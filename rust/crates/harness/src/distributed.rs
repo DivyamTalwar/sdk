@@ -1645,16 +1645,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await?;
             return Ok(WorkPull::Idle);
         }
-        let available = self.scheduler.available_for(&worker.id, &worker.available);
-        let selected = match target {
-            Some(target) => self
-                .scheduler
-                .operation_ready_for(target, &available, &worker.labels, owner)
-                .then_some(target),
-            None => self
-                .scheduler
-                .next_ready_for(&available, &worker.labels, owner),
-        };
+        let selected = self.ready_operation(worker, target, owner);
         let Some(operation_id) = selected else {
             return Ok(WorkPull::Idle);
         };
@@ -1709,6 +1700,24 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(operation_id)
             .map_or(0, |value| value.revision);
         Ok(WorkPull::Claimed(lease))
+    }
+
+    fn ready_operation(
+        &self,
+        worker: &Worker,
+        target: Option<OperationId>,
+        owner: Option<&Authority>,
+    ) -> Option<OperationId> {
+        let available = self.scheduler.available_for(&worker.id, &worker.available);
+        match target {
+            Some(target) => self
+                .scheduler
+                .operation_ready_for(target, &available, &worker.labels, owner)
+                .then_some(target),
+            None => self
+                .scheduler
+                .next_ready_for(&available, &worker.labels, owner),
+        }
     }
 
     fn pull_fingerprint(
