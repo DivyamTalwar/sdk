@@ -1,5 +1,7 @@
 //! Customer identity commands, independent of the local workspace service.
 
+mod mcp;
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use fs2::FileExt as _;
 use reqwest::{Client, StatusCode, Url};
@@ -15,13 +17,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 pub(crate) fn is_command(command: &str) -> bool {
-    matches!(command, "login" | "whoami" | "orgs" | "refresh")
+    matches!(
+        command,
+        "login" | "whoami" | "orgs" | "refresh" | "identity-mcp"
+    )
 }
 
 #[derive(Debug)]
 struct Error {
     code: String,
     message: String,
+    status: Option<StatusCode>,
 }
 
 impl Error {
@@ -29,6 +35,14 @@ impl Error {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            status: None,
+        }
+    }
+
+    fn http(code: &str, message: impl Into<String>, status: StatusCode) -> Self {
+        Self {
+            status: Some(status),
+            ..Self::new(code, message)
         }
     }
 
@@ -279,7 +293,7 @@ fn now() -> Result<u64, Error> {
         .map_err(|_| Error::new("clock_error", "clock precedes Unix epoch"))
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceCode {
     device_code: String,
     user_code: String,
@@ -351,10 +365,18 @@ impl Identity {
 
     async fn decode(response: reqwest::Response) -> Result<Value, Error> {
         let status = response.status();
-        let value: Value = response.json().await.map_err(|_| {
-            Error::new(
+        let bytes = response.bytes().await.map_err(|_| {
+            Error::http(
+                "transport_error",
+                "identity response body download failed",
+                status,
+            )
+        })?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            Error::http(
                 "invalid_response",
                 format!("identity returned non-JSON (HTTP {status})"),
+                status,
             )
         })?;
         if !status.is_success() {
@@ -363,9 +385,10 @@ impl Identity {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("identity_error");
-            return Err(Error::new(
+            return Err(Error::http(
                 code,
                 format!("identity request refused (HTTP {status})"),
+                status,
             ));
         }
         Ok(value)
@@ -409,34 +432,43 @@ impl Identity {
             .session()
     }
 
-    async fn login(&self, device: &DeviceCode) -> Result<Session, Error> {
-        let deadline = tokio::time::Instant::now()
+    async fn login(
+        &self,
+        device: &mut DeviceCode,
+        started: tokio::time::Instant,
+        cancelled: impl std::future::Future<Output = ()>,
+    ) -> Result<Session, Error> {
+        let deadline = started
             .checked_add(Duration::from_secs(device.expires_in))
             .ok_or_else(|| Error::new("invalid_response", "device expiry overflow"))?;
-        let mut interval = device.interval.max(1);
+        tokio::pin!(cancelled);
         loop {
-            let sleep = Duration::from_secs(interval);
+            let sleep = Duration::from_secs(device.interval.max(1));
             if tokio::time::Instant::now()
                 .checked_add(sleep)
                 .is_none_or(|next| next >= deadline)
             {
                 return Err(Error::new("expired_token", "device approval expired"));
             }
-            tokio::time::sleep(sleep).await;
-            let result = tokio::time::timeout_at(
-                deadline,
-                self.token(&[
+            tokio::select! {
+                biased;
+                () = &mut cancelled => return Err(Error::new("request_cancelled", "device polling cancelled")),
+                () = tokio::time::sleep(sleep) => {}
+            }
+            // Once dispatched, a successful exchange must reach the credential store.
+            let result = self
+                .token(&[
                     ("grant_type", DEVICE_GRANT),
                     ("device_code", &device.device_code),
                     ("code_verifier", &device.verifier),
-                ]),
-            )
-            .await
-            .map_err(|_| Error::new("expired_token", "device approval expired"))?;
+                ])
+                .await;
             match result {
                 Ok(session) => return Ok(session),
                 Err(error) if error.code == "authorization_pending" => {}
-                Err(error) if error.code == "slow_down" => interval = interval.saturating_add(5),
+                Err(error) if error.code == "slow_down" => {
+                    device.interval = device.interval.max(1).saturating_add(5);
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -557,6 +589,12 @@ impl Options {
 }
 
 pub(crate) async fn run(arguments: &[String]) -> Result<(), io::Error> {
+    if arguments
+        .first()
+        .is_some_and(|command| command == "identity-mcp")
+    {
+        return mcp::serve(arguments).await;
+    }
     let json_output = arguments.iter().any(|argument| argument == "--json");
     let result = execute(arguments).await;
     match result {
@@ -579,7 +617,7 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
     let store = Store::open(&options.credentials)?;
     match options.command.as_str() {
         "login" => {
-            let device = identity.device_code("cli", &store).await?;
+            let mut device = identity.device_code("cli", &store).await?;
             if options.json {
                 // Progress goes to stderr so stdout remains one machine-readable result.
                 eprintln!(
@@ -598,7 +636,13 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
                     device.user_code
                 );
             }
-            let session = identity.login(&device).await?;
+            let session = identity
+                .login(
+                    &mut device,
+                    tokio::time::Instant::now(),
+                    std::future::pending(),
+                )
+                .await?;
             let session = store.write(&identity.endpoint, session)?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
