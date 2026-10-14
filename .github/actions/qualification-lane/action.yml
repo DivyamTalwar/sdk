@@ -141,6 +141,11 @@ runs:
         }
         Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin
 
+    - name: Configure Windows Rust test profile
+      if: inputs.lane == 'windows-rust'
+      shell: bash
+      run: echo "CARGO_PROFILE_TEST_DEBUG=0" >> "$GITHUB_ENV"
+
     - name: Restore Windows Rust dependency builds
       if: inputs.lane == 'windows-rust'
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

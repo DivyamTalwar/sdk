@@ -1,8 +1,35 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join, resolve, sep } from "node:path";
 import test from "node:test";
+import YAML from "./vendor/yaml.cjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
+
+test("only Windows Rust drops test debug information before its dependency cache restores", () => {
+  const action = YAML.parse(readFileSync(".github/actions/qualification-lane/action.yml", "utf8"));
+  const steps = action.runs.steps;
+  const configure = steps.find(step => step.name === "Configure Windows Rust test profile");
+  assert.equal(configure.if, "inputs.lane == 'windows-rust'");
+  assert.ok(steps.indexOf(configure) < steps.findIndex(step => step.name === "Restore Windows Rust dependency builds"));
+  assert.doesNotMatch(configure.run, /OPT_LEVEL|DEBUG_ASSERTIONS|OVERFLOW_CHECKS/);
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/windows-test-debug-");
+  const output = join(root, "env");
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    writeFileSync(output, "");
+    const result = spawnSync(bash, ["-c", configure.run], { encoding: "utf8", timeout: 60_000,
+      env: { ...process.env, GITHUB_ENV: resolve(output).replaceAll("\\", "/") } });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(output, "utf8"), "CARGO_PROFILE_TEST_DEBUG=0\n");
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Windows setup forwards the lane to every phase and retains its detached join", () => {
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
