@@ -70,14 +70,13 @@ test("Windows Rust restores dependency builds after toolchain setup and skips un
   assert.ok(windowsLane.includes("CARGO_TARGET_DIR: ${{ inputs.lane == 'windows-rust' && format('{0}/target', github.workspace) || format('{0}/target', runner.temp) }}"));
   assert.ok(cache.includes("RUSTC_WRAPPER: ''"));
   assert.ok(cache.includes("cache-bin: false"));
-  assert.ok(cache.includes("save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}"));
+  assert.ok(cache.includes("save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}"));
   assert.doesNotMatch(cache, /add-rust-environment-hash-key: false|cache-targets: false|cache-workspace-crates: true/);
-  for (const step of ["Restore lane build cache", "Enable compiler cache"]) {
+  for (const step of ["Enable compiler cache"]) {
     const body = action.split("    - name: " + step)[1]?.split("    - name:")[0] ?? assert.fail("missing cache step");
     assert.ok(body.includes("if: inputs.lane != 'windows-rust'"));
   }
-  const save = action.split("    - name: Save lane build cache")[1]?.split("    - name:")[0] ?? assert.fail("missing cache save");
-  assert.ok(save.includes("inputs.lane != 'windows-rust'"));
+  assert.doesNotMatch(action, /Restore lane build cache|Save lane build cache/);
   assert.ok(workflow.includes("RUSTC_WRAPPER: ${{ matrix.lane != 'windows-rust' && 'sccache' || '' }}"));
   assert.ok(action.includes('if [[ "$LANE" != windows-rust ]]; then'));
 });
