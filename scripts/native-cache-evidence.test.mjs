@@ -7,21 +7,40 @@ import YAML from "./vendor/yaml.cjs";
 
 const workflow = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml", "utf8"));
 
-test("native compiler caches refresh each run while restoring the previous working set", () => {
+test("the product Cargo invocation preserves the configured compiler wrapper", () => {
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    import childProcess from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    childProcess.spawnSync = (command, args, options) => {
+      console.log(JSON.stringify({ command, args, wrapper: options.env.RUSTC_WRAPPER }));
+      return { status: 0 };
+    };
+    syncBuiltinESMExports();
+    await import('./scripts/build-product.mjs');
+  `], { encoding: "utf8", timeout: 60_000,
+    env: { ...process.env, CARGO: "fixture-cargo", RUSTC_WRAPPER: "fixture-sccache",
+      RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "" } });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const invocation = JSON.parse(result.stdout);
+  assert.equal(invocation.command, "fixture-cargo");
+  assert.equal(invocation.wrapper, "fixture-sccache");
+  assert.deepEqual(invocation.args.slice(0, 6), ["build", "--locked", "--profile", "dist", "-p", "acyclic-plugin"]);
+});
+
+test("native compiler caches keep one daily snapshot while restoring the previous working set", () => {
   const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
   const compiler = action.runs.steps.find(step => step.name === "Restore compiler output");
   assert.equal(compiler.uses, "actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25");
   assert.equal(compiler.with.path, "${{ runner.temp }}/sccache");
   const [matchingInputs, matchingTarget] = compiler.with["restore-keys"].trim().split("\n");
-  assert.equal(compiler.with.key, matchingInputs + "${{ github.run_id }}-${{ github.run_attempt }}");
+  assert.equal(compiler.with.key, matchingInputs + "${{ steps.cache-day.outputs.day }}");
   assert.equal(matchingInputs, matchingTarget + "${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-");
   assert.equal(matchingTarget, "rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-");
-  // Each successful run can save new source objects instead of returning an
-  // immutable exact hit before its updated working set is uploaded.
-  const key = (run, attempt) => compiler.with.key.replace("${{ github.run_id }}", run).replace("${{ github.run_attempt }}", attempt);
-  assert.notEqual(key("100", "1"), key("101", "1"));
-  assert.notEqual(key("100", "1"), key("100", "2"));
-  for (const value of [key("100", "1"), key("101", "1"), key("100", "2")]) {
+  const key = day => compiler.with.key.replace("${{ steps.cache-day.outputs.day }}", day);
+  assert.notEqual(key("20261014"), key("20261015"));
+  assert.doesNotMatch(compiler.with.key, /run_id|run_attempt/);
+  for (const value of [key("20261014"), key("20261015")]) {
     assert.ok(value.startsWith(matchingInputs));
   }
   const downloads = action.runs.steps.find(step => step.name === "Restore Cargo downloads");
@@ -98,6 +117,11 @@ test("native cache snapshot runs before leaving the build step and preserves its
   assert.ok(start >= 0 && end > start);
   const trap = build.run.slice(start, end + "\n' EXIT".length) + "\n";
   assert.ok(end < build.run.indexOf("node scripts/build-product.mjs"));
+  const startup = build.run.indexOf("sccache --start-server");
+  assert.ok(startup >= 0, "native builds must start the compiler-cache daemon");
+  assert.ok(startup < build.run.indexOf("cargo build --locked"));
+  assert.ok(startup < build.run.indexOf("node scripts/build-product.mjs"));
+  assert.ok(build.run.includes('command -v "$RUSTC_WRAPPER"'));
   assert.ok(build.run.includes('wait "${pids[$index]}"'));
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/native-cache-").replaceAll("\\", "/");
