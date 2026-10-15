@@ -10,6 +10,11 @@ use syntect::{
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
 
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static HIGHLIGHTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone)]
 pub(crate) struct Code {
     highlight: HighlightState,
@@ -40,6 +45,8 @@ pub(crate) fn highlighter(language: &str) -> Code {
 }
 
 pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
+    #[cfg(test)]
+    HIGHLIGHTED.with(|count| count.set(count.get() + 1));
     let mut highlighter =
         HighlightLines::from_state(theme(), code.highlight.clone(), code.parse.clone());
     let mut line = Line::plain("│ ", MUTED);

@@ -87,3 +87,24 @@ fn provider_control_characters_are_escaped_before_rendering() {
         .collect::<String>();
     assert_eq!(text, "escape \\u{1b}[2J and tab\\there");
 }
+
+#[test]
+fn multiline_html_renders_as_separate_terminal_rows() {
+    let mut markdown = Markdown::default();
+    for delta in ["<div>\n", "hello\n", "</div>\n"] {
+        markdown.push(delta);
+    }
+    let area = Rect::new(0, 0, 12, 3);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(lines(markdown.lines()).collect::<Vec<_>>()).render(area, &mut buffer);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(rows, ["<div>", "hello", "</div>"]);
+}

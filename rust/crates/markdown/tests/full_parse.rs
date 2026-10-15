@@ -1,4 +1,5 @@
 use super::*;
+use proptest::prelude::*;
 
 fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
@@ -53,6 +54,20 @@ fn incremental_frontier_matches_full_commonmark_parse() {
         "[r]\n\n[r]: /url\n\n[r]",
         "[r]: /old\n\n# Heading\n\n[r]: /new\n\n[r]",
         "[SS]: /case\n\n# Heading\n\nparagraph\n\n[ß]",
+        "[a b]: /one\n\n[a\u{a0}b]: /two\n\n[a b] [a\u{a0}b]",
+        "<div>\nhello\n</div>\n\nend",
+        "[a][b]\n\n[a]: /one\n\n[b]: /two\n\nend",
+        "- ```rust\n  let x = 1;\n  ```\n- second\n",
+        "*a [r] b*\n\n[r]: /url\n\nend",
+        "> [r]\n> extra\n>\n\n[r]: /url\n\nend",
+        "- [r]\n- other\n\n[r]: /url\n\nend",
+        "| [r] | b |\n| - | - |\n| 1 | 2 |\n\n[r]: /url\n\nend",
+        "[a][b  \nc]\n\nStable\n\n[b c]: /url\n\nend",
+        "- ```text\n  code\n  ```\nend",
+        "- - ```text\n    code\n    ```\n    after\n",
+        "- > ```text\n  > code\n  > ```\n  > after\n",
+        "[r]\n\n- parent\n  - child\n\n    [r]: /nested\n\n    more\n",
+        "[r]\n\n> quote\n>\n> [r]: /quoted\n>\n> more\n",
     ] {
         let mut markdown = Markdown::default();
         let mut end = 0;
@@ -62,6 +77,186 @@ fn incremental_frontier_matches_full_commonmark_parse() {
             end += delta.len();
             let prefix = source.get(..end).unwrap_or_default();
             assert_eq!(markdown.lines(), full_parse(prefix), "prefix {prefix:?}");
+        }
+    }
+}
+
+#[test]
+fn unused_definitions_never_parse_or_highlight_finalized_fences() {
+    let mut markdown = Markdown::default();
+    markdown.push(&format!("```rust\n{}```\n\n", "let x = 1;\n".repeat(1000)));
+    let first = markdown
+        .lines()
+        .get(1)
+        .and_then(|line| line.spans.first())
+        .map(|span| span.text.as_ptr());
+    let highlighted = code::HIGHLIGHTED.get();
+    let before = markdown.parsed_bytes;
+    for index in 0..100 {
+        markdown.push(&format!("[unused{index}]: /url\n\n"));
+    }
+    assert_eq!(code::HIGHLIGHTED.get(), highlighted);
+    assert!(markdown.parsed_bytes - before < 4096);
+    assert_eq!(
+        first,
+        markdown
+            .lines()
+            .get(1)
+            .and_then(|line| line.spans.first())
+            .map(|span| span.text.as_ptr())
+    );
+}
+
+#[test]
+fn completed_nested_fences_have_parser_and_lexer_checkpoints() {
+    for lines in [100, 10_000] {
+        let source = format!(
+            "- parent\n\n  ```rust\n{}  ```\n",
+            "  let x = 1;\n".repeat(lines)
+        );
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let highlighted = code::HIGHLIGHTED.get();
+        let before = markdown.parsed_bytes;
+        markdown.push("- next\n");
+        assert_eq!(code::HIGHLIGHTED.get(), highlighted);
+        assert!(markdown.parsed_bytes - before < 64);
+        assert_eq!(markdown.lines(), full_parse(&format!("{source}- next\n")));
+    }
+}
+
+#[test]
+fn long_plain_paragraph_appends_only_visit_the_delta() {
+    for length in [1000, 100_000] {
+        let mut markdown = Markdown::default();
+        markdown.push(&"x".repeat(length));
+        let before = markdown.parsed_bytes;
+        for delta in ["a", " ", " ", "b", "c"] {
+            markdown.push(delta);
+        }
+        assert_eq!(markdown.parsed_bytes, before);
+        assert_eq!(
+            markdown.lines(),
+            full_parse(&format!("{}a  bc", "x".repeat(length)))
+        );
+    }
+}
+
+#[test]
+fn styled_paragraph_text_reuses_the_inline_checkpoint() {
+    for prefix in ["**bold** text ", "*unfinished text ", "# heading text "] {
+        let mut markdown = Markdown::default();
+        markdown.push(&format!("{prefix}{}", "x".repeat(100_000)));
+        let before = markdown.parsed_bytes;
+        for delta in ["a", " ", " ", "b", "c"] {
+            markdown.push(delta);
+        }
+        assert_eq!(markdown.parsed_bytes, before);
+        assert_eq!(
+            markdown.lines(),
+            full_parse(&format!("{prefix}{}a  bc", "x".repeat(100_000)))
+        );
+    }
+}
+
+#[test]
+fn ordinary_append_does_not_visit_committed_reference_definitions() {
+    for definitions in [100, 10_000] {
+        let mut markdown = Markdown::default();
+        for index in 0..definitions {
+            markdown.push(&format!("[r{index}]: /url\n\n"));
+        }
+        markdown.push("unfinished ");
+        let before = markdown.parsed_bytes;
+        for _ in 0..100 {
+            markdown.push("x");
+        }
+        assert_eq!(markdown.parsed_bytes, before);
+    }
+    let source: String = (0..10_000)
+        .map(|index| format!("[r{index}]: /url\n\n"))
+        .collect();
+    let mut markdown = Markdown::default();
+    markdown.push(&format!("{source}a *unfinished "));
+    let before = markdown.parsed_bytes;
+    for _ in 0..100 {
+        markdown.push("x");
+    }
+    assert_eq!(markdown.parsed_bytes, before);
+    let work = markdown.references.work;
+    markdown.push("!");
+    assert!(markdown.parsed_bytes - before < 128);
+    assert_eq!(markdown.references.work, work);
+}
+
+#[test]
+fn late_definitions_select_cached_reference_nodes_only() {
+    for source in [
+        "[r]\n\n",
+        "[**bold**][r]\n\n",
+        "[a][r]\n\n",
+        "![image][r]\n\n",
+    ] {
+        let mut markdown = Markdown::default();
+        markdown.push(source);
+        let before = markdown.parsed_bytes;
+        let delta = "[r]: /url\n\n";
+        markdown.push(delta);
+        assert!(markdown.parsed_bytes - before <= delta.len());
+        assert_eq!(markdown.lines(), full_parse(&format!("{source}{delta}")));
+    }
+}
+
+#[test]
+fn html_spans_are_physical_display_lines() {
+    let mut markdown = Markdown::default();
+    markdown.push("<div>\nhello\n</div>\n");
+    assert_eq!(markdown.lines().len(), 3);
+    assert!(
+        markdown
+            .lines()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .all(|span| !span.text.contains(['\r', '\n']))
+    );
+    markdown.clear();
+    // Script HTML blocks retain interior blank lines.
+    markdown.push("<script>\n\nhello\n</script>\n");
+    assert_eq!(markdown.lines().len(), 4);
+}
+
+#[test]
+fn nested_paragraph_checkpoint_context() {
+    let source = "- parent\n  - child\n\n    pa";
+    let mut markdown = Markdown::default();
+    let mut end = 0;
+    for character in source.chars() {
+        let delta = character.to_string();
+        markdown.push(&delta);
+        end += delta.len();
+        assert_eq!(
+            markdown.lines(),
+            full_parse(source.get(..end).unwrap_or_default())
+        );
+    }
+    assert_eq!(markdown.lines(), full_parse(source));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn random_chunks_match_the_full_parser(parts in prop::collection::vec(0usize..16, 1..20), cuts in prop::collection::vec(1usize..20, 1..12)) {
+        let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n", "[r]", "<div>\nhello\n</div>\n", "> quote\n", "[a\u{a0}b]: /two\n"];
+        let source: String = parts.iter().filter_map(|index| vocabulary.get(*index)).copied().collect();
+        let mut streamed = Markdown::default();
+        let mut offset = 0;
+        for size in cuts.iter().cycle() {
+            if offset == source.len() { break; }
+            let mut end = (offset + size).min(source.len());
+            while !source.is_char_boundary(end) { end += 1; }
+            streamed.push(source.get(offset..end).unwrap_or_default());
+            prop_assert_eq!(streamed.lines(), full_parse(source.get(..end).unwrap_or_default()), "prefix {:?}", source.get(..end));
+            offset = end;
         }
     }
 }

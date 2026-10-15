@@ -14,8 +14,8 @@ pub(crate) fn render(events: &[Event<'_>]) -> Vec<Line> {
 }
 
 #[derive(Default)]
-struct Renderer {
-    lines: Vec<Line>,
+pub(crate) struct Renderer {
+    pub(crate) lines: Vec<Line>,
     line: Line,
     styles: Vec<(Style, Option<String>)>,
     style: Style,
@@ -28,7 +28,19 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn flush(&mut self) {
+    pub(crate) fn checkpoint(&self) -> Self {
+        Self {
+            line: self.line.clone(),
+            styles: self.styles.clone(),
+            style: self.style,
+            link: self.link.clone(),
+            lists: self.lists.clone(),
+            prefixes: self.prefixes.clone(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn flush(&mut self) {
         if !self.line.spans.is_empty() {
             self.lines.push(std::mem::take(&mut self.line));
         }
@@ -45,13 +57,13 @@ impl Renderer {
         self.prefixes.concat()
     }
 
-    fn block_line(&mut self, line: Line) {
+    pub(crate) fn block_line(&mut self, line: Line) {
         let mut prefixed = Line::plain(&self.prefix(), MUTED);
         prefixed.spans.extend(line.spans);
         self.lines.push(prefixed);
     }
 
-    fn event(&mut self, event: &Event<'_>) {
+    pub(crate) fn event(&mut self, event: &Event<'_>) {
         if let Some(table) = &mut self.table {
             if matches!(event, Event::End(TagEnd::Table)) {
                 if let Some(table) = self.table.take() {
@@ -71,11 +83,23 @@ impl Renderer {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(*tag),
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => {
+            Event::Text(text) => {
                 if self.code.is_some() {
                     self.code_text.push_str(text);
                 } else {
                     self.text(text);
+                }
+            }
+            Event::Html(text) | Event::InlineHtml(text) => {
+                for part in text.split_inclusive('\n') {
+                    self.text(part.trim_end_matches('\n'));
+                    if part.ends_with('\n') {
+                        if self.line.spans.is_empty() {
+                            self.lines.push(Line::default());
+                        } else {
+                            self.flush();
+                        }
+                    }
                 }
             }
             Event::Code(text) => {
@@ -186,7 +210,7 @@ impl Renderer {
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph | TagEnd::Heading(_) => self.flush(),
+            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::HtmlBlock => self.flush(),
             TagEnd::Item | TagEnd::BlockQuote(_) => {
                 self.flush();
                 self.prefixes.pop();
