@@ -30,8 +30,23 @@ proptest! {
             } else {
                 ModelContentPart::File { file: file.clone(), policy: FileProjectionPolicy::BoundedFull }
             };
-            let request = with_parts(&provider, vec![part]).unwrap();
-            let extra = crate::files::extra_bytes(&request.request().messages[0].content, u64::MAX).unwrap();
+            let mut messages = Vec::new();
+            if tool_result {
+                messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        acyclic_harness::model::ToolCall::new("call".into(), "echo".into(), json!({})),
+                    )),
+                });
+            }
+            messages.push(ModelMessage {
+                role: if tool_result { ModelRole::Tool } else { ModelRole::User },
+                content: ModelContent::Part(part),
+            });
+            let request = PreparedModelRequest::prepare(ModelRequest {
+                model: provider.model().clone(), messages, tools: vec![], max_output_tokens: Some(64),
+            }, Limits::default(), None).unwrap();
+            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
             let mut estimate = crate::files::FileText::Estimate;
             let before = crate::projection::body(&provider, request.request(), &mut estimate).unwrap();
             let mut resolved = crate::files::FileText::Ready(vec![text.clone()].into_iter());
