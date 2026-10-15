@@ -2,6 +2,28 @@ use super::*;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata() -> Result<()> {
+    let call = ToolCall::new("call".into(), "echo".into(), json!({"value":1}));
+    assert!(call.metadata.is_null());
+    let event = ModelEvent::ToolCall(call.clone());
+    let bytes = crate::contract::canonical_json_bytes(&event)?;
+    let value: Value = serde_json::from_slice(&bytes).expect("fixture event JSON");
+    assert_eq!(
+        value,
+        json!({"kind":"tool_call","call_id":"call","name":"echo","arguments":{"value":1}})
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelEvent>(value.clone()).expect("legacy event"),
+        event
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelContentPart>(value).expect("legacy content"),
+        ModelContentPart::ToolCall(call)
+    );
+    Ok(())
+}
+
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
         model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
@@ -25,12 +47,11 @@ fn exchange(request: &mut ModelRequest) {
     request.messages.extend([
         ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Part(ModelContentPart::ToolCall {
-                metadata: serde_json::Value::Null,
-                call_id: "call-1".into(),
-                name: "echo".into(),
-                arguments: json!("é"),
-            }),
+            content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+                "call-1".into(),
+                "echo".into(),
+                json!("é"),
+            ))),
         },
         ModelMessage {
             role: ModelRole::Tool,
@@ -447,8 +468,10 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
         |request| request.max_output_tokens = Some(0),
         |request| request.model.revision.clear(),
         |request| {
-            let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
-                &mut request.messages[1].content
+            let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall {
+                arguments,
+                ..
+            })) = &mut request.messages[1].content
             else {
                 unreachable!()
             };
@@ -469,7 +492,7 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
 fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Result<()> {
     let mut input = request()?;
     exchange(&mut input);
-    let ModelContent::Part(ModelContentPart::ToolCall { metadata, .. }) =
+    let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { metadata, .. })) =
         &mut input.messages[1].content
     else {
         unreachable!()
@@ -489,7 +512,7 @@ fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Resul
         )
         .is_err()
     );
-    let ModelContent::Part(ModelContentPart::ToolCall { metadata, .. }) =
+    let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { metadata, .. })) =
         &mut input.messages[1].content
     else {
         unreachable!()

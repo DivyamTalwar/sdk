@@ -36,12 +36,14 @@ impl StockExecution<'_> {
             for (invocation, metadata) in calls {
                 let message = ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                        name: stock_string_copy(&invocation.name, self.io)?,
-                        arguments: crate::model::clone_value(&invocation.arguments, self.io)?,
-                        metadata,
-                    }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        crate::model::ToolCall::new(
+                            stock_string_copy(&invocation.call_id, self.io)?,
+                            stock_string_copy(&invocation.name, self.io)?,
+                            crate::model::clone_value(&invocation.arguments, self.io)?,
+                        )
+                        .with_metadata(metadata),
+                    )),
                 };
                 crate::executor::with_history_io(self.io, |work| {
                     message.content.validate_limits(self.stock.limits, work)
@@ -94,12 +96,12 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                 }
-                ModelEvent::ToolCall {
+                ModelEvent::ToolCall(crate::model::ToolCall {
                     call_id,
                     name,
                     arguments,
                     metadata,
-                } => {
+                }) => {
                     let invocation = ToolInvocation::for_model_call(
                         input.operation_id,
                         step,

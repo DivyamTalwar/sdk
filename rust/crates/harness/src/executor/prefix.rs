@@ -30,12 +30,12 @@ impl StockExecution<'_> {
         let mut request = crate::model::clone_request(prepared.request(), self.io)?;
         let mut calls = Vec::new();
         for event in retained.events {
-            if let ModelEvent::ToolCall {
+            if let ModelEvent::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
                 metadata,
-            } = event
+            }) = event
             {
                 let invocation = ToolInvocation::for_model_call(
                     input.operation_id,
@@ -69,12 +69,14 @@ impl StockExecution<'_> {
                 &mut request.messages,
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                        name: stock_string_copy(&invocation.name, self.io)?,
-                        arguments: invocation.arguments,
-                        metadata,
-                    }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        crate::model::ToolCall::new(
+                            stock_string_copy(&invocation.call_id, self.io)?,
+                            stock_string_copy(&invocation.name, self.io)?,
+                            invocation.arguments,
+                        )
+                        .with_metadata(metadata),
+                    )),
                 },
                 self.io,
             )?;
