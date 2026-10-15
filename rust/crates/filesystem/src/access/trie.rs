@@ -31,6 +31,9 @@ pub struct PathTrie {
     valid_from: u64,
     valid_until: Option<u64>,
     config: crate::VolumeConfig,
+    volume: String,
+    subject: (super::PrincipalKind, String),
+    pub(super) capability_binding: [u8; 32],
 }
 
 /// A path bound to its immutable compiled view. Its private state cannot be
@@ -43,6 +46,26 @@ pub struct PreparedPath<'a> {
     depth: usize,
 }
 
+/// Immutable permission state retained by an open native handle.
+pub struct PinnedPath {
+    view: std::sync::Arc<PathTrie>,
+    state: usize,
+}
+
+impl PinnedPath {
+    /// Check the pinned policy, including its original expiry, without allocation.
+    #[must_use]
+    pub fn decide(&self, action: Action, now: u64) -> Decision<'_> {
+        self.view.decision(self.state, action, now)
+    }
+
+    pub(super) fn action_mask(&self, now: u64) -> u16 {
+        self.view
+            .state_at(self.state, now)
+            .map_or(0, |state| state.actions)
+    }
+}
+
 impl<'a> PreparedPath<'a> {
     /// Prepare a child during namespace lookup. Only this new name is scanned;
     /// previously prepared ancestors are never scanned again.
@@ -50,17 +73,17 @@ impl<'a> PreparedPath<'a> {
         if name.is_empty() || name.contains('/') {
             return Err(InvalidPolicy("expected one path component"));
         }
-        let key = super::names::key(name, self.trie.config)?;
-        self.advance(
-            super::names::encoded_len(name, self.trie.config),
-            key.chars().map(Ok),
-        )
+        super::names::validate(name, self.trie.config)?;
+        self.advance(super::names::encoded_len(name, self.trie.config), |sink| {
+            super::names::write_key(name, self.trie.config, sink)
+                .map_err(|_| InvalidPolicy("invalid compiled path"))
+        })
     }
 
     fn advance(
         self,
         length: usize,
-        chars: impl Iterator<Item = Result<char, InvalidPolicy>>,
+        emit: impl FnOnce(&mut PathWriter<'_>) -> Result<(), InvalidPolicy>,
     ) -> Result<Self, InvalidPolicy> {
         let bytes = length
             .checked_add(1)
@@ -76,11 +99,13 @@ impl<'a> PreparedPath<'a> {
         if self.depth != 0 {
             state = self.trie.step(state, '/')?;
         }
-        for ch in chars {
-            state = self.trie.step(state, ch?)?;
-        }
-        Ok(Self {
+        let mut sink = PathWriter {
+            trie: self.trie,
             state,
+        };
+        emit(&mut sink)?;
+        Ok(Self {
+            state: sink.state,
             bytes,
             depth,
             ..self
@@ -107,12 +132,14 @@ impl<'a> PreparedPath<'a> {
             NameEncoding::WindowsUtf16Le => {
                 let units = crate::kernel::types::utf16le_units(name.as_bytes())
                     .ok_or(InvalidPolicy("invalid UTF-16 access name"))?;
-                self.advance(
-                    name.as_bytes().len(),
-                    char::decode_utf16(units).map(|ch| {
-                        ch.map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))
-                    }),
-                )
+                self.advance(name.as_bytes().len(), |sink| {
+                    for ch in char::decode_utf16(units) {
+                        let ch = ch
+                            .map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))?;
+                        sink.state = sink.trie.step(sink.state, ch)?;
+                    }
+                    Ok(())
+                })
             }
         }
     }
@@ -127,6 +154,23 @@ impl<'a> PreparedPath<'a> {
         self.trie
             .state_at(self.state, now)
             .map_or(0, |state| state.actions)
+    }
+}
+
+struct PathWriter<'a> {
+    trie: &'a PathTrie,
+    state: usize,
+}
+
+impl std::fmt::Write for PathWriter<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        for ch in text.chars() {
+            self.state = self
+                .trie
+                .step(self.state, ch)
+                .map_err(|_| std::fmt::Error)?;
+        }
+        Ok(())
     }
 }
 
@@ -177,6 +221,53 @@ impl Alphabet {
 }
 
 impl PathTrie {
+    /// Authoritative name semantics pinned by this view.
+    #[must_use]
+    pub const fn config(&self) -> crate::VolumeConfig {
+        self.config
+    }
+
+    /// Authenticated volume identity pinned by compilation.
+    #[must_use]
+    pub fn volume(&self) -> &str {
+        &self.volume
+    }
+
+    /// Authenticated principal identity pinned by compilation.
+    #[must_use]
+    pub fn subject(&self) -> (super::PrincipalKind, &str) {
+        (self.subject.0, &self.subject.1)
+    }
+
+    /// Policy revision used for every decision in this view.
+    #[must_use]
+    pub const fn policy_version(&self) -> u64 {
+        self.version
+    }
+
+    /// Prepare exact encoded names instead of a potentially lossy path projection.
+    pub fn prepare_namespace(
+        &self,
+        path: &crate::kernel::NamespacePath,
+    ) -> Result<PreparedPath<'_>, InvalidPolicy> {
+        let mut prepared = self.prepare("")?;
+        for name in path.components() {
+            prepared = prepared.child_name(name)?;
+        }
+        Ok(prepared)
+    }
+
+    /// Pin the current compiled state for an opened file's lifetime.
+    pub fn pin(
+        self: &std::sync::Arc<Self>,
+        path: &crate::kernel::NamespacePath,
+    ) -> Result<PinnedPath, InvalidPolicy> {
+        Ok(PinnedPath {
+            state: self.prepare_namespace(path)?.state,
+            view: std::sync::Arc::clone(self),
+        })
+    }
+
     /// Compile the same decision reducer used by `decide` into terminal states.
     /// `resource.path` is ignored; every other input is pinned for this view.
     /// Rejects policies whose glob automaton exceeds bounded state, storage or
@@ -198,6 +289,8 @@ impl PathTrie {
         let mut rules = BTreeMap::new();
         let mut grants = BTreeMap::new();
         let mut text_left = MAXIMUM_TEXT_BYTES;
+        spend(&mut text_left, resource.volume.len())?;
+        spend(&mut text_left, principal.id.len())?;
         let mut valid_until = capability.expires_at.filter(|expiry| *expiry > context.now);
         for rule in policy.layers.iter().flatten() {
             if let Some(expiry) = rule
@@ -268,6 +361,9 @@ impl PathTrie {
             valid_from: context.now,
             valid_until,
             config: resource.config,
+            volume: resource.volume.to_owned(),
+            subject: (principal.kind, principal.id.clone()),
+            capability_binding: super::capability::binding(capability)?,
         })
     }
 
@@ -284,9 +380,9 @@ impl PathTrie {
         self.valid_until
     }
 
-    /// Prepare an entire path. This scans its bytes and may allocate a folded
-    /// name. Native lookups should retain handles and use `PreparedPath::child`
-    /// to prepare only new components; hot checks use `PreparedPath::decide`.
+    /// Prepare an entire path, streaming native name keys without temporary strings.
+    /// Native lookups can retain parents and use `PreparedPath::child` to scan
+    /// only new components; hot checks use `PreparedPath::decide`.
     pub fn prepare(&self, path: &str) -> Result<PreparedPath<'_>, InvalidPolicy> {
         let mut prepared = PreparedPath {
             trie: self,

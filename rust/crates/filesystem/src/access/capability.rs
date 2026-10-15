@@ -105,3 +105,33 @@ impl Capability {
         Ok(())
     }
 }
+
+pub(super) fn binding(capability: &Capability) -> Result<[u8; 32], InvalidPolicy> {
+    use sha2::Digest as _;
+    struct Writer {
+        hash: sha2::Sha256,
+        remaining: usize,
+    }
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.remaining = self.remaining.checked_sub(bytes.len()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "capability binding exceeds compilation limit",
+                )
+            })?;
+            self.hash.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Writer {
+        hash: sha2::Sha256::new(),
+        remaining: super::compilation::MAXIMUM_TEXT_BYTES,
+    };
+    serde_json::to_writer(&mut writer, capability)
+        .map_err(|_| InvalidPolicy("capability binding exceeds compilation limit"))?;
+    Ok(writer.hash.finalize().into())
+}

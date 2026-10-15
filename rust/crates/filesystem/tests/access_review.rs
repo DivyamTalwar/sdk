@@ -135,6 +135,87 @@ proptest! {
     }
 }
 
+#[test]
+fn published_policy_refreshes_new_opens_and_preserves_pinned_handles()
+-> Result<(), Box<dyn std::error::Error>> {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let mut cap = capability();
+    cap.expires_at = Some(200);
+    let res = resource(&caller.lineage, "", 10);
+    let mut policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
+    let view = AccessView::new(PathTrie::compile(&policy, &caller, res, context, &cap)?);
+    let name = LogicalName::new(NameEncoding::Utf8, b"public".to_vec(), 255)?;
+    let path = acyclic_fs::kernel::NamespacePath::new(vec![name], res.config.limits)?;
+    let opened = view.current()?.pin(&path)?;
+    assert!(opened.decide(Action::Read, 100).allowed);
+    policy.version = 2;
+    policy
+        .layers
+        .push(vec![rule("revoked", Effect::Deny, &Action::ALL, "public")]);
+    view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?)?;
+    let reopened = view.current()?.pin(&path)?;
+    assert!(!reopened.decide(Action::Read, 100).allowed);
+    assert_eq!(reopened.decide(Action::Read, 100).rule_id, Some("revoked"));
+    assert!(opened.decide(Action::Read, 199).allowed);
+    assert!(!opened.decide(Action::Read, 200).allowed);
+    assert!(!opened.mount_mode(200).visible());
+    policy.version = 1;
+    policy.layers.pop();
+    assert!(
+        view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?)
+            .is_err()
+    );
+    policy.version = 2;
+    let mut other_volume = res;
+    other_volume.volume = "different-volume";
+    assert!(
+        view.publish(PathTrie::compile(
+            &policy,
+            &caller,
+            other_volume,
+            context,
+            &cap
+        )?)
+        .is_err()
+    );
+    let mut other_subject = caller.clone();
+    other_subject.id = "different-principal".into();
+    assert!(
+        view.publish(PathTrie::compile(
+            &policy,
+            &other_subject,
+            res,
+            context,
+            &cap
+        )?)
+        .is_err()
+    );
+    let mut wider = cap.clone();
+    wider.expires_at = Some(300);
+    assert!(
+        view.publish(PathTrie::compile(&policy, &caller, res, context, &wider)?)
+            .is_err()
+    );
+    let mut other = res;
+    other.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    assert!(
+        view.publish(PathTrie::compile(&policy, &caller, other, context, &cap)?)
+            .is_err()
+    );
+    assert!(
+        !view
+            .current()?
+            .pin(&path)?
+            .decide(Action::Read, 100)
+            .allowed
+    );
+    Ok(())
+}
+
 fn native_exact_grant(
     profile: FilesystemProfile,
     capability_grant: bool,
