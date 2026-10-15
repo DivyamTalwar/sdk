@@ -1,5 +1,12 @@
 //! Golden patches and incremental pinned-file query projection.
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "client_diff_model.rs"]
+mod model;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "client_diff_properties.rs"]
+mod properties;
+
 use acyclic_fs::Fs;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
@@ -15,7 +22,7 @@ use acyclic_harness::{
 };
 use serde::Deserialize;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -189,8 +196,8 @@ async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()>
         let reader = Reader {
             inner: fixture.reader.as_ref(),
             reads: AtomicUsize::new(0),
-            requested_bytes: Mutex::new(Vec::new()),
-            pause_first: false,
+            expected_limits: None,
+            pause_first: None,
         };
         let mut result = Ok(Vec::new());
         let allocation = allocation_counter::measure(|| {
@@ -239,8 +246,8 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
         let reader = Reader {
             inner: fixture.reader.as_ref(),
             reads: AtomicUsize::new(0),
-            requested_bytes: Mutex::new(Vec::new()),
-            pause_first: false,
+            expected_limits: None,
+            pause_first: None,
         };
         let limits = DiffLimits {
             changes: 512,
@@ -348,8 +355,8 @@ impl Fixture {
 struct Reader<'a> {
     inner: &'a dyn ContentResidencyVerifier,
     reads: AtomicUsize,
-    requested_bytes: Mutex<Vec<u64>>,
-    pause_first: bool,
+    expected_limits: Option<&'a [u64]>,
+    pause_first: Option<&'a (dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync)>,
 }
 impl ContentResidencyVerifier for Reader<'_> {
     fn read_private_path<'a, 'io>(
@@ -374,18 +381,22 @@ impl ContentResidencyVerifier for Reader<'_> {
         'io: 'a,
     {
         let index = self.reads.fetch_add(1, Ordering::SeqCst);
-        self.requested_bytes
-            .lock()
-            .expect("read bounds")
-            .push(maximum_bytes);
+        if let Some(limits) = self.expected_limits {
+            assert_eq!(limits.get(index), Some(&maximum_bytes));
+        }
         let read =
             self.inner
                 .read_private_path(volume, prefix, path, generation, maximum_bytes, io)?;
-        if self.pause_first && index == 0 {
-            return acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
-                futures::future::pending::<()>().await;
-                read.await
-            });
+        if index == 0 {
+            if let Some(pause) = self.pause_first {
+                return acyclic_harness::conversation::BoundedContentFuture::new(
+                    io,
+                    || async move {
+                        pause().await;
+                        read.await
+                    },
+                );
+            }
         }
         Ok(read)
     }
@@ -462,10 +473,14 @@ async fn exhausted_work_stops_before_reading_the_next_file() -> Result<()> {
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: false,
+        expected_limits: None,
+        pause_first: None,
     };
     let mut view = DiffView::new(fixture.root.volume.clone(), base.generation)?;
+    let reader = Reader {
+        expected_limits: Some(&[1]),
+        ..reader
+    };
     let before = view.clone();
     let result = view
         .apply(
@@ -483,7 +498,7 @@ async fn exhausted_work_stops_before_reading_the_next_file() -> Result<()> {
         if reason == "diff computation work bound exceeded")
     );
     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-    assert_eq!(*reader.requested_bytes.lock().expect("read bounds"), [1]);
+
     assert_eq!(view, before);
     Ok(())
 }
@@ -507,10 +522,14 @@ async fn endpoint_reads_use_only_the_remaining_input_allowance() -> Result<()> {
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: false,
+        expected_limits: None,
+        pause_first: None,
     };
     let mut view = DiffView::new(fixture.root.volume.clone(), base.generation)?;
+    let reader = Reader {
+        expected_limits: Some(&[2, 1]),
+        ..reader
+    };
     let before = view.clone();
     assert!(
         view.apply(
@@ -525,7 +544,7 @@ async fn endpoint_reads_use_only_the_remaining_input_allowance() -> Result<()> {
         .is_err()
     );
     assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
-    assert_eq!(*reader.requested_bytes.lock().expect("read bounds"), [2, 1]);
+
     assert_eq!(view, before);
     Ok(())
 }
@@ -549,8 +568,8 @@ async fn unchanged_baseline_snapshot_initializes_once_without_reads() -> Result<
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: false,
+        expected_limits: None,
+        pause_first: None,
     };
     {
         let source =
@@ -615,8 +634,8 @@ async fn render_bound_stops_before_reading_later_files_and_preserves_the_view() 
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: false,
+        expected_limits: None,
+        pause_first: None,
     };
     let before = serde_json::to_string(&view)
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
@@ -663,8 +682,8 @@ async fn cancelling_a_read_keeps_the_received_publication_for_the_next_read() ->
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: true,
+        expected_limits: None,
+        pause_first: Some(&|| Box::pin(futures::future::pending())),
     };
     let mut follow = view.follow(
         Box::pin(futures::stream::iter([Ok(publication.clone())])),
@@ -714,8 +733,8 @@ async fn deletion_only_publications_keep_the_published_generation() -> Result<()
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: false,
+        expected_limits: None,
+        pause_first: None,
     };
     assert_eq!(
         view.apply(&publication, &reader, limits()).await?,
@@ -786,8 +805,8 @@ async fn publications_update_only_named_files_and_keep_the_fork_base() -> Result
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
-        requested_bytes: Mutex::new(Vec::new()),
-        pause_first: false,
+        expected_limits: None,
+        pause_first: None,
     };
     for (index, current, expected) in [
         (1, "first\n", 1),
