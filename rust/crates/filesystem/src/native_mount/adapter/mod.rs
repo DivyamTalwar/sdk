@@ -64,7 +64,7 @@ pub struct CheckoutMountSource<A, O> {
     config: VolumeConfig,
     access_view: Option<Arc<crate::access::AccessView>>,
     folds_names: bool,
-    folded_directories: folded_cache::FoldedDirectoryCache,
+    folded_directories: folded_cache::FoldedDirectoryCache<folded_names::FoldedKeys>,
     cancellation: CancellationToken,
     capture_gate: Arc<StdMutex<CaptureSourceGate>>,
     capture_quiesced: Arc<std::sync::Condvar>,
@@ -182,9 +182,9 @@ include!("inputs.rs");
 include!("native_names.rs");
 mod capture;
 mod directory;
+mod file_handles;
 mod folded_cache;
 mod folded_names;
-mod file_handles;
 include!("operations.rs");
 mod records;
 mod sparse;

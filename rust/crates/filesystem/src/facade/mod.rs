@@ -164,6 +164,7 @@ mod mutations;
 mod names;
 #[cfg(feature = "native-mount")]
 mod names_unique;
+pub(crate) use names_unique::ambiguous_folded_name;
 mod namespace;
 mod proof;
 mod publication;

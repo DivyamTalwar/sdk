@@ -43,10 +43,12 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )?;
-            if self.folds_names() {
+            let folded = if self.folds_names() {
                 self.require_unique_folded_path(&mut checkout, &path, true, work, cancellation)
-                    .await?;
-            }
+                    .await?
+            } else {
+                None
+            };
             let (page, source_allocation) = checkout
                 .list_directory_records(
                     &path,
@@ -67,6 +69,15 @@ where
                     .mount_mode(now)
                     .visible();
                 if !visible {
+                    continue;
+                }
+                if let Some(keys) = &folded
+                    && crate::facade::ambiguous_folded_name(
+                        &keys.value,
+                        &entry.name,
+                        &mut crate::kernel::KernelAccounting::native(work, cancellation),
+                    )?
+                {
                     continue;
                 }
                 let (name, mut allocation) = native_mount_name(&entry.name, inputs.carrier)?;
@@ -98,7 +109,9 @@ where
                             inputs
                                 .allocation
                                 .as_mut()
-                                .ok_or(MountSourceError::AccessDenied)?
+                                .ok_or(MountSourceError::NativeWork(
+                                    crate::NativeTreeMaterializationError::InvalidLayout,
+                                ))?
                                 .absorb(&mut allocation)
                                 .map_err(MountSourceError::NativeWork)?;
                         }

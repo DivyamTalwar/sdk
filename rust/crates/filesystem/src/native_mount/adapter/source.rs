@@ -321,7 +321,8 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         if self.folds_names() {
-            self.require_unique_folded_path(checkout, path, false, &work, cancellation)
+            let _ = self
+                .require_unique_folded_path(checkout, path, false, &work, cancellation)
                 .await?;
         }
         let value = checkout

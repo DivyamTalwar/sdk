@@ -150,10 +150,13 @@ fn folded_legacy_collisions_cannot_reuse_a_warm_inode() -> TestResult {
             .file_id,
         first
     );
-    assert!(matches!(
-        source.read_directory_with_meter(&MountPath::root(), None, 256, &work),
-        Err(MountSourceError::Filesystem(crate::FsError::NameCollision))
-    ));
+    let page = source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
+    assert!(!page.entries.is_empty());
+    assert!(
+        page.entries
+            .iter()
+            .all(|entry| entry.name.starts_with(b"Sa"))
+    );
     Ok(())
 }
 
@@ -295,5 +298,83 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
     let before = work.receipt().bytes_encoded;
     source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
     assert!(work.receipt().bytes_encoded >= before + 1024 * 9);
+    Ok(())
+}
+
+#[test]
+fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let mut checkout = runtime.block_on(crate::facade::test_fixtures::folded_checkout(
+        ["Stra\u{df}e", "STRASSE", "notes"].map(str::to_owned),
+    ))?;
+    let config = checkout.volume_config();
+    let path = |text: &str| -> Result<_, Box<dyn std::error::Error>> {
+        Ok(crate::kernel::NamespacePath::from_portable(
+            &crate::path::PortablePath::parse(text, config.limits)?,
+            config.limits,
+        )?)
+    };
+    runtime.block_on(checkout.apply_authored_transaction(
+        vec![
+            crate::AuthoredMutation::CreateDirectory {
+                path: path("/Nested")?,
+                metadata: FileMetadata::default(),
+            },
+            crate::AuthoredMutation::CreateFile {
+                path: path("/Nested/inside")?,
+                bytes: acyclic_stream::OwnedBytes::new(),
+                metadata: FileMetadata::default(),
+            },
+        ],
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    ))?;
+    let source = MemorySource::new(
+        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+        config,
+    )?;
+    let work = fuse_fixture_work();
+    for _ in 0..2 {
+        for spelling in ["notes", "NOTES", "Nested/inside", "NESTED/INSIDE"] {
+            let path = spelling.split('/').fold(MountPath::root(), |path, name| {
+                path.child(name.as_bytes().to_vec())
+            });
+            assert!(
+                source.lookup_with_meter(&path, &work)?.is_some(),
+                "{spelling}"
+            );
+        }
+        for spelling in ["Stra\u{df}e", "STRASSE", "strasse"] {
+            assert!(matches!(
+                source.lookup_with_meter(&name(spelling), &work),
+                Err(MountSourceError::Filesystem(crate::FsError::NameCollision))
+            ));
+        }
+    }
+    let mut cursor = None;
+    let mut listed = Vec::new();
+    loop {
+        let page =
+            source.read_directory_with_meter(&MountPath::root(), cursor.as_deref(), 1, &work)?;
+        listed.extend(page.entries.iter().map(|entry| entry.name.clone()));
+        if page.entries.is_empty() {
+            assert!(
+                page.next_cursor().is_some(),
+                "ambiguous page lost its source frontier"
+            );
+        }
+        cursor = page.next_cursor().map(<[u8]>::to_vec);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(listed, [b"Nested".to_vec(), b"notes".to_vec()]);
+    assert!(
+        source
+            .read_directory_with_meter(&name("Nested"), None, 1, &work)?
+            .entries
+            .iter()
+            .any(|entry| entry.name == b"inside")
+    );
     Ok(())
 }
