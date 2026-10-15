@@ -6,17 +6,21 @@
 //! new open after a policy change, generation change, or credential expiry.
 
 mod capability;
+mod compilation;
 mod decision;
 mod glob;
+mod mount;
+mod names;
 mod trie;
 
 pub use capability::{
     Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX, VolumeOperation,
 };
 pub use decision::{Decision, Denial, decide};
+pub use mount::MountMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-pub use trie::PathTrie;
+pub use trie::{PathTrie, PreparedPath};
 
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
@@ -192,6 +196,8 @@ pub struct ResourcePattern {
 /// Borrowed concrete resource, with the authoritative current head.
 #[derive(Clone, Copy, Debug)]
 pub struct Resource<'a> {
+    /// Authoritative volume name semantics, never supplied by the caller.
+    pub config: crate::VolumeConfig,
     /// Root-first resource task ancestry.
     pub lineage: &'a [String],
     /// Volume identity.
@@ -205,6 +211,15 @@ pub struct Resource<'a> {
 }
 
 impl ResourcePattern {
+    pub(super) fn validate(&self) -> Result<(), InvalidPolicy> {
+        if let Generations::Range(range) = self.generations
+            && range.first > range.last
+        {
+            return Err(InvalidPolicy("generation range is reversed"));
+        }
+        glob::validate(&self.path)
+    }
+
     pub(super) fn matches_view(&self, resource: Resource<'_>) -> bool {
         self.lineage_root
             .as_ref()
@@ -324,7 +339,14 @@ impl Policy {
             {
                 return Err(InvalidPolicy("approval conditions require only merge-into"));
             }
-            glob::validate(&rule.resource.path)?;
+            if rule
+                .conditions
+                .generations
+                .is_some_and(|range| range.first > range.last)
+            {
+                return Err(InvalidPolicy("generation condition is reversed"));
+            }
+            rule.resource.validate()?;
         }
         Ok(())
     }

@@ -3,6 +3,9 @@ use acyclic_fs::access::*;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "access_review.rs"]
+mod review;
+
 fn principal() -> Principal {
     Principal {
         kind: PrincipalKind::Agent,
@@ -55,6 +58,7 @@ fn capability() -> Capability {
 
 fn resource<'a>(lineage: &'a [String], path: &'a str, generation: u64) -> Resource<'a> {
     Resource {
+        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
         lineage,
         volume: "project",
         generation,
@@ -658,15 +662,218 @@ fn inheritance_history_and_invalid_inputs_fail_closed() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[test]
+fn adversarial_globs_have_bounded_compilation() {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let explosive = format!("*a{}", "?".repeat(24));
+    for (policy_glob, capability_glob) in [(explosive.as_str(), "**"), ("**", explosive.as_str())] {
+        let policy = policy(vec![rule(
+            "bounded",
+            Effect::Allow,
+            &Action::ALL,
+            policy_glob,
+        )]);
+        let cap = Capability {
+            layers: vec![vec![Grant {
+                actions: Action::ALL.into_iter().collect(),
+                resource: pattern(capability_glob),
+            }]],
+            expires_at: None,
+        };
+        assert!(policy.validate().is_ok());
+        assert!(cap.validate().is_ok());
+        assert!(
+            PathTrie::compile(
+                &policy,
+                &caller,
+                resource(&caller.lineage, "", 10),
+                context,
+                &cap
+            )
+            .is_err()
+        );
+    }
+    let oversized = "a".repeat(32_769);
+    let policy = policy(vec![rule(
+        "oversized",
+        Effect::Allow,
+        &Action::ALL,
+        &oversized,
+    )]);
+    assert!(policy.validate().is_ok());
+    assert!(
+        PathTrie::compile(
+            &policy,
+            &caller,
+            resource(&caller.lineage, "", 10),
+            context,
+            &capability()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn compiled_rule_identifiers_have_a_bound() {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let long_id = "x".repeat(1_048_577);
+    let policy = policy(vec![rule(&long_id, Effect::Allow, &Action::ALL, "**")]);
+    assert!(
+        PathTrie::compile(
+            &policy,
+            &caller,
+            resource(&caller.lineage, "", 10),
+            context,
+            &capability()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn malformed_generation_denials_fail_closed() {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let cap = capability();
+    let reversed = GenerationRange { first: 10, last: 9 };
+    for condition in [false, true] {
+        let mut deny = rule("invalid-deny", Effect::Deny, &Action::ALL, "**");
+        if condition {
+            deny.conditions.generations = Some(reversed);
+        } else {
+            deny.resource.generations = Generations::Range(reversed);
+        }
+        let policy = policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**"), deny]);
+        let res = resource(&caller.lineage, "a", 10);
+        assert_eq!(
+            decide(&policy, &caller, Action::Read, res, context, &cap).denial,
+            Some(Denial::Invalid)
+        );
+        assert!(PathTrie::compile(&policy, &caller, res, context, &cap).is_err());
+    }
+    let mut selected = pattern("**");
+    selected.generations = Generations::Range(reversed);
+    let cap = Capability {
+        layers: vec![vec![Grant {
+            actions: Action::ALL.into_iter().collect(),
+            resource: selected,
+        }]],
+        expires_at: None,
+    };
+    let policy = policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
+    assert_eq!(
+        decide(
+            &policy,
+            &caller,
+            Action::Read,
+            resource(&caller.lineage, "a", 10),
+            context,
+            &cap
+        )
+        .denial,
+        Some(Denial::Invalid)
+    );
+}
+
+#[test]
+fn native_mount_modes_share_the_policy_decisions() -> Result<(), Box<dyn std::error::Error>> {
+    let caller = principal();
+    let cap = capability();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let policy = policy(vec![
+        rule("read", Effect::Allow, &[Action::List, Action::Read], "**"),
+        rule(
+            "hidden",
+            Effect::Deny,
+            &[Action::List, Action::Read],
+            "secrets/**",
+        ),
+        rule("inbox-no-read", Effect::Deny, &[Action::Read], "inbox/**"),
+        rule("inbox", Effect::Allow, &[Action::Create], "inbox/**"),
+        rule("log", Effect::Allow, &[Action::Append], "logs/**"),
+    ]);
+    let trie = PathTrie::compile(
+        &policy,
+        &caller,
+        resource(&caller.lineage, "", 10),
+        context,
+        &cap,
+    )?;
+    let source = trie.mount_mode("src/lib.rs", 100);
+    assert!(source.visible());
+    assert!(source.read_only());
+    assert!(!source.create_only());
+    let secret = trie.mount_mode("secrets/key", 100);
+    assert!(!secret.visible());
+    assert!(!secret.allows(Action::Read));
+    let inbox = trie.mount_mode("inbox/message", 100);
+    assert!(inbox.create_only());
+    assert!(!inbox.read_only());
+    assert!(!inbox.allows(Action::Read));
+    let log = trie.mount_mode("logs/events", 100);
+    assert!(log.allows(Action::Append));
+    assert!(!log.allows(Action::Write));
+    assert!(!log.read_only());
+    for path in ["src/lib.rs", "secrets/key", "inbox/message", "logs/events"] {
+        for action in Action::ALL {
+            assert_eq!(
+                trie.mount_mode(path, 100).allows(action),
+                decide(
+                    &policy,
+                    &caller,
+                    action,
+                    resource(&caller.lineage, path, 10),
+                    context,
+                    &cap
+                )
+                .allowed
+            );
+        }
+    }
+    let expiring = Capability {
+        expires_at: Some(101),
+        ..cap
+    };
+    let trie = PathTrie::compile(
+        &policy,
+        &caller,
+        resource(&caller.lineage, "", 10),
+        context,
+        &expiring,
+    )?;
+    assert!(!trie.mount_mode("src/lib.rs", 101).visible());
+    assert!(trie.mount_mode("src/lib.rs", 101).read_only());
+    assert!(!trie.mount_mode("src/../secrets/key", 100).visible());
+    assert!(!trie.mount_mode("src/lib.rs", 99).visible());
+    Ok(())
+}
+
 fn glob_strategy() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop_oneof![
             Just("a"),
+            Just("A"),
             Just("b"),
             Just("*"),
             Just("**"),
             Just("a?"),
-            Just("é*")
+            Just("é*"),
+            Just("É*"),
+            Just("ΟΣ")
         ],
         0..4,
     )
@@ -678,8 +885,9 @@ proptest! {
     #[test]
     fn trie_agrees_with_reference(
         rules in prop::collection::vec((any::<bool>(), any::<u16>(), glob_strategy()), 0..8),
-        path in prop::collection::vec(prop_oneof![Just("a"), Just("b"), Just("aa"), Just("é")], 0..5),
+        path in prop::collection::vec(prop_oneof![Just("a"), Just("A"), Just("b"), Just("aa"), Just("é"), Just("É"), Just("ΟΣ"), Just("ος")], 0..5),
         grant_path in glob_strategy(),
+        folded in any::<bool>(),
     ) {
         let principal = principal();
         let rules = rules.into_iter().enumerate().map(|(index, (deny, bits, path))|
@@ -689,10 +897,15 @@ proptest! {
         let cap = capability().attenuate(vec![Grant { actions: Action::ALL.into_iter().collect(), resource: pattern(&grant_path) }], None);
         let context = Context { now: 100, approvals: 0 };
         let path = path.join("/");
-        let res = resource(&principal.lineage, &path, 10);
+        let mut res = resource(&principal.lineage, &path, 10);
+        if folded { res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
         let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
+        let prepared = trie.prepare(&path)?;
+        let mode = prepared.mount_mode(100);
         for action in Action::ALL {
+            prop_assert_eq!(mode.allows(action), decide(&policy, &principal, action, res, context, &cap).allowed);
             prop_assert_eq!(trie.decide(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));
+            prop_assert_eq!(prepared.decide(action, 100), decide(&policy, &principal, action, res, context, &cap));
         }
     }
 

@@ -1,4 +1,5 @@
 use super::InvalidPolicy;
+use super::compilation::{MAXIMUM_NFA_STATES, spend};
 
 pub(super) fn valid_path(path: &str) -> bool {
     !path.contains(['\\', '\0'])
@@ -104,14 +105,20 @@ impl Nfa {
             .ok_or(InvalidPolicy("invalid glob state"))
     }
 
-    pub fn node(&mut self) -> usize {
+    pub fn node(&mut self) -> Result<usize, InvalidPolicy> {
         let id = self.nodes.len();
+        if id == MAXIMUM_NFA_STATES {
+            return Err(InvalidPolicy("glob compilation exceeds NFA state limit"));
+        }
         self.nodes.push(Node::default());
-        id
+        Ok(id)
     }
 
     pub fn pattern(&mut self, pattern: &str) -> Result<(usize, usize), InvalidPolicy> {
-        let start = self.node();
+        if pattern.chars().count() > MAXIMUM_NFA_STATES {
+            return Err(InvalidPolicy("glob compilation exceeds NFA state limit"));
+        }
+        let start = self.node()?;
         let mut current = start;
         let mut components: Vec<_> = pattern.split('/').filter(|part| !part.is_empty()).collect();
         components.dedup_by(|a, b| *a == "**" && *b == "**");
@@ -119,12 +126,12 @@ impl Nfa {
         while let Some(part) = parts.next() {
             let last = parts.peek().is_none();
             if part == "**" {
-                let next = self.node();
+                let next = self.node()?;
                 self.node_mut(current)?.epsilon.push(next);
                 if last {
                     self.node_mut(current)?.edges.push((Symbol::Any, current));
                 } else {
-                    let looping = self.node();
+                    let looping = self.node()?;
                     self.node_mut(current)?.edges.push((Symbol::Any, looping));
                     self.node_mut(looping)?.edges.push((Symbol::Any, looping));
                     self.node_mut(current)?
@@ -138,7 +145,7 @@ impl Nfa {
             } else {
                 if part == "*" {
                     // A component wildcard cannot consume the volume root.
-                    let next = self.node();
+                    let next = self.node()?;
                     self.node_mut(current)?
                         .edges
                         .push((Symbol::Component, next));
@@ -146,7 +153,7 @@ impl Nfa {
                     current = next;
                 }
                 for ch in part.chars().filter(|_| part != "*") {
-                    let next = self.node();
+                    let next = self.node()?;
                     match ch {
                         '*' => {
                             self.node_mut(current)?.epsilon.push(next);
@@ -166,9 +173,9 @@ impl Nfa {
                     current = next;
                 }
                 if !last {
-                    if parts.peek() == Some(&"**") && parts.clone().count() == 1 {
-                        let end = self.node();
-                        let looping = self.node();
+                    if parts.peek() == Some(&"**") && parts.len() == 1 {
+                        let end = self.node()?;
+                        let looping = self.node()?;
                         self.node_mut(current)?.epsilon.push(end);
                         self.node_mut(current)?
                             .edges
@@ -177,7 +184,7 @@ impl Nfa {
                         self.node_mut(looping)?.edges.push((Symbol::Any, looping));
                         return Ok((start, end));
                     }
-                    let next = self.node();
+                    let next = self.node()?;
                     self.node_mut(current)?
                         .edges
                         .push((Symbol::Literal('/'), next));
@@ -188,9 +195,10 @@ impl Nfa {
         Ok((start, current))
     }
 
-    pub fn close(&self, states: &mut Vec<usize>) -> Result<(), InvalidPolicy> {
+    pub fn close(&self, states: &mut Vec<usize>, work: &mut usize) -> Result<(), InvalidPolicy> {
         let mut cursor = 0;
         while let Some(id) = states.get(cursor).copied() {
+            spend(work, 1)?;
             cursor += 1;
             for next in &self
                 .nodes
@@ -198,6 +206,7 @@ impl Nfa {
                 .ok_or(InvalidPolicy("invalid glob state"))?
                 .epsilon
             {
+                spend(work, states.len() + 1)?;
                 if !states.contains(next) {
                     states.push(*next);
                 }
@@ -207,21 +216,31 @@ impl Nfa {
         Ok(())
     }
 
-    pub fn step(&self, states: &[usize], ch: char) -> Result<Vec<usize>, InvalidPolicy> {
+    pub fn step(
+        &self,
+        states: &[usize],
+        ch: char,
+        work: &mut usize,
+    ) -> Result<Vec<usize>, InvalidPolicy> {
         let mut next = Vec::new();
         for id in states {
+            spend(work, 1)?;
             for (symbol, target) in &self
                 .nodes
                 .get(*id)
                 .ok_or(InvalidPolicy("invalid glob state"))?
                 .edges
             {
-                if symbol.matches(ch) && !next.contains(target) {
-                    next.push(*target);
+                spend(work, 1)?;
+                if symbol.matches(ch) {
+                    spend(work, next.len() + 1)?;
+                    if !next.contains(target) {
+                        next.push(*target);
+                    }
                 }
             }
         }
-        self.close(&mut next)?;
+        self.close(&mut next, work)?;
         Ok(next)
     }
 }
