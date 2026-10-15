@@ -17,6 +17,11 @@ build = "build.rs"
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "local-harness"
+path = "tests/local_harness.rs"
+required-features = ["filesystem-local"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

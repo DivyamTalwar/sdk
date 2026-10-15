@@ -82,8 +82,12 @@ impl Owner {
                     workspace: workspace.clone(),
                     workspace_identity,
                 };
-                owner.publish(directory, &path)?;
-                Self::load(&path)?
+                key.fill(0);
+                if owner.publish(directory, &path)? {
+                    owner
+                } else {
+                    Self::load(&path)?
+                }
             }
             Err(error) => return Err(error),
         };
@@ -136,7 +140,7 @@ impl Owner {
         owner
     }
 
-    fn publish(&self, directory: &Path, path: &Path) -> Result<()> {
+    fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
         let temporary = directory.join(format!(".owner-{}.next", uuid::Uuid::new_v4()));
         let mut options = fs::OpenOptions::new();
         options.create_new(true).write(true);
@@ -164,8 +168,8 @@ impl Owner {
             let _ = fs::remove_file(&temporary);
         }
         match result {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
             Err(error) => Err(storage(error)),
         }
     }

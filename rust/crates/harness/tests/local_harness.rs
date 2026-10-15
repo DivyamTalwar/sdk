@@ -340,7 +340,7 @@ async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
         .read("/hello.txt", 1024, &mut accounting)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    assert_eq!(bytes.as_ref(), b"original checkout");
+    assert_eq!(bytes.bytes.as_ref(), b"original checkout");
     drop(bytes);
     let project = harness.project().clone();
     drop(harness);
