@@ -576,9 +576,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     let mut found = None;
                     loop {
                         accounting.check()?;
-                        let page = this
-                            .list_directory_with_accounting(
+                        this.synchronize_live_with_accounting(accounting, cancellation)
+                            .await?;
+                        let (lookup, _allocation) = this
+                            .lookup_no_follow_at_current_with_accounting(
                                 &parent.0,
+                                accounting,
+                                cancellation,
+                                false,
+                            )
+                            .await?;
+                        let page = this
+                            .list_directory_record_with_accounting(
+                                lookup.record.ok_or(FsError::NotFound)?,
                                 after
                                     .as_ref()
                                     .map(|owned| &owned.0)
@@ -638,7 +648,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     Ok(found)
                 },
             )?;
-            let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
+            let mut future = future;
             let result = future.as_mut().await;
             drop(future);
             let mut frame_custody =
