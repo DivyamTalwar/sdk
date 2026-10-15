@@ -25,45 +25,70 @@ impl AsRef<[u8]> for RequestBody {
     }
 }
 
-async fn send(
+async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    work: &NativeMaterializationWork,
+) -> Result<bytes::Bytes> {
+    let (bytes, nodes) = shape(request.bytes());
+    let mut expanded = bytes;
+    for message in &request.request().messages {
+        expanded = expanded
+            .checked_add(
+                crate::files::extra_bytes(&message.content, provider.files.maximum_bytes)? as u64,
+            )
+            .ok_or_else(|| invalid("model file size overflow"))?;
+    }
+    let mut allocation = reserve(work, expanded, nodes, 0)?;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+    let body = diagnostic(
+        dispatch::encode(provider, request, Some(&io)).await,
+        &mut allocation,
+    )?;
+    retain(
+        &mut allocation,
+        (std::mem::size_of::<RequestBody>() + body.capacity()) as u64,
+    )?;
+    Ok(bytes::Bytes::from_owner(RequestBody {
+        bytes: body,
+        _custody: allocation,
+    }))
+}
+
+async fn send(
+    provider: &ResolvedModel,
+    body: bytes::Bytes,
     dispatch_id: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
     work: &NativeMaterializationWork,
-) -> Result<(crate::HttpResponse, usize)> {
-    let (bytes, nodes) = shape(request.bytes());
-    let mut allocation = reserve(
-        work,
-        bytes,
-        nodes,
-        key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
-    )?;
-    let (url, headers, body) = diagnostic(
-        dispatch::request(provider, request, dispatch_id, key, account),
-        &mut allocation,
-    )?;
-    let input_bytes = body.len();
+) -> Result<crate::HttpResponse> {
+    let bytes = (provider.config.base_url.len()
+        + provider
+            .config
+            .headers
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum::<usize>()
+        + key.map_or(0, str::len)
+        + account.map_or(0, str::len)) as u64;
+    let mut allocation = reserve(work, bytes, provider.config.headers.len() as u64 + 16, 0)?;
+    let url = diagnostic(projection::endpoint(provider), &mut allocation)?;
+    let headers = dispatch::headers(provider, dispatch_id, key, account);
     let retained = (std::mem::size_of::<crate::HttpRequest>()
-        + std::mem::size_of::<RequestBody>()
         + url.capacity()
-        + body.capacity()
         + headers.len() * std::mem::size_of::<(String, String)>()
         + headers
             .iter()
             .map(|(name, value)| name.capacity() + value.capacity())
             .sum::<usize>()) as u64;
     retain(&mut allocation, retained)?;
-    let body = bytes::Bytes::from_owner(RequestBody {
-        bytes: body,
-        _custody: allocation,
-    });
     let response = provider
         .transport
         .send_with_native_work(crate::HttpRequest { url, headers, body }, work)?
         .await?;
-    Ok((response, input_bytes))
+    drop(allocation);
+    Ok(response)
 }
 
 fn invalid(reason: &'static str) -> Error {
@@ -193,18 +218,20 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
+            let body = encode(provider, request, work).await?;
+            let input_bytes = body.len();
             let auth = dispatch::authenticate(provider).await?;
             work.remaining()?;
-            let (response, input_bytes) = send(
+            let response = send(
                 provider,
-                request,
+                body.clone(),
                 dispatch_id,
                 auth.0.as_deref(),
                 auth.1.as_deref(),
                 work,
             )
             .await?;
-            let (response, input_bytes) = if response.status == 401 {
+            let response = if response.status == 401 {
                 if let Some(login) = &provider.codex_login {
                     drop(response);
                     let (key, account) = login
@@ -213,7 +240,7 @@ pub(crate) fn generate<'a>(
                     work.remaining()?;
                     send(
                         provider,
-                        request,
+                        body,
                         dispatch_id,
                         Some(&key),
                         account.as_deref(),
@@ -221,10 +248,10 @@ pub(crate) fn generate<'a>(
                     )
                     .await?
                 } else {
-                    (response, input_bytes)
+                    response
                 }
             } else {
-                (response, input_bytes)
+                response
             };
             drop(auth);
             if !(200..300).contains(&response.status) {

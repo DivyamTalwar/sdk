@@ -13,6 +13,7 @@ import type {
   ToolDefinition as ToolDefinitionWire,
   Model as ModelWire,
   ModelDispatch as ModelDispatchWire,
+  ProviderDispatch,
   ModelRole,
   WasmToolJsonSchema as ToolJsonSchema,
   WasmToolJsonValue as ToolJsonValue,
@@ -101,6 +102,8 @@ export type ModelAttempt =
     requestDigest: Uint8Array;
     observed: readonly ModelEvent[];
   }>;
+/** Executor-owned identity; providers bind its digest to the prepared bytes. */
+export type ModelGeneration = ProviderDispatch;
 /** Provider capacity for the exact immutable model, derived from the Rust proof. */
 export type ModelContextCapacity = Readonly<Omit<ModelContextCapacityWire, "context_tokens" | "output_tokens"> & {
   contextTokens: ModelContextCapacityWire["context_tokens"];
@@ -117,7 +120,7 @@ export interface ModelProvider {
   contextCapacity(model: Model): ModelContextCapacity;
   /** Synchronous; serializedInput is a defensive copy of the exact canonical request. */
   countTokens(request: ModelRequest & { readonly serializedInput: Uint8Array }): ModelTokenCount;
-  generate(request: ModelRequest & { readonly serializedInput: Uint8Array }): AsyncIterable<ModelEvent>;
+  generate(request: ModelRequest & { readonly serializedInput: Uint8Array }, dispatch: ModelGeneration): AsyncIterable<ModelEvent>;
   reconcile(attempt: ModelAttempt): Promise<readonly ModelEvent[] | undefined>;
 }
 

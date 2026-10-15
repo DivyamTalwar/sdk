@@ -16,6 +16,7 @@ pub struct ResolvedModel {
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
+    pub(crate) files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }

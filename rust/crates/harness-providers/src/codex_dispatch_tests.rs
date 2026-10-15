@@ -219,6 +219,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
                     output_tokens: 1024,
                 },
             )]),
+            headers: Default::default(),
             max_event_bytes: 4096,
         },
     )?;

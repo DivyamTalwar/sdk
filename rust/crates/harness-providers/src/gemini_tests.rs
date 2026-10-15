@@ -80,7 +80,7 @@ fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<(
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let replayed = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
     for request in [prepared.request(), replayed.request()] {
-        let body = projection::body(&provider, request)?;
+        let body = projection::body(&provider, request, &mut crate::files::FileText::Estimate)?;
         let contents = body["contents"].as_array().expect("contents");
         assert_eq!(contents.len(), 5);
         for step in 0..2 {

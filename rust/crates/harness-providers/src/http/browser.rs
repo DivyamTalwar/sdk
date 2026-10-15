@@ -54,7 +54,7 @@ impl HttpTransport for BrowserTransport {
             init.set_credentials(RequestCredentials::Omit);
             init.set_redirect(RequestRedirect::Error);
             init.set_signal(Some(&abort.0.signal()));
-            let body = Uint8Array::from(request.body.as_slice());
+            let body = Uint8Array::from(request.body.as_ref());
             init.set_body(body.as_ref());
             let headers = Headers::new().map_err(|_| invalid("browser headers are unavailable"))?;
             headers
@@ -73,10 +73,14 @@ impl HttpTransport for BrowserTransport {
                     &JsValue::from_str(&request.url),
                     init.as_ref(),
                 )
-                .map_err(|_| invalid("browser model dispatch failed"))?;
+                .map_err(|_| {
+                    acyclic_harness::Error::Storage("browser model dispatch failed".into())
+                })?;
             let response = JsFuture::from(Promise::resolve(&response))
                 .await
-                .map_err(|_| invalid("browser model exchange failed"))?
+                .map_err(|_| {
+                    acyclic_harness::Error::Storage("browser model exchange failed".into())
+                })?
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
             let status = response.status();
@@ -96,9 +100,9 @@ impl HttpTransport for BrowserTransport {
                     _abort: abort,
                 },
                 |body| async move {
-                    let chunk = JsFuture::from(body.reader.read())
-                        .await
-                        .map_err(|_| invalid("browser model body interrupted"))?;
+                    let chunk = JsFuture::from(body.reader.read()).await.map_err(|_| {
+                        acyclic_harness::Error::Storage("browser model body interrupted".into())
+                    })?;
                     let done = Reflect::get(&chunk, &JsValue::from_str("done"))
                         .map_err(|_| invalid("invalid browser stream result"))?;
                     if done.as_bool() == Some(true) {

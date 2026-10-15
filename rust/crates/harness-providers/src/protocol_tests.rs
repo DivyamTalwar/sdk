@@ -24,9 +24,13 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
         });
         let (prepared, dispatch) = request(&provider)?;
         let initial = total(&provider.count_tokens(&prepared)?);
-        let bytes = serde_json::to_vec(&projection::body(&provider, prepared.request())?)
-            .expect("encode fixture")
-            .len();
+        let bytes = serde_json::to_vec(&projection::body(
+            &provider,
+            prepared.request(),
+            &mut crate::files::FileText::Estimate,
+        )?)
+        .expect("encode fixture")
+        .len();
         assert!(initial >= bytes.div_ceil(2) as u32 && initial < bytes as u32);
         provider
             .generate(prepared.clone(), dispatch)

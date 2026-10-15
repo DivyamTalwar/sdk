@@ -1,8 +1,8 @@
 use super::*;
 use futures::StreamExt as _;
 
-/// Pooled native HTTP; reqwest uses browser fetch on wasm32.
-pub struct ReqwestTransport(reqwest::Client);
+/// Pooled native HTTP with redirects and implicit retries disabled.
+pub struct ReqwestTransport(::reqwest::Client);
 
 impl ReqwestTransport {
     async fn exchange(
@@ -38,13 +38,13 @@ impl ReqwestTransport {
     }
     /// Creates the platform transport. Credentials are never forwarded across redirects.
     pub fn new() -> Result<Self> {
-        let builder = reqwest::Client::builder();
+        let builder = ::reqwest::Client::builder();
         #[cfg(not(target_arch = "wasm32"))]
         let builder = builder
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never());
+            .redirect(::reqwest::redirect::Policy::none())
+            .retry(::reqwest::retry::never());
         Ok(Self(builder.build().map_err(|_| {
-            super::invalid("HTTP client initialization failed")
+            crate::invalid("HTTP client initialization failed")
         })?))
     }
 }

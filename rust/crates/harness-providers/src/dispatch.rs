@@ -17,17 +17,19 @@ pub(crate) fn generate(
         if request.request_digest() != dispatch.request_digest {
             Err(invalid("model dispatch digest differs from prepared request"))?;
         }
+        let body = encode(provider, &request, None).await?;
+        let body = bytes::Bytes::from(body);
+        let input_bytes = body.len();
         let auth = authenticate(provider).await?;
-        let (response, input_bytes) = send(provider, &request, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
+        let response = send(provider, dispatch, body.clone(), auth.0.as_deref(), auth.1.as_deref()).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        let (response, input_bytes) = if response.status == 401 {
+        let response = if response.status == 401 {
             if let Some(login) = &provider.codex_login {
-                // No stream bytes have been read; a rejected credential did not start inference.
                 drop(response);
                 let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref()).await?;
-                send(provider, &request, dispatch, Some(&key), account.as_deref()).await?
-            } else { (response, input_bytes) }
-        } else { (response, input_bytes) };
+                send(provider, dispatch, body, Some(&key), account.as_deref()).await?
+            } else { response }
+        } else { response };
         drop(auth);
         if !(200..300).contains(&response.status) {
             Err(crate::http_error(response.status))?;
@@ -52,35 +54,41 @@ pub(crate) async fn authenticate(
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
 }
 
-pub(crate) async fn send(
+pub(crate) async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
-    dispatch: ModelDispatch,
-    key: Option<&str>,
-    account: Option<&str>,
-) -> Result<(HttpResponse, usize)> {
-    let (url, headers, body) = self::request(provider, request, dispatch, key, account)?;
-    let input_bytes = body.len();
-    let response = provider
-        .transport
-        .send(HttpRequest {
-            url,
-            headers,
-            body: body.into(),
-        })
-        .await?;
-    Ok((response, input_bytes))
+    io: Option<&acyclic_harness::conversation::ContentIo>,
+) -> Result<Vec<u8>> {
+    let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
+    let body = projection::body(provider, request.request(), &mut files)?;
+    serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
 }
 
-pub(crate) fn request(
+async fn send(
     provider: &ResolvedModel,
-    request: &PreparedModelRequest,
+    dispatch: ModelDispatch,
+    body: bytes::Bytes,
+    key: Option<&str>,
+    account: Option<&str>,
+) -> Result<HttpResponse> {
+    provider
+        .transport
+        .send(HttpRequest {
+            url: projection::endpoint(provider)?,
+            headers: headers(provider, dispatch, key, account),
+            body,
+        })
+        .await
+}
+
+pub(crate) fn headers(
+    provider: &ResolvedModel,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
-) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
-    let body = projection::body(provider, request.request())?;
-    let mut headers = BTreeMap::from([("accept".into(), "text/event-stream".into())]);
+) -> BTreeMap<String, String> {
+    let mut headers = provider.config.headers.clone();
+    headers.insert("accept".into(), "text/event-stream".into());
     if let Some(key) = key {
         let (name, value) = match provider.config.adapter {
             Adapter::Anthropic => ("x-api-key", key.into()),
@@ -115,6 +123,5 @@ pub(crate) fn request(
         );
     }
     let _ = dispatch;
-    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
-    Ok((projection::endpoint(provider)?, headers, encoded))
+    headers
 }

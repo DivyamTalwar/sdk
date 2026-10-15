@@ -52,7 +52,7 @@ fn request() -> HttpRequest {
     HttpRequest {
         url: "https://example.test/v1/responses".into(),
         headers: BTreeMap::from([("authorization".into(), "Bearer fixture".into())]),
-        body: b"{}".to_vec(),
+        body: Bytes::from_static(b"{}"),
     }
 }
 

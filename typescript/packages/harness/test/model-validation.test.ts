@@ -352,8 +352,10 @@ test("stale WASM modules fail compatibility checks before model dispatch", () =>
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateUserInput: undefined })).toThrow();
   expect(() => assertHarnessWasmExports({ ...harnessWasm, admitModelEvent: undefined })).toThrow();
   expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmContentStore: undefined })).toThrow();
+  expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmProviderRegistry: undefined })).toThrow();
   expect(() => assertHarnessWasmExports(rawWasmExports)).not.toThrow();
   expect(() => assertHarnessWasmExports({ ...rawWasmExports, wasmcontentstore_stage: undefined })).toThrow();
+  expect(() => assertHarnessWasmExports({ ...rawWasmExports, wasmproviderregistry_resolve: undefined })).toThrow();
 });
 
 test("fresh WASM initialization accepts the raw content-store ABI", async () => {

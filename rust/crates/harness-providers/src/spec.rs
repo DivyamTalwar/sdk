@@ -28,6 +28,9 @@ pub struct ProviderSpec {
     /// Exact model capacities, including local server configurations.
     #[serde(default)]
     pub models: BTreeMap<String, ModelContextCapacity>,
+    /// Additional endpoint headers. Authentication headers are supplied by credentials.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,
 }

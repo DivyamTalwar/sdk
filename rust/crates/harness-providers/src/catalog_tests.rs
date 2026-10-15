@@ -9,6 +9,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
+        headers: Default::default(),
         max_event_bytes: 4096,
         models: BTreeMap::from([(
             "m".into(),
@@ -101,7 +102,11 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
         let provider = registry.resolve_with_options(selection, options.clone())?;
         let (prepared, _) = request(&provider)?;
         assert_eq!(provider.model().options, options);
-        let body = projection::body(&provider, prepared.request())?;
+        let body = projection::body(
+            &provider,
+            prepared.request(),
+            &mut crate::files::FileText::Estimate,
+        )?;
         for (field, configured) in options.as_object().expect("fixture options") {
             for (key, value) in configured.as_object().expect("fixture option controls") {
                 assert_eq!(&body[field][key], value);

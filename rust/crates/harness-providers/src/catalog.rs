@@ -83,6 +83,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     authentication,
                     base_url: base_url.into(),
                     models,
+                    headers: Default::default(),
                     max_event_bytes: 1024 * 1024,
                 },
             )

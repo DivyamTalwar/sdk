@@ -3,6 +3,8 @@
 mod accounting;
 mod adapter;
 mod catalog;
+#[cfg(target_arch = "wasm32")]
+mod cancellation;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
@@ -11,6 +13,11 @@ pub use codex::CodexLogin;
 mod codex_dispatch_tests;
 mod credentials;
 mod dispatch;
+mod files;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub mod fuzzing;
+#[cfg(test)]
+mod fixtures;
 mod http;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -22,21 +29,27 @@ mod sse;
 mod stream;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+mod wasm;
 
 pub use adapter::Adapter;
 pub use catalog::default_catalog;
 pub use credentials::Credentials;
-pub use http::{HttpRequest, HttpResponse, HttpTransport};
-#[cfg(not(target_arch = "wasm32"))]
-pub use http::ReqwestTransport;
 #[cfg(target_arch = "wasm32")]
 pub use http::BrowserTransport;
+#[cfg(not(target_arch = "wasm32"))]
+pub use http::ReqwestTransport;
+pub use http::{HttpRequest, HttpResponse, HttpTransport};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;
+use std::sync;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod accounting_properties;
 
 fn invalid(reason: impl Into<String>) -> Error {
     Error::Invalid(reason.into())

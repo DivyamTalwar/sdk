@@ -1,7 +1,4 @@
-use crate::{
-    Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel,
-    invalid,
-};
+use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
 use acyclic_harness::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
@@ -11,6 +8,7 @@ pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     credentials: Credentials,
     transport: Arc<dyn HttpTransport>,
+    files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
     codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -18,10 +16,7 @@ pub struct Registry {
 impl Registry {
     /// Standard endpoints; unknown capacities must be registered explicitly.
     pub fn new(credentials: Credentials) -> Result<Self> {
-        Ok(Self::with_transport(
-            credentials,
-            crate::http::platform()?,
-        ))
+        Ok(Self::with_transport(credentials, crate::http::platform()?))
     }
 
     /// Uses the same adapters with a caller-owned transport.
@@ -40,6 +35,7 @@ impl Registry {
             providers,
             credentials,
             transport,
+            files: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         }
@@ -49,6 +45,19 @@ impl Registry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_codex_login(mut self, login: crate::CodexLogin) -> Self {
         self.codex_login = Some(Arc::new(login));
+        self
+    }
+
+    /// Supplies an owner-authenticated reader for bounded text files.
+    pub fn with_content(
+        mut self,
+        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+        maximum_bytes: u64,
+    ) -> Self {
+        self.files = crate::files::Files {
+            reader: Some(reader),
+            maximum_bytes,
+        };
         self
     }
 
@@ -143,6 +152,7 @@ impl Registry {
             capacity,
             key,
             transport: self.transport.clone(),
+            files: self.files.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         })
@@ -171,6 +181,27 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    for (name, value) in &config.headers {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            || value.contains(['\r', '\n'])
+            || [
+                "authorization",
+                "x-api-key",
+                "x-goog-api-key",
+                "cookie",
+                "host",
+                "content-length",
+                "content-type",
+            ]
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved))
+        {
+            return Err(invalid("invalid or reserved provider header"));
+        }
+    }
     for capacity in config.models.values() {
         capacity.validate()?;
     }

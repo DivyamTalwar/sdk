@@ -1,6 +1,6 @@
 use crate::Adapter;
+use crate::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Usage-calibrated estimate owned by one immutable resolved model.
 pub(crate) struct TokenEstimator {

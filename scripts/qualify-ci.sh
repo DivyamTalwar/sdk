@@ -396,6 +396,8 @@ case "$lane" in
       harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
         --test client_public_consumer identical_public_harness_trace
     harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
+    cargo test -p acyclic-harness-providers --features browser \
+      --target wasm32-unknown-unknown --lib --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
