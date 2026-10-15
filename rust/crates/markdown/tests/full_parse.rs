@@ -207,7 +207,7 @@ fn ordinary_append_does_not_visit_committed_reference_definitions() {
 }
 
 #[test]
-fn late_definitions_select_cached_reference_nodes_only() {
+fn late_definitions_resolve_only_dependent_blocks() {
     for source in [
         "[r]\n\n",
         "[**bold**][r]\n\n",
@@ -318,7 +318,8 @@ fn punctuation_appends_have_linear_parser_work() {
 }
 
 #[test]
-fn lazy_list_reference_updates_never_reparse_finalized_paragraphs() {
+fn lazy_list_reference_updates_only_parse_dependent_paragraphs() {
+    let mut previous = None;
     for count in [100, 10_000] {
         let mut source = "- earlier\n".repeat(count);
         source.push_str(
@@ -330,8 +331,14 @@ fn lazy_list_reference_updates_never_reparse_finalized_paragraphs() {
         let mut markdown = Markdown::default();
         markdown.push(&source);
         let before = markdown.parsed_bytes;
+        let parsed = references::PARSED_BYTES.get();
         markdown.push("[r]: u\n\n");
         assert!(markdown.parsed_bytes - before <= 16);
+        let work = references::PARSED_BYTES.get() - parsed;
+        if let Some(previous) = previous {
+            assert_eq!(work, previous);
+        }
+        previous = Some(work);
         source.push_str("[r]: u\n\n");
         assert_eq!(markdown.lines(), full_parse(&source));
     }
@@ -481,32 +488,64 @@ fn decoded_newlines_keep_the_display_line_contract() {
 }
 
 #[test]
-fn adjacent_reference_alternatives_share_suffixes() {
-    let mut previous = 0;
-    for count in [16, 32, 64] {
-        let mut source: String = (0..count)
-            .map(|index| format!("[text{index}][ref{index}]"))
-            .collect();
-        source.push_str("\n\n");
+fn reference_blocks_parse_once_when_definitions_change() {
+    for count in [16, 32, 64, 128] {
+        let source = format!("{}\n\n", "[r][r]".repeat(count));
         let mut markdown = Markdown::default();
-        let before = references::COMPILED_NODES.get();
         markdown.push(&source);
-        let nodes = references::COMPILED_NODES.get() - before;
+        let before = references::PARSED_BYTES.get();
+        let definition = "[r]: /url\n\n";
+        markdown.push(definition);
+        let parsed = references::PARSED_BYTES.get() - before;
         assert!(
-            nodes < count * 64,
-            "{count} references compiled {nodes} nodes"
+            parsed <= source.len() + 2 * definition.len(),
+            "{parsed} parser bytes"
         );
-        if previous > 0 {
-            assert!(nodes * 10 <= previous * 22, "{previous} -> {nodes} nodes");
+        assert_eq!(
+            markdown.lines(),
+            full_parse(&format!("{source}{definition}"))
+        );
+    }
+}
+
+#[test]
+fn collapsed_reference_updates_match_every_chunk_boundary() {
+    let source = "[a][][c]\n\n";
+    let definition = "[a]: /a\n\n";
+    let mut markdown = Markdown::default();
+    markdown.push(source);
+    markdown.push(definition);
+    assert_eq!(
+        markdown.lines(),
+        full_parse(&format!("{source}{definition}"))
+    );
+    for cuts in [&[1][..], &[2, 3][..], &[11, 4, 1][..]] {
+        check_chunks(&format!("{source}{definition}"), cuts);
+    }
+}
+
+#[test]
+fn adversarial_reference_endings_have_linear_parser_work() {
+    for pattern in ["[text][ref]", "[text*][ref][text*][ref]"] {
+        let mut previous = 0;
+        for count in [64, 128] {
+            let source = format!("{}(url)\n\n", pattern.repeat(count));
+            let before = references::PARSED_BYTES.get();
+            let mut markdown = Markdown::default();
+            markdown.push(&source);
+            let parsed = references::PARSED_BYTES.get() - before;
+            assert!(
+                parsed <= source.len() * 16,
+                "{} bytes: {parsed} parser bytes",
+                source.len()
+            );
+            if previous > 0 {
+                assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}");
+            }
+            println!("{pattern:?}, {} bytes: {parsed} parser bytes", source.len());
+            previous = parsed;
+            assert_eq!(markdown.lines(), full_parse(&source));
         }
-        previous = nodes;
-        assert_eq!(markdown.lines(), full_parse(&source));
-        let before = references::COMPILED_NODES.get();
-        let definitions = format!("[ref0]: /zero\n\n[ref{}]: /last\n\n", count - 1);
-        markdown.push(&definitions);
-        assert_eq!(references::COMPILED_NODES.get(), before);
-        source.push_str(&definitions);
-        assert_eq!(markdown.lines(), full_parse(&source));
     }
 }
 
@@ -564,19 +603,19 @@ fn linear_work_preserves_quoted_tasks_when_references_resolve() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn adjacent_reference_total_parser_work_is_linear(
-        count in 2usize..48,
-        labels in prop::collection::vec(0usize..12, 1..8),
+    fn adversarial_reference_total_parser_work_is_linear(
+        count in 2usize..20,
+        fragments in prop::collection::vec(0usize..9, 1..6),
+        defined in prop::array::uniform5(any::<bool>()),
+        ending in any::<bool>(),
         cuts in prop::collection::vec(1usize..24, 1..8),
     ) {
-        let words = ["word", "a b", "**bold**", "*em*", "é", "a\tb", "&#97;", "a\\]b", "`code`", "`x[y]`", "`[`", "<span title='[x]'>a</span>"];
-        let pattern: String = (0..count).map(|index| {
-            let label = labels.get(index % labels.len()).and_then(|index| words.get(*index)).copied().unwrap_or_default();
-            format!("[{label}][ref{index}]")
-        }).collect();
+        let words = ["[x][y]", "[x][]", "[x](u)", "[outer [x][y]][ref]", "[x*][y][z*][ref]", "[*x][y][z*][ref]", "[**x**][ref]", "[`[x]`][ref]", "[a\\]b][ref]"];
+        let pattern: String = fragments.iter().filter_map(|index| words.get(*index)).copied().collect();
+        let pattern = pattern.repeat(count);
         let mut previous = 0;
         for copies in [1, 2] {
-            let source = format!("{}\n\n", pattern.repeat(copies));
+            let source = format!("{}{}\n\n", pattern.repeat(copies), if ending { "(u)" } else { "" });
             let before = references::PARSED_BYTES.get();
             let mut markdown = Markdown::default();
             markdown.push(&source);
@@ -585,11 +624,20 @@ proptest! {
             if previous > 0 { prop_assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}"); }
             previous = parsed;
             prop_assert_eq!(markdown.lines(), full_parse(&source));
-            let definitions = "[ref0]: /first\n\n[word]: /word\n\n[ref1]: /second\n\n";
-            markdown.push(definitions);
-            prop_assert_eq!(markdown.lines(), full_parse(&format!("{source}{definitions}")));
+            let mut complete = source.clone();
+            for (label, present) in ["x", "y", "z", "ref", "outer [x][y]"].into_iter().zip(defined) {
+                if present {
+                    let definition = format!("[{label}]: /target\n\n");
+                    let before = references::PARSED_BYTES.get();
+                    markdown.push(&definition);
+                    let work = references::PARSED_BYTES.get() - before;
+                    prop_assert!(work <= source.len() + definition.len() * 3);
+                    complete.push_str(&definition);
+                    prop_assert_eq!(markdown.lines(), full_parse(&complete));
+                }
+            }
         }
-        check_chunks(&format!("{pattern}\n\n[ref0]: /first\n\n[word]: /word\n\n"), &cuts);
+        check_chunks(&format!("{pattern}\n\n[x]: /x\n\n[y]: /y\n\n[ref]: /ref\n\n"), &cuts);
     }
 
     #[test]

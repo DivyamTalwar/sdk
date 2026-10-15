@@ -19,7 +19,7 @@ pub use style::{Color, Line, Span, Style};
 
 /// Disposable incremental presentation of one append-only Markdown stream.
 /// Completed leaves and fence lines remain behind a parser checkpoint, including
-/// leaves inside containers. Reference definitions select cached inline nodes.
+/// leaves inside containers. Reference changes parse only dependent blocks.
 #[derive(Default)]
 pub struct Markdown {
     source: String,
