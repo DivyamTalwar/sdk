@@ -3,6 +3,9 @@ use acyclic_fs::access::*;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "access_review.rs"]
+mod review;
+
 fn principal() -> Principal {
     Principal {
         kind: PrincipalKind::Agent,
@@ -55,6 +58,7 @@ fn capability() -> Capability {
 
 fn resource<'a>(lineage: &'a [String], path: &'a str, generation: u64) -> Resource<'a> {
     Resource {
+        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
         lineage,
         volume: "project",
         generation,
@@ -862,11 +866,14 @@ fn glob_strategy() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop_oneof![
             Just("a"),
+            Just("A"),
             Just("b"),
             Just("*"),
             Just("**"),
             Just("a?"),
-            Just("é*")
+            Just("é*"),
+            Just("É*"),
+            Just("ΟΣ")
         ],
         0..4,
     )
@@ -878,8 +885,9 @@ proptest! {
     #[test]
     fn trie_agrees_with_reference(
         rules in prop::collection::vec((any::<bool>(), any::<u16>(), glob_strategy()), 0..8),
-        path in prop::collection::vec(prop_oneof![Just("a"), Just("b"), Just("aa"), Just("é")], 0..5),
+        path in prop::collection::vec(prop_oneof![Just("a"), Just("A"), Just("b"), Just("aa"), Just("é"), Just("É"), Just("ΟΣ"), Just("ος")], 0..5),
         grant_path in glob_strategy(),
+        folded in any::<bool>(),
     ) {
         let principal = principal();
         let rules = rules.into_iter().enumerate().map(|(index, (deny, bits, path))|
@@ -889,12 +897,15 @@ proptest! {
         let cap = capability().attenuate(vec![Grant { actions: Action::ALL.into_iter().collect(), resource: pattern(&grant_path) }], None);
         let context = Context { now: 100, approvals: 0 };
         let path = path.join("/");
-        let res = resource(&principal.lineage, &path, 10);
+        let mut res = resource(&principal.lineage, &path, 10);
+        if folded { res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
         let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
-        let mode = trie.mount_mode(&path, 100);
+        let prepared = trie.prepare(&path)?;
+        let mode = prepared.mount_mode(100);
         for action in Action::ALL {
-            prop_assert_eq!(trie.decide(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));
             prop_assert_eq!(mode.allows(action), decide(&policy, &principal, action, res, context, &cap).allowed);
+            prop_assert_eq!(trie.decide(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));
+            prop_assert_eq!(prepared.decide(action, 100), decide(&policy, &principal, action, res, context, &cap));
         }
     }
 

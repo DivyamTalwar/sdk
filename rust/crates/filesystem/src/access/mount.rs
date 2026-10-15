@@ -1,4 +1,4 @@
-use super::{Action, PathTrie};
+use super::{Action, PathTrie, PreparedPath};
 
 /// Metadata projection of the same decisions used to authorize mount callbacks.
 /// Operations still call `decide` to check expiry and attribute the rule at the
@@ -44,12 +44,21 @@ impl MountMode {
 }
 
 impl PathTrie {
-    /// Derive native mount metadata in one path traversal, without allocation.
+    /// Derive native mount metadata, including preparation of the raw path.
     /// A stale, expired or malformed view projects no permissions.
     #[must_use]
     pub fn mount_mode(&self, path: &str, now: u64) -> MountMode {
+        self.prepare(path)
+            .map_or_else(|_| MountMode::default(), |path| path.mount_mode(now))
+    }
+}
+
+impl PreparedPath<'_> {
+    /// Constant-time, allocation-free native mode from the same pinned decisions.
+    #[must_use]
+    pub fn mount_mode(self, now: u64) -> MountMode {
         MountMode {
-            actions: self.action_mask(path, now),
+            actions: self.action_mask(now),
         }
     }
 }

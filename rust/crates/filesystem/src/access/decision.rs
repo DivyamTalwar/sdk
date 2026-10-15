@@ -171,11 +171,14 @@ pub fn decide<'a>(
 ) -> Decision<'a> {
     if policy.validate().is_err()
         || capability.validate().is_err()
-        || !super::glob::valid_path(resource.path)
+        || resource.config.validate().is_err()
         || resource.generation > resource.head
     {
         return Decision::denied(policy.version, Denial::Invalid);
     }
+    let Ok(path) = super::names::key(resource.path, resource.config) else {
+        return Decision::denied(policy.version, Denial::Invalid);
+    };
     evaluate(
         policy,
         capability,
@@ -184,11 +187,17 @@ pub fn decide<'a>(
         resource.generation != resource.head,
         |rule| {
             rule_matches(rule, principal, resource, context)
-                && super::glob::matches(&rule.resource.path, resource.path)
+                && super::glob::matches(
+                    &super::names::fold(&rule.resource.path, resource.config),
+                    &path,
+                )
         },
         |grant| {
             grant.resource.matches_view(resource)
-                && super::glob::matches(&grant.resource.path, resource.path)
+                && super::glob::matches(
+                    &super::names::fold(&grant.resource.path, resource.config),
+                    &path,
+                )
         },
     )
 }
