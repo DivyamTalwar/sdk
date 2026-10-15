@@ -147,7 +147,6 @@ pub mod speculation;
 pub mod staged_objects;
 pub mod storage;
 pub mod streams_record;
-mod sync;
 #[cfg(all(test, feature = "memory"))]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
