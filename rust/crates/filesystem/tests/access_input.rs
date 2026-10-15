@@ -136,6 +136,7 @@ pub fn check(bytes: &[u8]) {
                     let expected = native.decide(action, input.now);
                     assert_eq!(
                         namespace_access
+                            .as_ref()
                             .expect("same native namespace")
                             .decide(action, input.now),
                         expected
