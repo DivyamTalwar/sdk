@@ -434,7 +434,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let stop = CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
         .map_err(|(cause, _)| cause)?;
-    let generation = main.workspace().head(&work, &stop).await?.value;
+    let generation = main.workspace().head(&work, &stop).await?;
     let identity = work.root_identity(&root)?;
     let publication = acyclic_harness::filesystem::CheckoutPublication::new(
         &root,
