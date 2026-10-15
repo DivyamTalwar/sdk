@@ -33,10 +33,10 @@ pub(crate) fn protect_with_copy<T, E: From<io::Error>>(
         })?,
         pbData: bytes.as_ptr().cast_mut(),
     };
-    let mut output = ProtectedBlob(CRYPT_INTEGER_BLOB {
+    let mut output = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: ptr::null_mut(),
-    });
+    };
     // SAFETY: input borrows live read-only bytes. DPAPI writes its owned output
     // descriptor, and no input pointer is retained after the synchronous call.
     let success = unsafe {
@@ -48,7 +48,7 @@ pub(crate) fn protect_with_copy<T, E: From<io::Error>>(
                 ptr::null(),
                 ptr::null(),
                 CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output.0,
+                &mut output,
             )
         } else {
             CryptUnprotectData(
@@ -58,13 +58,14 @@ pub(crate) fn protect_with_copy<T, E: From<io::Error>>(
                 ptr::null(),
                 ptr::null(),
                 CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output.0,
+                &mut output,
             )
         }
     };
     if success == 0 {
         return Err(io::Error::last_os_error().into());
     }
+    let output = ProtectedBlob(output);
     if output.0.cbData == 0
         || output.0.pbData.is_null()
         || u64::from(output.0.cbData) > maximum_bytes
