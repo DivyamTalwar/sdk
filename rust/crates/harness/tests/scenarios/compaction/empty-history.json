@@ -1,10 +1,4 @@
-{
-  "prompt":"current request",
-  "context":[],
-  "capacity":{"context_tokens":60,"output_tokens":10},
-  "message_tokens":10,
-  "compaction":{"kind":"threshold","config":{"response_reserve_tokens":10,"recent_tokens":30,"retention":{"roles":["system"],"native_media":true}}},
-  "turns":["answer"],
-  "replay":true,
-  "expect":{"text":"answer","request_count":1,"requests":[{"max_output_tokens":10,"messages":[{"role":"user","content":"current request"}]}],"not_events":[{"kind":"context_compacted"},{"kind":"model_started","purpose":"summary"}]}
-}
+{"context":[],"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,"retention":{"roles":["system"],
+  "native_media":true}}},"turns":["answer"],"replay":true,"expect":{"text":"answer","request_count":1,
+  "requests":[{"max_output_tokens":10,"messages":[{"role":"user","content":"current request"}]}],
+  "not_events":[{"kind":"context_compacted"},{"kind":"model_started","purpose":"summary"}]}}

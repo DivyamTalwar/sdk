@@ -5,16 +5,17 @@ use acyclic_harness::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     #[serde(default)]
     pub seed: BTreeMap<String, String>,
-    pub prompt: String,
     #[serde(default)]
-    pub summary: bool,
+    pub kind: Kind,
+    pub prompt: Option<String>,
+    pub instruction: Option<String>,
     pub turns: Vec<ScriptedTurn>,
     #[serde(default)]
     pub context: Vec<ModelMessage>,
@@ -28,15 +29,18 @@ pub struct Scenario {
     pub resume: Vec<String>,
     #[serde(default)]
     pub limits: BTreeMap<String, Value>,
-    #[serde(default = "default_steps")]
-    pub max_steps: u32,
+    pub max_steps: Option<u32>,
     #[serde(default)]
     pub replay: bool,
     pub expect: Expectations,
 }
 
-fn default_steps() -> u32 {
-    16
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    #[default]
+    Turn,
+    Summary,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +62,42 @@ pub struct Expectations {
 }
 
 impl Scenario {
+    pub fn take_instruction(&mut self) -> Result<String, String> {
+        match self.kind {
+            Kind::Turn => self.prompt.take(),
+            Kind::Summary => self.instruction.take(),
+        }
+        .ok_or_else(|| "missing scenario instruction".into())
+    }
+
+    pub fn load(root: &Path, path: &Path) -> Result<Self, String> {
+        let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+        let mut merged = Value::Object(serde_json::Map::new());
+        let mut directory = root.to_path_buf();
+        let parents = relative.parent().ok_or("scenario has no parent")?;
+        for component in std::iter::once(None).chain(parents.components().map(Some)) {
+            if let Some(component) = component {
+                directory.push(component);
+            }
+            let defaults = directory.join("_defaults.json");
+            match std::fs::read(&defaults) {
+                Ok(bytes) => merge(
+                    &mut merged,
+                    serde_json::from_slice(&bytes)
+                        .map_err(|e| format!("{}: {e}", defaults.display()))?,
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("{}: {error}", defaults.display())),
+            }
+        }
+        merge(
+            &mut merged,
+            serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+        );
+        Self::from_value(merged)
+    }
+
     pub fn execution_limits(&self) -> Result<acyclic_harness::conversation::Limits, String> {
         let defaults = acyclic_harness::conversation::Limits::default();
         if self.limits.is_empty() {
@@ -74,7 +114,28 @@ impl Scenario {
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
-        let scenario: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let value: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        Self::from_value(value)
+    }
+
+    fn from_value(value: Value) -> Result<Self, String> {
+        let forbidden = match value.get("kind").and_then(Value::as_str) {
+            Some("summary") => &["prompt", "max_steps"][..],
+            _ => &["instruction"][..],
+        };
+        for key in forbidden {
+            if value.get(key).is_some() {
+                return Err(format!("{key} does not apply to this scenario kind"));
+            }
+        }
+        let scenario: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        let instruction = match scenario.kind {
+            Kind::Summary => &scenario.instruction,
+            Kind::Turn => &scenario.prompt,
+        };
+        if instruction.is_none() {
+            return Err(format!("missing instruction for {:?}", scenario.kind));
+        }
         if scenario.expect.text.is_some() == scenario.expect.error.is_some() {
             return Err("expect exactly one of text or error".into());
         }
@@ -83,9 +144,6 @@ impl Scenario {
         }
         if scenario.resume.iter().any(String::is_empty) {
             return Err("resume error expectation must not be empty".into());
-        }
-        if scenario.summary && scenario.max_steps != default_steps() {
-            return Err("max_steps applies to ordinary turns".into());
         }
         if scenario.expect.error.is_some() && (scenario.expect.result.is_some() || scenario.replay)
         {
@@ -109,7 +167,13 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"prompt":"x","turns":[],"capacity":{"context_tokens":60,"output_tokens":10,"typo":1},"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","turns":[],"compaction":{"kind":"typo"},"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","turns":[],"message_tokens":-1,"expect":{"text":"x"}}"#,
-        r#"{"summary":true,"prompt":"x","turns":[],"max_steps":0,"expect":{"text":"x"}}"#,
+        r#"{"summary":true,"prompt":"x","turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"summary","prompt":"x","instruction":"x","turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"summary","instruction":"x","max_steps":16,"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"summary","instruction":"x","max_steps":null,"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"summary","turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"turn","prompt":"x","instruction":"x","turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"unknown","prompt":"x","turns":[],"expect":{"text":"x"}}"#,
     ] {
         assert!(
             Scenario::parse(input.as_bytes()).is_err(),
@@ -132,5 +196,55 @@ fn limit_overrides_preserve_defaults_and_reject_unknown_keys() -> Result<(), Str
     let typo =
         Scenario::parse(br#"{"prompt":"x","turns":[],"limits":{"typo":2},"expect":{"text":"x"}}"#)?;
     assert!(typo.execution_limits().is_err());
+    Ok(())
+}
+
+fn merge(base: &mut Value, delta: Value) {
+    match (base, delta) {
+        (Value::Object(base), Value::Object(delta)) => {
+            for (key, value) in delta {
+                merge(base.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (base, delta) => *base = delta,
+    }
+}
+
+#[test]
+fn defaults_merge_from_root_to_family_and_keep_case_overrides() -> super::TestResult {
+    let temp = tempfile::tempdir()?;
+    let family = temp.path().join("family");
+    std::fs::create_dir(&family)?;
+    std::fs::write(
+        temp.path().join("_defaults.json"),
+        r#"{
+        "prompt":"root", "turns":["root"], "capacity":{"context_tokens":60,"output_tokens":10},
+        "max_output_tokens":10, "expect":{"text":"root","request_count":1}
+    }"#,
+    )?;
+    std::fs::write(
+        family.join("_defaults.json"),
+        r#"{
+        "prompt":"family", "expect":{"text":"family"}, "capacity":{"context_tokens":80}
+    }"#,
+    )?;
+    let path = family.join("case.json");
+    std::fs::write(
+        &path,
+        r#"{"turns":[],"max_output_tokens":null,"expect":{"text":"case"}}"#,
+    )?;
+    let case = Scenario::load(temp.path(), &path)?;
+    assert_eq!(case.prompt.as_deref(), Some("family"));
+    assert!(case.turns.is_empty());
+    assert_eq!(case.max_output_tokens, None);
+    assert_eq!(case.expect.text.as_deref(), Some("case"));
+    assert_eq!(case.expect.request_count, Some(1));
+    let capacity = case.capacity.ok_or("missing capacity")?;
+    assert_eq!(capacity.context_tokens, 80);
+    assert_eq!(capacity.output_tokens, 10);
+    std::fs::write(&path, r#"{"typo":1}"#)?;
+    assert!(Scenario::load(temp.path(), &path).is_err());
+    std::fs::write(family.join("_defaults.json"), "{")?;
+    assert!(Scenario::load(temp.path(), &path).is_err());
     Ok(())
 }

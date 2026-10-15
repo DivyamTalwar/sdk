@@ -10,7 +10,7 @@ use acyclic_harness::{
     },
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
-    model::{Model, ModelContent, PreparedModelRequest},
+    model::{Model, ModelContent},
     test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
@@ -35,9 +35,9 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
         operation_id: OperationId::new(),
-        input: ModelContent::Text(std::mem::take(&mut case.prompt)),
+        input: ModelContent::Text(case.take_instruction()?),
         selected_context: None,
-        max_steps: case.max_steps,
+        max_steps: case.max_steps.unwrap_or(16),
     };
     let journal = storage.journal();
     let operation = input.operation_id;
@@ -68,15 +68,18 @@ fn configure(
     if let Some(capacity) = case.capacity {
         provider = provider.with_context_capacity(capacity);
     }
-    let options = if let Some(tokens) = case.message_tokens {
-        provider = provider.with_token_counter(count_messages);
-        serde_json::json!({"message_tokens":tokens})
-    } else {
-        Value::Null
-    };
+    if let Some(tokens) = case.message_tokens {
+        provider = provider.with_token_counter(move |request| {
+            Ok(ModelTokenCount {
+                request_digest: request.request_digest(),
+                fixed_tokens: 0,
+                message_tokens: vec![tokens; request.request().messages.len()],
+            })
+        });
+    }
     let provider = Arc::new(provider);
     let mut summary_source = None;
-    let context = if case.summary {
+    let context = if case.kind == scenario::Kind::Summary {
         summary_source = Some(Context {
             messages: std::mem::take(&mut case.context),
             ..Context::default()
@@ -96,7 +99,12 @@ fn configure(
         )) as Arc<dyn ContextStage>])
     };
     let mut executor = StockExecutor::new(
-        Model::new("scripted".into(), "scenario".into(), "1".into(), options)?,
+        Model::new(
+            "scripted".into(),
+            "scenario".into(),
+            "1".into(),
+            Value::Null,
+        )?,
         provider.clone(),
         context,
         ToolRegistry::default(),
@@ -136,7 +144,7 @@ async fn run_summary(
         let text = journal.load(&actual.output, None)?.await?;
         check_text(&case.expect, text.as_ref())?;
         if let Some(input) = replay_input {
-            let counts = (provider.request_count(), provider.reconciliation_count());
+            let counts = (provider.requests().len(), provider.reconciliations().len());
             let replay = executor
                 .summarize(
                     journal,
@@ -146,7 +154,7 @@ async fn run_summary(
                 )
                 .await?;
             if replay != actual
-                || counts != (provider.request_count(), provider.reconciliation_count())
+                || counts != (provider.requests().len(), provider.reconciliations().len())
             {
                 return Err(
                     "summary replay changed the result or invoked the provider again".into(),
@@ -176,12 +184,12 @@ async fn run_turn(
     if let Some(actual) = check_result(&case.expect, result)? {
         check_text(&case.expect, actual.text.as_bytes())?;
         if let Some(input) = replay_input {
-            let requests = provider.request_count();
-            let reconciliations = provider.reconciliation_count();
+            let requests = provider.requests().len();
+            let reconciliations = provider.reconciliations().len();
             let replay = executor.execute(input, journal).await?;
             if replay != actual
-                || provider.request_count() != requests
-                || provider.reconciliation_count() != reconciliations
+                || provider.requests().len() != requests
+                || provider.reconciliations().len() != reconciliations
             {
                 return Err("replay changed the result or dispatched the model again".into());
             }
@@ -197,19 +205,23 @@ fn check_provider(
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
     }
-    if provider.remaining_reconciliations() != 0 {
+    if provider.recoveries().len() != 0 {
         return Err(format!(
             "{} unused reconciliation replies",
-            provider.remaining_reconciliations()
+            provider.recoveries().len()
         )
         .into());
     }
     for (label, expected, actual) in [
-        ("requests", expected.request_count, provider.request_count()),
+        (
+            "requests",
+            expected.request_count,
+            provider.requests().len(),
+        ),
         (
             "reconciliations",
             expected.reconciliation_count,
-            provider.reconciliation_count(),
+            provider.reconciliations().len(),
         ),
     ] {
         if expected.is_some_and(|expected| expected != actual) {
@@ -320,22 +332,4 @@ fn check_text(expected: &scenario::Expectations, actual: &[u8]) -> TestResult {
         .into());
     }
     Ok(())
-}
-
-fn count_messages(request: &PreparedModelRequest) -> acyclic_harness::Result<ModelTokenCount> {
-    let tokens = request
-        .request()
-        .model
-        .options
-        .get("message_tokens")
-        .and_then(Value::as_u64)
-        .and_then(|tokens| u32::try_from(tokens).ok())
-        .ok_or_else(|| {
-            acyclic_harness::Error::Invalid("missing scenario message token count".into())
-        })?;
-    Ok(ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: 0,
-        message_tokens: vec![tokens; request.request().messages.len()],
-    })
 }

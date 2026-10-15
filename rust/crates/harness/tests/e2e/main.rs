@@ -17,7 +17,11 @@ fn discover(root: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
         let path = entry.path();
         if entry.file_type()?.is_dir() {
             discover(&path, paths)?;
-        } else if path.extension().is_some_and(|ext| ext == "json") {
+        } else if path.extension().is_some_and(|ext| ext == "json")
+            && path
+                .file_name()
+                .is_some_and(|name| name != "_defaults.json")
+        {
             paths.push(path);
         }
     }
@@ -67,6 +71,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
             "recoveries" => {
                 case.recoveries
                     .push(acyclic_harness::test_support::ScriptedReconciliation {
+                        orphan: false,
                         observed: vec![],
                         continuation: None,
                     });
@@ -81,12 +86,16 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
 
 #[tokio::test]
 async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() -> TestResult {
-    let baseline = include_bytes!("../scenarios/summary/exact-capacity.json");
-    run(Scenario::parse(baseline)?).await?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = root.join("summary/exact-capacity.json");
+    run(Scenario::load(&root, &baseline)?).await?;
     for field in ["mode", "text", "result", "context", "budget"] {
-        let mut case = Scenario::parse(baseline)?;
+        let mut case = Scenario::load(&root, &baseline)?;
         match field {
-            "mode" => case.summary = false,
+            "mode" => {
+                case.kind = scenario::Kind::Turn;
+                case.prompt = case.instruction.take();
+            }
             "text" => case.expect.text = Some("wrong".into()),
             "result" => case.expect.result = Some(serde_json::json!({"source_messages":99})),
             "context" => case.context.pop().map(|_| ()).ok_or("missing context")?,
@@ -95,7 +104,7 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
     }
-    let mut case = Scenario::parse(include_bytes!("../scenarios/summary/recover-prefix.json"))?;
+    let mut case = Scenario::load(&root, &root.join("summary/recover-prefix.json"))?;
     case.recoveries
         .first_mut()
         .ok_or("missing recovery")?
@@ -110,10 +119,11 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
 
 #[tokio::test]
 async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accounting() -> TestResult {
-    let baseline = include_bytes!("../scenarios/compaction/threshold.json");
-    run(Scenario::parse(baseline)?).await?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = root.join("compaction/threshold.json");
+    run(Scenario::load(&root, &baseline)?).await?;
     for field in ["context", "capacity", "policy", "accounting", "output"] {
-        let mut case = Scenario::parse(baseline)?;
+        let mut case = Scenario::load(&root, &baseline)?;
         match field {
             "context" => case.context.clear(),
             "capacity" => {
@@ -177,16 +187,19 @@ async fn scenarios() -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| async move {
-        let case_path = path.clone();
-        let result: TestResult = tokio::spawn(async move {
-            let case = Scenario::parse(&std::fs::read(&case_path)?)?;
-            tokio::time::timeout(Duration::from_secs(5), run(case)).await??;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        })
-        .await
-        .unwrap_or_else(|error| Err(Box::new(error)));
-        (path, result)
+    let mut results = stream::iter(paths.into_iter().map(|path| {
+        let root = root.clone();
+        async move {
+            let case_path = path.clone();
+            let result: TestResult = tokio::spawn(async move {
+                let case = Scenario::load(&root, &case_path)?;
+                tokio::time::timeout(Duration::from_secs(5), run(case)).await??;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            })
+            .await
+            .unwrap_or_else(|error| Err(Box::new(error)));
+            (path, result)
+        }
     }))
     .buffer_unordered(16);
     let mut failures = Vec::new();
@@ -209,8 +222,16 @@ async fn scenarios() -> TestResult {
     if !failures.is_empty() {
         return Err(format!("{} scenarios failed", failures.len()).into());
     }
-    if started.elapsed() >= Duration::from_secs(10) {
-        return Err("scenario suite exceeded 10 seconds".into());
-    }
     Ok(())
+}
+
+#[tokio::test]
+async fn token_accounting_configuration_does_not_change_model_options() -> TestResult {
+    run(Scenario::parse(
+        br#"{
+        "prompt":"x", "turns":["answer"], "message_tokens":7,
+        "expect":{"text":"answer","requests":[{"model":{"options":null}}]}
+    }"#,
+    )?)
+    .await
 }

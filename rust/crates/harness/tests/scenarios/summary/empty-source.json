@@ -1,10 +1,1 @@
-{
-  "summary":true,
-  "prompt":"Summarize this context.",
-  "context":[],
-  "capacity":{"context_tokens":40,"output_tokens":10},
-  "message_tokens":10,
-  "max_output_tokens":10,
-  "turns":[],
-  "expect":{"error":"summary source is empty","request_count":0,"reconciliation_count":0,"not_events":[{"kind":"context_compacted"},{"kind":"model_started","purpose":"response"}]}
-}
+{"context":[],"max_output_tokens":10,"turns":[],"expect":{"error":"summary source is empty","request_count":0}}
