@@ -5,7 +5,43 @@ use acyclic_harness::{
     },
     model::{FileProjectionPolicy, ModelContentPart, ModelDataPart, ToolResultContent},
 };
+use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn file_estimates_bound_unicode_wire_expansion_for_every_adapter(
+        characters in prop::collection::vec(any::<char>(), 0..128),
+        tool_result in any::<bool>(),
+    ) {
+        let text: String = characters.into_iter().collect();
+        let file = file(text.as_bytes(), "text/plain").unwrap();
+        for (adapter, _) in fixtures() {
+            let (provider, _) = provider(adapter, 200);
+            let part = if tool_result {
+                ModelContentPart::ToolResult {
+                    call_id: "call".into(), name: "echo".into(),
+                    content: ToolResultContent::Parts { parts: vec![ModelDataPart::File {
+                        file: file.clone(), policy: FileProjectionPolicy::BoundedFull,
+                    }] },
+                }
+            } else {
+                ModelContentPart::File { file: file.clone(), policy: FileProjectionPolicy::BoundedFull }
+            };
+            let request = with_parts(&provider, vec![part]).unwrap();
+            let extra = crate::files::extra_bytes(&request.request().messages[0].content, u64::MAX).unwrap();
+            let mut estimate = crate::files::FileText::Estimate;
+            let before = crate::projection::body(&provider, request.request(), &mut estimate).unwrap();
+            let mut resolved = crate::files::FileText::Ready(vec![text.clone()].into_iter());
+            let after = crate::projection::body(&provider, request.request(), &mut resolved).unwrap();
+            prop_assert_eq!(extra, text.len() * 6);
+            prop_assert!(crate::projection::encoded_len(&after).unwrap()
+                <= crate::projection::encoded_len(&before).unwrap() + extra);
+        }
+    }
+}
 
 struct Reader {
     data: Vec<u8>,
