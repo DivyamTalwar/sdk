@@ -113,6 +113,15 @@ fn real_session_has_no_lost_append_or_credit_wakeup() {
                 receiver.boxed(),
             )
             .unwrap();
+            // Install the channel before exploring append versus credit. The
+            // handshake has no producer race; priming it bounds model state
+            // without limiting the schedules of either wakeup.
+            loom::future::block_on(async {
+                for _ in 0..3 {
+                    let control = output.next().await.unwrap().unwrap();
+                    assert!(!matches!(control.body, Some(Body::Data(_))));
+                }
+            });
             let consumer = loom::thread::spawn(move || {
                 loom::future::block_on(async {
                     loop {
