@@ -10,12 +10,12 @@ use crate::{
     context::ModelContextCapacity,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelEvent, ModelProvider},
     resources::ProviderRef,
     runtime::{TaskStateProvider, ToolContext},
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -33,45 +33,6 @@ fn capacity() -> ModelContextCapacity {
     ModelContextCapacity {
         context_tokens: 32_768,
         output_tokens: 4096,
-    }
-}
-
-struct Interrupted {
-    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    inner: ScriptedModelProvider,
-}
-impl ModelProvider for Interrupted {
-    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
-        self.inner.context_capacity(model)
-    }
-    fn count_tokens(
-        &self,
-        request: &PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        self.inner.count_tokens(request)
-    }
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        let _stream = self.inner.generate(request, dispatch);
-        if let Ok(mut started) = self.started.lock() {
-            if let Some(started) = started.take() {
-                let _ = started.send(());
-                return Box::pin(futures::stream::pending());
-            }
-        }
-        Box::pin(futures::stream::iter([Err(Error::Conflict(
-            "model dispatched twice".into(),
-        ))]))
-    }
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: ModelDispatch,
-        observed: &'a [ModelEvent],
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        self.inner.reconcile(dispatch, observed)
     }
 }
 
@@ -352,25 +313,28 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let (started, boundary) = tokio::sync::oneshot::channel();
-    let provider = Arc::new(Interrupted {
-        started: Mutex::new(Some(started)),
-        inner: ScriptedModelProvider::new([ScriptedTurn::Text(
-            "discarded interrupted response".into(),
-        )])
-        .with_context_capacity(capacity())
-        .with_reconciliations([ScriptedReconciliation {
-            orphan: false,
-            observed: vec![],
-            continuation: Some(vec![
-                ModelEvent::Content {
-                    delta: "recovered".into(),
-                },
-                ModelEvent::Completed {
-                    metadata: json!({}),
-                },
-            ]),
-        }]),
-    });
+    let started = Mutex::new(Some(started));
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])])
+            .with_context_capacity(capacity())
+            .with_dispatch_observer(move |_| {
+                if let Some(started) = started.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                }
+            })
+            .with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: Some(vec![
+                    ModelEvent::Content {
+                        delta: "recovered".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: json!({}),
+                    },
+                ]),
+            }]),
+    );
     let config = || {
         Ok::<_, Error>(volume_config(
             directory.path(),
@@ -423,8 +387,8 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     assert_eq!(retained.reservation.id, original.reservation.id);
     assert_eq!(reopened.resume(task).await?.text, "recovered");
     assert_eq!(reopened.resume(task).await?.text, "recovered");
-    assert_eq!(provider.inner.requests().len(), 1);
-    assert_eq!(provider.inner.reconciliations().len(), 1);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.reconciliations().len(), 1);
     Ok(())
 }
 
