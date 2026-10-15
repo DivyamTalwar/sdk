@@ -319,6 +319,71 @@ async fn corrupt_owner_is_rejected_without_reissuing_credentials() -> Result<()>
     Ok(())
 }
 
+async fn output_runtime(
+    harness: &LocalHarness,
+    grants: acyclic_harness::Capabilities,
+) -> Result<acyclic_harness::local::LocalTaskRuntime> {
+    let limits = acyclic_harness::conversation::Limits::default();
+    acyclic_harness::local::LocalTaskRuntime::open(
+        harness.stream().clone(),
+        harness.filesystem().clone(),
+        harness.journal_volume(),
+        harness.verifier(),
+        harness.owner_scope(),
+        &acyclic_harness::runtime::RuntimeScope::new(grants, limits)?,
+        &acyclic_harness::runtime::TaskRegistry::default(),
+        &acyclic_harness::workflow::MachineRegistry::default(),
+        &acyclic_harness::tool::ToolRegistry::default(),
+        acyclic_harness::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 1,
+            model_steps: 1,
+        },
+        1,
+        limits.file_bytes,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        None,
+        &[],
+        &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn root_output_requires_task_grants_and_exclusive_configuration() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::volume(directory.path(), project).model(model()?, Scripted::text()),
+    )
+    .await?;
+    let denied = output_runtime(&harness, acyclic_harness::Capabilities::default()).await?;
+    assert!(matches!(
+        denied.with_output_volume(harness.scratch(), None),
+        Err(Error::Unauthorized(_))
+    ));
+    let grants = acyclic_harness::Capabilities::new([
+        harness
+            .scratch()
+            .capability(VolumeOperation::Read, &mut None)?,
+        harness
+            .scratch()
+            .capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    let configured = output_runtime(&harness, grants)
+        .await?
+        .with_output_volume(harness.scratch(), None)?;
+    let retained = configured.harness().clone();
+    assert!(matches!(
+        configured.with_output_volume(harness.scratch(), None),
+        Err(Error::Conflict(_))
+    ));
+    drop(retained);
+    Ok(())
+}
+
 #[cfg(feature = "native-execution")]
 #[tokio::test]
 async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
