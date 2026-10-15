@@ -370,3 +370,21 @@ fn poisoned_state_remains_observable() {
     assert!(provider.dispatches().is_empty());
     assert_eq!(provider.requests().len(), 0);
 }
+
+#[test]
+fn token_counter_can_capture_configuration_without_changing_the_request() -> Result<()> {
+    let tokens = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(7));
+    let captured = tokens.clone();
+    let provider = ScriptedModelProvider::new([]).with_token_counter(move |request| {
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.request_digest(),
+            fixed_tokens: captured.load(std::sync::atomic::Ordering::SeqCst),
+            message_tokens: vec![0; request.request().messages.len()],
+        })
+    });
+    let (request, _) = request()?;
+    assert_eq!(provider.count_tokens(&request)?.fixed_tokens, 7);
+    tokens.store(11, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(provider.count_tokens(&request)?.fixed_tokens, 11);
+    Ok(())
+}
