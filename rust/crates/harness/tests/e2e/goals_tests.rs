@@ -1,5 +1,5 @@
 use super::*;
-use crate::TestResult;
+use crate::{TestResult, goals};
 use acyclic_harness::{
     OperationId, TaskId,
     goal::{GoalContinuation, GoalStatus, GoalView},
@@ -10,6 +10,8 @@ use std::path::Path;
 
 #[path = "../../fuzz/fuzz_targets/goal_parser_input.rs"]
 mod goal_parser_input;
+#[path = "../../fuzz/fuzz_targets/goal_scenario_input.rs"]
+mod goal_scenario_input;
 
 fn text() -> impl Strategy<Value = String> {
     proptest::collection::vec(any::<char>(), 0..64)
@@ -34,6 +36,7 @@ proptest! {
                 "view":{"markdown":body}, "files":{"GOAL.md":body}}})).unwrap();
         let canonical = serde_json::to_value(case).unwrap();
         let bytes = serde_json::to_vec(&canonical).unwrap();
+        goal_scenario_input::check(&bytes);
         let parsed = GoalCase::parse(serde_json::from_slice(&bytes).unwrap()).unwrap();
         prop_assert_eq!(serde_json::to_value(parsed).unwrap(), canonical);
     }
@@ -78,6 +81,18 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn goal_scenario_fuzz_corpus() -> TestResult {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/goal_scenario");
+    let mut count = 0;
+    for entry in std::fs::read_dir(directory)? {
+        goal_scenario_input::check(&std::fs::read(entry?.path())?);
+        count += 1;
+    }
+    assert!(count > 0);
+    Ok(())
 }
 
 #[tokio::test]
