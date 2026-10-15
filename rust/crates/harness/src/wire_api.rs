@@ -35,12 +35,6 @@ pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
         request: wire::ResumeRequest,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<wire::Delivery>>>>;
 
-    /// Authenticates one decoded operation-control scope against host-held trust roots.
-    fn authorize_operation_control<'a>(
-        &'a self,
-        request: &'a OperationControlRequest,
-    ) -> BoxFuture<'a, Result<()>>;
-
     /// Observes one authenticated durable operation projection.
     fn observe<'a>(
         &'a self,
@@ -84,21 +78,13 @@ pub struct OperationControlRequest {
     pub scope: Scope,
 }
 
-impl OperationControlRequest {
-    /// Verifies the signed scope against the host-selected owner trust root.
-    pub fn authenticate(&self, verifier: &crate::core::AuthorityVerifier) -> Result<()> {
-        verifier.verify_audience(&self.owner, &mut None)?;
-        verifier.verify(&self.scope, &mut None)
-    }
-}
-
 /// Validates and decodes an observe request without authenticating its proof.
-pub fn validate_observe_request(request: &wire::ObserveRequest) -> Result<OperationControlRequest> {
+pub fn validate_observe_request(request: wire::ObserveRequest) -> Result<OperationControlRequest> {
     validate_request_protocol(request.protocol.as_ref())?;
     decode_control(
-        request.owner.clone(),
+        request.owner,
         &request.operation_id,
-        request.scope.clone(),
+        request.scope,
         capability::OPERATION_OBSERVE,
     )
 }
@@ -114,13 +100,13 @@ pub struct CancelControlRequest {
 }
 
 /// Validates and decodes a cancellation request without authenticating its proof.
-pub fn validate_cancel_request(request: &wire::CancelRequest) -> Result<CancelControlRequest> {
+pub fn validate_cancel_request(request: wire::CancelRequest) -> Result<CancelControlRequest> {
     validate_request_protocol(request.protocol.as_ref())?;
-    let idempotency_key = IdempotencyKey::new(request.idempotency_key.clone())?;
+    let idempotency_key = IdempotencyKey::new(request.idempotency_key)?;
     let control = decode_control(
-        request.owner.clone(),
+        request.owner,
         &request.operation_id,
-        request.scope.clone(),
+        request.scope,
         capability::OPERATION_CANCEL,
     )?;
     Ok(CancelControlRequest {
@@ -128,6 +114,36 @@ pub fn validate_cancel_request(request: &wire::CancelRequest) -> Result<CancelCo
         idempotency_key,
         recursive: request.recursive,
     })
+}
+
+/// Forwards an owned request; the host authenticates it before reading task state.
+pub async fn observe(
+    api: &dyn HarnessWireApi,
+    request: wire::ObserveRequest,
+) -> Result<wire::OperationStatus> {
+    let operation_id = request.operation_id.clone();
+    let owner = request.owner.clone();
+    let response = api.observe(request).await?;
+    validate_operation_status(&operation_id, owner.as_ref(), &response)?;
+    Ok(response)
+}
+
+/// Forwards an owned cancellation and checks only its returned identity.
+pub async fn cancel(
+    api: &dyn HarnessWireApi,
+    request: wire::CancelRequest,
+) -> Result<wire::CancelResponse> {
+    let operation_id = request.operation_id.clone();
+    let idempotency_key = request.idempotency_key.clone();
+    let owner = request.owner.clone();
+    let response = api.cancel(request).await?;
+    crate::wire_validation::validate_cancel_identity(
+        &operation_id,
+        &idempotency_key,
+        owner.as_ref(),
+        &response,
+    )?;
+    Ok(response)
 }
 
 /// Converts the authoritative scheduler projection to its canonical wire status.
@@ -247,15 +263,15 @@ mod tests {
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
-            validate_observe_request(&wire::ObserveRequest::default()),
+            validate_observe_request(wire::ObserveRequest::default()),
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
-            validate_cancel_request(&wire::CancelRequest::default()),
+            validate_cancel_request(wire::CancelRequest::default()),
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
-            validate_observe_request(&wire::ObserveRequest {
+            validate_observe_request(wire::ObserveRequest {
                 protocol: Some(current_protocol()),
                 owner: Some(wire::Authority::default()),
                 ..wire::ObserveRequest::default()
@@ -296,7 +312,7 @@ mod tests {
             operation_id: operation_id.clone(),
             scope: Some(scope.clone()),
         };
-        let decoded = validate_observe_request(&observe)?;
+        let decoded = validate_observe_request(observe.clone())?;
         assert_eq!(decoded.operation_id.to_string(), operation_id);
         let status = wire::OperationStatus {
             operation: Some(wire::OperationIdentity {
@@ -335,7 +351,7 @@ mod tests {
             recursive: true,
             idempotency_key: "cancel-1".into(),
         };
-        validate_cancel_request(&cancel)?;
+        validate_cancel_request(cancel.clone())?;
         let response = wire::CancelResponse {
             status: Some(status),
             operation: Some(wire::OperationIdentity {

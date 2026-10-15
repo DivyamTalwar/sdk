@@ -3,8 +3,7 @@
 use crate::{
     Error, wire,
     wire_api::{
-        HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
-        validate_command_protocol, validate_observe_request, validate_operation_status,
+        HarnessWireApi, cancel, observe, validate_admission, validate_command_protocol,
         validate_resume_protocol,
     },
 };
@@ -126,14 +125,8 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
     ) -> Result<Response<wire::OperationStatus>, Status> {
         traced(
             async {
-                let control = validate_observe_request(request.get_ref()).map_err(status)?;
-                self.api
-                    .authorize_operation_control(&control)
+                let response = observe(self.api.as_ref(), request.into_inner())
                     .await
-                    .map_err(status)?;
-                let request = request.into_inner();
-                let response = self.api.observe(request.clone()).await.map_err(status)?;
-                validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)
                     .map_err(status)?;
                 Ok(Response::new(response))
             }
@@ -155,16 +148,9 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
     ) -> Result<Response<wire::CancelResponse>, Status> {
         traced(
             async {
-                let control = validate_cancel_request(request.get_ref())
-                    .map_err(status)?
-                    .control;
-                self.api
-                    .authorize_operation_control(&control)
+                let response = cancel(self.api.as_ref(), request.into_inner())
                     .await
                     .map_err(status)?;
-                let request = request.into_inner();
-                let response = self.api.cancel(request.clone()).await.map_err(status)?;
-                validate_cancel_response(&request, &response).map_err(status)?;
                 Ok(Response::new(response))
             }
             .await,
@@ -222,13 +208,6 @@ mod tests {
     struct FakeApi;
 
     impl HarnessWireApi for FakeApi {
-        fn authorize_operation_control<'a>(
-            &'a self,
-            _: &'a crate::wire_api::OperationControlRequest,
-        ) -> futures::future::BoxFuture<'a, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
-
         fn handshake<'a>(
             &'a self,
             request: wire::HandshakeRequest,

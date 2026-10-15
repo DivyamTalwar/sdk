@@ -55,7 +55,6 @@ pub(super) enum Method {
     Replay = 2,
     Observe = 3,
     Cancel = 4,
-    Authorize = 5,
 }
 
 #[derive(Clone, PartialEq, Message)]

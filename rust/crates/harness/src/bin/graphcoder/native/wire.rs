@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_harness::{
     wire,
-    wire_api::{HarnessWireApi, OperationControlRequest, negotiate, validate_resume_protocol},
+    wire_api::{HarnessWireApi, negotiate, validate_resume_protocol},
     wire_codec::{decode_command_envelope, encode_authority, encode_event_envelope},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
@@ -125,16 +125,6 @@ impl HarnessWireApi for NativeSession {
             };
             Ok(Box::pin(stream::iter([Ok(delivery)]))
                 as BoxProviderStream<'static, Result<wire::Delivery>>)
-        })
-    }
-    fn authorize_operation_control<'a>(
-        &'a self,
-        request: &'a OperationControlRequest,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.runtime
-                .task_host()
-                .authorize_operation_control(request)
         })
     }
     fn observe<'a>(
