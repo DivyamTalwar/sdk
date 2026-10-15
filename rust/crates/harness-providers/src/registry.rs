@@ -42,14 +42,22 @@ impl Registry {
 
     /// Adds or replaces one endpoint. Local models require their configured capacities.
     pub fn register(&mut self, provider: String, config: ProviderSpec) -> Result<()> {
-        if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == 0 {
-            return Err(invalid("invalid provider registration"));
-        }
-        validate_url(&config.base_url)?;
-        for capacity in config.models.values() {
-            capacity.validate()?;
-        }
+        validate_spec(&provider, &config)?;
         self.providers.insert(provider, Arc::new(config));
+        Ok(())
+    }
+
+    /// Loads endpoint, credential policy and exact capacities from a JSON catalog.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
+        let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
+        let catalog: BTreeMap<String, ProviderSpec> =
+            serde_json::from_slice(&bytes).map_err(|_| invalid("invalid provider catalog"))?;
+        for (provider, spec) in &catalog {
+            validate_spec(provider, spec)?;
+        }
+        self.providers
+            .extend(catalog.into_iter().map(|(id, spec)| (id, Arc::new(spec))));
         Ok(())
     }
 
@@ -109,4 +117,15 @@ pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
         ));
     }
     Ok(url)
+}
+
+fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
+    if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == 0 {
+        return Err(invalid("invalid provider registration"));
+    }
+    validate_url(&config.base_url)?;
+    for capacity in config.models.values() {
+        capacity.validate()?;
+    }
+    Ok(())
 }

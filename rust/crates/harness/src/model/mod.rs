@@ -11,6 +11,8 @@ mod request;
 mod tests;
 mod tool_call;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use crate::executor::json::json_value_logical_owned_bytes;
 pub use content::{
     ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole, ToolResultContent,
 };

@@ -54,6 +54,7 @@ impl StockExecution<'_> {
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
+        let mut results = Vec::new();
         for (invocation, metadata) in calls {
             let projection = completed_tool_projection(
                 journal,
@@ -84,7 +85,7 @@ impl StockExecution<'_> {
                 self.io,
             )?;
             stock_vec_push(
-                &mut request.messages,
+                &mut results,
                 ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -98,6 +99,9 @@ impl StockExecution<'_> {
             if through_call.is_some_and(|id| invocation.call_id == id) {
                 break;
             }
+        }
+        for result in results {
+            stock_vec_push(&mut request.messages, result, self.io)?;
         }
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;

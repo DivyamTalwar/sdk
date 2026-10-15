@@ -4,7 +4,10 @@ mod accounting;
 mod adapter;
 mod catalog;
 mod credentials;
+mod dispatch;
 mod http;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
 mod projection;
 mod registry;
 mod resolved;

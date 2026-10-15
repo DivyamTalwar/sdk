@@ -18,17 +18,17 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
-struct Call {
+pub(crate) struct Call {
     id: String,
     name: String,
     arguments: String,
     metadata: Value,
 }
 
-struct State {
+pub(crate) struct State {
     calls: BTreeMap<u64, Call>,
     metadata: serde_json::Map<String, Value>,
-    terminal: bool,
+    pub(crate) terminal: bool,
     thinking: BTreeMap<u64, Value>,
     budget: budget::Budget,
 }
@@ -44,58 +44,133 @@ pub(crate) fn events<'a>(
         let mut state = State::new(maximum);
         while let Some(data) = input.next().await {
             let data = data?;
-            if data == "[DONE]" {
-                if adapter != Adapter::Chat { Err(invalid("unexpected stream terminator"))?; }
-                state.terminal = true;
-                break;
-            }
-            let value = crate::json(data.as_bytes())?;
-            if !value.is_object() { Err(invalid("model event must be an object"))?; }
-            if value.get("error").is_some_and(|error| !error.is_null())
-                || matches!(value["type"].as_str(), Some("error" | "response.failed")) {
-                Err(invalid("model provider reported a stream error"))?;
-            }
-            let deltas = match adapter {
-                Adapter::Chat => chat::parse(&mut state, &value)?,
-                Adapter::Anthropic => anthropic::parse(&mut state, &value)?,
-                Adapter::Responses => responses::parse(&mut state, &value)?,
-                Adapter::Gemini => gemini::parse(&mut state, &value, dispatch)?,
-            };
+            let deltas = parse(&mut state, adapter, &data, dispatch)?;
             for event in deltas { yield event; }
-            if state.terminal && matches!(adapter, Adapter::Anthropic | Adapter::Responses) { break; }
+            if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
-        if !state.terminal { Err(acyclic_harness::Error::Storage("model stream ended without a terminal marker".into()))?; }
-        if state.metadata.get("finish_reason").is_some_and(|reason| reason == "length") {
-            yield ModelEvent::Completed { metadata: Value::Object(state.metadata) };
-            return;
-        }
-        // Validate the whole tool batch before exposing any call to the executor.
-        let mut seen = BTreeSet::new();
-        let mut calls = Vec::with_capacity(state.calls.len());
-        for (position, mut call) in state.calls.into_values().enumerate() {
-            if call.id.trim().is_empty() || call.name.trim().is_empty() || !seen.insert(call.id.clone()) {
-                Err(invalid("incomplete or duplicate model tool call"))?;
-            }
-            let arguments = json(call.arguments.as_bytes())?;
-            if !arguments.is_object() { Err(invalid("tool arguments must be a JSON object"))?; }
-            validate_numbers(&arguments)?;
-            if matches!(adapter, Adapter::Anthropic | Adapter::Responses) && position == 0 && !state.thinking.is_empty() {
-                let key = if adapter == Adapter::Anthropic { "anthropic_thinking" } else { "openai_reasoning" };
-                state.budget.add(std::mem::size_of::<(String,Value)>() + key.len()
-                    + state.thinking.len() * std::mem::size_of::<Value>(), state.thinking.len() + 1)?;
-                call.metadata = Value::Object(serde_json::Map::from_iter([(
-                    key.into(), Value::Array(std::mem::take(&mut state.thinking).into_values().collect()),
-                )]));
-            }
-            calls.push(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(call.id, call.name, arguments).with_metadata(call.metadata)));
-        }
-        for call in calls { yield call; }
-        yield ModelEvent::Completed { metadata: Value::Object(state.metadata) };
+        for event in finish(state, adapter)? { yield event; }
     })
 }
 
+pub(crate) fn parse(
+    state: &mut State,
+    adapter: Adapter,
+    data: &str,
+    dispatch: ModelDispatch,
+) -> Result<Vec<ModelEvent>> {
+    if data == "[DONE]" {
+        if adapter != Adapter::Chat {
+            return Err(invalid("unexpected stream terminator"));
+        }
+        state.terminal = true;
+        return Ok(Vec::new());
+    }
+    let value = crate::json(data.as_bytes())?;
+    if !value.is_object() {
+        return Err(invalid("model event must be an object"));
+    }
+    if value.get("error").is_some_and(|error| !error.is_null())
+        || matches!(value["type"].as_str(), Some("error" | "response.failed"))
+    {
+        return Err(invalid("model provider reported a stream error"));
+    }
+    match adapter {
+        Adapter::Chat => chat::parse(state, &value),
+        Adapter::Anthropic => anthropic::parse(state, &value),
+        Adapter::Responses => responses::parse(state, &value),
+        Adapter::Gemini => gemini::parse(state, &value, dispatch),
+    }
+}
+
+pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEvent>> {
+    if !state.terminal {
+        return Err(acyclic_harness::Error::Storage(
+            "model stream ended without a terminal marker".into(),
+        ));
+    }
+    let mut calls = Vec::with_capacity(state.calls.len() + 1);
+    if state
+        .metadata
+        .get("finish_reason")
+        .is_some_and(|reason| reason == "length")
+    {
+        calls.push(ModelEvent::Completed {
+            metadata: Value::Object(state.metadata),
+        });
+        return Ok(calls);
+    }
+    // Validate the whole tool batch before exposing any call to the executor.
+    let mut seen = BTreeSet::new();
+    for (position, mut call) in state.calls.into_values().enumerate() {
+        if call.id.trim().is_empty() || call.name.trim().is_empty() || !seen.insert(call.id.clone())
+        {
+            return Err(invalid("incomplete or duplicate model tool call"));
+        }
+        let arguments = json(call.arguments.as_bytes())?;
+        if !arguments.is_object() {
+            return Err(invalid("tool arguments must be a JSON object"));
+        }
+        validate_numbers(&arguments)?;
+        if matches!(adapter, Adapter::Anthropic | Adapter::Responses)
+            && position == 0
+            && !state.thinking.is_empty()
+        {
+            let key = if adapter == Adapter::Anthropic {
+                "anthropic_thinking"
+            } else {
+                "openai_reasoning"
+            };
+            state.budget.add(
+                std::mem::size_of::<(String, Value)>()
+                    + key.len()
+                    + state.thinking.len() * std::mem::size_of::<Value>(),
+                state.thinking.len() + 1,
+            )?;
+            call.metadata = Value::Object(serde_json::Map::from_iter([(
+                key.into(),
+                Value::Array(std::mem::take(&mut state.thinking).into_values().collect()),
+            )]));
+        }
+        calls.push(ModelEvent::ToolCall(
+            acyclic_harness::model::ToolCall::new(call.id, call.name, arguments)
+                .with_metadata(call.metadata),
+        ));
+    }
+    calls.push(ModelEvent::Completed {
+        metadata: Value::Object(state.metadata),
+    });
+    Ok(calls)
+}
+
 impl State {
-    fn new(maximum: usize) -> Self {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        use acyclic_harness::model::json_value_logical_owned_bytes as owned;
+        let mut bytes = std::mem::size_of::<Self>() as u64;
+        for call in self.calls.values() {
+            bytes += std::mem::size_of::<(u64, Call)>() as u64
+                + call.id.capacity() as u64
+                + call.name.capacity() as u64
+                + call.arguments.capacity() as u64
+                + owned(&call.metadata)?;
+        }
+        for (key, value) in &self.metadata {
+            bytes += std::mem::size_of::<(String, Value)>() as u64
+                + key.capacity() as u64
+                + owned(value)?;
+        }
+        for value in self.thinking.values() {
+            bytes += std::mem::size_of::<(u64, Value)>() as u64 + owned(value)?;
+        }
+        Ok(bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn arguments(&self) -> impl Iterator<Item = &str> {
+        self.calls.values().map(|call| call.arguments.as_str())
+    }
+
+    pub(crate) fn new(maximum: usize) -> Self {
         Self {
             calls: BTreeMap::new(),
             metadata: serde_json::Map::new(),

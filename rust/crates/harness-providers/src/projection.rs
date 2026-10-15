@@ -113,7 +113,25 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         {
             system.push(text_content(&message.content)?);
         } else {
-            messages.extend(project_message(adapter, message)?);
+            for mut projected in project_message(adapter, message)? {
+                // A tool batch is one model turn, followed by one result turn.
+                if adapter == Adapter::Gemini
+                    && messages
+                        .last()
+                        .is_some_and(|last: &Value| last["role"] == projected["role"])
+                {
+                    if let (Some(previous), Some(parts)) =
+                        (messages.last_mut(), projected["parts"].as_array_mut())
+                    {
+                        previous["parts"]
+                            .as_array_mut()
+                            .ok_or_else(|| invalid("invalid projected Gemini parts"))?
+                            .append(parts);
+                    }
+                } else {
+                    messages.push(projected);
+                }
+            }
         }
     }
     let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {

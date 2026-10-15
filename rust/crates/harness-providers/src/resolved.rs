@@ -1,11 +1,11 @@
-use crate::{Adapter, HttpTransport, ProviderSpec, invalid, projection};
+use crate::{HttpTransport, ProviderSpec, invalid, projection};
 use acyclic_harness::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
 use acyclic_stream::BoxProviderStream;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
@@ -35,6 +35,66 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        self.transport.supports_native(work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn context_capacity_with_native_work(
+        &self,
+        model: &Model,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<ModelContextCapacity> {
+        work.remaining()?;
+        if model != &self.model {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "request model differs from resolved selection",
+            });
+        }
+        Ok(self.capacity)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn count_tokens_with_native_work(
+        &self,
+        request: &PreparedModelRequest,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ModelTokenCount, acyclic_fs::NativeAllocation)> {
+        crate::native::count(self, request, work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn generate_with_native_work<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: ModelDispatch,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_harness::NativeFutureBundle<'a, acyclic_harness::model::NativeModelStream<'a>>,
+    > {
+        crate::native::generate(self, request, dispatch, work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconcile_with_native_work<'a>(
+        &'a self,
+        _: ModelDispatch,
+        _: &'a [ModelEvent],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_harness::NativeFutureBundle<
+            'a,
+            (Option<Vec<ModelEvent>>, acyclic_fs::NativeAllocation),
+        >,
+    > {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
+            Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
+        })
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
         Ok(self.capacity)
@@ -50,45 +110,6 @@ impl ModelProvider for ResolvedModel {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        Box::pin(async_stream::try_stream! {
-            self.validate(&request.request().model)?;
-            if request.request_digest() != dispatch.request_digest {
-                Err(invalid("model dispatch digest differs from prepared request"))?;
-            }
-            let body = projection::body(self, request.request())?;
-            let mut headers = BTreeMap::new();
-            headers.insert("accept".into(), "text/event-stream".into());
-            if let Some(key) = &self.key {
-                let (name, value) = match self.config.adapter {
-                    Adapter::Anthropic => ("x-api-key", key.clone()),
-                    Adapter::Gemini => ("x-goog-api-key", key.clone()),
-                    _ => ("authorization", format!("Bearer {key}")),
-                };
-                headers.insert(name.into(), value);
-            }
-            if self.config.adapter == Adapter::Anthropic {
-                headers.insert("anthropic-version".into(), "2023-06-01".into());
-                #[cfg(target_arch = "wasm32")]
-                headers.insert("anthropic-dangerous-direct-browser-access".into(), "true".into());
-            }
-            let body = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
-            let input_bytes = body.len();
-            let response = self.transport.send(crate::HttpRequest {
-                url: projection::endpoint(self)?, headers,
-                body,
-            }).await?;
-            if !(200..300).contains(&response.status) {
-                Err(crate::http_error(response.status))?;
-            }
-            use futures::StreamExt as _;
-            let mut events = crate::stream::events(self.config.adapter, response.body, self.config.max_event_bytes, dispatch);
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if let ModelEvent::Completed { metadata } = &event {
-                    self.estimator.observe(input_bytes, metadata);
-                }
-                yield event;
-            }
-        })
+        crate::dispatch::generate(self, request, dispatch)
     }
 }

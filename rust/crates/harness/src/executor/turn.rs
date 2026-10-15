@@ -32,7 +32,9 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
-            for (invocation, metadata) in calls {
+            let mut calls = calls;
+            // Preserve the model's complete batch before appending any tool results.
+            for (invocation, metadata) in &mut calls {
                 let message = ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall(
@@ -41,13 +43,15 @@ impl StockExecution<'_> {
                             stock_string_copy(&invocation.name, self.io)?,
                             crate::model::clone_value(&invocation.arguments, self.io)?,
                         )
-                        .with_metadata(metadata),
+                        .with_metadata(std::mem::take(metadata)),
                     )),
                 };
                 crate::executor::with_history_io(self.io, |work| {
                     message.content.validate_limits(self.stock.limits, work)
                 })?;
                 stock_vec_push(&mut prior_messages, message, self.io)?;
+            }
+            for (invocation, _) in calls {
                 match self
                     .resolve_tool_call(
                         journal,
