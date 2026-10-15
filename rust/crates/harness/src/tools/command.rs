@@ -75,7 +75,8 @@ mod tests {
 
         #[test]
         fn nul_is_always_rejected(prefix in ".{0,64}", suffix in ".{0,64}") {
-            prop_assert!(parse_command(&format!("{prefix}\0{suffix}")).is_err());
+            let command = format!("{prefix}\0{suffix}");
+            prop_assert!(parse_command(&command).is_err());
         }
     }
 }
