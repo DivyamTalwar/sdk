@@ -286,11 +286,8 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             Some(&io),
         )
         .await?;
-        let definition = tasks.get_version::<serde_json::Value, serde_json::Value>(
-            "model",
-            "1",
-            None,
-        )?;
+        let definition =
+            tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
         assert!(matches!(
             runtime
                 .harness()
