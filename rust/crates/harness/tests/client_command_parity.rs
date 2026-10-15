@@ -222,6 +222,29 @@ proptest! {
         }
     }
 
+    // Direct tool arguments remain one JSON string. Empty text and NUL are
+    // rejected, including after trimming arbitrary Unicode whitespace.
+    #[test]
+    fn tool_arguments_are_structured_or_rejected(
+        index in 0_usize..4,
+        arguments in proptest::collection::vec(prop_oneof![any::<char>(), Just('\0'), Just(' '), Just('\n')], 0..80)
+            .prop_map(|chars| chars.into_iter().collect::<String>()),
+    ) {
+        let catalog = CommandCatalog::builtins().expect("catalog");
+        let (name, key) = [("shell", "command"), ("delegate", "task"), ("search", "query"), ("fetch", "url")][index];
+        let input = format!("/{name} {arguments}");
+        let result = futures::executor::block_on(catalog.resolve(&input, &DeniedReader, 1024));
+        let arguments = arguments.trim();
+        if arguments.is_empty() || arguments.contains('\0') {
+            prop_assert!(result.is_err());
+        } else {
+            let CommandResolution::Tool { input, .. } = result.expect("tool arguments") else {
+                return Err(TestCaseError::fail("direct tool became another command kind"));
+            };
+            prop_assert_eq!(input, serde_json::json!({key: arguments}));
+        }
+    }
+
     // Every name and alias resolves to identical structured arguments, rather
     // than expanding shell, delegation, search or fetch text as a model prompt.
     #[test]
