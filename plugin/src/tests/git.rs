@@ -1,6 +1,8 @@
 use super::*;
 
 async fn open_child(fixture: &Fixture) -> ControlPlane {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    acyclic_fs::initialize_native_mount_services().unwrap();
     let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
     control
         .session_start(json!({"session_id":"git-review","cwd":fixture.root}))
