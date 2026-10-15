@@ -21,14 +21,20 @@ mod credit {
     include!("credit.rs");
 }
 
-struct WakeCount(AtomicU64);
+struct WakeCount(AtomicU64, Box<dyn Fn() + Send + Sync>);
 impl std::task::Wake for WakeCount {
     fn wake(self: std::sync::Arc<Self>) {
+        (self.1)();
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 fn wake_count() -> (std::sync::Arc<WakeCount>, std::task::Waker) {
-    let count = std::sync::Arc::new(WakeCount(AtomicU64::new(0)));
+    wake_probe(|| {})
+}
+fn wake_probe(
+    probe: impl Fn() + Send + Sync + 'static,
+) -> (std::sync::Arc<WakeCount>, std::task::Waker) {
+    let count = std::sync::Arc::new(WakeCount(AtomicU64::new(0), Box::new(probe)));
     let wake = std::task::Waker::from(std::sync::Arc::clone(&count));
     (count, wake)
 }
