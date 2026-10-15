@@ -81,7 +81,7 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
         .prepared_response(&journal, &input, 0, &[])
         .await?;
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.request_count(), 0);
+    assert_eq!(provider.requests().len(), 0);
     let reopened = executor.clone();
     let recovered = StockExecution::ordinary(&reopened)
         .prepared_response(&journal, &input, 0, &[])
@@ -92,8 +92,8 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
     let events = reopened.model_step(&journal, &input, 0, &[]).await?;
     assert_eq!(events.len(), 72);
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.request_count(), 1);
-    assert_eq!(provider.reconciliation_count(), 1);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.reconciliations().len(), 1);
     assert_eq!(
         journal
             .0
@@ -269,8 +269,8 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
 
     assert_eq!(recovered.text, format!("{}restored", "partial-".repeat(70)));
     assert_eq!(replayed, recovered);
-    assert_eq!(model.request_count(), 1);
-    assert_eq!(model.reconciliation_count(), 1);
+    assert_eq!(model.requests().len(), 1);
+    assert_eq!(model.reconciliations().len(), 1);
     assert_eq!(host.claims.load(Ordering::SeqCst), 1);
     assert_eq!(
         journal
@@ -321,8 +321,8 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
         executor.execute(input, &journal).await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(model.request_count(), 1);
-    assert_eq!(model.reconciliation_count(), 1);
+    assert_eq!(model.requests().len(), 1);
+    assert_eq!(model.reconciliations().len(), 1);
     Ok(())
 }
 

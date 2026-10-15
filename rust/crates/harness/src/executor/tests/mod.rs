@@ -277,6 +277,7 @@ fn recoverable_model(attempts: usize) -> ScriptedModelProvider {
         .collect::<Vec<_>>();
     ScriptedModelProvider::new(turns)
         .with_reconciliations((0..attempts).map(|_| ScriptedReconciliation {
+            orphan: false,
             observed: observed.clone(),
             continuation: Some(vec![
                 ModelEvent::Content {
