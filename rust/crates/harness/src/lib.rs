@@ -34,6 +34,7 @@ pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;
+pub mod hooks;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 pub mod interaction;
