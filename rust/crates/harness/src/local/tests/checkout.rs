@@ -278,6 +278,15 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         let result = tool.executor.execute(invocation, Some(context)).await;
         assert!(result.is_ok(), "{name} {command}: {result:?}");
         let result = result?;
+        crate::executor::validate_json_schema_value(
+            &tool.definition.output_schema,
+            &result.value,
+            "checkout tool output",
+            &mut None,
+        )?;
+        if command == "add note.txt" {
+            assert_eq!(result.value, json!({"result":"NoOp"}));
+        }
         if command.ends_with("printf visible") {
             assert_eq!(result.value["stdout"], "visible");
         }

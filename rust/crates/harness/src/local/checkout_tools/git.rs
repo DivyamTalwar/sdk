@@ -57,7 +57,7 @@ impl CheckoutTools {
         let switched = executor.inner.switched_workspace().map_err(storage)?;
         Ok((
             ToolResult {
-                value: serde_json::to_value(output).map_err(storage)?,
+                value: serde_json::json!({"result": output}),
             },
             switched,
         ))
