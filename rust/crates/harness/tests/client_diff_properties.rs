@@ -24,6 +24,41 @@ fn bytes() -> impl Strategy<Value = Vec<u8>> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
+    // A thin side has at most four lines, so frontier width and repeated snake
+    // comparisons are constant-bounded. Every case MUST succeed with work
+    // linear in input bytes/lines, rather than ignoring budget exhaustion.
+    #[test]
+    fn additions_deletions_and_thin_sides_finish_with_linear_work(
+        count in 1_usize..4096,
+        line in prop_oneof![Just("a".to_owned()), "[a-zλé]{0,8}"],
+        short in proptest::collection::vec("[a-zλé]{0,8}", 0..5),
+    ) {
+        let long = format!("{line}\n").repeat(count);
+        let short: String = short.iter().map(|line| format!("{line}\n")).collect();
+        let prefixed = format!("{short}{long}");
+        for (before, after) in [
+            (None, Some(long.as_str())), (Some(long.as_str()), None),
+            (Some(""), Some(long.as_str())), (Some(long.as_str()), Some("")),
+            (Some(short.as_str()), Some(long.as_str())),
+            (Some(long.as_str()), Some(short.as_str())),
+            (Some(short.as_str()), Some(prefixed.as_str())),
+            (Some(prefixed.as_str()), Some(short.as_str())),
+        ] {
+            let bytes = before.unwrap_or_default().len() + after.unwrap_or_default().len();
+            let lines = before.unwrap_or_default().lines().count() + after.unwrap_or_default().lines().count();
+            let diff = FileDiff::between(
+                before.map(str::as_bytes), after.map(str::as_bytes),
+                4 * bytes + 256, 64 * (bytes + lines + 1),
+            ).expect("linear work must suffice for empty/thin/prefix inputs");
+            if let Some(diff) = diff {
+                let patch = diffy::Patch::from_str(&diff.patch).expect("patch");
+                prop_assert_eq!(diffy::apply(before.unwrap_or_default(), &patch).expect("apply"), after.unwrap_or_default());
+            } else {
+                prop_assert_eq!(before, after);
+            }
+        }
+    }
+
     // Every accepted text patch reconstructs the endpoint, uses the minimum
     // number of edits, and round-trips through the client model's JSON codec.
     #[test]

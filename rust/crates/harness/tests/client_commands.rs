@@ -1,6 +1,8 @@
 //! Data-driven composer cases against the production filesystem reader.
 
 use acyclic_fs::Fs;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::Error;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope, resolve_file_mentions},
@@ -15,6 +17,15 @@ use acyclic_harness::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_parser;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/parse.rs"]
+mod command_parse;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/context/discovery/frontmatter.rs"]
+mod frontmatter;
 
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
