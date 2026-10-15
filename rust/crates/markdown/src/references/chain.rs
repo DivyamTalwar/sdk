@@ -43,7 +43,7 @@ pub(super) fn compile(
         let literal = compiler.shared(literal);
         let pair = if let Some(next) = brackets.get(index + 1) {
             let pair = source.get(bracket.start..next.end)?;
-            link(compiler, parse(pair, true), pair.len())
+            link(compiler, &parse(pair, true), pair.len())
         } else {
             None
         };
@@ -52,7 +52,7 @@ pub(super) fn compile(
             // this bracket. The following bracket remains available to pair.
             reference(compiler, link, suffixes.get(index + 2)?.clone(), literal)
         } else {
-            match link(compiler, parse(raw, true), raw.len()) {
+            match link(compiler, &parse(raw, true), raw.len()) {
                 Some(link) => reference(compiler, link, following, literal),
                 None => literal,
             }
@@ -74,7 +74,7 @@ fn reference(compiler: &mut Compiler, link: Link, following: Shared, missing: Sh
     }])
 }
 
-fn link(compiler: &mut Compiler, events: Events, length: usize) -> Option<Link> {
+fn link(compiler: &mut Compiler, events: &Events, length: usize) -> Option<Link> {
     let (start, range) = events.first()?;
     let key = match start {
         Event::Start(Tag::Link { link_type, id, .. } | Tag::Image { link_type, id, .. })
@@ -165,17 +165,17 @@ fn brackets(source: &str, opaque: &[Range<usize>]) -> Option<Vec<Range<usize>>> 
 fn independent(events: &Events, brackets: &[Range<usize>]) -> bool {
     let mut index = 0;
     for (event, range) in events {
-        if let Event::Start(tag) = event {
-            if !matches!(
+        if let Event::Start(tag) = event
+            && !matches!(
                 tag,
                 Tag::Emphasis
                     | Tag::Strong
                     | Tag::Strikethrough
                     | Tag::Link { .. }
                     | Tag::Image { .. }
-            ) {
-                return false;
-            }
+            )
+        {
+            return false;
         }
         if matches!(
             event,
