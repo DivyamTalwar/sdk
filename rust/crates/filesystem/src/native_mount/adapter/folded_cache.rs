@@ -48,11 +48,16 @@ impl FoldedDirectoryCache {
     // and publication do not share the production critical section.
     #[cfg(all(test, loom))]
     pub(super) fn insert_split(&self, key: ObjectId, unique: bool) {
-        let position = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
+        let position = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
+                return;
+            }
+            state.0
+        };
         let mut state = self
             .state
             .lock()
