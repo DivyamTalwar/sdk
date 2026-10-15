@@ -567,7 +567,7 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
         }
         let directory = NativeDirectory(&physical.path)
             .publication_directory(operation_id)
-            .map_err(PluginRootMaterializerError)?;
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
             expected_root_identity: None,
@@ -626,7 +626,7 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
         let directory = NativeDirectory(&physical.path)
             .publication_directory(operation_id)
-            .map_err(PluginRootMaterializerError)?;
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
         match fs::remove_dir_all(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}

@@ -3,7 +3,7 @@ use super::*;
 /// Publishes git facade mutations into the ordinary checkout.
 pub(crate) struct RootMaterializingGitExecutor<'a> {
     /// Managed workspace executor.
-    pub inner: WorkspaceGitExecutor<'a>,
+    pub inner: &'a WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
@@ -37,9 +37,7 @@ impl RootMaterializingGitExecutor<'_> {
         if from.id() == to {
             return Ok(());
         }
-        let operation_directory = NativeDirectory(self.root)
-            .publication_directory(operation_id)
-            .map_err(Error::Storage)?;
+        let operation_directory = NativeDirectory(self.root).publication_directory(operation_id)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
             expected_root_identity: None,
@@ -75,13 +73,8 @@ impl RootMaterializingGitExecutor<'_> {
             .remove_materialization_async(operation_id)
             .await
             .map_err(display)?;
-        NativeDirectory(
-            &NativeDirectory(self.root)
-                .publication_root()
-                .map_err(Error::Storage)?,
-        )
-        .remove(&operation_directory)
-        .map_err(display)?;
+        NativeDirectory(&NativeDirectory(self.root).publication_root()?)
+            .remove(&operation_directory)?;
         Ok(())
     }
 }

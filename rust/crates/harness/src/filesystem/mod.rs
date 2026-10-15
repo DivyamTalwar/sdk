@@ -100,6 +100,7 @@ pub use native_contract::{
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
+#[doc(hidden)]
 pub use native_directory::NativeDirectory;
 mod configured_recursive_tools;
 mod default_tools;
@@ -634,4 +635,5 @@ mod workspace_policy;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
+#[doc(hidden)]
 pub use workspace_policy::{RESERVED_IGNORE_RULES, WorkspacePolicy};

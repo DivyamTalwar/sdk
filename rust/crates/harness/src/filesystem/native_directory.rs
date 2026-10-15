@@ -5,24 +5,27 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-fn display(error: impl std::fmt::Display) -> String {
-    error.to_string()
+fn storage(error: impl std::fmt::Display) -> crate::Error {
+    crate::Error::Storage(error.to_string())
 }
 /// A physical directory used for checked cleanup and checkout publication staging.
+#[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct NativeDirectory<'a>(pub &'a Path);
 
 impl NativeDirectory<'_> {
     /// Removes a direct child after verifying its canonical parent.
-    pub fn remove(&self, target: &Path) -> Result<(), String> {
-        let root = self.0.canonicalize().map_err(display)?;
+    pub fn remove(&self, target: &Path) -> crate::Result<()> {
+        let root = self.0.canonicalize().map_err(storage)?;
         let parent = target
             .parent()
-            .ok_or_else(|| "discard target has no parent".to_owned())?
+            .ok_or_else(|| crate::Error::Invalid("discard target has no parent".to_owned()))?
             .canonicalize()
-            .map_err(display)?;
+            .map_err(storage)?;
         if parent != root {
-            return Err("refusing to discard a path outside the managed workspace root".to_owned());
+            return Err(crate::Error::Unauthorized(
+                "refusing to discard a path outside the managed workspace root".to_owned(),
+            ));
         }
         if !target.exists() {
             return Ok(());
@@ -31,26 +34,32 @@ impl NativeDirectory<'_> {
             Ok(target) => target,
             #[cfg(target_os = "windows")]
             Err(error) if error.raw_os_error() == Some(369) => return Ok(()),
-            Err(error) => return Err(display(error)),
+            Err(error) => return Err(storage(error)),
         };
         if target.parent() != Some(root.as_path()) {
-            return Err("refusing to discard a path outside the plugin workspace root".to_owned());
+            return Err(crate::Error::Unauthorized(
+                "refusing to discard a path outside the managed workspace root".to_owned(),
+            ));
         }
         match fs::remove_dir_all(target) {
             Ok(()) => Ok(()),
             #[cfg(target_os = "windows")]
             Err(error) if error.raw_os_error() == Some(369) => Ok(()),
-            Err(error) => Err(display(error)),
+            Err(error) => Err(storage(error)),
         }
     }
 
     /// Returns the same-filesystem staging root for a checkout.
-    pub fn publication_root(&self) -> Result<PathBuf, String> {
+    pub fn publication_root(&self) -> crate::Result<PathBuf> {
         let root = self.0;
         let digest = blake3::hash(root.as_os_str().to_string_lossy().as_bytes());
         Ok(root
             .parent()
-            .ok_or_else(|| "root checkout has no same-filesystem staging parent".to_owned())?
+            .ok_or_else(|| {
+                crate::Error::Invalid(
+                    "root checkout has no same-filesystem staging parent".to_owned(),
+                )
+            })?
             .join(".acyclic-m")
             .join(
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest.as_bytes()[..16]),
@@ -58,14 +67,14 @@ impl NativeDirectory<'_> {
     }
 
     /// Returns the per-operation staging directory.
-    pub fn publication_directory(&self, operation_id: OperationId) -> Result<PathBuf, String> {
+    pub fn publication_directory(&self, operation_id: OperationId) -> crate::Result<PathBuf> {
         let root = self.0;
-        let parent = root
-            .parent()
-            .ok_or_else(|| "root checkout has no same-filesystem staging parent".to_owned())?;
+        let parent = root.parent().ok_or_else(|| {
+            crate::Error::Invalid("root checkout has no same-filesystem staging parent".to_owned())
+        })?;
         let digest = blake3::hash(root.as_os_str().to_string_lossy().as_bytes());
-        let leaf = root_materialization_leaf(&digest, operation_id).map_err(display)?;
-        let leaf = std::str::from_utf8(&leaf).map_err(display)?;
+        let leaf = root_materialization_leaf(&digest, operation_id).map_err(storage)?;
+        let leaf = std::str::from_utf8(&leaf).map_err(storage)?;
         Ok(parent.join(leaf))
     }
     /// Constructs the staging path on the caller's original native work ledger.

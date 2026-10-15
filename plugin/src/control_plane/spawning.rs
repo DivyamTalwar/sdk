@@ -348,7 +348,9 @@ impl ControlPlane {
             }
         }
         if pending.mount_path.exists() {
-            NativeDirectory(&self.workspace_mount_root()).remove(&pending.mount_path)?;
+            NativeDirectory(&self.workspace_mount_root())
+                .remove(&pending.mount_path)
+                .map_err(display)?;
         }
         self.state
             .pending
