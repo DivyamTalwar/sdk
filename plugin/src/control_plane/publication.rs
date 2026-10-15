@@ -54,10 +54,9 @@ impl ControlPlane {
                 .ok_or_else(|| "root workspace is unavailable".to_owned())?;
             publisher = publisher.with_root_merge_drivers(
                 root_id,
-                WorkspacePolicy::load(workspace)
+                WorkspacePolicy::load_merge_drivers(workspace)
                     .await
-                    .map_err(display)?
-                    .merge_drivers,
+                    .map_err(display)?,
             );
         }
         Ok(MultiRootPublicationCoordinator::new(

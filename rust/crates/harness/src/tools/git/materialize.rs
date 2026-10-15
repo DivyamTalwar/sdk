@@ -89,6 +89,10 @@ impl RootMaterializingGitExecutor<'_> {
 impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
     type Error = Error;
 
+    async fn validate(&self) -> Result<(), Self::Error> {
+        self.inner.validate().await
+    }
+
     async fn execute(
         &self,
         operation_id: OperationId,

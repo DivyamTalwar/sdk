@@ -61,8 +61,15 @@ impl WorkspacePolicy {
     pub async fn load(workspace: &LocalLazyWorkspace) -> Result<Self> {
         Ok(Self {
             ignore: Self::load_ignore(workspace).await?,
-            merge_drivers: merge_drivers_for(workspace).await?,
+            merge_drivers: Self::load_merge_drivers(workspace).await?,
         })
+    }
+
+    /// Loads merge drivers without reading or parsing ignore rules.
+    pub async fn load_merge_drivers(
+        workspace: &LocalLazyWorkspace,
+    ) -> Result<Arc<MergeDriverRegistry>> {
+        merge_drivers_for(workspace).await
     }
 
     /// Loads ignore rules without interpreting merge attributes.
