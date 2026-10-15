@@ -29,3 +29,10 @@ path = "fuzz_targets/git_path.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "file_tool_inputs"
+path = "fuzz_targets/file_tool_inputs.rs"
+test = false
+doc = false
+bench = false
