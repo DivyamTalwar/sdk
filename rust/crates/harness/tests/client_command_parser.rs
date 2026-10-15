@@ -32,21 +32,21 @@ proptest! {
         }
     }
 
-    // JSON is canonical YAML frontmatter: decoding and rewriting preserves all
-    // fields, including escaped Unicode, delimiters and placeholder text.
+    // Frontmatter encoding, decoding and rewriting preserves all fields,
+    // including escaped Unicode, delimiters and placeholder text.
     #[test]
     fn frontmatter_round_trips(
         fields in proptest::collection::btree_map("[a-z]{1,12}", text(), 0..8), crlf in any::<bool>(),
     ) {
         let newline = if crlf { "\r\n" } else { "\n" };
-        let header = serde_json::to_string(&fields).expect("header");
+        let header = serde_saphyr::to_string(&fields).expect("header");
         let source = format!("---{newline}{header}{newline}---{newline}body $ARGUMENTS");
         prop_assert!(command_parse::has_frontmatter(source.as_bytes()));
-        let decoded: BTreeMap<String, String> = frontmatter::parse_frontmatter(source.as_bytes()).expect("parse JSON header");
+        let decoded: BTreeMap<String, String> = frontmatter::parse_frontmatter(source.as_bytes()).expect("parse header");
         prop_assert_eq!(&decoded, &fields);
         let (_, _, body) = frontmatter::frontmatter_end(source.as_bytes()).expect("body offset");
         prop_assert_eq!(&source[body..], "body $ARGUMENTS");
-        let rewritten = format!("---\n{}\n---\n", serde_json::to_string(&decoded).expect("rewrite"));
+        let rewritten = format!("---\n{}\n---\n", serde_saphyr::to_string(&decoded).expect("rewrite"));
         prop_assert_eq!(frontmatter::parse_frontmatter::<BTreeMap<String, String>>(rewritten.as_bytes()).expect("reparse"), fields);
     }
 
