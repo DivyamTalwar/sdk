@@ -1,5 +1,6 @@
 //! Deadlines interrupt only the existing invocation; durable ownership stays put.
 
+use crate::conversation::BoundedContentFuture;
 use crate::live::sleep_millis;
 use crate::{
     Error, OperationId, Result, TaskId, durable_host::CoordinatorTaskHost, scheduler::LeaseFence,
@@ -27,14 +28,7 @@ where
         io.check_cancellation()?;
     }
     if deadline.is_some_and(|deadline| host.now_unix_millis() >= deadline) {
-        host.expire_task_deadline(
-            task,
-            fence,
-            &mut super::observed::history(io)?
-                .as_mut()
-                .map(|work| work as &mut dyn crate::store::HistoryIo),
-        )
-        .await?;
+        expire(host, task, fence, io)?.await?;
         return Err(Error::Indeterminate(operation));
     }
     let future = crate::conversation::BoundedContentFuture::new(io, build)?;
@@ -67,14 +61,7 @@ where
             return result;
         }
     }
-    host.expire_task_deadline(
-        task,
-        fence,
-        &mut super::observed::history(io)?
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::HistoryIo),
-    )
-    .await?;
+    expire(host, task, fence, io)?.await?;
     Err(Error::Indeterminate(operation))
 }
 
@@ -103,11 +90,27 @@ async fn wait_until<P>(host: &CoordinatorTaskHost<P>, deadline: u64) -> Result<(
 where
     P: StreamProvider + 'static,
 {
-    loop {
-        let now = host.now_unix_millis();
-        if now >= deadline {
-            return Ok(());
-        }
-        sleep_millis(deadline.saturating_sub(now).min(1_000)).await?;
+    let remaining = deadline.saturating_sub(host.now_unix_millis());
+    if remaining == 0 {
+        return Ok(());
     }
+    sleep_millis(remaining).await
+}
+
+fn expire<'a, P: StreamProvider + 'static>(
+    host: &'a CoordinatorTaskHost<P>,
+    task: TaskId,
+    fence: Option<&'a LeaseFence>,
+    io: Option<&'a crate::filesystem::PreparationIo>,
+) -> Result<BoundedContentFuture<'a, ()>> {
+    BoundedContentFuture::new(io, || async move {
+        host.expire_task_deadline(
+            task,
+            fence,
+            &mut super::observed::history(io)?
+                .as_mut()
+                .map(|work| work as &mut dyn crate::store::HistoryIo),
+        )
+        .await
+    })
 }

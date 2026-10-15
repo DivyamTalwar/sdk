@@ -311,12 +311,15 @@ where
                     io.preflight(hashed)?;
                     io.charge(hashed)?;
                 }
-                let mut digest = blake3::Hasher::new();
-                digest.update(b"harness/v2/task-worker-step\0");
-                digest.update(&task.into_bytes());
-                digest.update(&revision.to_be_bytes());
-                let mut bytes = [0; 16];
-                bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+                let bytes = {
+                    let mut digest = blake3::Hasher::new();
+                    digest.update(b"harness/v2/task-worker-step\0");
+                    digest.update(&task.into_bytes());
+                    digest.update(&revision.to_be_bytes());
+                    let mut bytes = [0; 16];
+                    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+                    bytes
+                };
                 #[cfg(not(target_arch = "wasm32"))]
                 let native_input = if let Some(CommandDispatch::Ready {
                     custody: Some(primary),

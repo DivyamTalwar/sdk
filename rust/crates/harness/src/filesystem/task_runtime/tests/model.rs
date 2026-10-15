@@ -126,7 +126,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let runtime = fixture.runtime(Some(&io)).await?;
+    let opening = fixture.runtime(Some(&io));
+    let bytes = std::mem::size_of_val(&opening);
+    eprintln!("native runtime open future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native runtime open future is {bytes} bytes"
+    );
+    let runtime = opening.await?;
     let input = super::super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None,
@@ -183,7 +190,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let before = work.receipt();
     drop(commands);
     drop(runtime);
-    let reopened = fixture.runtime(Some(&io)).await?;
+    let opening = fixture.runtime(Some(&io));
+    let bytes = std::mem::size_of_val(&opening);
+    eprintln!("native runtime reopen future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native runtime reopen future is {bytes} bytes"
+    );
+    let reopened = opening.await?;
     let commands = reopened.commands().with_model(
         &model,
         provider.clone(),

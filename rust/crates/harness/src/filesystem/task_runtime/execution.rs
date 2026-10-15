@@ -159,41 +159,47 @@ where
     }
 
     /// Observes retained model/tool attempts without starting another step.
-    pub async fn reconcile(
+    pub fn reconcile(
         self,
         input: TurnInput,
         maximum_wait_millis: u32,
-    ) -> Result<Option<TurnOutput>> {
-        if maximum_wait_millis == 0 {
-            return Err(Error::Invalid("invalid reconciliation allowance".into()));
-        }
-        deadline::observe(
-            maximum_wait_millis,
-            || async { self.reconcile_progress(input).await?.into_output() },
-            None,
-        )
-        .await
+    ) -> impl std::future::Future<Output = Result<Option<TurnOutput>>> {
+        let future = crate::conversation::BoundedContentFuture::new(None, || async move {
+            if maximum_wait_millis == 0 {
+                return Err(Error::Invalid("invalid reconciliation allowance".into()));
+            }
+            deadline::observe(
+                maximum_wait_millis,
+                || async { self.reconcile_progress(input).await?.into_output() },
+                None,
+            )
+            .await
+        });
+        async move { future?.await }
     }
 
-    pub(crate) async fn reconcile_progress(
+    pub(crate) fn reconcile_progress(
         mut self,
         input: TurnInput,
-    ) -> Result<ExecutionProgress<TurnOutput>> {
-        self.validate_input(&input)?;
-        self.host
-            .verify_execution_owner(self.task, &self.fence, None)?
-            .await?;
-        if self
-            .run_limits
-            .deadline_epoch_ms
-            .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
-        {
+    ) -> impl std::future::Future<Output = Result<ExecutionProgress<TurnOutput>>> {
+        let future = crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.validate_input(&input)?;
             self.host
-                .expire_task_deadline(self.task, Some(&self.fence), &mut None)
+                .verify_execution_owner(self.task, &self.fence, None)?
                 .await?;
-        }
-        self.executor = self.executor.into_reconciliation();
-        self.executor.execute_progress(input, &self.journal).await
+            if self
+                .run_limits
+                .deadline_epoch_ms
+                .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
+            {
+                self.host
+                    .expire_task_deadline(self.task, Some(&self.fence), &mut None)
+                    .await?;
+            }
+            self.executor = self.executor.into_reconciliation();
+            self.executor.execute_progress(input, &self.journal).await
+        });
+        async move { future?.await }
     }
 
     pub(super) fn validate_input(&self, input: &TurnInput) -> Result<()> {
