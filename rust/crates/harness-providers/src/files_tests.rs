@@ -43,8 +43,15 @@ proptest! {
                 role: if tool_result { ModelRole::Tool } else { ModelRole::User },
                 content: ModelContent::Part(part),
             });
+            let tools = if tool_result {
+                vec![acyclic_harness::tool::ToolDefinition {
+                    name: "echo".into(), revision: "1".into(), description: "Echo".into(),
+                    input_schema: json!({"type":"object"}),
+                    output_schema: json!({}), projection_schema: json!({}),
+                }]
+            } else { vec![] };
             let request = PreparedModelRequest::prepare(ModelRequest {
-                model: provider.model().clone(), messages, tools: vec![], max_output_tokens: Some(64),
+                model: provider.model().clone(), messages, tools, max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
             let mut estimate = crate::files::FileText::Estimate;
