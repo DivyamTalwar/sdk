@@ -42,13 +42,7 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         COMMANDS
             .iter()
             .enumerate()
-            .flat_map(|(index, (name, command))| {
-                // The real 32K model's tool catalog leaves a smaller history
-                // budget. Supply the admitted automatic summary between diffs.
-                (index == 5).then(|| ScriptedTurn::Text(
-                    "Committed note.txt, changed it, moved doomed.txt into nested, and inspected the first diff. Repeat the diff, delete the moved file, write the final note and inspect status.".into()
-                )).into_iter().chain([call(index, name, command)])
-            })
+            .map(|(index, (name, command))| call(index, name, command))
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
     let harness = LocalHarness::open(LocalHarnessConfig::new(
@@ -77,7 +71,7 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     }
     assert_eq!(output?.text, "commands completed");
     let requests = provider.requests();
-    assert_eq!(requests.len(), COMMANDS.len() + 2);
+    assert_eq!(requests.len(), COMMANDS.len() + 1);
     let results: std::collections::BTreeMap<_, _> = requests
         .iter()
         .flat_map(|request| &request.messages)
