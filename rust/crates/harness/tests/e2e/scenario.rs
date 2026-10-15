@@ -1,4 +1,8 @@
 use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
+use acyclic_harness::{
+    context::{CompactionPolicy, ModelContextCapacity},
+    model::ModelMessage,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -10,6 +14,12 @@ pub struct Scenario {
     pub seed: BTreeMap<String, String>,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
+    #[serde(default)]
+    pub context: Vec<ModelMessage>,
+    pub capacity: Option<ModelContextCapacity>,
+    pub compaction: Option<CompactionPolicy>,
+    pub max_output_tokens: Option<u32>,
+    pub message_tokens: Option<u32>,
     #[serde(default)]
     pub recoveries: Vec<ScriptedReconciliation>,
     #[serde(default)]
@@ -91,6 +101,9 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"prompt":"x","turns":[],"replay":true,"expect":{"error":"x"}}"#,
         r#"{"prompt":"x","turns":[],"expect":{"error":"x","result":{}}}"#,
         r#"{"prompt":"x","turns":[],"resume":[""],"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","turns":[],"capacity":{"context_tokens":60,"output_tokens":10,"typo":1},"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","turns":[],"compaction":{"kind":"typo"},"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","turns":[],"message_tokens":-1,"expect":{"text":"x"}}"#,
     ] {
         assert!(
             Scenario::parse(input.as_bytes()).is_err(),

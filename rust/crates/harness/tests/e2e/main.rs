@@ -5,11 +5,13 @@ mod scenario;
 
 use acyclic_harness::{
     AgentId, OperationId,
-    context::{CompactionPolicy, ContextPipeline},
-    conversation::Limits,
+    context::{
+        CompactionPolicy, Context, ContextPipeline, ContextPlacement, ContextStage,
+        ModelTokenCount, SourceStage,
+    },
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
-    model::{Model, ModelContent},
+    model::{Model, ModelContent, PreparedModelRequest},
     test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
@@ -51,9 +53,41 @@ async fn run(case: Scenario) -> TestResult {
             )
             .await?;
     }
-    let provider =
-        Arc::new(ScriptedModelProvider::new(case.turns).with_reconciliations(case.recoveries));
-    let mut executor = make_executor(provider.clone(), limits)?;
+    let mut provider = ScriptedModelProvider::new(case.turns).with_reconciliations(case.recoveries);
+    if let Some(capacity) = case.capacity {
+        provider = provider.with_context_capacity(capacity);
+    }
+    let options = if let Some(tokens) = case.message_tokens {
+        provider = provider.with_token_counter(count_messages);
+        serde_json::json!({"message_tokens":tokens})
+    } else {
+        Value::Null
+    };
+    let provider = Arc::new(provider);
+    let context = if case.context.is_empty() {
+        ContextPipeline::default()
+    } else {
+        ContextPipeline::new([Arc::new(SourceStage::new(
+            "history",
+            "1",
+            Arc::new(Context {
+                messages: case.context,
+                ..Context::default()
+            }),
+            ContextPlacement::Prepend,
+        )) as Arc<dyn ContextStage>])
+    };
+    let mut executor = StockExecutor::new(
+        Model::new("scripted".into(), "scenario".into(), "1".into(), options)?,
+        provider.clone(),
+        context,
+        ToolRegistry::default(),
+    )
+    .with_compaction_policy(case.compaction.unwrap_or(CompactionPolicy::Disabled))
+    .with_limits(limits);
+    if let Some(maximum) = case.max_output_tokens {
+        executor = executor.with_max_output_tokens(maximum)?;
+    }
     let input = TurnInput {
         operation_id: OperationId::new(),
         input: ModelContent::Text(case.prompt),
@@ -64,7 +98,8 @@ async fn run(case: Scenario) -> TestResult {
     let operation = input.operation_id;
     let replay_input = case.replay.then(|| input.clone());
     for expected_error in case.resume {
-        match executor.execute(input.clone(), journal.as_ref()).await {
+        let attempt = executor.clone();
+        match attempt.execute(input.clone(), journal.as_ref()).await {
             Err(error) if error.to_string().contains(&expected_error) => {}
             actual => {
                 return Err(format!(
@@ -73,7 +108,6 @@ async fn run(case: Scenario) -> TestResult {
                 .into());
             }
         }
-        executor = make_executor(provider.clone(), limits)?;
     }
     let result = executor.execute(input, journal.as_ref()).await;
     match (&case.expect.text, &case.expect.error, result) {
@@ -177,23 +211,18 @@ async fn run(case: Scenario) -> TestResult {
     Ok(())
 }
 
-fn make_executor(
-    provider: Arc<ScriptedModelProvider>,
-    limits: Limits,
-) -> acyclic_harness::Result<StockExecutor> {
-    Ok(StockExecutor::new(
-        Model::new(
-            "scripted".into(),
-            "scenario".into(),
-            "1".into(),
-            Value::Null,
-        )?,
-        provider,
-        ContextPipeline::default(),
-        ToolRegistry::default(),
-    )
-    .with_compaction_policy(CompactionPolicy::Disabled)
-    .with_limits(limits))
+fn count_messages(request: &PreparedModelRequest) -> acyclic_harness::Result<ModelTokenCount> {
+    let tokens = request.request().model.options["message_tokens"]
+        .as_u64()
+        .and_then(|tokens| u32::try_from(tokens).ok())
+        .ok_or_else(|| {
+            acyclic_harness::Error::Invalid("missing scenario message token count".into())
+        })?;
+    Ok(ModelTokenCount {
+        request_digest: request.request_digest(),
+        fixed_tokens: 0,
+        message_tokens: vec![tokens; request.request().messages.len()],
+    })
 }
 
 #[tokio::test]
@@ -245,6 +274,30 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
             }
             "resume" => case.resume.push("interrupted".into()),
             _ => return Err("unknown test mutation".into()),
+        }
+        assert!(run(case).await.is_err(), "accepted incorrect {field}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accounting() -> TestResult {
+    let baseline = include_bytes!("../scenarios/compaction/threshold.json");
+    run(Scenario::parse(baseline)?).await?;
+    for field in ["context", "capacity", "policy", "accounting", "output"] {
+        let mut case = Scenario::parse(baseline)?;
+        match field {
+            "context" => case.context.clear(),
+            "capacity" => {
+                case.capacity
+                    .as_mut()
+                    .ok_or("missing capacity")?
+                    .context_tokens = 1_000
+            }
+            "policy" => case.compaction = Some(CompactionPolicy::Disabled),
+            "accounting" => case.message_tokens = Some(1),
+            "output" => case.max_output_tokens = Some(11),
+            _ => return Err("unknown compaction mutation".into()),
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
     }
