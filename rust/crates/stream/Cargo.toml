@@ -68,7 +68,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
-[target.'cfg(loom)'.dependencies]
+[target.'cfg(acyclic_stream_loom)'.dependencies]
 loom = { version = "0.7.2", features = ["futures"] }
 
 [dev-dependencies]

@@ -3,10 +3,9 @@ name = "acyclic-stream-models"
 version = "0.0.0"
 edition = "2024"
 publish = false
-build = "build.rs"
 
 [dependencies]
-acyclic-stream = { path = ".." }
+thiserror = "2.0"
 futures = "0.3.31"
 loom = { version = "0.7.2", features = ["futures"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
@@ -17,3 +16,6 @@ path = "session_model.rs"
 
 [workspace]
 members = ["."]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_stream_loom)'] }
