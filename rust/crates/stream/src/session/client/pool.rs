@@ -287,7 +287,7 @@ impl Pool {
         }
     }
     pub(super) fn fail(&mut self, error: &StreamError) {
-        for mut route in std::mem::take(&mut self.routes).into_values() {
+        for (id, mut route) in std::mem::take(&mut self.routes) {
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Ok(id));
             }
