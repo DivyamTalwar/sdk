@@ -290,7 +290,7 @@ mod tests {
     fn exec_path_placeholders_are_single_pass_literal_native_paths() -> Result<()> {
         use std::{borrow::Cow, ffi::OsString};
         let workspace = Path::new("project ${CLAUDE_PLUGIN_DATA} ' $ ` spaces");
-        let environment = |name| match name {
+        let environment = |name: &str| match name {
             "CLAUDE_PLUGIN_ROOT" => Some(OsString::from("plugin ' $ ` spaces")),
             "CLAUDE_PLUGIN_DATA" => Some(OsString::from("persistent plugin data")),
             _ => panic!("unexpected environment lookup"),
