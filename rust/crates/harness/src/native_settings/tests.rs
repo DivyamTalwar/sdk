@@ -245,3 +245,83 @@ async fn canonical_aliases_keep_the_highest_declared_scope() -> Result<()> {
     assert_eq!(executable(&project.mcp, "shared"), Some("claude"));
     Ok(())
 }
+
+#[tokio::test]
+async fn only_winning_server_entries_are_validated() -> Result<()> {
+    let fixture = Fixture::new()?;
+    write(
+        &fixture.home.join(".claude.json"),
+        br#"{"mcpServers":{"shared":{"command":42},"disabled":{"command":42}}}"#,
+    )?;
+    write(
+        &fixture.codex.join("config.toml"),
+        "[mcp_servers.shared]\ncommand='winner'\n[mcp_servers.disabled]\nenabled=false\ncommand=42\n",
+    )?;
+    let snapshot = NativeSettings::load(fixture.config()).await?;
+    assert_eq!(snapshot.mcp.server_names().collect::<Vec<_>>(), ["shared"]);
+    assert_eq!(executable(&snapshot.mcp, "shared"), Some("winner"));
+    write(
+        &fixture.codex.join("config.toml"),
+        "[mcp_servers.shared]\ncommand=42\n[mcp_servers.disabled]\nenabled=false\n",
+    )?;
+    assert!(NativeSettings::load(fixture.config()).await.is_err());
+    write(
+        &fixture.workspace.join(".mcp.json"),
+        br#"{"mcpServers":{"shared":{"command":"project-winner"}}}"#,
+    )?;
+    let snapshot = NativeSettings::load(fixture.config().trust_project_mcp(true)).await?;
+    assert_eq!(executable(&snapshot.mcp, "shared"), Some("project-winner"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn unrelated_workspace_entries_are_not_validated() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let configured = fixture.workspace.to_string_lossy();
+    let document = json!({"projects": {
+        "unrelated-project": {"mcpServers":{"broken":{"command":42}}},
+        "another-project": 42,
+        configured.as_ref(): {"mcpServers":{"selected":{"command":"winner"}}}
+    }});
+    write(
+        &fixture.home.join(".claude.json"),
+        serde_json::to_vec(&document).map_err(|error| Error::Invalid(error.to_string()))?,
+    )?;
+    let snapshot = NativeSettings::load(fixture.config()).await?;
+    assert_eq!(
+        snapshot.mcp.server_names().collect::<Vec<_>>(),
+        ["selected"]
+    );
+    assert_eq!(executable(&snapshot.mcp, "selected"), Some("winner"));
+    let invalid =
+        json!({"projects": {configured.as_ref(): {"mcpServers":{"selected":{"command":42}}}}});
+    write(
+        &fixture.home.join(".claude.json"),
+        serde_json::to_vec(&invalid).map_err(|error| Error::Invalid(error.to_string()))?,
+    )?;
+    assert!(NativeSettings::load(fixture.config()).await.is_err());
+    Ok(())
+}
+
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn untrusted_hook_sections_do_not_block_trusted_project_mcp() -> Result<()> {
+    let fixture = Fixture::new()?;
+    write(
+        &fixture.workspace.join(".codex/config.toml"),
+        "hooks=42\n[mcp_servers.selected]\ncommand='winner'\n",
+    )?;
+    let snapshot = NativeSettings::load(fixture.config().trust_project_mcp(true)).await?;
+    assert_eq!(executable(&snapshot.mcp, "selected"), Some("winner"));
+    assert!(
+        NativeSettings::load(
+            fixture
+                .config()
+                .trust_project_mcp(true)
+                .trust_project_hooks(true)
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}

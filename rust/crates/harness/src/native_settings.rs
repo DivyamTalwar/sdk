@@ -4,7 +4,7 @@ use crate::{
     Error, Result,
     mcp::config::{Dialect, ImportedServer, McpConfig},
 };
-use serde::Deserialize;
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     io::Read as _,
@@ -73,25 +73,6 @@ pub struct NativeSettings {
     pub hooks: crate::hooks::Hooks,
     /// Enabled MCP declarations after whole-entry scope overrides.
     pub mcp: McpConfig,
-}
-
-#[derive(Deserialize)]
-struct Document {
-    #[cfg(feature = "hooks")]
-    #[serde(flatten)]
-    hooks: crate::hooks::imports::Document,
-    #[serde(default, rename = "mcpServers")]
-    claude: BTreeMap<String, ImportedServer>,
-    #[serde(default)]
-    mcp_servers: BTreeMap<String, ImportedServer>,
-    #[serde(default)]
-    projects: BTreeMap<String, Project>,
-}
-
-#[derive(Deserialize)]
-struct Project {
-    #[serde(default, rename = "mcpServers")]
-    servers: BTreeMap<String, ImportedServer>,
 }
 
 struct Source {
@@ -250,33 +231,44 @@ impl NativeSettings {
                 snapshot.hooks.add_document(parse(&bytes, source.toml)?)?;
                 continue;
             }
-            let document: Document = parse(&bytes, source.toml)?;
+            let mut document: BTreeMap<String, Value> = parse(&bytes, source.toml)?;
             #[cfg(feature = "hooks")]
-            if source.hooks {
-                snapshot.hooks.add_document(document.hooks)?;
+            if source.hooks
+                && let Some(hooks) = document.remove("hooks")
+            {
+                snapshot
+                    .hooks
+                    .add_document(crate::hooks::imports::Document {
+                        hooks: serde_json::from_value(hooks)
+                            .map_err(|error| Error::Invalid(format!("settings hooks: {error}")))?,
+                    })?;
             }
             if let Some(dialect) = source.mcp {
-                let servers = match dialect {
-                    Dialect::Claude => document.claude,
-                    Dialect::Codex => document.mcp_servers,
+                let key = match dialect {
+                    Dialect::Claude => "mcpServers",
+                    Dialect::Codex => "mcp_servers",
                 };
-                select(&mut selected, servers, dialect, source.mcp_order);
+                if let Some(servers) = document.remove(key) {
+                    select(&mut selected, servers, dialect, source.mcp_order)?;
+                }
                 if source.local
-                    && let Some(project) = document.projects.into_iter().find(|(path, _)| {
+                    && let Some(projects) = document.remove("projects")
+                    && let Some((_, project)) = object(projects)?.into_iter().find(|(path, _)| {
                         Path::new(path) == configured_workspace
                             || Path::new(path) == config.workspace
                     })
+                    && let Some(servers) = object(project)?.remove("mcpServers")
                 {
-                    select(
-                        &mut selected,
-                        project.1.servers,
-                        Dialect::Claude,
-                        usize::MAX,
-                    );
+                    select(&mut selected, servers, Dialect::Claude, usize::MAX)?;
                 }
             }
         }
         for (name, (_, dialect, imported)) in selected {
+            if imported.get("enabled") == Some(&Value::Bool(false)) {
+                continue;
+            }
+            let imported: ImportedServer = serde_json::from_value(imported)
+                .map_err(|error| Error::Invalid(format!("MCP server {name}: {error}")))?;
             snapshot.mcp.insert(name, imported, dialect)?;
         }
         Ok(snapshot)
@@ -284,12 +276,12 @@ impl NativeSettings {
 }
 
 fn select(
-    selected: &mut BTreeMap<String, (usize, Dialect, ImportedServer)>,
-    declarations: BTreeMap<String, ImportedServer>,
+    selected: &mut BTreeMap<String, (usize, Dialect, Value)>,
+    declarations: Value,
     dialect: Dialect,
     order: usize,
-) {
-    for (name, declaration) in declarations {
+) -> Result<()> {
+    for (name, declaration) in object(declarations)? {
         match selected.entry(name) {
             Entry::Vacant(entry) => {
                 entry.insert((order, dialect, declaration));
@@ -299,6 +291,16 @@ fn select(
             }
             Entry::Occupied(_) => {}
         }
+    }
+    Ok(())
+}
+
+fn object(value: Value) -> Result<serde_json::Map<String, Value>> {
+    match value {
+        Value::Object(fields) => Ok(fields),
+        _ => Err(Error::Invalid(
+            "selected settings section must be an object".into(),
+        )),
     }
 }
 

@@ -75,7 +75,7 @@ struct Group {
 #[derive(Deserialize)]
 pub(crate) struct Document {
     #[serde(default)]
-    hooks: BTreeMap<String, Value>,
+    pub(crate) hooks: BTreeMap<String, Value>,
 }
 
 impl Hooks {
