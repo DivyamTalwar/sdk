@@ -61,6 +61,14 @@ pub struct WorkspacePolicy {
 impl WorkspacePolicy {
     /// Loads workspace rules while retaining reserved SDK exclusions.
     pub async fn load(workspace: &LocalLazyWorkspace) -> Result<Self> {
+        Ok(Self {
+            ignore: Self::load_ignore(workspace).await?,
+            merge_drivers: merge_drivers_for(workspace).await?,
+        })
+    }
+
+    /// Loads ignore rules without interpreting merge attributes.
+    pub async fn load_ignore(workspace: &LocalLazyWorkspace) -> Result<GitIgnorePolicy> {
         let ignore_text = match workspace
             .read(
                 "/.gitignore",
@@ -73,9 +81,8 @@ impl WorkspacePolicy {
             Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
             Err(error) => return Err(display(error)),
         };
-        Ok(Self {
-            ignore: GitIgnorePolicy::parse(&format!("{ignore_text}\n{RESERVED_IGNORE_RULES}")),
-            merge_drivers: merge_drivers_for(workspace).await?,
-        })
+        Ok(GitIgnorePolicy::parse(&format!(
+            "{ignore_text}\n{RESERVED_IGNORE_RULES}"
+        )))
     }
 }

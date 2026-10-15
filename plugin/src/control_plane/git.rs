@@ -174,15 +174,15 @@ impl ControlPlane {
             }
         }
         observed?;
-        let command = command?;
-        let switched = command.switched;
+        // A failed merge can still publish conflict markers the agent must edit.
         self.mounts
             .get(agent_id)
             .ok_or_else(|| "subagent mount is unavailable".to_owned())?
             .advance_to_head()
             .await
             .map_err(display)?;
-        if let Some(switched) = switched {
+        let command = command?;
+        if let Some(switched) = command.switched {
             self.unmount_agent(agent_id).await?;
             WorkspaceContextRegistry::new(self.store.clone())
                 .set_workspace(
