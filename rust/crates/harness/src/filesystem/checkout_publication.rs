@@ -97,10 +97,7 @@ impl CheckoutPublication {
             }
             Err((source, spent)) => {
                 work.spent(spent)?;
-                Err(Error::NativeWorkspacePublication {
-                    source: Box::new(source),
-                    custody: None,
-                })
+                Err(source.into())
             }
         }
     }
@@ -129,10 +126,7 @@ impl CheckoutPublication {
         )
         .await
         .map(|receipt| receipt.value)
-        .map_err(|(source, _)| Error::NativeWorkspacePublication {
-            source: Box::new(source),
-            custody: None,
-        })
+        .map_err(|(source, _)| source.into())
     }
 }
 

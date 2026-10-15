@@ -417,3 +417,49 @@ async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<(
     .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn publication_identity_change_after_guard_preserves_conflict_code() -> Result<()> {
+    use acyclic_fs::{
+        MaterializeOptions, NativeMaterializationWork, NativeTreeMaterializationError,
+    };
+    let (_temp, root, _fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
+        .map_err(|(cause, _)| cause)?;
+    let generation = main.workspace().head(&work, &stop).await?.value;
+    let identity = work.root_identity(&root)?;
+    let publication = acyclic_harness::filesystem::CheckoutPublication::new(
+        &root,
+        identity,
+        OperationId::new(),
+        &work,
+    )?;
+    let options = MaterializeOptions {
+        destination: publication.directory().join("target"),
+        expected_root_identity: None,
+        maximum_directory_entries: 32,
+        maximum_extent_spans: 32,
+        transfer_bytes: 4096,
+    };
+    let mut guards = 0;
+    let error = publication
+        .publish(&generation, &generation, &store, &options, &work, || {
+            guards += 1;
+            let changed = std::fs::rename(&root, root.with_extension("original"))
+                .and_then(|()| std::fs::create_dir(&root));
+            std::future::ready(changed.map_err(acyclic_fs::NativeWorkspacePublicationError::from))
+        })
+        .await
+        .expect_err("the checkout identity changed after authorization");
+    assert_eq!(guards, 1);
+    assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Conflict);
+    assert!(matches!(
+        error,
+        acyclic_harness::Error::NativeWork {
+            cause: NativeTreeMaterializationError::AllocationChanged { expected, actual },
+            ..
+        } if expected == identity && actual != identity
+    ));
+    Ok(())
+}

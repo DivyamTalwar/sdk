@@ -375,6 +375,23 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
     }
 }
 
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
+    fn from(source: acyclic_fs::NativeWorkspacePublicationError) -> Self {
+        match source {
+            acyclic_fs::NativeWorkspacePublicationError::Native(cause) => cause.into(),
+            source => Self::NativeWorkspacePublication {
+                source: Box::new(source),
+                custody: None,
+            },
+        }
+    }
+}
+
 /// Moves the complete filesystem cause and its intrinsic custody without formatting.
 #[cfg(feature = "filesystem")]
 impl From<acyclic_fs::FsError> for Error {
