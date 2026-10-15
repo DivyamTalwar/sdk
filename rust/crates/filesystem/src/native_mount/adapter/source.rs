@@ -135,9 +135,30 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
+        let observation = self
+            .checkout
+            .observe(
+                ViewGate::callback_owner()?,
+                inputs.carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
+        let file = self
+            .lookup_in(
+                &observation,
+                path,
+                crate::access::Action::Write,
+                inputs.carrier,
+            )
+            .await?
+            .ok_or(MountSourceError::NotFound)?
+            .node
+            .file_id;
+        drop(observation);
         let mut candidate = self
             .checkout
-            .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
+            .file_candidate(file, inputs.carrier, cancellation, Some(&self.cancellation))
             .await?;
         let lookup = self
             .lookup_in(
@@ -148,6 +169,9 @@ impl<A, O> CheckoutMountSource<A, O> {
             )
             .await?
             .ok_or(MountSourceError::NotFound)?;
+        if lookup.node.file_id != file {
+            return Err(MountSourceError::Stale);
+        }
         candidate
             .checkout
             .change_named_attribute(lookup.node.file_id, &name, value, work, cancellation)
@@ -609,8 +633,9 @@ where
         invoke(&self.runtime, work, || async {
             let view = self.access_snapshot()?;
             let now = access::access_time()?;
-            let path = &file;
-            let permissions = view.pin(path).map_err(|_| MountSourceError::AccessDenied)?;
+            let permissions = view
+                .pin(&file)
+                .map_err(|_| MountSourceError::AccessDenied)?;
             if let ContentChange::CloneFrom { source, .. } = &change {
                 access::require(
                     &view
@@ -620,58 +645,27 @@ where
                     now,
                 )?;
             }
-            let mut carrier = NativeDemandCarrier::Native(work);
-            let mut candidate = self
-                .checkout
-                .candidate(
-                    None,
-                    &mut carrier,
-                    work.cancellation(),
-                    Some(&self.cancellation),
-                )
-                .await?;
-            let record = candidate
-                .checkout
-                .inspector(
-                    &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                    work.cancellation(),
-                )?
-                .lookup_no_follow(path, work, work.cancellation())
-                .await?
-                .record
-                .ok_or(MountSourceError::NotFound)?;
-            let node = record.file_id;
-            if !permissions
+            let append_only = !permissions
                 .decide(crate::access::Action::Write, now)
-                .allowed
-            {
-                if matches!(&change, ContentChange::Write { offset, .. } if *offset == mount_node(record).logical_bytes)
-                {
-                    access::require(&permissions, crate::access::Action::Append, now)?;
+                .allowed;
+            if append_only {
+                let action = if matches!(&change, ContentChange::Write { .. }) {
+                    crate::access::Action::Append
                 } else {
-                    access::require(&permissions, crate::access::Action::Write, now)?;
-                }
+                    crate::access::Action::Write
+                };
+                access::require(&permissions, action, now)?;
             }
-            candidate
-                .checkout
-                .change_content(
+            self.checkout
+                .change_file_content(
                     file,
                     change,
-                    ContentTimes::Stamp(content_change_time()?),
-                    work,
-                    work.cancellation(),
-                )
-                .await?;
-            self.checkout
-                .install_change(
-                    candidate,
-                    ViewChange::Node(node),
+                    append_only,
                     work,
                     &self.cancellation,
                     self.native_callback_guard.clone(),
                 )
-                .await?;
-            Ok(())
+                .await
         })
     }
 }

@@ -64,3 +64,8 @@ pub(super) fn fold(text: &str, config: VolumeConfig) -> Cow<'_, str> {
         Cow::Borrowed(text)
     }
 }
+
+pub(super) fn folds_unicode(config: VolumeConfig) -> bool {
+    config.case_sensitivity == CaseSensitivity::ProfileFolded
+        && encoding(config) == NameEncoding::Utf8
+}

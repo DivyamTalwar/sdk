@@ -155,6 +155,9 @@ fn errno(error: &MountSourceError) -> i32 {
         MountSourceError::ReadOnly => libc::EROFS,
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
+        MountSourceError::NotDirectory => libc::ENOTDIR,
+        MountSourceError::IsDirectory => libc::EISDIR,
+        MountSourceError::DirectoryNotEmpty => libc::ENOTEMPTY,
         MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
         MountSourceError::Allocation(_) => libc::ENOMEM,
@@ -255,6 +258,8 @@ where
 
 mod source;
 pub use source::*;
+mod path;
+pub use path::MountPath;
 mod callbacks;
 pub use callbacks::*;
 mod filesystem;

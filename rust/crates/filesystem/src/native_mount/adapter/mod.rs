@@ -129,6 +129,15 @@ impl From<FsError> for MountSourceError {
             | FsError::Mutation(
                 GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
             ) => MountSourceError::NotFound,
+            FsError::NotDirectory | FsError::Mutation(GenerationMutationError::NotDirectory) => {
+                MountSourceError::NotDirectory
+            }
+            FsError::Mutation(GenerationMutationError::IsDirectory) => {
+                MountSourceError::IsDirectory
+            }
+            FsError::Mutation(GenerationMutationError::DirectoryNotEmpty) => {
+                MountSourceError::DirectoryNotEmpty
+            }
             FsError::Work(error) => MountSourceError::Work(error),
             FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
             FsError::Cancelled(_) => MountSourceError::Cancelled,
@@ -165,6 +174,8 @@ mod source_factory;
 pub(in crate::native_mount) use authorized_file::{authorize_file, retarget_file};
 include!("work.rs");
 include!("locks.rs");
+include!("file_leases.rs");
+include!("content_changes.rs");
 include!("view_changes.rs");
 include!("inputs.rs");
 include!("native_names.rs");

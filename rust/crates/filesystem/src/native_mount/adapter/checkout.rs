@@ -3,6 +3,8 @@ pub struct SharedCheckout<A, O> {
     volume_id: VolumeId,
     config: VolumeConfig,
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
+    publication_fence: tokio::sync::RwLock<()>,
+    file_mutations: StdMutex<FileMutationEntries>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
     publishing: AtomicBool,
@@ -51,6 +53,8 @@ impl<A, O> SharedCheckout<A, O> {
         Self {
             volume_id: checkout.volume_id(),
             config: checkout.volume_config(),
+            publication_fence: tokio::sync::RwLock::new(()),
+            file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -85,6 +89,8 @@ impl<A, O> SharedCheckout<A, O> {
         Ok(Arc::new(Self {
             volume_id: checkout.volume_id(),
             config: checkout.volume_config(),
+            publication_fence: tokio::sync::RwLock::new(()),
+            file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -166,11 +172,18 @@ impl<A, O> SharedCheckout<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
-    ) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    ) -> Result<CheckoutCandidate<'_, A, O>, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let publication = await_lock(
+            self.publication_fence.read(),
+            carrier,
+            cancellation,
+            lifetime,
+        )
+        .await?;
         let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
@@ -185,6 +198,8 @@ impl<A, O> SharedCheckout<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         Ok(CheckoutCandidate {
+            _publication: publication,
+            _file_mutation: None,
             base: state
                 .checkout
                 .private_candidate(

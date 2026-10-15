@@ -61,11 +61,13 @@ pub(super) struct ProjectionState {
     pub(super) inode_by_path: HashMap<FuseOwned<MountPath>, u64>,
     pub(super) inode_by_file: HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     pub(super) files: HashMap<u64, FileHandle>,
-    pub(super) implicit: HashMap<u64, (u64, crate::NativeAllocation)>,
     pub(super) streams: DirectoryStreams,
     pub(super) invalidation: InvalidationQueue,
     pub(super) superseded_attributes:
         FuseOwned<Vec<(u64, crate::materializer::NativeWorkReservation)>>,
+    /// Numbers listing replies, so a reply can tell an inode it already
+    /// carries (see [`InodeEntry::listed_in_reply`]).
+    pub(super) listing_replies: u64,
 }
 
 impl ProjectionState {
@@ -95,10 +97,10 @@ impl ProjectionState {
             inode_by_path: HashMap::new(),
             inode_by_file: HashMap::new(),
             files: HashMap::new(),
-            implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
             superseded_attributes: FuseOwned::default(),
+            listing_replies: 0,
         }
     }
 
@@ -106,8 +108,24 @@ impl ProjectionState {
         self.by_inode
             .get(&inode)
             .and_then(|entry| entry.bindings.first())
-            .map(|binding| &*binding.path)
+            .map(Binding::native_path)
             .ok_or(libc::ESTALE)
+    }
+
+    pub(super) fn retain_spelling(
+        &mut self,
+        inode: u64,
+        name: ChildName,
+    ) -> Result<(), NativeMountError> {
+        if let Some(key) = name.folded {
+            self.by_inode
+                .get_mut(&inode)
+                .ok_or(libc::ESTALE)?
+                .binding_mut(&key)
+                .ok_or(libc::ESTALE)?
+                .spelled = (*key != *name.spelled).then_some(name.spelled);
+        }
+        Ok(())
     }
 
     pub(super) fn child_path(
@@ -216,11 +234,11 @@ impl ProjectionState {
                 continue;
             }
             if let Some(stamp) = binding.verified
-                && source.unchanged_since_with_meter(&binding.path, None, stamp, work)?
+                && source.unchanged_since_with_meter(binding.native_path(), None, stamp, work)?
             {
                 continue;
             }
-            let name = fuse_clone_path(&binding.path, work)?;
+            let name = fuse_clone_path(binding.native_path(), work)?;
             fuse_reserve(&mut names, 1, work)?;
             names.push(name);
         }
@@ -231,12 +249,8 @@ impl ProjectionState {
         if inode == ROOT_INODE {
             return;
         }
-        let forgotten = self.by_inode.get_mut(&inode).is_some_and(|entry| {
+        if let Some(entry) = self.by_inode.get_mut(&inode) {
             entry.lookup_references = entry.lookup_references.saturating_sub(references);
-            entry.lookup_references == 0
-        });
-        if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
-            let _ = self.discard_file_handle(inode, implicit.0);
         }
         if self
             .by_inode
@@ -491,7 +505,7 @@ impl ProjectionState {
             let through = entry
                 .bindings
                 .first()
-                .map(|binding| fuse_clone_path(&binding.path, work))
+                .map(|binding| fuse_clone_path(binding.native_path(), work))
                 .transpose()?;
             return Ok(NodeFacts::Current(Resolved {
                 lookup: entry.lookup,
@@ -508,7 +522,7 @@ impl ProjectionState {
         let mut paths = fuse_vec(entry.bindings.len(), work)?;
         for binding in entry.bindings.iter() {
             work.charge(Items.delta(1))?;
-            paths.push(fuse_clone_path(&binding.path, work)?);
+            paths.push(fuse_clone_path(binding.native_path(), work)?);
         }
         Ok(NodeFacts::Names {
             file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id),

@@ -316,3 +316,76 @@ async fn require_nfc_volume_rejects_non_normalized_names() -> TestResult {
     .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn full_case_fold_legacy_alias_collisions_fail_closed() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
+    let first = create(
+        &mut checkout,
+        "Straße",
+        OwnedBytes::from_static(b"first"),
+        &cancel,
+    )
+    .await?;
+    let second = create(
+        &mut checkout,
+        "STRASSE",
+        OwnedBytes::from_static(b"second"),
+        &cancel,
+    )
+    .await?;
+    let mut fillers = Vec::new();
+    for index in 0..255 {
+        fillers.push(AuthoredMutation::CreateFile {
+            path: path(&format!("Sa{index:03}"))?,
+            bytes: OwnedBytes::new(),
+            metadata: FileMetadata::default(),
+        });
+    }
+    checkout
+        .apply_authored_transaction(fillers, B, &cancel)
+        .await?;
+    checkout.volume.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    let before = checkout_state(&checkout);
+    for (name, expected) in [("Straße", first), ("STRASSE", second)] {
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&path(name)?, B, &cancel)
+                .await?
+                .value
+                .record
+                .ok_or("missing exact file")?
+                .file_id,
+            expected
+        );
+    }
+    assert!(matches!(
+        checkout
+            .lookup_no_follow(&path("strasse")?, B, &cancel)
+            .await,
+        Err(OperationFailure {
+            error: FsError::NameCollision,
+            ..
+        })
+    ));
+    assert!(matches!(
+        checkout
+            .apply_authored_transaction(
+                vec![AuthoredMutation::Write {
+                    path: path("strasse")?,
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(b"bad")
+                }],
+                B,
+                &cancel
+            )
+            .await,
+        Err(OperationFailure {
+            error: FsError::NameCollision,
+            ..
+        })
+    ));
+    assert_eq!(checkout_state(&checkout), before);
+    Ok(())
+}

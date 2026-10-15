@@ -19,14 +19,11 @@ fn sources(
     consistency: ConsistencyMode,
     publication: MountPublication,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    configured_sources(
-        VolumeConfig {
-            profile,
-            ..VolumeConfig::portable(Lifecycle::Ephemeral)
-        },
-        consistency,
-        publication,
-    )
+    let config = VolumeConfig {
+        profile,
+        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    };
+    configured_sources(config, consistency, publication)
 }
 
 fn configured_sources(
@@ -102,3 +99,4 @@ include!("source_limits.rs");
 
 pub(in crate::native_mount) mod access;
 use access::bind_test_access;
+mod concurrent;

@@ -51,6 +51,10 @@ fn full_case_folding_preserves_glob_literal_matches() -> Result<(), InvalidPolic
         ("**/ΟΣ*", "folder/ΟΣΑ"),
         ("Straße*", "STRASSE.txt"),
         ("ﬃ*", "FFI.txt"),
+        ("file?.txt", "fileß.txt"),
+        ("file?.txt", "filess.txt"),
+        ("file?.txt", "fileﬃ.txt"),
+        ("file?.txt", "fileffi.txt"),
     ] {
         let policy = super::policy(vec![
             rule("allow", Effect::Allow, &Action::ALL, "**"),
@@ -558,5 +562,48 @@ fn prepared_paths_retain_deadlines_and_view_identity() -> Result<(), InvalidPoli
     assert!(path.decide(Action::Read, 109).allowed);
     assert!(trie.prepare("a").and_then(|p| p.child("../b")).is_err());
     assert!(trie.prepare("a//b").is_err());
+    Ok(())
+}
+
+#[test]
+fn full_case_fold_question_preserves_native_scalar_aliases()
+-> Result<(), Box<dyn std::error::Error>> {
+    let caller = principal();
+    let cap = capability();
+    let policy = super::policy(vec![
+        rule("allow", Effect::Allow, &Action::ALL, "**"),
+        rule("single", Effect::Deny, &[Action::Read], "file?.txt"),
+    ]);
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let mut res = resource(&caller.lineage, "", 10);
+    res.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    res.config.unicode = UnicodePolicy::Preserve;
+    let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(128));
+    let scalar = prop_oneof![
+        Just('ß'),
+        Just('ﬃ'),
+        Just('ΐ'),
+        Just('İ'),
+        any::<char>().prop_filter("alphabetic name", |ch| ch.is_alphabetic())
+    ];
+    runner.run(&scalar, |ch| {
+        let path = format!("file{ch}.txt");
+        let name = LogicalName::new(NameEncoding::Utf8, path.as_bytes().to_vec(), 255)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        let alias = String::from_utf8(name.case_fold_key())
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        for path in [&path, &alias] {
+            let res = Resource { path, ..res };
+            let decision = decide(&policy, &caller, Action::Read, res, context, &cap);
+            prop_assert!(!decision.allowed, "{path}");
+            prop_assert_eq!(trie.decide(Action::Read, path, 100), decision);
+        }
+        Ok(())
+    })?;
+    assert!(trie.decide(Action::Read, "fileab.txt", 100).allowed);
     Ok(())
 }

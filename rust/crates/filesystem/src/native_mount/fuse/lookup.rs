@@ -108,7 +108,7 @@ impl FuseProjection {
                     .zip(entry.facts)
                     .map(|(name, facts)| name.min(facts))
                 && source.unchanged_since_with_meter(
-                    child.key(),
+                    &child.spelled,
                     Some(entry.lookup.node.file_id),
                     stamp,
                     work,
@@ -125,7 +125,7 @@ impl FuseProjection {
                 .get(&parent)
                 .and_then(|entry| entry.empty_since)
                 && child.folded.is_none()
-                && source.unchanged_since_with_meter(child.key(), None, empty, work)?
+                && source.unchanged_since_with_meter(&child.spelled, None, empty, work)?
             {
                 return state.negative_entry(source, parent, &child, Some(empty), work);
             }
@@ -157,6 +157,7 @@ impl FuseProjection {
             state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        state.retain_spelling(inode, child)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -211,7 +212,11 @@ impl FuseProjection {
             let after = source.view_stamp_with_meter(work)?;
             match stamp {
                 Some(before)
-                    if source.listing_unchanged_since_with_meter(child.key(), before, work)? =>
+                    if source.listing_unchanged_since_with_meter(
+                        &child.spelled,
+                        before,
+                        work,
+                    )? =>
                 {
                     after
                 }
@@ -239,6 +244,7 @@ impl FuseProjection {
             state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        state.retain_spelling(inode, child)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -249,23 +255,13 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(u64, FuseOpenFile)>, NativeMountError> {
         // The caller holds the names lock exclusively.
-        let (inode, unopened) = {
-            let state = self.core.state()?;
-            let inode = lookup
-                .filter(|lookup| {
-                    lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1
-                })
-                .and_then(|lookup| state.inode_by_file.get(&lookup.node.file_id))
-                .map(|(inode, _)| *inode);
-            let unopened = inode
-                .and_then(|inode| state.by_inode.get(&inode))
-                .is_some_and(|entry| entry.lookup_references != 0 && entry.open_handles == 0);
-            (inode, unopened)
-        };
-        if self.skips_open && unopened {
-            self.reopen_implicit(inode.ok_or(libc::ESTALE)?, None, AccessMode::ReadOnly, work)?;
-        }
         let state = self.core.state()?;
+        let inode = lookup
+            .filter(|lookup| {
+                lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1
+            })
+            .and_then(|lookup| state.inode_by_file.get(&lookup.node.file_id))
+            .map(|(inode, _)| *inode);
         let Some(inode) = inode.filter(|inode| {
             state
                 .by_inode
@@ -354,8 +350,8 @@ impl FuseProjection {
         renamed?;
         if from.key() != to.key() {
             state.invalidate_prefix(to.key(), work)?;
-            state.rename_prefix(from.key(), to.key(), work)?;
         }
+        state.rename_prefix(from.key(), to.key(), (&from.spelled, &to.spelled), work)?;
         Ok(())
     }
 
@@ -396,6 +392,7 @@ impl FuseProjection {
             if entry.binding(to.key()).is_none() {
                 fuse_reserve(&mut entry.bindings, 1, work)?;
                 Some(Binding {
+                    spelled: None,
                     path: fuse_clone_path(to.key(), work)?,
                     verified: None,
                     kernel: None,
@@ -413,6 +410,7 @@ impl FuseProjection {
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
         let ttl = state.admit_entry(source, inode, &to, current.stamp, work)?;
+        state.retain_spelling(inode, to)?;
         Ok(Entry { attr, ttl })
     }
 }

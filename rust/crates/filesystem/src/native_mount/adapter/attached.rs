@@ -48,7 +48,12 @@ where
         let name = inputs.attribute_name(name, self.profile, self.limits)?;
         let mut candidate = self
             .checkout
-            .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
+            .file_candidate(
+                self.file_id,
+                inputs.carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
             .await?;
         candidate
             .checkout
@@ -80,47 +85,15 @@ where
         append_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        invoke(&self.runtime, work, || async {
-            let cancellation = work.cancellation();
-            let mut candidate = self
-                .checkout
-                .candidate(
-                    None,
-                    &mut NativeDemandCarrier::Native(work),
-                    cancellation,
-                    Some(&self.cancellation),
-                )
-                .await?;
-            if append_only {
-                let record = candidate
-                    .checkout
-                    .read_file_record_by_id(self.file_id, work, cancellation)
-                    .await?;
-                if !matches!(&change, ContentChange::Write { offset, .. } if *offset == mount_node(record).logical_bytes)
-                {
-                    return Err(MountSourceError::AccessDenied);
-                }
-            }
-            candidate
-                .checkout
-                .change_content(
-                    self.file_id,
-                    change,
-                    ContentTimes::Stamp(content_change_time()?),
-                    work,
-                    cancellation,
-                )
-                .await?;
-            self.checkout
-                .install_change(
-                    candidate,
-                    ViewChange::Node(self.file_id),
-                    work,
-                    &self.cancellation,
-                    self.native_callback_guard.clone(),
-                )
-                .await?;
-            Ok(())
+        invoke(&self.runtime, work, || {
+            self.checkout.change_file_content(
+                self.file_id,
+                change,
+                append_only,
+                work,
+                &self.cancellation,
+                self.native_callback_guard.clone(),
+            )
         })
     }
 }
@@ -354,8 +327,8 @@ where
             let cancellation = work.cancellation();
             let mut candidate = self
                 .checkout
-                .candidate(
-                    None,
+                .file_candidate(
+                    self.file_id,
                     &mut NativeDemandCarrier::Native(work),
                     cancellation,
                     Some(&self.cancellation),
@@ -463,8 +436,8 @@ where
             let cancellation = work.cancellation();
             let mut candidate = self
                 .checkout
-                .candidate(
-                    None,
+                .file_candidate(
+                    self.file_id,
                     &mut NativeDemandCarrier::Native(work),
                     cancellation,
                     Some(&self.cancellation),

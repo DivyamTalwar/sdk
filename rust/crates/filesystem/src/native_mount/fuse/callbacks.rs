@@ -34,12 +34,19 @@ impl Filesystem for FuseProjection {
                 .contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
                 && ProjectionState::directory_open_flags(source, work)?
                     .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
+            // Every file open is answered, never skipped
+            // (`FUSE_NO_OPEN_SUPPORT`): an open pins the version its handle
+            // reads and drops any other size the kernel holds. A kernel
+            // that opens without
+            // asking reads by the size it holds, and an empty size reads
+            // nothing at all, so no reply could correct it. (See
+            // `FuseProjection::open_node`.)
             config
                 .add_capabilities(REQUESTED_CAPABILITIES & config.capabilities())
                 .map_err(NativeMountError::FuseUnsupportedCapabilities)?;
-            Ok((skips_opendir, false))
+            Ok(skips_opendir)
         });
-        (self.skips_opendir, self.skips_open) = self
+        self.skips_opendir = self
             .core
             .finish(result)
             .map_err(std::io::Error::from_raw_os_error)?;
@@ -316,9 +323,6 @@ impl Filesystem for FuseProjection {
             span,
             work,
             {
-                if self.skips_open {
-                    return Err(libc::ENOSYS.into());
-                }
                 let _names = self.core.names()?;
                 self.open_node(inode.0, flags.0, work)
             },
@@ -350,7 +354,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.read_through(inode.0, fh.0, offset, size, work),
+            self.read_handle(inode.0, fh.0, offset, size, work),
             |bytes| reply.data(&bytes.bytes)
         );
     }
@@ -380,13 +384,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.with_handle(
-                inode.0,
-                fh.0,
-                AccessMode::ReadWrite,
-                |handle| self.write_handle(inode.0, handle, offset, data, work),
-                work
-            ),
+            self.write_handle(inode.0, fh.0, offset, data, work),
             |written| reply.written(written)
         );
     }
@@ -398,13 +396,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.with_handle(
-                inode.0,
-                fh.0,
-                AccessMode::ReadOnly,
-                |handle| self.flush_handle(inode.0, handle, true, false, work),
-                work
-            ),
+            self.flush_handle(inode.0, fh.0, true, false, work),
             |()| reply.ok()
         );
     }
@@ -423,12 +415,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            {
-                if self.skips_open && fh.0 == 0 {
-                    return Err(libc::ENOSYS.into());
-                }
-                self.flush_handle(inode.0, fh.0, false, false, work)
-            },
+            self.flush_handle(inode.0, fh.0, false, false, work),
             |()| reply.ok()
         );
     }
@@ -623,13 +610,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.with_handle(
-                inode.0,
-                fh.0,
-                AccessMode::ReadWrite,
-                |handle| self.allocate(inode.0, handle, offset, length, mode, work),
-                work
-            ),
+            self.allocate(inode.0, fh.0, offset, length, mode, work),
             |()| reply.ok()
         );
     }
@@ -649,13 +630,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.with_handle(
-                inode.0,
-                fh.0,
-                AccessMode::ReadOnly,
-                |handle| self.seek(inode.0, handle, offset, whence, work),
-                work
-            ),
+            self.seek(inode.0, fh.0, offset, whence, work),
             |found| reply.offset(found)
         );
     }
@@ -679,27 +654,15 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            self.with_handle(
+            self.copy_range(
                 inode_in.0,
                 fh_in.0,
-                AccessMode::ReadOnly,
-                |handle_in| self.with_handle(
-                    inode_out.0,
-                    fh_out.0,
-                    AccessMode::ReadWrite,
-                    |handle_out| self.copy_range(
-                        inode_in.0,
-                        handle_in,
-                        offset_in,
-                        inode_out.0,
-                        handle_out,
-                        offset_out,
-                        length,
-                        flags.bits(),
-                        work
-                    ),
-                    work
-                ),
+                offset_in,
+                inode_out.0,
+                fh_out.0,
+                offset_out,
+                length,
+                flags.bits(),
                 work
             ),
             |written| reply.written(written)
