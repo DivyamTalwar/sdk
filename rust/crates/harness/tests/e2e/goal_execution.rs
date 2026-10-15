@@ -35,7 +35,7 @@ async fn run_turn(
         )
         .await?;
     let output = storage
-        .run_conversation(bundle, operation, input.clone(), Vec::new(), 16)
+        .run_conversation(bundle, operation, input.clone(), Vec::new(), case.max_steps)
         .await?;
     if output.text != case.expect.text {
         return Err(format!(
@@ -46,7 +46,7 @@ async fn run_turn(
     }
     let dispatches = provider.dispatches();
     let replay = storage
-        .run_conversation(bundle, operation, input, Vec::new(), 16)
+        .run_conversation(bundle, operation, input, Vec::new(), case.max_steps)
         .await?;
     if replay != output || provider.dispatches() != dispatches {
         return Err("replayed goal admission dispatched again or changed output".into());

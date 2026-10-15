@@ -7,5 +7,6 @@
     "metadata":null}],"Settled"],
   "expect":{"request_prompt":"The service is available; finish the goal","result":{"requests":3},"view":{"status":"done","markdown":
     "Service verified\n"},"files":{"GOAL.md":"---\nstatus: done\n---\nService verified\n"}},
-  "seed":{"GOAL.md":"---\nstatus: blocked\n---\nWaiting for service\n"}
+  "seed":{"GOAL.md":"---\nstatus: blocked\n---\nWaiting for service\n"},
+  "max_steps":3
 }

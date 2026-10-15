@@ -5,5 +5,6 @@
     "metadata":null}],"Settled"],
   "expect":{"request_prompt":"Complete the goal","result":{"requests":2},"view":{"status":"done","markdown":"Shipped the change\n"},
     "files":{"GOAL.md":"---\nstatus: done\n---\nShipped the change\n"}},
-  "seed":{"GOAL.md":"Ship the change\n"}
+  "seed":{"GOAL.md":"Ship the change\n"},
+  "max_steps":2
 }

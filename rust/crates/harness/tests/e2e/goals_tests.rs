@@ -28,7 +28,8 @@ proptest! {
             json!([answer])
         };
         let case = GoalCase::parse(json!({"seed":{"GOAL.md":body},
-            "prompt":body, "turns":turns, "policy":{"max_continuations":limit},
+            "prompt":body, "turns":turns, "max_steps":if streamed { 2 } else { 1 },
+            "policy":{"max_continuations":limit},
             "expect":{"text":answer, "request_prompt":body, "result":{"requests":1},
                 "view":{"markdown":body}, "files":{"GOAL.md":body}}})).unwrap();
         let canonical = serde_json::to_value(case).unwrap();
@@ -86,8 +87,17 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
         crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
     crate::drivers::run(baseline.clone()).await?;
     for mutation in [
-        "file", "view", "count", "requests", "actions", "prompt", "script", "policy", "settles",
+        "file",
+        "view",
+        "count",
+        "requests",
+        "actions",
+        "prompt",
+        "script",
+        "policy",
+        "settles",
         "text",
+        "max_steps",
     ] {
         let mut value = baseline.clone();
         match mutation {
@@ -101,6 +111,7 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
             "policy" => value["policy"]["max_continuations"] = json!(0),
             "settles" => value["settles"] = json!(1),
             "text" => value["expect"]["text"] = json!("wrong"),
+            "max_steps" => value["max_steps"] = json!(0),
             _ => unreachable!(),
         }
         assert!(

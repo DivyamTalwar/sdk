@@ -10,11 +10,17 @@ pub(super) struct GoalCase {
     pub seed: BTreeMap<String, String>,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
+    #[serde(default = "one_step")]
+    pub max_steps: u32,
     #[serde(default)]
     pub settles: u32,
     #[serde(default)]
     pub policy: GoalContinuationPolicy,
     pub expect: Expectations,
+}
+
+fn one_step() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize, Serialize)]
