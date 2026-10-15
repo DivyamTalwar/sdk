@@ -4,8 +4,11 @@ use acyclic_native_runtime::{
 };
 use std::{
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::Arc,
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -13,17 +16,28 @@ use std::{
 pub struct HooksConfig {
     workspace: PathBuf,
     home: PathBuf,
+    codex_home: PathBuf,
     trust_project_hooks: bool,
 }
 
 impl HooksConfig {
     /// Loads user configuration by default. Project configuration is untrusted.
     pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let codex_home = codex_directory(&home, std::env::var_os("CODEX_HOME").as_deref());
         Self {
             workspace: workspace.into(),
-            home: home.into(),
+            home,
+            codex_home,
             trust_project_hooks: false,
         }
+    }
+
+    /// Selects an explicit Codex directory instead of CODEX_HOME or ~/.codex.
+    #[must_use]
+    pub fn codex_home(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.codex_home = directory.into();
+        self
     }
 
     /// Explicitly permits commands supplied by the workspace's configuration.
@@ -42,9 +56,9 @@ impl Hooks {
             move || {
                 let mut hooks = Self::default();
                 let user = [
-                    ".claude/settings.json",
-                    ".codex/hooks.json",
-                    ".codex/config.toml",
+                    config.home.join(".claude/settings.json"),
+                    config.codex_home.join("hooks.json"),
+                    config.codex_home.join("config.toml"),
                 ];
                 let project = [
                     ".claude/settings.json",
@@ -52,13 +66,22 @@ impl Hooks {
                     ".codex/hooks.json",
                     ".codex/config.toml",
                 ];
-                let paths = user.into_iter().map(|path| config.home.join(path)).chain(
+                let paths = user.into_iter().chain(
                     project
                         .into_iter()
                         .filter(|_| config.trust_project_hooks)
                         .map(|path| config.workspace.join(path)),
                 );
+                let mut seen = std::collections::BTreeSet::new();
                 for path in paths {
+                    let path = match std::fs::canonicalize(path) {
+                        Ok(path) => path,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(Error::process_io(error)),
+                    };
+                    if !seen.insert(path.clone()) {
+                        continue;
+                    }
                     let bytes = match std::fs::read(&path) {
                         Ok(bytes) => bytes,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -119,27 +142,32 @@ impl Hooks {
     }
 }
 
-async fn run_hook(
+pub(super) async fn run_hook(
     hook: Arc<CommandHook>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    let cancellation = HookCancellation::new();
+    let cancelled = Arc::clone(&cancellation.0);
     run_blocking_io(
         move || {
-            let mut command = shell_command(&hook.command, hook.shell.as_deref());
+            let check = || check_cancelled(&cancelled);
+            check().map_err(Error::process_io)?;
+            let mut command = hook_command(&hook);
             command
                 .current_dir(&request.1)
                 .env("CLAUDE_PROJECT_DIR", &request.0)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            check().map_err(Error::process_io)?;
             let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
             let output = tree
                 .wait_with_output(
                     Duration::from_secs(hook.timeout),
                     65_536,
                     Some(CaptureInput::Literal(&request.2)),
-                    || Ok(()),
+                    check,
                     |_| Ok(ProcessInput::default()),
                     None,
                     None,
@@ -152,4 +180,62 @@ async fn run_hook(
     .map_err(Error::process_io)?
     .await
     .map_err(Error::process_io)?
+}
+
+fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf {
+    configured
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
+fn hook_command(hook: &CommandHook) -> Command {
+    if let Some(args) = &hook.args {
+        let mut command = Command::new(&hook.command);
+        command.args(args);
+        command
+    } else {
+        shell_command(&hook.command, hook.shell.as_deref())
+    }
+}
+
+struct HookCancellation(Arc<AtomicBool>);
+
+impl HookCancellation {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+}
+
+impl Drop for HookCancellation {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> std::io::Result<()> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(std::io::ErrorKind::Interrupted.into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_home_uses_the_configured_environment_path() {
+        let home = Path::new("home");
+        assert_eq!(
+            codex_directory(home, Some(std::ffi::OsStr::new("custom"))),
+            Path::new("custom")
+        );
+        assert_eq!(codex_directory(home, None), home.join(".codex"));
+        assert_eq!(
+            codex_directory(home, Some(std::ffi::OsStr::new(""))),
+            home.join(".codex")
+        );
+    }
 }

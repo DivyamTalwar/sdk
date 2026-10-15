@@ -56,6 +56,91 @@ fn claude_json_and_codex_toml_are_additive_and_match_standard_events() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()> {
+    use super::native::run_hook;
+    let process_error = Error::process_io;
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(process_error)?;
+    let address = listener.local_addr().map_err(process_error)?;
+    let hook: CommandHook = serde_json::from_value(json!({
+        "type":"command", "command":std::env::current_exe().map_err(process_error)?,
+        "args":["--exact","hooks::tests::native_hooks_default_user_guards_and_project_trust_use_one_shared_script",
+            "--nocapture","--skip",format!("hook-child:{address}")]
+    })).map_err(|error| Error::Invalid(error.to_string()))?;
+    let root = std::env::current_dir().map_err(process_error)?;
+    let mut future = Box::pin(run_hook(
+        Arc::new(hook),
+        Arc::new((root.clone(), root, vec![])),
+    ));
+    let (mut stream, _) = tokio::select! {
+        result = listener.accept() => result.map_err(process_error)?,
+        result = &mut future => return Err(Error::Invalid(format!("hook exited before handshake: {result:?}"))),
+    };
+    assert_eq!(stream.read_u8().await.map_err(process_error)?, 1);
+    drop(future);
+    let mut bytes = Vec::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        stream.read_to_end(&mut bytes),
+    )
+    .await
+    .map_err(|_| Error::Invalid("cancelled hook process stayed alive".into()))?;
+    match result {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) => return Err(process_error(error)),
+    }
+    assert!(bytes.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> Result<()> {
+    let process_error = Error::process_io;
+    let root = tempfile::tempdir().map_err(process_error)?;
+    let home = root.path();
+    let relocated = home.join("custom-codex");
+    std::fs::create_dir_all(home.join(".claude")).map_err(process_error)?;
+    std::fs::create_dir(&relocated).map_err(process_error)?;
+    let document = br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"guard"}]}]}}"#;
+    std::fs::write(home.join(".claude/settings.json"), document).map_err(process_error)?;
+    std::fs::write(relocated.join("hooks.json"), document).map_err(process_error)?;
+    let hooks = Hooks::load(
+        HooksConfig::new(home, home)
+            .codex_home(&relocated)
+            .trust_project_hooks(true),
+    )
+    .await?;
+    let registry = registry()?;
+    assert_eq!(
+        hooks
+            .commands(HookEvent::Stop, &json!({}), &registry)?
+            .count(),
+        2
+    );
+    #[cfg(unix)]
+    {
+        let alias = home.join("alias");
+        std::os::unix::fs::symlink(home, &alias).map_err(process_error)?;
+        let hooks = Hooks::load(
+            HooksConfig::new(&alias, home)
+                .codex_home(&relocated)
+                .trust_project_hooks(true),
+        )
+        .await?;
+        assert_eq!(
+            hooks
+                .commands(HookEvent::Stop, &json!({}), &registry)?
+                .count(),
+            2
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn invalid_hook_replacement_is_atomic() -> Result<()> {
     let mut hooks = Hooks::default();
@@ -66,6 +151,8 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
         json!({"hooks":{"Stop":[{"hooks":[{"type":"prompt","command":"test"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","async":true}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","shell":"invalid"}]}]}}),
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":[],"shell":"sh"}]}]}}),
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":["\u{0}"]}]}]}}),
     ] {
         assert!(hooks.add_json(document.to_string().as_bytes()).is_err());
         assert!(hooks.bindings.is_empty());
@@ -183,6 +270,15 @@ fn output_applies_context_tool_decisions_and_stop_blocking() -> Result<()> {
     }}"#,
         b"",
     )?;
+    assert_eq!(output.blocked.as_deref(), Some("protected path"));
+    output.observe(
+        HookEvent::PreToolUse,
+        Some(0),
+        br#"{"hookSpecificOutput":{
+        "permissionDecision":"ask","permissionDecisionReason":"risky command"}}"#,
+        b"",
+    )?;
+    assert_eq!(output.approval.as_deref(), Some("risky command"));
     assert_eq!(output.blocked.as_deref(), Some("protected path"));
     let mut output = HookOutput::default();
     output.observe(HookEvent::Stop, Some(2), b"", b"tests failed")?;
@@ -316,6 +412,18 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
 #[tokio::test]
 async fn native_hooks_default_user_guards_and_project_trust_use_one_shared_script() -> Result<()> {
     let process_error = Error::process_io;
+    if let Some(address) =
+        std::env::args().find_map(|arg| arg.strip_prefix("hook-child:").map(str::to_owned))
+    {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).map_err(process_error)?;
+        stream.write_all(&[1]).map_err(process_error)?;
+        let mut byte = [0];
+        stream.read_exact(&mut byte).map_err(process_error)?;
+        return Err(Error::Invalid(
+            "hook fixture was released instead of cancelled".into(),
+        ));
+    }
     let fixture = tempfile::tempdir().map_err(process_error)?;
     let home = fixture.path().join("home");
     let workspace = fixture.path().join("project");
@@ -382,7 +490,8 @@ exit 2
         "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {command:?}\nshell = '{shell}'\n"
     )).map_err(process_error)?;
     let registry = registry()?;
-    let hooks = Hooks::load(HooksConfig::new(&workspace, &home)).await?;
+    let hooks =
+        Hooks::load(HooksConfig::new(&workspace, &home).codex_home(home.join(".codex"))).await?;
     let input = json!({"tool_name":"bash","session_id":"test"});
     assert_eq!(
         hooks
@@ -430,8 +539,12 @@ exit 2
         .await?;
     assert!(failure.blocked.is_none());
     assert_eq!(failure.diagnostics.len(), 1);
-    let trusted =
-        Hooks::load(HooksConfig::new(&workspace, &home).trust_project_hooks(true)).await?;
+    let trusted = Hooks::load(
+        HooksConfig::new(&workspace, &home)
+            .codex_home(home.join(".codex"))
+            .trust_project_hooks(true),
+    )
+    .await?;
     assert_eq!(
         trusted
             .commands(HookEvent::Stop, &json!({}), &registry)?
@@ -447,7 +560,7 @@ exit 2
     std::fs::remove_file(home.join(".claude/settings.json")).map_err(process_error)?;
     std::fs::create_dir(home.join(".claude/settings.json")).map_err(process_error)?;
     assert!(matches!(
-        Hooks::load(HooksConfig::new(&workspace, &home)).await,
+        Hooks::load(HooksConfig::new(&workspace, &home).codex_home(home.join(".codex"))).await,
         Err(Error::Process { .. })
     ));
     Ok(())

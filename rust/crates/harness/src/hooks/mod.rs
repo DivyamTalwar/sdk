@@ -35,6 +35,8 @@ struct CommandHook {
     #[serde(rename = "type")]
     kind: String,
     command: String,
+    #[serde(default)]
+    args: Option<Vec<String>>,
     #[serde(default = "default_timeout")]
     timeout: u64,
     #[serde(default)]
@@ -155,6 +157,11 @@ impl Hooks {
                     }
                     if hook.command.trim().is_empty()
                         || hook.command.contains('\0')
+                        || hook
+                            .args
+                            .as_ref()
+                            .is_some_and(|args| args.iter().any(|arg| arg.contains('\0')))
+                        || (hook.args.is_some() && hook.shell.is_some())
                         || hook.timeout == 0
                     {
                         return Err(Error::Invalid(
@@ -241,6 +248,8 @@ impl Hooks {
 pub struct HookOutput {
     /// Reason a tool or stop was blocked.
     pub blocked: Option<String>,
+    /// A pre-tool hook requested human approval, with its explanation.
+    pub approval: Option<String>,
     /// Extra context to include in the next model request.
     pub additional_context: Vec<String>,
     /// Replacement arguments returned by a pre-tool hook.
@@ -309,6 +318,14 @@ impl HookOutput {
                 take_string(&mut specific, "permissionDecisionReason")
                     .or_else(|| take_string(&mut value, "reason"))
                     .unwrap_or_else(|| "Blocked by hook".into())
+            });
+        }
+        if event == HookEvent::PreToolUse
+            && specific.get("permissionDecision").and_then(Value::as_str) == Some("ask")
+        {
+            self.approval.get_or_insert_with(|| {
+                take_string(&mut specific, "permissionDecisionReason")
+                    .unwrap_or_else(|| "Approval requested by hook".into())
             });
         }
         if let Some(context) = take_string(&mut specific, "additionalContext") {
