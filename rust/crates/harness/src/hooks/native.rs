@@ -156,7 +156,7 @@ pub(super) fn process_error(error: std::io::Error) -> Error {
 }
 
 pub(super) async fn run_hook(
-    hook: Arc<CommandHook>,
+    hook: Arc<HookSpec>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(process_error)?;
@@ -177,7 +177,7 @@ pub(super) async fn run_hook(
             let mut tree = ProcessTree::spawn(&mut command).map_err(process_error)?;
             let output = tree
                 .wait_with_output(
-                    Duration::from_secs(hook.timeout),
+                    Duration::from_millis(hook.timeout_ms),
                     65_536,
                     Some(CaptureInput::Literal(&request.2)),
                     check,
@@ -202,13 +202,14 @@ fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf
         .unwrap_or_else(|| home.join(".codex"))
 }
 
-fn hook_command(hook: &CommandHook) -> Command {
-    if let Some(args) = &hook.args {
-        let mut command = Command::new(&hook.command);
-        command.args(args);
-        command
-    } else {
-        shell_command(&hook.command, hook.shell.as_deref())
+fn hook_command(hook: &HookSpec) -> Command {
+    match &hook.run {
+        HookRun::Executable { executable, argv } => {
+            let mut command = Command::new(executable);
+            command.args(argv);
+            command
+        }
+        HookRun::Shell { command, shell } => shell_command(command, shell.as_deref()),
     }
 }
 
