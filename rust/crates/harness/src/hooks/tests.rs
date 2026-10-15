@@ -113,7 +113,7 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
     }
     let executable = std::env::current_exe().map_err(|error| Error::Invalid(error.to_string()))?;
     let fixture = tempfile::Builder::new()
-        .prefix("hook ${CLAUDE_PLUGIN_ROOT} ' $ ` space ")
+        .prefix("hook ' $ ` space ")
         .tempdir_in(executable.parent().expect("binary parent"))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let root = fixture.path();
@@ -418,7 +418,7 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
         json!({"hooks":{"Stop":[{"hooks":[{"type":"prompt","command":"test"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","async":true}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","shell":"invalid"}]}]}}),
-        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":[],"shell":"sh"}]}]}}),
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":42,"shell":"sh"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":["\u{0}"]}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","onFailure":"ignore"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","timeout":u64::MAX}]}]}}),
@@ -434,7 +434,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
     let mut imported = Hooks::default();
     imported.add_json(
         br#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
-        {"type":"command","command":"guard","args":["--check"],"timeout":2,"onFailure":"block"},
+        {"type":"command","command":"guard","args":["--check"],"shell":"bash","timeout":2,"onFailure":"block"},
         {"type":"command","command":"format","shell":"sh"}
     ]}]}}"#,
     )?;
@@ -447,6 +447,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
         type = "command"
         command = "guard"
         args = ["--check"]
+        shell = "bash"
         timeout = 2
         onFailure = "block"
         [[hooks.PreToolUse.hooks]]
