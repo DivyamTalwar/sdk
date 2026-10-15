@@ -1,5 +1,171 @@
 use super::*;
-use acyclic_fs::model::{CaseSensitivity, UnicodePolicy};
+use acyclic_fs::kernel::{LogicalName, NameEncoding};
+use acyclic_fs::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
+
+fn native_exact_grant(
+    profile: FilesystemProfile,
+    capability_grant: bool,
+) -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let policy = super::policy(vec![rule(
+        "allow",
+        Effect::Allow,
+        &[Action::Read],
+        if capability_grant { "**" } else { "public" },
+    )]);
+    let cap = if capability_grant {
+        capability().attenuate(
+            vec![Grant {
+                actions: [Action::Read].into_iter().collect(),
+                resource: pattern("public"),
+            }],
+            None,
+        )
+    } else {
+        capability()
+    };
+    let mut res = resource(&caller.lineage, "public", 10);
+    res.config.profile = profile;
+    res.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    let encoding = match profile {
+        FilesystemProfile::Posix => NameEncoding::PosixBytes,
+        FilesystemProfile::Windows => NameEncoding::WindowsUtf16Le,
+        _ => return Err(InvalidPolicy("fixture requires a native profile")),
+    };
+    let name = |text: &str| {
+        LogicalName::new(
+            encoding,
+            if encoding == NameEncoding::WindowsUtf16Le {
+                text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+            } else {
+                text.as_bytes().to_vec()
+            },
+            res.config.limits.maximum_component_bytes,
+        )
+        .map_err(|_| InvalidPolicy("invalid fixture name"))
+    };
+    assert_ne!(
+        name("public")?.case_fold_key(),
+        name("PUBLIC")?.case_fold_key()
+    );
+    let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+    for (path, allowed) in [("public", true), ("PUBLIC", false)] {
+        res.path = path;
+        let reference = decide(&policy, &caller, Action::Read, res, context, &cap);
+        assert_eq!(
+            reference.allowed, allowed,
+            "{profile:?}, capability={capability_grant}: {path}"
+        );
+        assert_eq!(trie.decide(Action::Read, path, 100), reference);
+        assert_eq!(
+            trie.prepare("")?
+                .child_name(&name(path)?)?
+                .decide(Action::Read, 100),
+            reference
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn posix_policy_grants_preserve_native_identity() -> Result<(), InvalidPolicy> {
+    native_exact_grant(FilesystemProfile::Posix, false)
+}
+
+#[test]
+fn posix_capability_grants_preserve_native_identity() -> Result<(), InvalidPolicy> {
+    native_exact_grant(FilesystemProfile::Posix, true)
+}
+
+#[test]
+fn windows_policy_grants_preserve_native_identity() -> Result<(), InvalidPolicy> {
+    native_exact_grant(FilesystemProfile::Windows, false)
+}
+
+#[test]
+fn windows_capability_grants_preserve_native_identity() -> Result<(), InvalidPolicy> {
+    native_exact_grant(FilesystemProfile::Windows, true)
+}
+
+#[test]
+fn native_name_views_reject_unsupported_encodings_and_names() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
+    let cap = capability();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    for (profile, encoding, invalid) in [
+        (
+            FilesystemProfile::Posix,
+            NameEncoding::PosixBytes,
+            vec![0xff],
+        ),
+        (
+            FilesystemProfile::Windows,
+            NameEncoding::WindowsUtf16Le,
+            vec![0, 0xd8],
+        ),
+    ] {
+        let mut res = resource(&caller.lineage, "", 10);
+        res.config.profile = profile;
+        res.config.unicode = UnicodePolicy::RequireNfc;
+        let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+        let root = trie.prepare("")?;
+        let utf8 = LogicalName::new(NameEncoding::Utf8, b"public".to_vec(), 255)
+            .map_err(|_| InvalidPolicy("invalid fixture name"))?;
+        assert!(root.child_name(&utf8).is_err());
+        let non_unicode = LogicalName::new(encoding, invalid, 255)
+            .map_err(|_| InvalidPolicy("invalid fixture name"))?;
+        assert!(root.child_name(&non_unicode).is_err());
+        // NFC admission applies only to UTF-8 logical names in the filesystem.
+        res.path = "e\u{301}";
+        assert!(decide(&policy, &caller, Action::Read, res, context, &cap).allowed);
+        assert!(trie.decide(Action::Read, res.path, 100).allowed);
+    }
+    Ok(())
+}
+
+#[test]
+fn windows_access_paths_obey_encoded_name_and_path_limits() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
+    let cap = capability();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let mut res = resource(&caller.lineage, "", 10);
+    res.config.profile = FilesystemProfile::Windows;
+    res.config.limits.maximum_component_bytes = 4;
+    res.config.limits.maximum_path_bytes = 8;
+    let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+    for (path, allowed) in [
+        ("ab", true),
+        ("abc", false),
+        ("ab/c", true),
+        ("ab/cd", false),
+        ("😀", true),
+    ] {
+        res.path = path;
+        assert_eq!(
+            decide(&policy, &caller, Action::Read, res, context, &cap).allowed,
+            allowed,
+            "{path}"
+        );
+        assert_eq!(
+            trie.decide(Action::Read, path, 100).allowed,
+            allowed,
+            "{path}"
+        );
+    }
+    Ok(())
+}
 
 #[test]
 fn volume_name_keys_apply_to_rules_and_capabilities() -> Result<(), InvalidPolicy> {

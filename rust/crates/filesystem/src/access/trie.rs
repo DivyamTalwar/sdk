@@ -49,9 +49,21 @@ impl<'a> PreparedPath<'a> {
         if name.is_empty() || name.contains('/') {
             return Err(InvalidPolicy("expected one path component"));
         }
-        let bytes = self
-            .bytes
-            .checked_add(name.len() + usize::from(self.depth != 0))
+        let key = super::names::key(name, self.trie.config)?;
+        self.advance(
+            super::names::encoded_len(name, self.trie.config),
+            key.chars().map(Ok),
+        )
+    }
+
+    fn advance(
+        self,
+        length: usize,
+        chars: impl Iterator<Item = Result<char, InvalidPolicy>>,
+    ) -> Result<Self, InvalidPolicy> {
+        let bytes = length
+            .checked_add(1)
+            .and_then(|length| self.bytes.checked_add(length))
             .ok_or(InvalidPolicy("path length overflow"))?;
         let depth = self.depth + 1;
         if bytes > self.trie.config.limits.maximum_path_bytes as usize
@@ -59,13 +71,12 @@ impl<'a> PreparedPath<'a> {
         {
             return Err(InvalidPolicy("path exceeds volume limits"));
         }
-        let key = super::names::key(name, self.trie.config)?;
         let mut state = self.state;
         if self.depth != 0 {
             state = self.trie.step(state, '/')?;
         }
-        for ch in key.chars() {
-            state = self.trie.step(state, ch)?;
+        for ch in chars {
+            state = self.trie.step(state, ch?)?;
         }
         Ok(Self {
             state,
@@ -73,6 +84,36 @@ impl<'a> PreparedPath<'a> {
             depth,
             ..self
         })
+    }
+
+    /// Prepare an authenticated native name without losing its encoding identity.
+    /// Unsupported profile/encoding pairs and non-Unicode names fail closed.
+    pub fn child_name(self, name: &crate::kernel::LogicalName) -> Result<Self, InvalidPolicy> {
+        use crate::kernel::NameEncoding;
+        if name.encoding() != super::names::encoding(self.trie.config)
+            || name.as_bytes().len() > self.trie.config.limits.maximum_component_bytes as usize
+        {
+            return Err(InvalidPolicy(
+                "name encoding does not match the access view profile",
+            ));
+        }
+        match name.encoding() {
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+                let text = std::str::from_utf8(name.as_bytes())
+                    .map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))?;
+                self.child(text)
+            }
+            NameEncoding::WindowsUtf16Le => {
+                let units = crate::kernel::types::utf16le_units(name.as_bytes())
+                    .ok_or(InvalidPolicy("invalid UTF-16 access name"))?;
+                self.advance(
+                    name.as_bytes().len(),
+                    char::decode_utf16(units).map(|ch| {
+                        ch.map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))
+                    }),
+                )
+            }
+        }
     }
 
     /// Constant-time, allocation-free decision, including the pinned deadline.
