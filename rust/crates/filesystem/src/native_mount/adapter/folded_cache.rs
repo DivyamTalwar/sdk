@@ -1,7 +1,11 @@
 #[cfg(loom)]
-use loom::sync::{Arc, Mutex};
+pub(super) use loom::sync::Arc as Shared;
+#[cfg(loom)]
+use loom::sync::Mutex;
 #[cfg(not(loom))]
-use std::sync::{Arc, Mutex};
+pub(super) use std::sync::Arc as Shared;
+#[cfg(not(loom))]
+use std::sync::Mutex;
 
 use crate::ObjectId;
 
@@ -10,14 +14,14 @@ const SLOTS: usize = 64;
 
 pub(super) enum DirectoryNames<T> {
     Unique,
-    Collisions(Arc<T>),
+    Collisions(Shared<T>),
 }
 
 impl<T> Clone for DirectoryNames<T> {
     fn clone(&self) -> Self {
         match self {
             Self::Unique => Self::Unique,
-            Self::Collisions(keys) => Self::Collisions(Arc::clone(keys)),
+            Self::Collisions(keys) => Self::Collisions(Shared::clone(keys)),
         }
     }
 }

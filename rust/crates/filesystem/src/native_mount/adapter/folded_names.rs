@@ -10,7 +10,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         include_directory: bool,
         work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<Option<Arc<FoldedKeys>>, MountSourceError> {
+    ) -> Result<Option<folded_cache::Shared<FoldedKeys>>, MountSourceError> {
         let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
         let mut parent = crate::kernel::Owned::new(
             NamespacePath::new(Vec::new(), self.limits).map_err(engine_error)?,
@@ -48,10 +48,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                         let mut allocation = accounting.claim_owned(bytes, 1)?;
                         keys.allocation.absorb(&mut allocation)?;
                         keys.bytes = keys.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-                        let keys = Arc::new(keys);
+                        let keys = folded_cache::Shared::new(keys);
                         self.folded_directories.insert(
                             entries,
-                            folded_cache::DirectoryNames::Collisions(Arc::clone(&keys)),
+                            folded_cache::DirectoryNames::Collisions(folded_cache::Shared::clone(
+                                &keys,
+                            )),
                         );
                         Some(keys)
                     }
