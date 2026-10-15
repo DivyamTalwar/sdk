@@ -207,9 +207,9 @@ fn hook_command(hook: &HookSpec, workspace: &Path) -> Result<Command> {
         HookRun::Executable { executable, argv } => {
             let environment = |name: &str| std::env::var_os(name);
             let executable = expand_exec_path(executable, workspace, environment)?;
-            let mut command = Command::new(executable.as_ref());
+            let mut command = Command::new(&*executable);
             for argument in argv {
-                command.arg(expand_exec_path(argument, workspace, environment)?.as_ref());
+                command.arg(&*expand_exec_path(argument, workspace, environment)?);
             }
             command
         }
@@ -301,7 +301,7 @@ mod tests {
             environment,
         )?;
         assert_eq!(
-            argument.as_ref(),
+            &*argument,
             std::ffi::OsStr::new(
                 "project ${CLAUDE_PLUGIN_DATA} ' $ ` spaces/plugin ' $ ` spaces/persistent plugin data/project ${CLAUDE_PLUGIN_DATA} ' $ ` spaces"
             )
