@@ -99,8 +99,14 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
         )
         .await;
     assert!(
-        denied.is_err(),
-        "original checkout escaped the live allocation ceiling"
+        matches!(&denied, Err(failure) if matches!(&failure.error,
+            WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes", ..
+            }) | WorkspaceError::Filesystem(FsError::Work(crate::WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes", ..
+            }))
+        )),
+        "original checkout escaped the live allocation ceiling: {denied:?}"
     );
     let admitted = selected
         .read_range_if_unchanged(
