@@ -47,6 +47,18 @@ impl ContentResidencyVerifier for Content {
 // must be released before waking the consumer or performing provider I/O.
 #[test]
 fn follow_has_no_lost_wakeup_or_torn_publication_across_cancellation() {
+    run_model(true);
+}
+
+// A missing provider wake must be observable, rather than a model that silently
+// runs dependency synchronization without exploring its wait/notify boundary.
+#[test]
+#[should_panic(expected = "deadlock! blocked tasks")]
+fn follow_model_detects_a_dropped_provider_wakeup() {
+    run_model(false);
+}
+
+fn run_model(wake: bool) {
     let (content, publication, original) = futures::executor::block_on(async {
         let fixture = Fixture::new().await.expect("fixture");
         let base = fixture.source("a.txt").await.expect("base");
@@ -85,7 +97,7 @@ fn follow_has_no_lost_wakeup_or_torn_publication_across_cancellation() {
                             state.0 = true;
                             state.1.take()
                         };
-                        if let Some(waker) = waker {
+                        if let Some(waker) = waker.filter(|_| wake) {
                             waker.wake();
                         }
                     })
