@@ -64,7 +64,7 @@ pub struct CheckoutMountSource<A, O> {
     limits: VolumeLimits,
     profile: FilesystemProfile,
     folds_names: bool,
-    folded_directories: folded_cache::FoldedDirectoryCache<crate::kernel::Owned<Vec<Vec<u8>>>>,
+    folded_directories: folded_cache::FoldedDirectoryCache<folded_names::FoldedKeys>,
     cancellation: CancellationToken,
     capture_gate: Arc<StdMutex<CaptureSourceGate>>,
     capture_quiesced: Arc<std::sync::Condvar>,

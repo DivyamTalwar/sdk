@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) type FoldedKeys = crate::kernel::Owned<Vec<Vec<u8>>>;
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     pub(super) async fn require_unique_folded_path(
         &self,
@@ -8,7 +10,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         include_directory: bool,
         work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<Option<Arc<crate::kernel::Owned<Vec<Vec<u8>>>>>, MountSourceError> {
+    ) -> Result<Option<Arc<FoldedKeys>>, MountSourceError> {
         let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
         let mut parent = crate::kernel::Owned::new(
             NamespacePath::new(Vec::new(), self.limits).map_err(engine_error)?,
