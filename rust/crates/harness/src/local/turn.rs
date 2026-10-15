@@ -157,7 +157,6 @@ impl LocalHarness {
                 .await?
             }
         };
-        let mut suspended_revision = None;
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -177,14 +176,10 @@ impl LocalHarness {
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                    crate::filesystem::TaskWorkerOutcome::Suspended { revision, .. },
+                    crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    // A wake may reclaim a command that is still pending. Retry a
-                    // checkpoint only once; further work needs an external wake.
-                    if suspended_revision == Some(revision) {
-                        break;
-                    }
-                    suspended_revision = Some(revision);
+                    // Only an authenticated wake makes a passive command claimable.
+                    // Without one, run_operation returns None and yields control.
                     attempt = Box::pin(self.runtime.run_operation(
                         &worker,
                         task,
