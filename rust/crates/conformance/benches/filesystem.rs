@@ -21,19 +21,16 @@ pub(crate) fn main() {
     divan::main();
 }
 
-#[cfg(feature = "memory")]
 #[divan::bench(args = [0, 1, 16, 128], sample_count = 200, sample_size = 64)]
 fn accounting_reconcile(bencher: Bencher, observers: usize) {
     accounting_bench(bencher, observers, false);
 }
 
-#[cfg(feature = "memory")]
 #[divan::bench(args = [0, 128], threads = [4], sample_count = 200, sample_size = 64)]
 fn accounting_shared(bencher: Bencher, observers: usize) {
     accounting_bench(bencher, observers, true);
 }
 
-#[cfg(feature = "memory")]
 fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
     let runtime = Runtime::new().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -91,7 +88,6 @@ fn accounting_charge_local(bencher: Bencher) {
     std::hint::black_box(work);
 }
 
-#[cfg(feature = "native-watch")]
 #[divan::bench(args = [(0, false), (128, false), (128, true)], threads = [1, 4], sample_count = 200, sample_size = 64)]
 fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) {
     use acyclic_fs::demand::native::NativeDemandSource;
@@ -286,7 +282,6 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
     });
 }
 
-#[cfg(feature = "memory")]
 #[divan::bench(args = [false, true], threads = [1, 4])]
 fn read_memory_small(bencher: Bencher, native_accounting: bool) {
     let runtime = Runtime::new().unwrap();
