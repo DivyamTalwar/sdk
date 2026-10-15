@@ -1,10 +1,12 @@
 use super::*;
 
-pub(crate) async fn legacy_folded_checkout()
--> Result<(MemoryCheckout, [FileId; 2]), Box<dyn std::error::Error>> {
+pub(crate) async fn folded_checkout(
+    names: impl IntoIterator<Item = String>,
+) -> Result<MemoryCheckout, Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    config.unicode = UnicodePolicy::Preserve;
     let volume = fs
         .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -29,10 +31,7 @@ pub(crate) async fn legacy_folded_checkout()
         )?)
     };
     let mut mutations = Vec::new();
-    for name in ["Straße".to_owned(), "STRASSE".to_owned()]
-        .into_iter()
-        .chain((0..255).map(|index| format!("Sa{index:03}")))
-    {
+    for name in names {
         mutations.push(AuthoredMutation::CreateFile {
             path: path(&name)?,
             bytes: acyclic_stream::OwnedBytes::new(),
@@ -42,16 +41,34 @@ pub(crate) async fn legacy_folded_checkout()
     checkout
         .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
+    checkout.volume.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    Ok(checkout)
+}
+
+pub(crate) async fn legacy_folded_checkout()
+-> Result<(MemoryCheckout, [FileId; 2]), Box<dyn std::error::Error>> {
+    let names = ["Straße".to_owned(), "STRASSE".to_owned()]
+        .into_iter()
+        .chain((0..255).map(|index| format!("Sa{index:03}")));
+    let mut checkout = folded_checkout(names).await?;
+    let cancellation = CancellationToken::new();
     let mut ids = [FileId::new(); 2];
     for (id, name) in ids.iter_mut().zip(["Straße", "STRASSE"]) {
+        let path = NamespacePath::new(
+            vec![LogicalName::new(
+                NameEncoding::Utf8,
+                name.as_bytes().to_vec(),
+                checkout.volume_config().limits.maximum_component_bytes,
+            )?],
+            checkout.volume_config().limits,
+        )?;
         *id = checkout
-            .lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation)
+            .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &cancellation)
             .await?
             .value
             .record
             .ok_or("legacy file missing")?
             .file_id;
     }
-    checkout.volume.config.case_sensitivity = CaseSensitivity::ProfileFolded;
     Ok((checkout, ids))
 }

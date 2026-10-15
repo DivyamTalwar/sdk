@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "access_review.rs"]
 mod review;
 
+#[path = "access_roundtrip.rs"]
+mod roundtrip;
+
 fn principal() -> Principal {
     Principal {
         kind: PrincipalKind::Agent,

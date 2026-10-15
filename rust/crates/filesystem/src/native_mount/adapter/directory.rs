@@ -44,12 +44,7 @@ where
                 cancellation,
             )?;
             if self.folds_names() {
-                checkout
-                    .require_unique_folded_path(
-                        &path,
-                        &mut crate::kernel::KernelAccounting::native(work, cancellation),
-                        cancellation,
-                    )
+                self.require_unique_folded_path(&mut checkout, &path, true, work, cancellation)
                     .await?;
             }
             let (page, source_allocation) = checkout
@@ -73,16 +68,6 @@ where
                     .visible();
                 if !visible {
                     continue;
-                }
-                if self.folds_names() {
-                    checkout
-                        .require_unique_folded_name(
-                            path.components(),
-                            &entry.name,
-                            &mut crate::kernel::KernelAccounting::native(work, cancellation),
-                            cancellation,
-                        )
-                        .await?;
                 }
                 let (name, mut allocation) = native_mount_name(&entry.name, inputs.carrier)?;
                 inputs
