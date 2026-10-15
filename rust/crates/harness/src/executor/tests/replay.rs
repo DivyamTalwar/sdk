@@ -406,7 +406,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         operation_id: OperationId::new(),
         call_id: "publication".into(),
         name: "write".into(),
-        arguments: json!({"path":"destination.txt","content":"body"}),
+        arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
     };
     let base = StockExecutor::new(
         Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
