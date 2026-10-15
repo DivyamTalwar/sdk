@@ -69,6 +69,7 @@ mod tests {
                 handler_timeout_millis: 1_000,
                 memory_bytes: 1024,
                 checkpoint_bytes: 1024,
+                sockets: None,
             }),
             subscriptions: vec![wire::SubscriptionSpec {
                 subscription_id: "events".into(),
