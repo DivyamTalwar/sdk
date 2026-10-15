@@ -125,3 +125,89 @@ fn production_labels_use_the_filesystem_vocabulary() -> Result<(), Box<dyn std::
     }
     Ok(())
 }
+
+#[test]
+fn policy_intersection_preserves_signed_narrowed_grants() -> Result<(), Box<dyn std::error::Error>>
+{
+    use acyclic_harness::{AuthorityLevel, AuthorityPolicy, PolicyLayer, resolve_policy_layers};
+    let parent = Capability {
+        layers: vec![vec![grant("src/**")]],
+        expires_at: Some(100),
+    };
+    let child = parent.clone().attenuate(vec![grant("**/*.rs")], Some(90));
+    let broad = Capabilities::new([
+        parent.to_scope_label()?,
+        "shared".into(),
+        "runtime-only".into(),
+    ]);
+    let narrow = Capabilities::new([
+        child.to_scope_label()?,
+        "shared".into(),
+        "agent-only".into(),
+    ]);
+    let expected = Capabilities::new([child.to_scope_label()?, "shared".into()]);
+    assert_eq!(broad.intersect(&narrow), expected);
+    assert_eq!(narrow.intersect(&broad), expected);
+    assert_eq!(expected.intersect(&expected), expected);
+    assert!(expected.is_subset_of(&broad) && expected.is_subset_of(&narrow));
+    let parent_denial = Capabilities::new([parent.to_scope_label()?]);
+    assert_eq!(
+        expected.without(&parent_denial),
+        Capabilities::new(["shared"]),
+    );
+    assert_eq!(
+        acyclic_harness::resolve_policies(&[
+            AuthorityPolicy {
+                grants: broad.clone(),
+                denies: parent_denial
+            },
+            AuthorityPolicy {
+                grants: narrow.clone(),
+                denies: Capabilities::default()
+            },
+        ]),
+        Capabilities::new(["shared"]),
+    );
+    let resolved = resolve_policy_layers(&[
+        PolicyLayer {
+            level: AuthorityLevel::Runtime,
+            policy: AuthorityPolicy {
+                grants: broad,
+                denies: Capabilities::default(),
+            },
+        },
+        PolicyLayer {
+            level: AuthorityLevel::Agent,
+            policy: AuthorityPolicy {
+                grants: narrow,
+                denies: Capabilities::default(),
+            },
+        },
+    ])?;
+    assert_eq!(resolved, expected);
+    let issuer = AuthorityIssuer::new(
+        "host",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "task".into(),
+        },
+    );
+    let scope = issuer.issue("resolved", &resolved, None, None, &mut None)?;
+    assert_eq!(
+        issuer.verifier(&mut None)?.filesystem_capability(&scope)?,
+        child
+    );
+    let unrelated = Capability {
+        layers: vec![vec![grant("elsewhere/**")]],
+        expires_at: Some(100),
+    };
+    assert!(
+        resolved
+            .intersect(&Capabilities::new([unrelated.to_scope_label()?]))
+            .iter()
+            .next()
+            .is_none()
+    );
+    Ok(())
+}

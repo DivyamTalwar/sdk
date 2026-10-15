@@ -301,18 +301,19 @@ impl Capabilities {
     /// Returns whether this set attenuates an ancestor set.
     #[must_use]
     pub fn is_subset_of(&self, ancestor: &Self) -> bool {
-        self.0.iter().all(|value| {
-            if ancestor.0.contains(value) {
-                return true;
-            }
-            let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
-                return false;
-            };
-            ancestor.0.iter().any(|value| {
-                acyclic_fs::access::Capability::from_scope_label(value).is_ok_and(|parent| {
-                    parent.is_some_and(|parent| child.is_attenuation_of(&parent))
-                })
-            })
+        self.0.iter().all(|value| ancestor.includes(value))
+    }
+
+    fn includes(&self, value: &str) -> bool {
+        if self.0.contains(value) {
+            return true;
+        }
+        let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
+            return false;
+        };
+        self.0.iter().any(|value| {
+            acyclic_fs::access::Capability::from_scope_label(value)
+                .is_ok_and(|parent| parent.is_some_and(|parent| child.is_attenuation_of(&parent)))
         })
     }
 
@@ -324,13 +325,26 @@ impl Capabilities {
     /// Returns the deterministic intersection of two grants.
     #[must_use]
     pub fn intersect(&self, other: &Self) -> Self {
-        Self(self.0.intersection(&other.0).cloned().collect())
+        Self(
+            self.0
+                .iter()
+                .chain(&other.0)
+                .filter(|value| self.includes(value) && other.includes(value))
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Removes explicit denials from this grant.
     #[must_use]
     pub fn without(&self, denied: &Self) -> Self {
-        Self(self.0.difference(&denied.0).cloned().collect())
+        Self(
+            self.0
+                .iter()
+                .filter(|value| !denied.includes(value))
+                .cloned()
+                .collect(),
+        )
     }
 }
 
