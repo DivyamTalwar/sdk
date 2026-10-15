@@ -410,6 +410,10 @@ async fn corrupt_owner_is_rejected_without_reissuing_credentials() -> Result<()>
     let config = || Ok::<_, Error>(volume_config(directory.path(), project.clone(), text())?);
     let path = super::owner::state_directory(&config()?.project)?.join("owner.json");
     drop(LocalHarness::open(config()?).await?);
+    #[cfg(windows)]
+    assert!(
+        serde_json::from_slice::<Value>(&std::fs::read(&path).map_err(super::storage)?).is_err()
+    );
     std::fs::write(&path, b"invalid owner").map_err(|error| Error::Storage(error.to_string()))?;
     assert!(matches!(
         LocalHarness::open(config()?).await,
