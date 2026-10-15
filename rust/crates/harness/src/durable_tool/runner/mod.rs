@@ -304,7 +304,14 @@ impl<'tools> DurableToolRunner<'tools> {
             attachments: self.limits.attachments.min(scope.limits().attachments),
             ..self.limits
         };
-        tool_json_bound(invocation, limits.file_bytes, io)?;
+        tool_json_bound(
+            &crate::tool::RecordedInvocation {
+                invocation,
+                metadata: &Value::Null,
+            },
+            limits.file_bytes,
+            io,
+        )?;
         let digest = preparation_digest(
             &("acyclic.tool.v2", &task_id, definition, invocation, limits),
             io,
