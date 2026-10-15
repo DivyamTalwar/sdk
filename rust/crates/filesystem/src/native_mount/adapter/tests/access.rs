@@ -347,13 +347,13 @@ fn native_access_full_fold_aliases_share_denials() -> Result<(), Box<dyn std::er
         ..VolumeConfig::portable(Lifecycle::Ephemeral)
     };
     let source = configured_sources(config, ConsistencyMode::Pinned, MountPublication::Manual)?.0;
-    seed(&source, "ÎŸÎ£Î‘", b"secret")?;
+    seed(&source, "ΟΣΑ", b"secret")?;
     let source = bind_test_access(
         source,
-        vec![deny("sigma", &[Action::List, Action::Read], "ÎŸÎ£*")],
+        vec![deny("sigma", &[Action::List, Action::Read], "ΟΣ*")],
         None,
     )?;
-    for spelling in ["ÎŸÎ£Î‘", "Î¿ÏƒÎ±", "Î¿Î£Î±"] {
+    for spelling in ["ΟΣΑ", "οσα", "οΣα"] {
         let path = native_test_path(spelling);
         assert!(source.lookup(&path)?.is_none());
         assert!(matches!(
@@ -393,7 +393,7 @@ fn native_access_clone_uses_both_handles_without_metadata_disclosure()
         let from = source.open_file(&native_test_path("from"))?;
         let to = source.open_file(&native_test_path("to"))?;
         assert_eq!(
-            to.clone_from(from.as_ref(), 0, 0, 8, &work).is_ok(),
+            to.clone_range_from(from.as_ref(), 0, 0, 8, &work).is_ok(),
             allowed
         );
         assert_eq!(
@@ -407,7 +407,7 @@ fn native_access_clone_uses_both_handles_without_metadata_disclosure()
     seed(&second, "to", b"original")?;
     let work = capture_meter(BOUNDARY_BUDGET, second.cancellation())?;
     assert!(matches!(
-        second.open_file(&native_test_path("to"))?.clone_from(
+        second.open_file(&native_test_path("to"))?.clone_range_from(
             first.open_file(&native_test_path("from"))?.as_ref(),
             0,
             0,

@@ -138,7 +138,7 @@ where
         Ok((self.checkout.volume_id, self.file_id))
     }
 
-    fn clone_from(
+    fn clone_range_from(
         &self,
         source: &dyn MountOpenFile,
         source_offset: u64,

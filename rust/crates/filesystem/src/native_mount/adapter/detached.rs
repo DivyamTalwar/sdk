@@ -195,7 +195,7 @@ where
         Err(MountSourceError::NativeUnsupported)
     }
 
-    fn clone_from(
+    fn clone_range_from(
         &self,
         _source: &dyn MountOpenFile,
         _source_offset: u64,

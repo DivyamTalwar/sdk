@@ -81,7 +81,7 @@ impl MountOpenFile for AuthorizedFile {
         self.file.clone_source(work)
     }
 
-    fn clone_from(
+    fn clone_range_from(
         &self,
         source: &dyn MountOpenFile,
         source_offset: u64,
@@ -91,7 +91,7 @@ impl MountOpenFile for AuthorizedFile {
     ) -> Result<(), MountSourceError> {
         self.require_write()?;
         self.file
-            .clone_from(source, source_offset, offset, length, work)
+            .clone_range_from(source, source_offset, offset, length, work)
     }
 
     checked! { List;

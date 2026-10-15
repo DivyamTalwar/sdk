@@ -171,7 +171,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
         work: &NativeMaterializationWork,
     ) -> Result<(crate::VolumeId, FileId), MountSourceError>;
     /// Clones immutable extents through both open handles' authority.
-    fn clone_from(
+    fn clone_range_from(
         &self,
         source: &dyn MountOpenFile,
         source_offset: u64,

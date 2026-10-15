@@ -150,7 +150,7 @@ where
         })
     }
 
-    fn clone_from(
+    fn clone_range_from(
         &self,
         source: &dyn MountOpenFile,
         source_offset: u64,
@@ -159,7 +159,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.mutate(work, |file| {
-            file.clone_from(source, source_offset, offset, length, work)
+            file.clone_range_from(source, source_offset, offset, length, work)
         })
     }
 
