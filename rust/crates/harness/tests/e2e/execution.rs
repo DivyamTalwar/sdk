@@ -62,9 +62,9 @@ pub(super) async fn run(case: Scenario) -> TestResult {
                 return Err(format!("result: expected {expected}, got {actual:?}").into());
             }
             if let Some(input) = replay_input {
-                let requests = provider.request_count();
+                let requests = provider.requests().len();
                 let replay = executor.execute(input, journal.as_ref()).await?;
-                if replay != actual || provider.request_count() != requests {
+                if replay != actual || provider.requests().len() != requests {
                     return Err("replay changed the result or dispatched the model again".into());
                 }
             }
