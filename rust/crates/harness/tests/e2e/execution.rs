@@ -80,13 +80,13 @@ fn check_provider(expected: &Expectations, provider: &ScriptedModelProvider) -> 
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
     }
-    if !expected.requests.is_empty() {
+    if let Some(expected) = &expected.requests {
         let requests = provider
             .requests()
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
-        matchers::ordered(&expected.requests, &requests, "requests")?;
+        matchers::ordered(expected, &requests, "requests")?;
     }
     Ok(())
 }
@@ -95,7 +95,7 @@ async fn check_events(
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
     operation: OperationId,
 ) -> TestResult {
-    if !expected.events.is_empty() || !expected.not_events.is_empty() {
+    if expected.events.is_some() || !expected.not_events.is_empty() {
         let mut events = Vec::new();
         let mut after = 0;
         loop {
@@ -113,7 +113,9 @@ async fn check_events(
                 events.push(value);
             }
         }
-        matchers::ordered(&expected.events, &events, "events")?;
+        if let Some(expected) = &expected.events {
+            matchers::ordered(expected, &events, "events")?;
+        }
         for forbidden in &expected.not_events {
             if events
                 .iter()
