@@ -126,6 +126,15 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
 
 #[test]
 fn non_blocking_failures_return_diagnostics() -> Result<()> {
+    let timeout = super::native::process_error(std::io::ErrorKind::TimedOut.into());
+    assert_eq!(timeout.code(), crate::wire::ErrorCode::Invalid);
+    assert!(matches!(
+        timeout,
+        Error::Process {
+            kind: "timeout",
+            ..
+        }
+    ));
     for event in [
         HookEvent::SessionStart,
         HookEvent::PreToolUse,
@@ -223,13 +232,16 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     let (second_tx, second_rx) = oneshot::channel();
     let mut receivers = [first_rx, second_rx].into_iter();
     let future = hooks.run_commands(HookEvent::PreToolUse, &input, &registry, |_| {
-        let receiver = receivers.next().expect("one receiver per command");
+        let receiver = receivers.next();
         let started = &started;
         async move {
             started.set(started.get() + 1);
             Ok((
                 Some(0),
-                receiver.await.expect("controlled completion"),
+                receiver
+                    .ok_or_else(|| Error::Invalid("missing hook receiver".into()))?
+                    .await
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
                 vec![],
             ))
         }
@@ -244,10 +256,14 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     let response = |name| {
         serde_json::to_vec(&json!({"decision":"block","reason":name,
         "hookSpecificOutput":{"additionalContext":name,"updatedInput":{"winner":name}}}))
-        .unwrap()
+        .map_err(|error| Error::Invalid(error.to_string()))
     };
-    second_tx.send(response("second")).unwrap();
-    first_tx.send(response("first")).unwrap();
+    second_tx
+        .send(response("second")?)
+        .map_err(|_| Error::Invalid("second hook cancelled".into()))?;
+    first_tx
+        .send(response("first")?)
+        .map_err(|_| Error::Invalid("first hook cancelled".into()))?;
     let output = future.await?;
     assert_eq!(output.blocked.as_deref(), Some("first"));
     assert_eq!(output.additional_context, ["first", "second"]);
@@ -338,8 +354,16 @@ exit 2
     let hook = json!({"type":"command","command":command,"shell":shell});
     let write = |root: &std::path::Path, path: &str, value: &Value| -> Result<()> {
         let path = root.join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(process_error)?;
-        std::fs::write(path, serde_json::to_vec(value).unwrap()).map_err(process_error)
+        std::fs::create_dir_all(
+            path.parent()
+                .ok_or_else(|| Error::Invalid("fixture parent missing".into()))?,
+        )
+        .map_err(process_error)?;
+        std::fs::write(
+            path,
+            serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .map_err(process_error)
     };
     write(
         &home,
@@ -390,7 +414,7 @@ exit 2
     );
     let captured: Value =
         serde_json::from_slice(&std::fs::read(workspace.join("hook-ran")).map_err(process_error)?)
-            .unwrap();
+            .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         captured,
         json!({"tool_name":"bash", "session_id":"test", "hook_event_name":"PreToolUse", "cwd":cwd.to_string_lossy()})
