@@ -64,6 +64,49 @@ async fn workspace_dispatch_futures_stay_bounded() -> Result<()> {
         sizes.iter().all(|size| *size < 16 * 1024),
         "workspace future sizes: {sizes:?}"
     );
+    drop((dispatch, git, shell));
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let generation = Box::pin(executor.workspace.view().exactify(
+        "/",
+        PublicationPermit::Unrestricted,
+        &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
+    ))
+    .await
+    .map_err(storage)?;
+    let output = tempfile::tempdir().map_err(storage)?;
+    let options = acyclic_fs::MaterializeOptions::native(output.path());
+    let mount = acyclic_fs::MountOptions::read_write()
+        .publication(acyclic_fs::MountPublication::Manual)
+        .native_context(&work, None, None);
+    let view = Box::pin(generation.prepare_native_working_set(
+        &mount,
+        &options,
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
+    .map_err(storage)?;
+    let root = acyclic_fs::MountPath::root();
+    let capture = view.capture_host_subtree(&root, &work);
+    let sync = view.sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+        std::future::ready(Ok::<(), Error>(()))
+    });
+    let sizes = [
+        std::mem::size_of_val(&capture),
+        std::mem::size_of_val(&sync),
+    ];
+    eprintln!("native capture/sync future sizes: {sizes:?}");
+    assert!(
+        sizes.iter().all(|size| *size < 16 * 1024),
+        "native capture/sync sizes: {sizes:?}"
+    );
+    drop((capture, sync));
+    view.retire(&cancellation).map_err(storage)?;
     Ok(())
 }
 
