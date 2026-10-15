@@ -91,7 +91,11 @@ alias_properties!(
 
 // Identity equals the volume key; I/O and parked streams retain native spelling,
 // including after a rename through another alias.
-fn alias_case(prefix: String, pair: (&str, &str), repetitions: usize) -> TestCaseResult {
+fn alias_case(
+    prefix: String,
+    pair: (&str, &str),
+    repetitions: usize,
+) -> proptest::test_runner::TestCaseResult {
     let repetitions = repetitions.min(240 / pair.0.len().max(pair.1.len()));
     let spelling = format!("{prefix}{}", pair.0.repeat(repetitions));
     let alias = format!("{prefix}{}", pair.1.repeat(repetitions));
