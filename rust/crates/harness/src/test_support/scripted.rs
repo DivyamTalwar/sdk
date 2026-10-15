@@ -8,7 +8,10 @@ use serde::{
     Deserialize, Deserializer, Serialize,
     de::{SeqAccess, Visitor, value::SeqAccessDeserializer},
 };
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 /// One provider response. A string emits text followed by completion; an event
 /// list is replayed exactly, including errors, incomplete streams and metadata.
@@ -69,6 +72,9 @@ pub enum ScriptedEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedReconciliation {
+    /// Explicitly permits recovery on a fresh provider that never generated this dispatch.
+    #[serde(default)]
+    pub orphan: bool,
     /// Exact durable prefix that the executor must supply.
     pub observed: Vec<ModelEvent>,
     /// Remaining events, or `None` when the provider cannot recover the request.
@@ -84,12 +90,14 @@ struct State {
     reconciliations: Vec<ModelDispatch>,
 }
 
+type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
+
 /// Replays responses once and retains the exact requests delivered by the executor.
 /// Exhaustion fails instead of silently repeating the final response.
 pub struct ScriptedModelProvider {
     state: Mutex<State>,
     capacity: ModelContextCapacity,
-    token_counter: fn(&PreparedModelRequest) -> Result<ModelTokenCount>,
+    token_counter: Arc<TokenCounter>,
 }
 
 impl ScriptedModelProvider {
@@ -105,7 +113,7 @@ impl ScriptedModelProvider {
                 context_tokens: 131_072,
                 output_tokens: 4_096,
             },
-            token_counter: serialized_tokens,
+            token_counter: Arc::new(serialized_tokens),
         }
     }
 
@@ -120,9 +128,9 @@ impl ScriptedModelProvider {
     #[must_use]
     pub fn with_token_counter(
         mut self,
-        counter: fn(&PreparedModelRequest) -> Result<ModelTokenCount>,
+        counter: impl Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync + 'static,
     ) -> Self {
-        self.token_counter = counter;
+        self.token_counter = Arc::new(counter);
         self
     }
 
@@ -154,24 +162,14 @@ impl ScriptedModelProvider {
         self.lock().turns.len()
     }
 
-    /// Number of recorded requests without copying their context.
-    pub fn request_count(&self) -> usize {
-        self.lock().requests.len()
-    }
-
     /// Snapshots interrupted dispatches submitted for reconciliation.
     pub fn reconciliations(&self) -> Vec<ModelDispatch> {
         self.lock().reconciliations.clone()
     }
 
-    /// Number of reconciliation calls without copying their dispatches.
-    pub fn reconciliation_count(&self) -> usize {
-        self.lock().reconciliations.len()
-    }
-
-    /// Number of recovery replies not yet consumed.
-    pub fn remaining_reconciliations(&self) -> usize {
-        self.lock().recoveries.len()
+    /// Snapshots the scripted recovery replies that have not been consumed.
+    pub fn recoveries(&self) -> Vec<ScriptedReconciliation> {
+        self.lock().recoveries.iter().cloned().collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -247,6 +245,13 @@ impl ModelProvider for ScriptedModelProvider {
                     "scripted reconciliation dispatch mismatch".into(),
                 ));
             }
+            if !state.dispatches.contains(&dispatch)
+                && !state.recoveries.front().is_some_and(|reply| reply.orphan)
+            {
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch was not generated".into(),
+                ));
+            }
             let reply = state
                 .recoveries
                 .pop_front()
@@ -266,16 +271,6 @@ fn serialized_tokens(request: &PreparedModelRequest) -> Result<ModelTokenCount> 
     Ok(request.serialized_token_upper_bound(None)?.0)
 }
 
-#[test]
-fn poisoned_state_remains_observable() {
-    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]);
-    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = provider.lock();
-        std::panic::resume_unwind(Box::new(()));
-    }));
-    assert!(poisoned.is_err());
-    assert_eq!(provider.remaining(), 1);
-    assert!(provider.requests().is_empty());
-    assert!(provider.dispatches().is_empty());
-    assert_eq!(provider.request_count(), 0);
-}
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
