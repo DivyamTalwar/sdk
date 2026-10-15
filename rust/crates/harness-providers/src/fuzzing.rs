@@ -32,6 +32,13 @@ pub fn assert_stream_invariants(input: &[u8]) {
         catalog_round_trip(input);
         return;
     }
+    if kind == b'A' {
+        if let Ok(auth) = crate::codex::decode_auth(input) {
+            let canonical = serde_json::to_vec(&auth).unwrap();
+            assert_eq!(crate::codex::decode_auth(&canonical).unwrap(), auth);
+        }
+        return;
+    }
     let adapter = [
         Adapter::Anthropic,
         Adapter::Responses,

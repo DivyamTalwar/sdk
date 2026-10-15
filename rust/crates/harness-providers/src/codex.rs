@@ -55,7 +55,14 @@ impl CodexLogin {
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
     ) -> Result<(String, Option<String>)> {
-        let _refresh = self.refresh.lock().await;
+        crate::refresh::serialized(&self.refresh, self.refresh_bearer(transport, rejected)).await
+    }
+
+    async fn refresh_bearer(
+        &self,
+        transport: &dyn HttpTransport,
+        rejected: Option<&str>,
+    ) -> Result<(String, Option<String>)> {
         let (mut original, mut auth) = self.load().await?;
         self.check_account(&auth)?;
         for attempt in 0..2 {
@@ -183,10 +190,15 @@ fn load(path: &Path) -> Result<(Vec<u8>, Value)> {
         .take(MAX_AUTH_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| invalid("cannot read Codex auth.json"))?;
+    let auth = decode_auth(&bytes)?;
+    Ok((bytes, auth))
+}
+
+pub(crate) fn decode_auth(bytes: &[u8]) -> Result<Value> {
     if bytes.len() as u64 > MAX_AUTH_BYTES {
         return Err(invalid("Codex auth.json exceeds limit"));
     }
-    let auth = crate::json(&bytes)?;
+    let auth = crate::json(bytes)?;
     if auth["auth_mode"]
         .as_str()
         .is_some_and(|mode| mode != "chatgpt")
@@ -194,7 +206,7 @@ fn load(path: &Path) -> Result<(Vec<u8>, Value)> {
         return Err(invalid("Codex auth.json is not a ChatGPT CLI login"));
     }
     token(&auth, "access_token")?;
-    Ok((bytes, auth))
+    Ok(auth)
 }
 
 fn persist_if_unchanged(path: &Path, original: &[u8], auth: Value) -> Result<Value> {

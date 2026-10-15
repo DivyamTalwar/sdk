@@ -6,6 +6,8 @@ mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
+mod refresh;
+#[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;
