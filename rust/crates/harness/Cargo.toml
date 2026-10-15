@@ -32,6 +32,11 @@ path = "tests/service.rs"
 required-features = ["service", "test-support"]
 
 [[test]]
+name = "service-lifecycle-models"
+path = "tests/service_lifecycle_models.rs"
+required-features = ["service", "test-support"]
+
+[[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
 required-features = ["filesystem-local"]
@@ -157,6 +162,8 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
 proptest.workspace = true
+shuttle = "0.8.1"
+loom = { version = "0.7.2", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
 tokio.workspace = true

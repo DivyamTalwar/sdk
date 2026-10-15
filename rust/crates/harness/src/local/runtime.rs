@@ -15,6 +15,8 @@ pub(super) struct Configuration<'a> {
     pub session_limits: SessionLimits,
     pub concurrency: usize,
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    #[cfg(feature = "native-execution")]
+    pub workspace_tools: Arc<dyn crate::tool::ToolExecutor>,
 }
 
 pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
@@ -107,6 +109,8 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         None,
     )
     .await?
-    .with_output_volume(config.scratch, None)?;
+    .with_output_volume(config.project, None)?;
+    #[cfg(feature = "native-execution")]
+    let runtime = runtime.with_workspace_tools(config.workspace_tools)?;
     Ok((Arc::new(runtime), signed))
 }

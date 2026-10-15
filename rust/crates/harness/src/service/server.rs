@@ -9,14 +9,15 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use prost::Message;
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::RwLock;
+use std::sync::Arc;
+
+#[cfg(test)]
+mod models;
 
 /// A single process hosting workspace wire APIs over UDS or Windows named pipes.
 pub struct HarnessService {
-    workspaces: RwLock<BTreeMap<String, Arc<dyn HarnessWireApi>>>,
-    listener: super::listener::Listener,
-    lifetime: super::lifetime::Lifetime,
+    workspaces: super::registry::Registry<dyn HarnessWireApi>,
+    lifetime: super::lifetime::Lifetime<super::listener::Listener>,
 }
 
 impl HarnessService {
@@ -25,43 +26,37 @@ impl HarnessService {
         let instance = endpoint.lock()?;
         let listener = super::listener::Listener::bind(endpoint)?;
         Ok(Self {
-            lifetime: super::lifetime::Lifetime::new(instance),
-            workspaces: RwLock::new(BTreeMap::new()),
-            listener,
+            lifetime: super::lifetime::Lifetime::new(instance, listener),
+            workspaces: super::registry::Registry::new(),
         })
     }
 
     /// Registers an already opened workspace exactly once, before clients submit work.
-    pub async fn register(&self, workspace: String, api: Arc<dyn HarnessWireApi>) -> Result<()> {
-        let mut workspaces = self.workspaces.write().await;
-        if workspaces.contains_key(&workspace) {
-            return Err(Error::Conflict("workspace already registered".into()));
-        }
-        workspaces.insert(workspace, api);
-        Ok(())
+    pub fn register(&self, workspace: String, api: Arc<dyn HarnessWireApi>) -> Result<()> {
+        self.workspaces.insert(workspace, api)
     }
 
     /// Accepts clients until shutdown. Client disconnects only cancel their RPC.
     pub async fn serve(self: Arc<Self>) -> Result<()> {
-        let phase = self.lifetime.begin()?;
+        let listener = self.lifetime.begin()?;
         let _stop = self.lifetime.stop_on_drop();
         // The drain must outlive cancellation of the public serving future.
-        tokio::spawn(self.clone().serve_connections(phase))
+        tokio::spawn(self.clone().serve_connections(listener))
             .await
             .map_err(super::storage)?
     }
 
     async fn serve_connections(
         self: Arc<Self>,
-        mut phase: tokio::sync::watch::Receiver<super::lifetime::Phase>,
+        mut listener: super::listener::Listener,
     ) -> Result<()> {
         let mut clients = tokio::task::JoinSet::new();
         let result = loop {
             tokio::select! {
                 biased;
-                _ = phase.wait_for(|phase| *phase == super::lifetime::Phase::Stopping) => break Ok(()),
+                _ = self.lifetime.stopping() => break Ok(()),
                 _ = clients.join_next(), if !clients.is_empty() => {}
-                socket = self.listener.accept() => {
+                socket = listener.accept() => {
                     let socket = match socket { Ok(socket) => socket, Err(error) => break Err(error) };
                     let service = self.clone();
                     clients.spawn(async move { service.handle(socket).await });
@@ -70,16 +65,17 @@ impl HarnessService {
         };
         clients.abort_all();
         while clients.join_next().await.is_some() {}
-        self.listener.close().await;
-        self.lifetime.release()?;
+        drop(listener);
+        self.lifetime.release();
         result
     }
 
     /// Stops accepting, drains connection tasks and releases the instance lock.
     pub async fn shutdown(&self) -> Result<()> {
-        if self.lifetime.request_stop() {
-            self.listener.close().await;
-            self.lifetime.release()?;
+        let (unstarted, listener) = self.lifetime.request_stop();
+        drop(listener);
+        if unstarted {
+            self.lifetime.release();
         }
         self.lifetime.stopped().await
     }
@@ -112,13 +108,7 @@ impl HarnessService {
     ) -> Result<()> {
         let method = Method::try_from(request.method)
             .map_err(|_| Error::Invalid("unknown local RPC".into()))?;
-        let api = self
-            .workspaces
-            .read()
-            .await
-            .get(&request.workspace)
-            .cloned()
-            .ok_or_else(|| Error::NotFound("workspace".into()))?;
+        let api = self.workspaces.get(&request.workspace)?;
         match method {
             Method::Handshake => {
                 let Some(response) =

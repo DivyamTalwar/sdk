@@ -1,0 +1,1 @@
+git diff -- 'src/a b.rs'

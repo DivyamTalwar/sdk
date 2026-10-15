@@ -7,6 +7,10 @@ use acyclic_fs::{
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
+    pub(super) directory: PathBuf,
+    pub(super) filesystem: acyclic_fs::LocalFs,
+    pub(super) store: LocalCoreStateStore,
+    pub(super) identity: acyclic_fs::NativeRootIdentity,
     view: LazyWorkspace<
         LocalAuthorityBackend,
         LocalObjectBackend,
@@ -76,7 +80,7 @@ pub(super) async fn open(
                 .open_workspace(&name, &work, &cancellation)
                 .await
                 .map_err(storage)?;
-            LazyWorkspace::open(workspace, source, store, &mut accounting)
+            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
                 .await
                 .map_err(storage)?
         }
@@ -85,7 +89,7 @@ pub(super) async fn open(
                 filesystem,
                 &name,
                 source,
-                store,
+                store.clone(),
                 acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
                 operation,
                 &mut accounting,
@@ -95,5 +99,64 @@ pub(super) async fn open(
             .0
         }
     };
-    Ok(LocalWorkspace { path, view })
+    Ok(LocalWorkspace {
+        path,
+        directory: directory.to_path_buf(),
+        view,
+        filesystem: filesystem.clone(),
+        store,
+        identity: acyclic_fs::NativeRootIdentity::from_bytes(
+            identity.ok_or_else(|| Error::Invalid("workspace root identity is absent".into()))?,
+        ),
+    })
+}
+
+pub(super) async fn open_volume(
+    filesystem: acyclic_fs::LocalFs,
+    volume: &VolumeRef,
+    directory: &Path,
+) -> Result<LocalWorkspace> {
+    let path = directory.join("project-view");
+    std::fs::create_dir_all(&path).map_err(storage)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let mut accounting = KernelAccounting::NativeOriginal {
+        work: &work,
+        cancellation: &cancellation,
+    };
+    let name = volume.storage_name(&mut None)?;
+    let id = filesystem.workspace_id(&name).map_err(storage)?;
+    let store = LocalCoreStateStore::new(directory.join("workspace"));
+    let original = store
+        .load_lazy_workspace(id, &mut accounting)
+        .await
+        .map_err(storage)?;
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(&path),
+        acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable).profile,
+        acyclic_fs::VolumeLimits::default(),
+        original.as_ref().map(|state| state.source),
+        None,
+        &work,
+        &cancellation,
+    )
+    .await
+    .map_err(storage)?;
+    let identity = source.root_identity();
+    let workspace = filesystem
+        .open_workspace(&name, &work, &cancellation)
+        .await
+        .map_err(storage)?;
+    let view = LazyWorkspace::bind(workspace, Arc::new(source), store.clone(), &mut accounting)
+        .await
+        .map_err(storage)?;
+    Ok(LocalWorkspace {
+        path,
+        directory: directory.to_path_buf(),
+        view,
+        filesystem,
+        store,
+        identity,
+    })
 }

@@ -1,7 +1,11 @@
-use super::storage;
+use super::sync::Mutex;
 use crate::{Error, Result};
-use std::{fs::File, sync::Mutex};
-use tokio::sync::watch;
+use std::{
+    fs::File,
+    future::poll_fn,
+    sync::PoisonError,
+    task::{Context, Poll, Waker},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
@@ -12,70 +16,115 @@ pub(super) enum Phase {
 }
 
 /// Owns the instance fence until the listener and all connections are drained.
-pub(super) struct Lifetime {
-    phase: watch::Sender<Phase>,
-    instance: Mutex<Option<File>>,
+pub(super) struct Lifetime<L> {
+    // Lock order: state only. No guard crosses an await or nests with the
+    // listener/registry. Wakers run after unlocking, including reentrant ones.
+    state: Mutex<State<L>>,
 }
 
-/// Cancelling the caller stops the independently owned connection drain.
-pub(super) struct StopOnDrop<'a>(&'a Lifetime);
+struct State<L> {
+    phase: Phase,
+    instance: Option<File>,
+    listener: Option<L>,
+    waiters: Vec<Waker>,
+}
 
-impl Drop for StopOnDrop<'_> {
+#[cfg(all(test, loom))]
+#[path = "lifetime/models.rs"]
+mod models;
+
+/// Cancelling the caller stops the independently owned connection drain.
+pub(super) struct StopOnDrop<'a, L>(&'a Lifetime<L>);
+
+impl<L> Drop for StopOnDrop<'_, L> {
     fn drop(&mut self) {
         self.0.request_stop();
     }
 }
 
-impl Lifetime {
-    pub fn stop_on_drop(&self) -> StopOnDrop<'_> {
+impl<L> Lifetime<L> {
+    pub fn stop_on_drop(&self) -> StopOnDrop<'_, L> {
         StopOnDrop(self)
     }
 
-    pub fn new(instance: File) -> Self {
+    pub fn new(instance: File, listener: L) -> Self {
         Self {
-            phase: watch::channel(Phase::Idle).0,
-            instance: Mutex::new(Some(instance)),
+            state: Mutex::new(State {
+                phase: Phase::Idle,
+                instance: Some(instance),
+                listener: Some(listener),
+                waiters: Vec::new(),
+            }),
         }
     }
 
-    pub fn begin(&self) -> Result<watch::Receiver<Phase>> {
-        if !self.phase.send_if_modified(|phase| {
-            if *phase != Phase::Idle {
-                return false;
-            }
-            *phase = Phase::Running;
-            true
-        }) {
+    pub fn begin(&self) -> Result<L> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.phase != Phase::Idle {
             return Err(Error::Conflict("service already started or stopped".into()));
         }
-        Ok(self.phase.subscribe())
+        state.phase = Phase::Running;
+        state
+            .listener
+            .take()
+            .ok_or_else(|| Error::Conflict("service listener is absent".into()))
     }
 
-    pub fn request_stop(&self) -> bool {
-        let mut unstarted = false;
-        self.phase.send_if_modified(|phase| {
-            unstarted = *phase == Phase::Idle;
-            if matches!(*phase, Phase::Stopping | Phase::Stopped) {
-                return false;
+    pub fn request_stop(&self) -> (bool, Option<L>) {
+        let (unstarted, listener, waiters) = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(state.phase, Phase::Stopping | Phase::Stopped) {
+                return (false, None);
             }
-            *phase = Phase::Stopping;
-            true
-        });
-        unstarted
+            let unstarted = state.phase == Phase::Idle;
+            state.phase = Phase::Stopping;
+            (
+                unstarted,
+                state.listener.take(),
+                std::mem::take(&mut state.waiters),
+            )
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
+        (unstarted, listener)
     }
 
-    pub fn release(&self) -> Result<()> {
-        drop(self.instance.lock().map_err(storage)?.take());
-        self.phase.send_replace(Phase::Stopped);
-        Ok(())
+    pub fn release(&self) {
+        let waiters = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            drop(state.instance.take());
+            state.phase = Phase::Stopped;
+            std::mem::take(&mut state.waiters)
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
+    }
+
+    fn poll_phase(&self, target: Phase, cx: &Context<'_>) -> Poll<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.phase == target || state.phase == Phase::Stopped {
+            return Poll::Ready(());
+        }
+        // Checking and registering share the transition lock: a transition
+        // either sees this waiter, or this poll sees the completed transition.
+        if !state
+            .waiters
+            .iter()
+            .any(|waiter| waiter.will_wake(cx.waker()))
+        {
+            state.waiters.push(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+
+    pub async fn stopping(&self) {
+        poll_fn(|cx| self.poll_phase(Phase::Stopping, cx)).await
     }
 
     pub async fn stopped(&self) -> Result<()> {
-        self.phase
-            .subscribe()
-            .wait_for(|phase| *phase == Phase::Stopped)
-            .await
-            .map_err(storage)?;
+        poll_fn(|cx| self.poll_phase(Phase::Stopped, cx)).await;
         Ok(())
     }
 }

@@ -3,6 +3,7 @@
 # native product targets are listed explicitly so retired crates cannot return.
 members = [
   "examples/sdk-services",
+  "fuzz",
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
@@ -127,6 +128,7 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"

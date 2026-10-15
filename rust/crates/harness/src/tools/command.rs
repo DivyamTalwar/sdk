@@ -49,3 +49,24 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
     }
     Ok(arguments)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Property: single-quoted arguments round trip without shell expansion.
+        #[test]
+        fn quoted_arguments_round_trip(words in prop::collection::vec("[^\u{0}']{0,24}", 1..8)) {
+            let command = words.iter().map(|word| format!("'{word}'")).collect::<Vec<_>>().join(" ");
+            prop_assert_eq!(parse_command(&command)?, words);
+        }
+
+        #[test]
+        fn nul_is_rejected(prefix in ".{0,32}", suffix in ".{0,32}") {
+            let command = format!("{prefix}\0{suffix}");
+            prop_assert!(parse_command(&command).is_err());
+        }
+    }
+}

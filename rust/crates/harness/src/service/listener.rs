@@ -1,5 +1,5 @@
 use super::{ServiceEndpoint, frames, storage};
-use crate::{Error, Result};
+use crate::Result;
 
 #[cfg(unix)]
 type SocketListener = tokio::net::UnixListener;
@@ -9,7 +9,7 @@ type SocketListener = tokio::net::windows::named_pipe::NamedPipeServer;
 pub(super) struct Listener {
     #[cfg(windows)]
     endpoint: ServiceEndpoint,
-    socket: tokio::sync::Mutex<Option<SocketListener>>,
+    socket: SocketListener,
 }
 
 impl Listener {
@@ -39,15 +39,12 @@ impl Listener {
         Ok(Self {
             #[cfg(windows)]
             endpoint,
-            socket: tokio::sync::Mutex::new(Some(socket)),
+            socket,
         })
     }
 
-    pub async fn accept(&self) -> Result<frames::Connection> {
-        let mut socket = self.socket.lock().await;
-        let listener = socket
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("service stopped".into()))?;
+    pub async fn accept(&mut self) -> Result<frames::Connection> {
+        let listener = &mut self.socket;
         #[cfg(unix)]
         {
             listener
@@ -66,9 +63,5 @@ impl Listener {
                 .map_err(storage)?;
             Ok(frames::connection(std::mem::replace(listener, next)))
         }
-    }
-
-    pub async fn close(&self) {
-        drop(self.socket.lock().await.take());
     }
 }

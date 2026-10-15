@@ -19,17 +19,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let workspace = self.open(reference, Some(io)).await?;
         let bytes = match generation {
-            Some(reference) => io.sdk(
-                self.generation(&workspace, reference, Some(io))
-                    .await?
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-            None => io.sdk(
-                workspace
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
+            Some(reference) => {
+                let pinned = self.generation(&workspace, reference, Some(io)).await?;
+                crate::conversation::BoundedContentFuture::new(Some(io), || {
+                    pinned
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .map(|result| io.sdk(result))
+                })?
+                .await?
+            }
+            None => {
+                crate::conversation::BoundedContentFuture::new(Some(io), || {
+                    workspace
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .map(|result| io.sdk(result))
+                })?
+                .await?
+            }
         };
         if io.original_native_work().is_none() {
             io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
@@ -181,91 +187,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         self.generation_ref_id(generation.id(), None)
     }
 
-    async fn apply_generation_unmeasured(
-        &self,
-        workspace: &WorkspaceRef,
-        expected_generation: Option<&GenerationRef>,
-        mutations: &[WorkspaceMutation],
-        idempotency_key: &IdempotencyKey,
-    ) -> Result<Generation<A, O>> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        let workspace = self.open(workspace, None).await?;
-        let key = filesystem_key(idempotency_key);
-        let mut transaction = match expected_generation {
-            Some(reference) => {
-                let generation = self.generation(&workspace, reference, None).await?;
-                workspace
-                    .begin_transaction_at(&generation, key, budget, &cancellation)
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(map_error)?
-            }
-            None => workspace
-                .begin_transaction(key, budget, &cancellation)
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .map_err(map_error)?,
-        };
-        for mutation in mutations {
-            match mutation {
-                WorkspaceMutation::CreateDirectory { path } => {
-                    transaction
-                        .create_dir_all(path, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?;
-                }
-                WorkspaceMutation::PutFile { path, bytes } => {
-                    transaction
-                        .write(path, Bytes::copy_from_slice(bytes), budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?;
-                }
-                WorkspaceMutation::Remove { path } => {
-                    transaction
-                        .remove(path, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?;
-                }
-            }
-        }
-        let committed = transaction
-            .commit(
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                budget,
-                &cancellation,
-                |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::default(),
-                    })
-                },
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        match committed {
-            TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            TransactionCommit::Conflict { .. } => {
-                Err(Error::Conflict("workspace generation changed".into()))
-            }
-            TransactionCommit::Fenced => Err(Error::Conflict("workspace writer was fenced".into())),
-            TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
-                "filesystem idempotency key belongs to another mutation".into(),
-            )),
-        }
-    }
-
     /// Resolves the current immutable head under the caller's work context.
     pub async fn resolve(
         &self,
@@ -361,13 +282,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&'a PreparationIo>,
         preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        let Some(io) = io else {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                self.apply_generation_unmeasured(reference, expected, mutations, &key)
-                    .await
-            });
-        };
-        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+        let unmeasured = io.is_none();
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let owned;
+            let io = match io {
+                Some(io) => io,
+                None => {
+                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &owned
+                }
+            };
             #[cfg(not(target_arch = "wasm32"))]
             let mut native_before = {
                 let preparation = preparation.cloned();
@@ -387,17 +311,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if let Some(work) = io.original_native_work() {
                 native_before(work).await?;
             }
-            let workspace = self.open(reference, Some(io)).await?;
+            let workspace = crate::conversation::BoundedContentFuture::new(Some(io), || {
+                self.open(reference, Some(io))
+            })?
+            .await?;
             let pinned = match expected {
-                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                Some(reference) => {
+                    crate::conversation::BoundedContentFuture::new(Some(io), || {
+                        self.generation(&workspace, reference, Some(io))
+                    })?
+                    .await?
+                }
+                None => {
+                    crate::conversation::BoundedContentFuture::new(Some(io), || {
+                        workspace
+                            .head(io, io.cancellation())
+                            .map(|result| io.sdk(result))
+                    })?
+                    .await?
+                }
             };
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = io.sdk(
+            let mut transaction = crate::conversation::BoundedContentFuture::new(Some(io), || {
                 workspace
                     .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
-                    .await,
-            )?;
+                    .map(|result| io.sdk(result))
+            })?
+            .await?;
             crate::conversation::BoundedContentFuture::new(Some(io), || async {
                 for mutation in mutations {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -405,16 +345,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         native_before(work).await?;
                     }
                     match mutation {
-                        WorkspaceMutation::CreateDirectory { path } => io.sdk(
-                            transaction
-                                .create_dir_all(path, io, io.cancellation())
-                                .await,
-                        )?,
-                        WorkspaceMutation::PutFile { path, bytes } => io.sdk(
-                            transaction
-                                .write(path, bytes.clone(), io, io.cancellation())
-                                .await,
-                        )?,
+                        WorkspaceMutation::CreateDirectory { path } => {
+                            crate::conversation::BoundedContentFuture::new(Some(io), || {
+                                transaction
+                                    .create_dir_all(path, io, io.cancellation())
+                                    .map(|result| io.sdk(result))
+                            })?
+                            .await?
+                        }
+                        WorkspaceMutation::PutFile { path, bytes } => {
+                            crate::conversation::BoundedContentFuture::new(Some(io), || {
+                                transaction
+                                    .write(path, bytes.clone(), io, io.cancellation())
+                                    .map(|result| io.sdk(result))
+                            })?
+                            .await?
+                        }
+                        WorkspaceMutation::Remove { path } if unmeasured => {
+                            crate::conversation::BoundedContentFuture::new(Some(io), || {
+                                transaction
+                                    .remove(path, io, io.cancellation())
+                                    .map(|result| io.sdk(result))
+                            })?
+                            .await?
+                        }
                         WorkspaceMutation::Remove { .. } => {
                             return Err(stock_boundary(
                                 Some(io),

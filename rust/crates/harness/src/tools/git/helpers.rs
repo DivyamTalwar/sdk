@@ -1,4 +1,7 @@
 use super::*;
+
+#[cfg(test)]
+mod properties;
 /// Resolves a path argument within the managed workspace.
 pub fn workspace_path_argument(mount: &Path, argument: &str) -> Result<String, String> {
     let argument = Path::new(argument);

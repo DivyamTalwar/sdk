@@ -76,7 +76,7 @@ async fn cancelled_serve_drains_connections_and_releases_the_instance_lock() -> 
     let endpoint = ServiceEndpoint::in_directory(directory.path().join("service"))?;
     let service = Arc::new(HarnessService::bind(endpoint.clone())?);
     let host = Arc::new(PendingHost::default());
-    service.register("pending".into(), host.clone()).await?;
+    service.register("pending".into(), host.clone())?;
     let serving = tokio::spawn(service.clone().serve());
     let client = LocalHarnessClient::new(endpoint.clone(), "pending".into());
     let call = tokio::spawn(async move { client.handshake(handshake()).await });
@@ -109,7 +109,7 @@ async fn disconnected_calls_drop_pending_host_io_without_stopping_the_service() 
     let endpoint = ServiceEndpoint::in_directory(directory.path().join("service"))?;
     let service = Arc::new(HarnessService::bind(endpoint.clone())?);
     let host = Arc::new(PendingHost::default());
-    service.register("pending".into(), host.clone()).await?;
+    service.register("pending".into(), host.clone())?;
     let serving = tokio::spawn(service.clone().serve());
     let client = LocalHarnessClient::new(endpoint, "pending".into());
     for method in ["handshake", "submit", "observe", "cancel", "replay"] {

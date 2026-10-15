@@ -5,7 +5,11 @@ mod endpoint;
 mod frames;
 mod lifetime;
 mod listener;
+#[cfg(test)]
+mod model;
+mod registry;
 mod server;
+mod sync;
 
 pub use client::LocalHarnessClient;
 pub use endpoint::ServiceEndpoint;

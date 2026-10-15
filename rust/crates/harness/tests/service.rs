@@ -72,9 +72,9 @@ async fn real_socket_routes_wire_calls_and_preserves_service_after_client_exit()
         Err(Error::Conflict(_))
     ));
     let host = support::open(&directory.path().join("one")).await?;
-    service.register("one".into(), host.clone()).await?;
+    service.register("one".into(), host.clone())?;
     assert!(matches!(
-        service.register("one".into(), host.clone()).await,
+        service.register("one".into(), host.clone()),
         Err(Error::Conflict(_))
     ));
     let server = tokio::spawn(service.clone().serve());
@@ -164,7 +164,7 @@ async fn real_socket_routes_wire_calls_and_preserves_service_after_client_exit()
     server.await.map_err(storage)??;
     for _ in 0..3 {
         let restarted = Arc::new(HarnessService::bind(endpoint.clone())?);
-        restarted.register("one".into(), host.clone()).await?;
+        restarted.register("one".into(), host.clone())?;
         let server = tokio::spawn(restarted.clone().serve());
         assert_eq!(
             client.handshake(handshake()).await?.protocol,
@@ -187,8 +187,8 @@ async fn real_socket_observes_scripted_task_and_authenticates_cancellation() -> 
     );
     let host = support::open(&directory.path().join("one")).await?;
     let other = support::open(&directory.path().join("two")).await?;
-    service.register("one".into(), host.clone()).await?;
-    service.register("two".into(), other.clone()).await?;
+    service.register("one".into(), host.clone())?;
+    service.register("two".into(), other.clone())?;
     let server = tokio::spawn(service.clone().serve());
     let client = LocalHarnessClient::new(endpoint.clone(), "one".into());
     let operation = OperationId::new();
@@ -302,7 +302,7 @@ async fn real_socket_replays_an_authenticated_maximum_size_record() -> Result<()
         wire::AdmissionState::Accepted as i32
     );
     let service = Arc::new(HarnessService::bind(endpoint.clone())?);
-    service.register("workspace".into(), host.clone()).await?;
+    service.register("workspace".into(), host.clone())?;
     let server = tokio::spawn(service.clone().serve());
     let client = LocalHarnessClient::new(endpoint, "workspace".into());
     let mut replay = client
@@ -341,7 +341,7 @@ async fn real_socket_requests_cancellation_of_running_work_without_settling_its_
     let host =
         support::open_with_provider(&directory.path().join("workspace"), provider.clone()).await?;
     let service = Arc::new(HarnessService::bind(endpoint.clone())?);
-    service.register("workspace".into(), host.clone()).await?;
+    service.register("workspace".into(), host.clone())?;
     let server = tokio::spawn(service.clone().serve());
     let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) = host
         .submit(OperationId::new(), "wait for cancellation")

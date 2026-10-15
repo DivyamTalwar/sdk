@@ -26,29 +26,42 @@ pub async fn run_git_command<E: GitFilesystemExecutor>(
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, String> {
-    if !git_transition_command(argv)
-        && repository
-            .resume(executor)
-            .await
-            .map_err(display)?
-            .is_some()
-    {
-        return Ok(None);
+    if !git_transition_command(argv) {
+        let resume = repository.resume(executor);
+        #[cfg(test)]
+        assert!(
+            std::mem::size_of_val(&resume) < 16 * 1024,
+            "git resume future: {}",
+            std::mem::size_of_val(&resume)
+        );
+        if resume.await.map_err(display)?.is_some() {
+            return Ok(None);
+        }
     }
     let output = if let Some(patch) = patch {
-        repository
-            .run(
-                GitCommand::Apply {
-                    patch: patch.to_vec(),
-                },
-                workspace_tree,
-                executor,
-            )
-            .await
+        let apply = repository.run(
+            GitCommand::Apply {
+                patch: patch.to_vec(),
+            },
+            workspace_tree,
+            executor,
+        );
+        #[cfg(test)]
+        assert!(
+            std::mem::size_of_val(&apply) < 16 * 1024,
+            "git apply future: {}",
+            std::mem::size_of_val(&apply)
+        );
+        apply.await
     } else {
-        repository
-            .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
-            .await
+        let run = repository.run_argv(argv, workspace_tree, author, authored_at_seconds, executor);
+        #[cfg(test)]
+        assert!(
+            std::mem::size_of_val(&run) < 16 * 1024,
+            "git argv future: {}",
+            std::mem::size_of_val(&run)
+        );
+        run.await
     };
     output.map(Some).map_err(display)
 }
