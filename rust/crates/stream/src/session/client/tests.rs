@@ -16,6 +16,7 @@ struct Counts {
     actors: AtomicUsize,
     acknowledgements: AtomicUsize,
     changed: tokio::sync::Notify,
+    // Fixture-only lock: never nested, and never held across an await.
     resumes: Mutex<Vec<(u64, u64, u64)>>,
 }
 struct Host<P> {

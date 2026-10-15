@@ -14,6 +14,8 @@ use tonic::{
 
 mod link;
 mod pool;
+mod progress;
+use progress::Progress;
 #[cfg(test)]
 mod tests;
 type Connect = Arc<
@@ -65,30 +67,6 @@ enum Command {
         epoch: u64,
         generation: u64,
     },
-}
-struct Progress {
-    state: Mutex<(u64, u64)>,
-}
-impl Progress {
-    fn next(&self) -> Result<u64, StreamError> {
-        Ok(self.state.lock().map_err(|_| StreamError::Unavailable)?.0)
-    }
-    fn fence(&self) -> Result<u64, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-        state.1 = state.1.checked_add(1).ok_or(StreamError::Capacity)?;
-        Ok(state.1)
-    }
-    fn consume(&self, generation: u64, sequence: u64) -> Result<bool, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-        if generation != state.1 || sequence < state.0 {
-            return Ok(false);
-        }
-        if sequence > state.0 {
-            return Err(StreamError::Unavailable);
-        }
-        state.0 = state.0.checked_add(1).ok_or(StreamError::OutOfRange)?;
-        Ok(true)
-    }
 }
 struct Route {
     node: String,
@@ -193,15 +171,8 @@ impl Client {
     ) -> Result<RecordStream, StreamError> {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
-        let progress = Arc::new(Progress {
-            state: Mutex::new((from, 1)),
-        });
-        let id = self
-            .next_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(2)
-            })
-            .map_err(|_| StreamError::Capacity)?;
+        let progress = Arc::new(Progress::new(from));
+        let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
         let cursor = Cursor {

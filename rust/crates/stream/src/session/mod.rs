@@ -67,6 +67,7 @@ struct Session<P> {
     limits: Limits,
     node: String,
     hello: bool,
+    prefer_control: bool,
     revision: u64,
     channels: BTreeMap<u64, Channel>,
     sources: SelectAll<Source>,
@@ -97,6 +98,7 @@ pub fn serve<P: StreamProvider>(
         node,
         limits,
         hello: false,
+        prefer_control: true,
         revision: 0,
         channels: BTreeMap::new(),
         sources: SelectAll::new(),
@@ -129,14 +131,27 @@ pub fn serve<P: StreamProvider>(
                 session.receive(frame?)?;
                 continue;
             }
-            tokio::select! {
-                frame = session.incoming.next() => match frame {
-                    Some(frame) => session.receive(frame?)?,
-                    None => return Ok(None),
-                },
-                event = session.sources.next() => {
-                    if let Some((channel,event)) = event { session.record(channel,event)?; }
+            // Alternate deterministic priority. This bounds ready-side work
+            // and lets the model explore the actual wakeup path without RNG.
+            let input = session.incoming.next();
+            let source = session.sources.next();
+            let event = if session.prefer_control {
+                match future::select(input, source).await {
+                    future::Either::Left((input, _)) => future::Either::Left(input),
+                    future::Either::Right((source, _)) => future::Either::Right(source),
                 }
+            } else {
+                match future::select(source, input).await {
+                    future::Either::Left((source, _)) => future::Either::Right(source),
+                    future::Either::Right((input, _)) => future::Either::Left(input),
+                }
+            };
+            session.prefer_control = !session.prefer_control;
+            match event {
+                future::Either::Left(Some(frame)) => session.receive(frame?)?,
+                future::Either::Left(None) => return Ok(None),
+                future::Either::Right(Some((channel, event))) => session.record(channel, event)?,
+                future::Either::Right(None) => {}
             }
         }
     })

@@ -1,3 +1,5 @@
+mod properties;
+
 use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use futures::channel::mpsc;

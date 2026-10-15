@@ -69,6 +69,7 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
 proptest.workspace = true
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
