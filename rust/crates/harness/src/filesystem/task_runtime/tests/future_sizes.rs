@@ -92,3 +92,57 @@ async fn execution_and_worker_futures_stay_bounded() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn reconciliation_has_only_its_progress_allocation() -> Result<()> {
+    use futures::FutureExt as _;
+
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime(None).await?;
+    let lease = fixture.admit(&runtime).await?;
+    runtime.task_host().start_task(&lease, &mut None).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let model = Model::new("synthetic".into(), "size".into(), "1".into(), Value::Null)?;
+    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+    for (valid, allowance) in [(true, 1_000), (false, 1_000), (true, 0)] {
+        let execution = runtime
+            .stock_execution(
+                task,
+                LeaseFence::from(&lease.reservation),
+                OperationId::from_bytes([106; 16]),
+                model.clone(),
+                provider.clone(),
+                ContextPipeline::default(),
+                None,
+            )
+            .await?;
+        let input = TurnInput {
+            operation_id: if valid {
+                execution.operation_id()
+            } else {
+                OperationId::from_bytes([107; 16])
+            },
+            input: crate::model::ModelContent::Text("question".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let allocations = allocation_counter::measure(|| {
+            let future = execution.reconcile(input, allowance);
+            if valid && allowance != 0 {
+                // Valid construction owns exactly one funded progress future.
+                drop(future);
+            } else {
+                // Poll through observation into input validation, before store I/O.
+                // Nested observation boxes would be allocated during this poll.
+                assert!(matches!(future.now_or_never(), Some(Err(_))));
+            }
+        });
+        // Rejected inputs also allocate their owned diagnostic. A zero
+        // allowance allocates that diagnostic without a progress frame.
+        let expected = u64::from(allowance != 0) + u64::from(!valid || allowance == 0);
+        assert_eq!(allocations.count_total, expected);
+        assert_eq!(allocations.count_current, 0);
+        assert_eq!(allocations.bytes_current, 0);
+    }
+    Ok(())
+}
