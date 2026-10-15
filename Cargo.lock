@@ -309,7 +309,6 @@ dependencies = [
  "async-stream",
  "base64 0.22.1",
  "bytes",
- "fs2",
  "futures",
  "keyring",
  "reqwest 0.12.28",

@@ -1,8 +1,8 @@
 //! Shared streaming adapters and immutable model selection.
 
+mod accounting;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
-mod accounting;
 mod credentials;
 mod dispatch;
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,14 +1,14 @@
 use crate::{HttpRequest, HttpTransport, invalid};
 use acyclic_harness::Result;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use fs2::FileExt as _;
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -16,10 +16,11 @@ const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 
 /// Native-only reuse of an existing Codex CLI ChatGPT login.
-/// Refreshes are serialized with both an async mutex and a process file lock.
+/// Refreshes serialize in memory and defer to concurrent CLI writes.
 pub struct CodexLogin {
     path: PathBuf,
-    account: tokio::sync::Mutex<Option<Option<String>>>,
+    account: OnceLock<Option<String>>,
+    refresh: tokio::sync::Mutex<()>,
 }
 
 impl CodexLogin {
@@ -27,7 +28,8 @@ impl CodexLogin {
     pub fn from_path(path: PathBuf) -> Self {
         Self {
             path,
-            account: tokio::sync::Mutex::new(None),
+            account: OnceLock::new(),
+            refresh: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -53,25 +55,15 @@ impl CodexLogin {
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
     ) -> Result<(String, Option<String>)> {
-        let mut account = self.account.lock().await;
-        let path = self.path.clone();
-        // Lock acquisition can block on another process performing a refresh.
-        let (lock, mut auth) = tokio::task::spawn_blocking(move || load_locked(&path))
-            .await
-            .map_err(|_| invalid("Codex credential reader interrupted"))??;
-        let current_account = auth["tokens"]["account_id"].as_str().map(str::to_owned);
-        if account
-            .as_ref()
-            .is_some_and(|expected| expected != &current_account)
-        {
-            return Err(invalid(
-                "Codex login account changed; resolve the model again",
-            ));
-        }
-        *account = Some(current_account.clone());
-        let access = token(&auth, "access_token")?;
-        let force = rejected.is_some_and(|rejected| rejected == access);
-        if force || needs_refresh(&auth, OffsetDateTime::now_utc()) {
+        let _refresh = self.refresh.lock().await;
+        let (mut original, mut auth) = self.load().await?;
+        self.check_account(&auth)?;
+        for attempt in 0..2 {
+            let access = token(&auth, "access_token")?;
+            let force = rejected.is_some_and(|rejected| rejected == access);
+            if !force && !needs_refresh(&auth, OffsetDateTime::now_utc()) {
+                break;
+            }
             let refresh = token(&auth, "refresh_token")?;
             let response = transport.send(HttpRequest {
                 url: "https://auth.openai.com/oauth/token".into(),
@@ -81,11 +73,25 @@ impl CodexLogin {
                     .map_err(|_| invalid("Codex refresh encoding failed"))?,
             }).await?;
             if response.status != 200 {
-                return Err(invalid(if matches!(response.status, 400 | 401 | 403) {
-                    "Codex login refresh rejected; sign in with the Codex CLI again"
+                if attempt == 0 && matches!(response.status, 400 | 401) {
+                    let (bytes, current) = self.load().await?;
+                    self.check_account(&current)?;
+                    if token(&current, "refresh_token").ok() != Some(refresh)
+                        || token(&current, "access_token").ok() != Some(access)
+                    {
+                        original = bytes;
+                        auth = current;
+                        continue;
+                    }
+                }
+                return Err(if matches!(response.status, 400 | 401 | 403) {
+                    acyclic_harness::Error::Unauthorized(format!(
+                        "Codex refresh HTTP status {}; sign in with the Codex CLI again",
+                        response.status
+                    ))
                 } else {
-                    "Codex login refresh temporarily unavailable"
-                }));
+                    crate::http_error(response.status)
+                });
             }
             let mut body = response.body;
             let mut bytes = Vec::new();
@@ -118,16 +124,32 @@ impl CodexLogin {
             );
             let path = self.path.clone();
             // Return the same document after atomic persistence, avoiding a clone of secrets.
-            auth = tokio::task::spawn_blocking(move || {
-                persist(&path, &auth)?;
-                Ok::<_, acyclic_harness::Error>(auth)
-            })
-            .await
-            .map_err(|_| invalid("Codex credential writer interrupted"))??;
+            auth =
+                tokio::task::spawn_blocking(move || persist_if_unchanged(&path, &original, auth))
+                    .await
+                    .map_err(|_| invalid("Codex credential writer interrupted"))??;
+            self.check_account(&auth)?;
+            break;
         }
         let access = token(&auth, "access_token")?.to_owned();
-        drop(lock);
-        Ok((access, current_account))
+        Ok((access, self.account.get().cloned().flatten()))
+    }
+
+    async fn load(&self) -> Result<(Vec<u8>, Value)> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || load(&path))
+            .await
+            .map_err(|_| invalid("Codex credential reader interrupted"))?
+    }
+
+    fn check_account(&self, auth: &Value) -> Result<()> {
+        let current = auth["tokens"]["account_id"].as_str().map(str::to_owned);
+        if self.account.get_or_init(|| current.clone()) != &current {
+            return Err(acyclic_harness::Error::Unauthorized(
+                "Codex login account changed; resolve the model again".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -154,22 +176,7 @@ fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
         .is_none_or(|last| now - last >= time::Duration::days(8))
 }
 
-fn load_locked(path: &Path) -> Result<(File, Value)> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
-    let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let lock = options
-        .open(parent.join("acyclic-auth.lock"))
-        .map_err(|_| invalid("cannot open Codex credential lock"))?;
-    lock.lock_exclusive()
-        .map_err(|_| invalid("cannot lock Codex credentials"))?;
+fn load(path: &Path) -> Result<(Vec<u8>, Value)> {
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|_| invalid("cannot read Codex auth.json"))?
@@ -187,23 +194,37 @@ fn load_locked(path: &Path) -> Result<(File, Value)> {
         return Err(invalid("Codex auth.json is not a ChatGPT CLI login"));
     }
     token(&auth, "access_token")?;
-    Ok((lock, auth))
+    Ok((bytes, auth))
 }
 
-fn persist(path: &Path, auth: &Value) -> Result<()> {
+fn persist_if_unchanged(path: &Path, original: &[u8], auth: Value) -> Result<Value> {
+    let absolute = if path.is_absolute() {
+        None
+    } else {
+        Some(std::path::absolute(path).map_err(|_| invalid("cannot resolve Codex auth path"))?)
+    };
+    let path = absolute.as_deref().unwrap_or(path);
     let parent = path
         .parent()
         .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)
+    // Stage beside CODEX_HOME, leaving its directory containing only auth.json.
+    let staging = parent
+        .parent()
+        .ok_or_else(|| invalid("Codex auth directory needs a parent"))?;
+    let mut file = tempfile::NamedTempFile::new_in(staging)
         .map_err(|_| invalid("cannot create Codex credential update"))?;
-    serde_json::to_writer(file.as_file_mut(), auth)
+    serde_json::to_writer(file.as_file_mut(), &auth)
         .map_err(|_| invalid("cannot encode Codex credential update"))?;
     file.write_all(b"\n")
         .and_then(|()| file.as_file().sync_all())
         .map_err(|_| invalid("cannot flush Codex credential update"))?;
+    let (bytes, current) = load(path)?;
+    if bytes != original {
+        return Ok(current);
+    }
     file.persist(path)
         .map_err(|_| invalid("cannot replace Codex auth.json"))?;
-    Ok(())
+    Ok(auth)
 }
 
 #[cfg(test)]

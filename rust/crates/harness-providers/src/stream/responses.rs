@@ -11,6 +11,11 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
         }
         Some("response.output_item.added" | "response.output_item.done") => {
             let item = &value["item"];
+            if item["type"] == "reasoning" && item["encrypted_content"].is_string() {
+                state
+                    .thinking
+                    .insert(index(value, "output_index")?, item.clone());
+            }
             if item["type"] == "function_call" {
                 let call = state
                     .calls

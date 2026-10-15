@@ -100,13 +100,12 @@ async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> R
 }
 
 #[tokio::test]
-async fn independent_login_instances_serialize_refresh_and_reload_the_winner() -> Result<()> {
-    let (root, first, transport) = fixture(&jwt(0), 200)?;
-    let second = CodexLogin::from_path(root.path().join("auth.json"));
+async fn shared_login_serializes_refresh_and_reloads_the_winner() -> Result<()> {
+    let (_root, first, transport) = fixture(&jwt(0), 200)?;
     let transport = Arc::new(transport);
     let (left, right) = futures::join!(
         first.bearer(transport.as_ref(), None),
-        second.bearer(transport.as_ref(), None)
+        first.bearer(transport.as_ref(), None)
     );
     assert_eq!(left?, right?);
     assert_eq!(
@@ -119,6 +118,9 @@ async fn independent_login_instances_serialize_refresh_and_reload_the_winner() -
     );
     Ok(())
 }
+
+#[path = "codex_race_tests.rs"]
+mod races;
 
 #[tokio::test]
 async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Result<()> {

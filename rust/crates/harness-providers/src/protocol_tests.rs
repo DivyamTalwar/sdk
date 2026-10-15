@@ -237,9 +237,9 @@ impl HttpTransport for ToolLoop {
 }
 
 #[tokio::test]
-async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_both_protocols()
+async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoning_protocols()
 -> Result<()> {
-    for adapter in [Adapter::Anthropic, Adapter::Gemini] {
+    for adapter in [Adapter::Anthropic, Adapter::Gemini, Adapter::Responses] {
         let first = match adapter {
             Adapter::Anthropic => concat!(
                 "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
@@ -248,11 +248,20 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_both_pr
                 "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"echo\",\"input\":{\"value\":1}}}\n\n",
                 "data: {\"type\":\"message_stop\"}\n\n"
             ),
+            Adapter::Responses => concat!(
+                "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"encrypted_content\":\"encrypted\"}}\n\n",
+                "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":1}\"}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+            ),
             _ => {
                 "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"echo\",\"args\":{\"value\":1}},\"thoughtSignature\":\"signed\"}]},\"finishReason\":\"STOP\"}]}\n\n"
             }
         };
         let second = match adapter {
+            Adapter::Responses => concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+            ),
             Adapter::Anthropic => {
                 "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
             }
@@ -347,6 +356,15 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_both_pr
                 body["contents"][1]["parts"][0]["functionCall"]["id"],
                 format!("{}-0-0", dispatch.operation_id)
             );
+        } else if adapter == Adapter::Responses {
+            assert_eq!(
+                body["input"][2],
+                json!({
+                    "type":"reasoning", "id":"rs_1", "summary":[], "encrypted_content":"encrypted"
+                })
+            );
+            assert_eq!(body["input"][3]["type"], "function_call");
+            assert_eq!(body["input"][4]["type"], "function_call_output");
         } else {
             assert_eq!(
                 body["messages"][1]["content"][0],

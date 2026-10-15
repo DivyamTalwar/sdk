@@ -235,7 +235,6 @@ impl ModelProvider for ResolvedModel {
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         crate::dispatch::generate(self, request, dispatch)
-
     }
 }
 

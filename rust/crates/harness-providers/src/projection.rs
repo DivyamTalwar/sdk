@@ -45,6 +45,10 @@ pub(crate) fn count(
     };
     fixed[field] = json!([]);
     if let Some(map) = fixed.as_object_mut() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if provider.codex_login.is_some() {
+            map.remove("instructions");
+        }
         match provider.config.adapter {
             Adapter::Anthropic => {
                 map.remove("system");
@@ -108,6 +112,11 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
     let mut messages = Vec::new();
     let mut system = Vec::new();
     for message in &request.messages {
+        #[cfg(not(target_arch = "wasm32"))]
+        if provider.codex_login.is_some() && message.role == ModelRole::System {
+            system.push(text_content(&message.content)?);
+            continue;
+        }
         if message.role == ModelRole::System
             && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         {
@@ -146,6 +155,17 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             }
         }
         Adapter::Responses => {
+            let include = map
+                .entry("include")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| invalid("Responses include must be an array"))?;
+            if !include
+                .iter()
+                .any(|item| item == "reasoning.encrypted_content")
+            {
+                include.push(json!("reasoning.encrypted_content"));
+            }
             map.insert("input".into(), json!(messages));
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
@@ -154,10 +174,12 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
+                map.insert("instructions".into(), json!(system.join("\n\n")));
                 map.insert("tool_choice".into(), json!("auto"));
                 map.insert("parallel_tool_calls".into(), json!(true));
-                map.entry("reasoning").or_insert(Value::Null);
-                map.entry("include").or_insert_with(|| json!([]));
+                if map.get("reasoning").is_some_and(Value::is_null) {
+                    map.remove("reasoning");
+                }
             }
         }
         Adapter::Anthropic => {
@@ -217,6 +239,11 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
                         calls.extend(thinking.iter().cloned());
                     }
                 }
+                if adapter == Adapter::Responses {
+                    if let Some(reasoning) = metadata["openai_reasoning"].as_array() {
+                        calls.extend(reasoning.iter().cloned());
+                    }
+                }
                 let mut call = match adapter {
                     Adapter::Anthropic => {
                         json!({"type":"tool_use","id":call_id,"name":name,"input":arguments})
@@ -267,7 +294,16 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
         }
         Adapter::Responses => {
             if !texts.is_empty() {
-                output.push(json!({"role":role,"content":texts.join("\n")}));
+                let kind = if message.role == ModelRole::Assistant {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                let content: Vec<_> = texts
+                    .into_iter()
+                    .map(|text| json!({"type":kind,"text":text}))
+                    .collect();
+                output.push(json!({"type":"message","role":role,"content":content}));
             }
             output.extend(calls);
             output.extend(results);

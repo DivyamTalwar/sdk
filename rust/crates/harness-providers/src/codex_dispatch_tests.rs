@@ -86,9 +86,11 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         (200, json!({"access_token":"new-access"}).to_string()),
         (200, RESPONSE.into()),
     ])?;
-    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-        .with_codex_login(login)
-        .resolve("openai/gpt-5")?;
+    let mut provider =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
+            .with_codex_login(login)
+            .resolve("openai/gpt-5")?;
+    provider.model.options["reasoning"] = serde_json::Value::Null;
     let (request, dispatch) = crate::tests::request(&provider)?;
     let events = provider
         .generate(request, dispatch)
@@ -113,11 +115,32 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
     assert_eq!(requests[2].headers["authorization"], "Bearer new-access");
     assert_eq!(requests[0].body, requests[2].body);
     let body = crate::json(&requests[2].body)?;
-    assert_eq!(body["store"], false);
-    assert_eq!(body["stream"], true);
-    assert_eq!(body["tool_choice"], "auto");
-    assert_eq!(body["parallel_tool_calls"], true);
-    assert!(body.get("max_output_tokens").is_none());
+    assert_eq!(
+        body,
+        json!({
+            "model":"gpt-5", "instructions":"system",
+            "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"user"}]}], "tools":[],
+            "store":false, "stream":true, "tool_choice":"auto",
+            "parallel_tool_calls":true, "include":["reasoning.encrypted_content"],
+        })
+    );
+    assert_eq!(requests[2].headers["originator"], "acyclic_harness");
+    assert_eq!(
+        requests[2].headers["session-id"],
+        dispatch.operation_id.to_string()
+    );
+    assert_eq!(
+        requests[2].headers["thread-id"],
+        dispatch.operation_id.to_string()
+    );
+    assert_eq!(
+        requests[2].headers["x-client-request-id"],
+        format!("{}-0", dispatch.operation_id)
+    );
+    assert_eq!(
+        requests[2].headers["user-agent"],
+        concat!("acyclic-harness/", env!("CARGO_PKG_VERSION"))
+    );
     Ok(())
 }
 

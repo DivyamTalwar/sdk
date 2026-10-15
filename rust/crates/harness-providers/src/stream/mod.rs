@@ -76,8 +76,16 @@ pub(crate) fn events<'a>(
             let arguments = json(call.arguments.as_bytes())?;
             if !arguments.is_object() { Err(invalid("tool arguments must be a JSON object"))?; }
             validate_numbers(&arguments)?;
-            if adapter == Adapter::Anthropic && position == 0 && !state.thinking.is_empty() {
-                call.metadata = json!({"anthropic_thinking": state.thinking.values().collect::<Vec<_>>()});
+            if matches!(adapter, Adapter::Anthropic | Adapter::Responses) && position == 0 && !state.thinking.is_empty() {
+                let key = if adapter == Adapter::Anthropic {
+                    "anthropic_thinking"
+                } else {
+                    "openai_reasoning"
+                };
+                call.metadata = Value::Object(serde_json::Map::from_iter([(
+                    key.into(),
+                    Value::Array(std::mem::take(&mut state.thinking).into_values().collect()),
+                )]));
             }
             calls.push(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(call.id, call.name, arguments).with_metadata(call.metadata)));
         }
