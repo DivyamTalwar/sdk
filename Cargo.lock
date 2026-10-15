@@ -263,6 +263,7 @@ dependencies = [
  "http",
  "js-sys",
  "jsonschema",
+ "loom",
  "proptest",
  "prost",
  "prost-build",
