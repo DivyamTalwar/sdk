@@ -174,22 +174,9 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         };
         let model = provider.model().clone();
         let provider = Arc::new(provider);
-        let storage_provider = ProviderRef::new(
-            "native-model-fixture".into(),
-            "filesystem".into(),
-            "2".into(),
-            &mut None,
-        )?;
-        let host = FilesystemHost::new(
-            acyclic_fs::Fs::memory(),
-            &ProviderRef::new(
-                "native-model-fixture".into(),
-                "filesystem".into(),
-                "2".into(),
-                &mut None,
-            )?,
-            None,
-        )?;
+        let storage_provider =
+            ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &storage_provider, None)?;
         let agent = AgentId::from_bytes([2; 16]);
         let volume = VolumeRef::new(
             storage_provider,
@@ -200,7 +187,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         )?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new(
-            "native-model-fixture",
+            "fixture",
             [47; 32],
             Authority {
                 kind: AggregateKind::Task,
@@ -213,7 +200,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
                 "operation:declare".into(),
                 "operation:observe".into(),
                 "operation:cancel".into(),
-                "task:spawn:fixture.model@1".into(),
+                "task:spawn:model@1".into(),
                 "model:generate".into(),
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
@@ -252,7 +239,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             .await?;
         let machine = Arc::new(OneCommand {
             identity: MachineIdentity {
-                name: "fixture.model".into(),
+                name: "model".into(),
                 version: "1".into(),
                 digest: [48; 32],
             },
@@ -299,11 +286,8 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             Some(&io),
         )
         .await?;
-        let definition = tasks.get_version::<serde_json::Value, serde_json::Value>(
-            "fixture.model",
-            "1",
-            None,
-        )?;
+        let definition =
+            tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
         assert!(matches!(
             runtime
                 .harness()

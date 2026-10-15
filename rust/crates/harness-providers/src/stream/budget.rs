@@ -1,6 +1,10 @@
 use super::{Result, Value, invalid};
 use std::mem::size_of;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "budget_properties.rs"]
+mod properties;
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct Size {
     pub bytes: usize,

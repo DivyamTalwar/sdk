@@ -5,6 +5,8 @@ mod adapter;
 mod catalog;
 mod credentials;
 mod dispatch;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub mod fuzzing;
 mod http;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -27,6 +29,10 @@ pub use spec::{Authentication, ProviderSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;
+use std::sync;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod accounting_properties;
 
 fn invalid(reason: impl Into<String>) -> Error {
     Error::Invalid(reason.into())
