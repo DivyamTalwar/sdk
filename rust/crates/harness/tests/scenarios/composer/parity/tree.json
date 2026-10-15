@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "tree"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "tree": true,
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/tree"

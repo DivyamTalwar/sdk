@@ -1,0 +1,214 @@
+use super::*;
+use acyclic_harness::{
+    OperationId,
+    client::{CommandFileRoot, CommandPaletteState, CommandQuery},
+    context::PinnedContextPath,
+};
+use proptest::prelude::*;
+use std::collections::BTreeMap;
+
+fn snapshot() -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        (
+            "settings.json".into(),
+            json!({"agent_mode":"code","agent_modes":["code","plan"],"diff_mode":"auto","diff_modes":["auto","unified","split"],"retained":"settings"}),
+        ),
+        ("layout.json".into(), json!({"retained":"layout"})),
+        ("theme.json".into(), json!({"retained":"theme"})),
+        (
+            "attention.json".into(),
+            json!({"tasks":["00000000-0000-0000-0000-000000000003","00000000-0000-0000-0000-000000000004"]}),
+        ),
+    ])
+}
+
+async fn source(fixture: &Fixture, path: &str) -> Result<PinnedContextPath> {
+    let page = fixture
+        .reader
+        .list_private_directory(&fixture.root.volume, "", "", None, None, 128, None)?
+        .await?;
+    Ok(PinnedContextPath {
+        root: fixture.root.clone(),
+        generation: page.generation,
+        path: path.into(),
+    })
+}
+
+#[tokio::test]
+async fn catalog_reads_the_file_at_the_query_cut() -> Result<()> {
+    let defaults = include_str!("../src/client/commands.json");
+    let fixture = Fixture::new(&[("config/commands.json", defaults)]).await?;
+    let pinned = source(&fixture, "config/commands.json").await?;
+    let mut changed: Value = serde_json::from_str(defaults).expect("definitions");
+    changed[0]["description"] = json!("Changed through the config volume");
+    fixture
+        .put("config/commands.json", &changed.to_string(), "edit-catalog")
+        .await?;
+    let before = CommandCatalog::from_file(&pinned, fixture.reader.as_ref(), 32_768).await?;
+    let after = CommandCatalog::from_file(
+        &source(&fixture, "config/commands.json").await?,
+        fixture.reader.as_ref(),
+        32_768,
+    )
+    .await?;
+    assert_ne!(
+        before
+            .commands()
+            .find(|spec| spec.name == "compact")
+            .unwrap()
+            .description,
+        after
+            .commands()
+            .find(|spec| spec.name == "compact")
+            .unwrap()
+            .description
+    );
+    assert!(
+        CommandCatalog::from_file(&pinned, &DeniedReader, 32_768)
+            .await
+            .is_err()
+    );
+    assert!(
+        CommandCatalog::from_file(&pinned, fixture.reader.as_ref(), 1)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn each_command_dispatches_through_ordinary_volume_files() -> Result<()> {
+    let fixture = Fixture::new(&[]).await?;
+    let catalog = CommandCatalog::builtins()?;
+    for spec in catalog.commands() {
+        let arguments = if matches!(
+            spec.action,
+            acyclic_harness::client::CommandAction::Tool { .. }
+        ) {
+            " echo @missing"
+        } else {
+            ""
+        };
+        let resolution = catalog
+            .resolve(&format!("/{}{arguments}", spec.name), &DeniedReader, 1024)
+            .await?;
+        let changes = resolution.file_changes(&snapshot(), OperationId::new())?;
+        assert_eq!(changes.len(), 1, "{}", spec.name);
+        for change in changes {
+            let prefix = match change.root {
+                CommandFileRoot::Config => "config",
+                CommandFileRoot::Task => "task",
+            };
+            let path = format!("{prefix}/{}", change.path);
+            assert_eq!(change.create_only, change.root == CommandFileRoot::Task);
+            if change.root == CommandFileRoot::Task {
+                assert!(change.path.starts_with("requests/"));
+            }
+            fixture
+                .put(&path, &change.contents.to_string(), &spec.name)
+                .await?;
+            let (_, bytes) = source(&fixture, &path)
+                .await?
+                .read(fixture.reader.as_ref(), 32_768)
+                .await?;
+            assert_eq!(
+                serde_json::from_slice::<Value>(&bytes).expect("published JSON"),
+                change.contents
+            );
+            if matches!(spec.name.as_str(), "delete" | "clearall") {
+                assert_eq!(change.root, CommandFileRoot::Config);
+                assert!(change.contents.get("confirmation").is_some());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn direct_requests_do_not_consult_unrelated_broken_config_files() -> Result<()> {
+    let catalog = CommandCatalog::builtins()?;
+    let broken = BTreeMap::from([
+        ("layout.json".into(), json!(42)),
+        ("settings.json".into(), Value::Null),
+    ]);
+    for input in ["/shell echo hi", "/delegate task", "/compact"] {
+        let resolution = futures::executor::block_on(catalog.resolve(input, &DeniedReader, 1024))?;
+        let changes = resolution.file_changes(&broken, OperationId::new())?;
+        assert_eq!(changes[0].root, CommandFileRoot::Task);
+    }
+    Ok(())
+}
+
+#[test]
+fn catalog_files_cannot_disable_delete_confirmation_or_add_approval_prompts() {
+    for (kind, confirmation, accepted) in [
+        ("delete", false, false),
+        ("delete", true, true),
+        ("clear_all", false, false),
+        ("clear_all", true, true),
+        ("new", true, false),
+        ("new", false, true),
+    ] {
+        let bytes = serde_json::to_vec(&json!([{"name":"action","description":"Action","arguments":"none","action":{"kind":"request","request":{"kind":kind},"confirmation":confirmation}}])).unwrap();
+        assert_eq!(CommandCatalog::from_bytes(&bytes, 1024).is_ok(), accepted);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    // Accepted definition files round-trip through the same validated loader;
+    // canonicalization preserves every command and alias.
+    #[test]
+    fn catalog_file_round_trips(description in "[a-zA-Z0-9 λ]{1,80}") {
+        let mut data: Value = serde_json::from_str(include_str!("../src/client/commands.json")).unwrap();
+        data[0]["description"] = json!(description);
+        let bytes = serde_json::to_vec(&data).unwrap();
+        let result = CommandCatalog::from_bytes(&bytes, 32_768);
+        prop_assert_eq!(result.is_ok(), !description.trim().is_empty());
+        if let Ok(catalog) = result {
+            let specs: Vec<_> = catalog.commands().collect();
+            let encoded = serde_json::to_vec(&specs).unwrap();
+            let decoded = CommandCatalog::from_bytes(&encoded, 32_768).unwrap();
+            prop_assert_eq!(decoded.commands().collect::<Vec<_>>(), specs);
+        }
+    }
+
+    // File-derived toggles preserve unrelated keys and two published toggles
+    // restore the observed boolean. No hidden in-memory state is required.
+    #[test]
+    fn file_toggles_preserve_other_fields(initial in any::<bool>(), extra in ".{0,80}", index in 0_usize..4) {
+        let (query, file, field) = [
+            (CommandQuery::Reasoning, "settings.json", "reasoning"),
+            (CommandQuery::Details, "settings.json", "tool_details"),
+            (CommandQuery::Tree, "layout.json", "tree"),
+            (CommandQuery::Terminal, "layout.json", "terminal"),
+        ][index];
+        let mut state = BTreeMap::from([(file.into(), json!({field:initial,"extra":extra}))]);
+        let resolution = CommandResolution::Select { query };
+        for expected in [!initial, initial] {
+            let changes = resolution.file_changes(&state, OperationId::new()).unwrap();
+            prop_assert_eq!(changes.len(), 1);
+            prop_assert_eq!(changes[0].path.as_str(), file);
+            prop_assert_eq!(&changes[0].contents["extra"], &state[file]["extra"]);
+            prop_assert_eq!(changes[0].contents[field], json!(expected));
+            state.insert(file.into(), changes[0].contents.clone());
+        }
+    }
+
+    // A palette-file snapshot can contain any usize selection: projection and
+    // both navigation directions stay within the live match set and round-trip.
+    #[test]
+    fn palette_file_selection_is_bounded(selected in any::<usize>(), filter in "[a-z]{0,5}") {
+        let catalog = CommandCatalog::builtins().unwrap();
+        let state = CommandPaletteState { filter, selected };
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let decoded: CommandPaletteState = serde_json::from_slice(&encoded).unwrap();
+        let palette = catalog.palette(&decoded);
+        for next in [palette.next(), palette.previous()] {
+            if palette.entries().is_empty() { prop_assert_eq!(next.selected, 0); }
+            else { prop_assert!(next.selected < palette.entries().len()); }
+        }
+        prop_assert_eq!(state, decoded);
+    }
+}

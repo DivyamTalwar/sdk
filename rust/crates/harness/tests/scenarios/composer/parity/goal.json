@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "goal"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "open_view": "goal",
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/goal"

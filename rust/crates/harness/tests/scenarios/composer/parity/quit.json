@@ -5,6 +5,12 @@
       "request": {
         "kind": "quit"
       }
+    },
+    "file_values": {
+      "config/layout.json": {
+        "exit_requested": true,
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/quit"

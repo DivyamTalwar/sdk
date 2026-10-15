@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "feedback"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "open_view": "feedback",
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/bug"

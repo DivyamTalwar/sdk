@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod presentation;
 pub use presentation::*;
+mod files;
 mod syntax;
+pub use files::*;
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
@@ -132,7 +134,7 @@ pub struct CommandSpec {
 
 /// Typed client requests emitted by built-in commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandRequest {
     /// Exit the client.
     Quit,
@@ -247,7 +249,7 @@ pub enum CommandQuery {
 
 /// Complete composer classification; renderers do not parse slash syntax.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandResolution {
     /// A destructive client operation awaiting explicit confirmation.
     Confirm {
@@ -297,25 +299,10 @@ struct PromptMetadata {
 }
 
 impl CommandCatalog {
-    /// Parses the schema-owned built-in catalog.
+    /// Bootstrap contents for the user's catalog file; live clients load that file.
     pub fn builtins() -> Result<Self> {
-        let specs: Vec<CommandSpec> = serde_json::from_str(include_str!("commands.json"))
-            .map_err(|error| Error::Invalid(format!("invalid command catalog: {error}")))?;
-        let mut commands = BTreeMap::new();
-        let mut names = BTreeSet::new();
-        for spec in specs {
-            for name in std::iter::once(&spec.name).chain(&spec.aliases) {
-                validate_name(name)?;
-                if !names.insert(name.clone()) {
-                    return Err(Error::Conflict("duplicate builtin command or alias".into()));
-                }
-            }
-            commands.insert(spec.name.clone(), spec);
-        }
-        Ok(Self {
-            commands,
-            themes: Vec::new(),
-        })
+        let bytes = include_bytes!("commands.json");
+        Self::from_bytes(bytes, bytes.len() as u64)
     }
 
     /// Discovers optional `.claude/commands` and `.codex/prompts` recursively.
@@ -327,13 +314,27 @@ impl CommandCatalog {
         skill_roots: &[ContextRoot],
         limits: ContextDiscoveryLimits,
     ) -> Result<Self> {
+        Self::builtins()?
+            .with_sources(reader, roots, skill_roots, limits)
+            .await
+    }
+
+    /// Fold declared prompt/skill source snapshots into a catalog loaded from
+    /// the config volume. A new file-query cut produces a new immutable catalog.
+    pub async fn with_sources(
+        self,
+        reader: &dyn ContentResidencyVerifier,
+        roots: &[CommandRoot],
+        skill_roots: &[ContextRoot],
+        limits: ContextDiscoveryLimits,
+    ) -> Result<Self> {
         limits.validate()?;
         if roots.len().saturating_add(skill_roots.len()) > limits.directories as usize {
             return Err(Error::Invalid(
                 "catalog declarations exceed directory bound".into(),
             ));
         }
-        let mut catalog = Self::builtins()?;
+        let mut catalog = self;
         let mut work = DiscoveryWork {
             entries: 0,
             directories: 0,
@@ -381,11 +382,28 @@ impl CommandCatalog {
                             if !names.insert(name.clone()) {
                                 return Err(Error::Conflict(format!("duplicate command: {name}")));
                             }
+                            if let Some(existing) = catalog.lookup(&name) {
+                                if existing.name != name {
+                                    return Err(Error::Conflict(format!(
+                                        "reserved command alias: {name}"
+                                    )));
+                                }
+                                if let CommandAction::Prompt {
+                                    scope: previous, ..
+                                } = &existing.action
+                                {
+                                    if *previous > scope {
+                                        continue;
+                                    }
+                                    if *previous == scope {
+                                        return Err(Error::Conflict(format!(
+                                            "duplicate command: {name}"
+                                        )));
+                                    }
+                                }
+                            }
                             if catalog.lookup(&name).is_some_and(|spec| {
-                                !matches!(
-                                    spec.action,
-                                    CommandAction::Prompt { .. } | CommandAction::Skill { .. }
-                                )
+                                !matches!(spec.action, CommandAction::Prompt { .. })
                             }) {
                                 return Err(Error::Conflict(format!("reserved command: {name}")));
                             }

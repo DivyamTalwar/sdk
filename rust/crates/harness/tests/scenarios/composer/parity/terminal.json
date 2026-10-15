@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "terminal"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "terminal": true,
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/terminal"

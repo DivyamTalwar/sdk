@@ -51,32 +51,10 @@ impl CommandCatalog {
             .collect()
     }
 
-    /// A palette searches the same names, aliases and help used by dispatch.
-    pub fn palette(&self, filter: &str) -> CommandPalette<'_> {
-        let mut palette = CommandPalette {
-            catalog: self,
-            entries: Vec::new(),
-            selected: 0,
-        };
-        palette.filter(filter);
-        palette
-    }
-}
-
-/// Borrowed renderer-neutral palette state. Selection wraps over its matches.
-#[derive(Debug)]
-pub struct CommandPalette<'a> {
-    catalog: &'a CommandCatalog,
-    entries: Vec<&'a CommandSpec>,
-    selected: usize,
-}
-
-impl<'a> CommandPalette<'a> {
-    /// Reset selection and match a substring of names, aliases or descriptions.
-    pub fn filter(&mut self, filter: &str) {
-        let filter = filter.to_lowercase();
-        self.entries = self
-            .catalog
+    /// Fold palette.json and the catalog query into borrowed display rows.
+    pub fn palette<'a>(&'a self, state: &'a CommandPaletteState) -> CommandPalette<'a> {
+        let filter = state.filter.to_lowercase();
+        let entries = self
             .complete("")
             .filter(|spec| {
                 spec.name.to_lowercase().contains(&filter)
@@ -87,34 +65,65 @@ impl<'a> CommandPalette<'a> {
                     || spec.description.to_lowercase().contains(&filter)
             })
             .collect();
-        self.selected = 0;
+        CommandPalette { state, entries }
     }
+}
 
-    /// Ordered matches; the selected item borrows this same catalog data.
+/// Contents of palette.json in the config volume, followed by the UI.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandPaletteState {
+    /// Substring matched against catalog names, aliases and descriptions.
+    pub filter: String,
+    /// Logical selection; projection wraps it to the current result count.
+    pub selected: usize,
+}
+
+/// Renderer-neutral fold over the palette-state and command-file snapshots.
+#[derive(Debug)]
+pub struct CommandPalette<'a> {
+    state: &'a CommandPaletteState,
+    entries: Vec<&'a CommandSpec>,
+}
+
+impl<'a> CommandPalette<'a> {
+    /// Ordered matches from the same catalog snapshot.
     pub fn entries(&self) -> &[&'a CommandSpec] {
         &self.entries
     }
 
-    /// Current selection, absent for an empty result set.
+    /// Selected row, absent for an empty result set.
     pub fn selected(&self) -> Option<&'a CommandSpec> {
-        self.entries.get(self.selected).copied()
+        self.index().map(|index| self.entries[index])
     }
 
-    /// Move forward, wrapping to the first result.
-    pub fn next(&mut self) {
-        self.selected = if self.selected + 1 >= self.entries.len() {
-            0
-        } else {
-            self.selected + 1
-        };
+    /// New palette-file contents. Publish, then render the resulting query cut.
+    pub fn next(&self) -> CommandPaletteState {
+        let selected = self
+            .index()
+            .map_or(0, |index| (index + 1) % self.entries.len());
+        CommandPaletteState {
+            filter: self.state.filter.clone(),
+            selected,
+        }
     }
 
-    /// Move backward, wrapping to the last result.
-    pub fn previous(&mut self) {
-        self.selected = if self.selected == 0 {
-            self.entries.len().saturating_sub(1)
-        } else {
-            self.selected - 1
-        };
+    /// New palette-file contents, with backward wrapping.
+    pub fn previous(&self) -> CommandPaletteState {
+        let selected = self.index().map_or(0, |index| {
+            if index == 0 {
+                self.entries.len() - 1
+            } else {
+                index - 1
+            }
+        });
+        CommandPaletteState {
+            filter: self.state.filter.clone(),
+            selected,
+        }
+    }
+
+    fn index(&self) -> Option<usize> {
+        (!self.entries.is_empty()).then(|| self.state.selected % self.entries.len())
     }
 }

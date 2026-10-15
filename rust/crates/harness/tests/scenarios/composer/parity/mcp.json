@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "mcp"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "open_view": "mcp",
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/mcp"

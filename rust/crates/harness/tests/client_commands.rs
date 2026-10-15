@@ -1,8 +1,10 @@
 //! Data-driven composer cases against the production filesystem reader.
 
 use acyclic_fs::Fs;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::Error;
 use acyclic_harness::{
-    AgentId, Capabilities, Error, IdempotencyKey, Result,
+    AgentId, Capabilities, IdempotencyKey, Result,
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope, resolve_file_mentions},
     context::{ContextDiscoveryLimits, ContextRoot},
     conversation::{
@@ -16,7 +18,11 @@ use acyclic_harness::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_files;
+#[cfg(not(target_arch = "wasm32"))]
 mod client_command_parity;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "../src/client/commands/syntax.rs"]
 mod command_syntax;
 

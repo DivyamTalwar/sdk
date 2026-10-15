@@ -3,6 +3,23 @@
     "result": {
       "kind": "select",
       "query": "details"
+    },
+    "file_values": {
+      "config/settings.json": {
+        "tool_details": true,
+        "agent_mode": "code",
+        "diff_modes": [
+          "auto",
+          "unified",
+          "split"
+        ],
+        "diff_mode": "auto",
+        "retained": "settings",
+        "agent_modes": [
+          "code",
+          "plan"
+        ]
+      }
     }
   },
   "prompt": "/details"

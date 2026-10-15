@@ -5,6 +5,22 @@
       "request": {
         "kind": "cycle_mode"
       }
+    },
+    "file_values": {
+      "config/settings.json": {
+        "agent_mode": "plan",
+        "diff_modes": [
+          "auto",
+          "unified",
+          "split"
+        ],
+        "diff_mode": "auto",
+        "retained": "settings",
+        "agent_modes": [
+          "code",
+          "plan"
+        ]
+      }
     }
   },
   "prompt": "/m"

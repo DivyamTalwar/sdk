@@ -6,6 +6,12 @@
         "kind": "theme",
         "name": "Solarized Dark"
       }
+    },
+    "file_values": {
+      "config/theme.json": {
+        "name": "Solarized Dark",
+        "retained": "theme"
+      }
     }
   },
   "prompt": "/theme solarized dark"

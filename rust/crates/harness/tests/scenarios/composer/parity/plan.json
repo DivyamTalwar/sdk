@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "plan"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "open_view": "plan",
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/plan"

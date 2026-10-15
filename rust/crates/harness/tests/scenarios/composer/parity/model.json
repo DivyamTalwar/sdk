@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "model"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "open_view": "model",
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/model"

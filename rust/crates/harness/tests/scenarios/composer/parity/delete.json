@@ -5,6 +5,17 @@
       "request": {
         "kind": "delete"
       }
+    },
+    "files": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": null
+    },
+    "file_values": {
+      "config/layout.json": {
+        "confirmation": {
+          "kind": "delete"
+        },
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/delete"

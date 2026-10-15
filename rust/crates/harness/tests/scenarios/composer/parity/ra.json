@@ -6,6 +6,12 @@
         "scope": "all",
         "kind": "resume"
       }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "scope": "all",
+        "kind": "resume"
+      }
     }
   },
   "prompt": "/ra"

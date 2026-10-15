@@ -3,6 +3,12 @@
     "result": {
       "kind": "select",
       "query": "theme"
+    },
+    "file_values": {
+      "config/layout.json": {
+        "open_view": "theme",
+        "retained": "layout"
+      }
     }
   },
   "prompt": "/theme"

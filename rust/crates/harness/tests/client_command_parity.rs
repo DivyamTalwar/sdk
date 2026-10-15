@@ -1,5 +1,7 @@
 use super::*;
-use acyclic_harness::client::{CommandAction, CommandArguments, CommandRequest, CommandTaskScope};
+use acyclic_harness::client::{
+    CommandAction, CommandArguments, CommandPaletteState, CommandRequest, CommandTaskScope,
+};
 use proptest::prelude::*;
 
 #[test]
@@ -127,7 +129,11 @@ fn completions_and_palette_share_the_catalog_and_theme_data() -> Result<()> {
         ("transcript", "find"),
         ("RESUMEALL", "resumeall"),
     ] {
-        let palette = catalog.palette(filter);
+        let state = CommandPaletteState {
+            filter: filter.into(),
+            selected: 0,
+        };
+        let palette = catalog.palette(&state);
         assert_eq!(palette.selected().expect("match").name, name);
     }
     assert!(
@@ -207,17 +213,20 @@ proptest! {
         filter in "[a-z]{0,5}", moves in proptest::collection::vec(any::<bool>(), 0..256),
     ) {
         let catalog = CommandCatalog::builtins().expect("catalog");
-        let mut palette = catalog.palette(&filter);
-        let count = palette.entries().len();
+        let mut state = CommandPaletteState { filter, selected: 0 };
+        let count = catalog.palette(&state).entries().len();
         let mut expected = 0;
         for forward in moves {
             if forward {
-                palette.next();
+                state = catalog.palette(&state).next();
                 if count > 0 { expected = (expected + 1) % count; }
             } else {
-                palette.previous();
+                state = catalog.palette(&state).previous();
                 if count > 0 { expected = (expected + count - 1) % count; }
             }
+            let bytes = serde_json::to_vec(&state).expect("palette file");
+            prop_assert_eq!(serde_json::from_slice::<CommandPaletteState>(&bytes).expect("query state"), state.clone());
+            let palette = catalog.palette(&state);
             prop_assert_eq!(palette.selected().map(|s| s.name.as_str()), palette.entries().get(expected).map(|s| s.name.as_str()));
         }
     }
