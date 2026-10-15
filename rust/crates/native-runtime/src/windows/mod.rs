@@ -7,6 +7,8 @@
 mod driver;
 mod io;
 mod service;
+#[cfg(feature = "named-pipe")]
+pub(crate) mod pipe;
 
 pub(super) use driver::{submit_read, submit_write};
 pub(super) use io::{

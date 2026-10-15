@@ -11,6 +11,8 @@ pub struct ServiceEndpoint {
     pub(super) directory: PathBuf,
     #[cfg(windows)]
     pub(super) pipe: String,
+    #[cfg(windows)]
+    pub(super) security: std::sync::Arc<acyclic_native_runtime::UserPipeSecurity>,
 }
 
 impl ServiceEndpoint {
@@ -48,6 +50,10 @@ impl ServiceEndpoint {
             }
         }
         Ok(Self {
+            #[cfg(windows)]
+            security: std::sync::Arc::new(
+                acyclic_native_runtime::UserPipeSecurity::current_user().map_err(storage)?,
+            ),
             #[cfg(windows)]
             pipe: format!(
                 r"\\.\pipe\acyclic-harness-{}",
@@ -112,6 +118,8 @@ impl ServiceEndpoint {
                 }
             }
         };
+        #[cfg(windows)]
+        self.security.authenticate(&socket).map_err(storage)?;
         Ok(frames::connection(socket))
     }
 }

@@ -34,21 +34,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn wire_cancel(&self, request: wire::CancelRequest) -> Result<wire::CancelResponse> {
         let control = wire_api::validate_cancel_request(&request)?;
         control.control.authenticate(&self.verifier)?;
-        let (_, state) = self
-            .coordinator
-            .lock()
-            .await
-            .cancel_operation(
-                &control.control.owner,
-                &control.control.scope,
-                &self.verifier,
-                control.control.operation_id,
-                control.idempotency_key.clone(),
-                control.recursive,
-                None,
-                &mut None,
-            )
-            .await?;
+        let mut coordinator = self.coordinator.lock().await;
+        let (_, state) = Box::pin(coordinator.cancel_operation(
+            &control.control.owner,
+            &control.control.scope,
+            &self.verifier,
+            control.control.operation_id,
+            control.idempotency_key.clone(),
+            control.recursive,
+            None,
+            &mut None,
+        ))
+        .await?;
         Ok(wire::CancelResponse {
             status: Some(wire_api::operation_status(&state)),
             operation: Some(wire::OperationIdentity {

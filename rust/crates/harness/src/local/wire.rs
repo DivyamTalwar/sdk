@@ -9,6 +9,11 @@ use acyclic_stream::{BoxProviderFuture, BoxProviderStream, StreamProvider as _};
 use futures::StreamExt as _;
 
 impl LocalHarness {
+    /// The authenticated workspace owner and this local user's bearer grant.
+    #[must_use]
+    pub fn owner(&self) -> (&crate::core::Authority, &crate::core::Scope) {
+        (self.verifier.audience(), &self.signed)
+    }
     /// Durable owner and bearer scope for this local user's workspace.
     #[must_use]
     pub fn wire_owner(&self) -> (wire::Authority, wire::Scope) {

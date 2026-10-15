@@ -1,10 +1,19 @@
 use super::storage;
 use crate::{Error, Result, wire};
-use bytes::Bytes;
-use futures::{SinkExt as _, StreamExt as _};
+use bytes::{BufMut as _, Bytes};
+use futures::StreamExt as _;
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+// A delivery contains one stored EventEnvelope, a repeated authority and its
+// generation ID. Each is bounded by the authenticated record containing it.
+// Each protobuf field needs at most one tag byte and ten length/varint bytes;
+// the two revision fields and live flag plus the RPC payload wrap are extra.
+const FIELD_OVERHEAD: usize = 1 + 10;
+const MAX_DELIVERY_BYTES: usize =
+    3 * (acyclic_stream::MAX_RECORD_BYTES + FIELD_OVERHEAD) + 2 * FIELD_OVERHEAD + 2;
+const MAX_FRAME_BYTES: usize = MAX_DELIVERY_BYTES + FIELD_OVERHEAD;
 
 // One RPC per connection: Replay owns its connection until the consumer drops it.
 // The payload is always an existing acyclic.harness.v2 message.
@@ -65,7 +74,9 @@ pub(super) type Connection = Framed<Box<dyn Socket>, LengthDelimitedCodec>;
 
 pub(super) fn connection(socket: impl Socket + 'static) -> Connection {
     LengthDelimitedCodec::builder()
-        .max_frame_length(acyclic_stream::MAX_RECORD_BYTES)
+        .length_field_length(4)
+        .big_endian()
+        .max_frame_length(MAX_FRAME_BYTES)
         .new_framed(Box::new(socket) as Box<dyn Socket>)
 }
 
@@ -73,13 +84,18 @@ pub(super) async fn send<M: Message + Default + std::fmt::Debug>(
     connection: &mut Connection,
     message: &M,
 ) -> Result<()> {
-    if message.encoded_len() > acyclic_stream::MAX_RECORD_BYTES {
+    let length = message.encoded_len();
+    if length > MAX_FRAME_BYTES {
         return Err(Error::Invalid(
-            "local wire frame exceeds the record limit".into(),
+            "local wire frame exceeds the transport envelope bound".into(),
         ));
     }
-    connection
-        .send(Bytes::from(message.encode_to_vec()))
+    let encoded_length = u32::try_from(length).map_err(storage)?;
+    let buffer = connection.write_buffer_mut();
+    buffer.reserve(4 + length);
+    buffer.put_u32(encoded_length);
+    message.encode_raw(buffer);
+    futures::SinkExt::<Bytes>::flush(connection)
         .await
         .map_err(storage)
 }

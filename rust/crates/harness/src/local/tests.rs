@@ -575,3 +575,56 @@ async fn owner_credentials_are_private_and_never_created_in_the_checkout() -> Re
     assert_eq!(original, reopened.signed);
     Ok(())
 }
+
+#[tokio::test]
+async fn request_and_worker_future_sizes() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let volume = volume(directory.path()).await?;
+    let host = Box::pin(LocalHarness::open(volume_config(
+        directory.path(),
+        volume,
+        text(),
+    )?))
+    .await?;
+    let task = crate::TaskId::new();
+    let submit = host.submit(OperationId::new(), "size");
+    eprintln!(
+        "stock submit state: {} bytes",
+        std::mem::size_of_val(&submit)
+    );
+    assert!(std::mem::size_of_val(&submit) < 16 * 1024);
+    drop(submit);
+    let resume = host.resume(task);
+    eprintln!(
+        "stock resume state: {} bytes",
+        std::mem::size_of_val(&resume)
+    );
+    assert!(std::mem::size_of_val(&resume) < 16 * 1024);
+    drop(resume);
+    let commands = host.commands()?;
+    let worker = crate::distributed::Worker {
+        id: "size".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let run = host
+        .runtime
+        .run_operation(&worker, task, &commands, 32, None);
+    eprintln!(
+        "worker operation state: {} bytes",
+        std::mem::size_of_val(&run)
+    );
+    assert!(std::mem::size_of_val(&run) < 16 * 1024);
+    drop(run);
+    let cancel = host
+        .runtime
+        .task_host()
+        .wire_cancel(crate::wire::CancelRequest::default());
+    eprintln!(
+        "wire cancel state: {} bytes",
+        std::mem::size_of_val(&cancel)
+    );
+    assert!(std::mem::size_of_val(&cancel) < 16 * 1024);
+    drop(cancel);
+    Ok(())
+}

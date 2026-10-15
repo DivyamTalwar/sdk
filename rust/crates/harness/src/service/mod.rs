@@ -3,9 +3,9 @@
 mod client;
 mod endpoint;
 mod frames;
+mod lifetime;
+mod listener;
 mod server;
-#[cfg(test)]
-mod tests;
 
 pub use client::LocalHarnessClient;
 pub use endpoint::ServiceEndpoint;

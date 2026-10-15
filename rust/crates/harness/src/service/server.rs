@@ -1,47 +1,31 @@
 use super::{
     ServiceEndpoint,
     frames::{self, Method},
-    storage,
 };
 use crate::{
     Error, Result, wire,
     wire_api::{self, HarnessWireApi},
 };
+use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use prost::Message;
-use std::{collections::BTreeMap, fs::File, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 
 /// A single process hosting workspace wire APIs over UDS or Windows named pipes.
 pub struct HarnessService {
-    endpoint: ServiceEndpoint,
     workspaces: RwLock<BTreeMap<String, Arc<dyn HarnessWireApi>>>,
-    #[cfg(unix)]
-    listener: tokio::net::UnixListener,
-    #[cfg(windows)]
-    listener: tokio::sync::Mutex<tokio::net::windows::named_pipe::NamedPipeServer>,
-    _instance: File,
+    listener: super::listener::Listener,
+    lifetime: super::lifetime::Lifetime,
 }
 
 impl HarnessService {
     /// Acquires the lifetime process lock before binding or removing a stale endpoint.
     pub fn bind(endpoint: ServiceEndpoint) -> Result<Self> {
         let instance = endpoint.lock()?;
-        #[cfg(unix)]
-        let listener = {
-            let path = endpoint.directory.join("harness.sock");
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(storage(error)),
-            }
-            tokio::net::UnixListener::bind(path).map_err(storage)?
-        };
-        #[cfg(windows)]
-        let listener = tokio::sync::Mutex::new(pipe(&endpoint, true)?);
+        let listener = super::listener::Listener::bind(endpoint)?;
         Ok(Self {
-            endpoint,
-            _instance: instance,
+            lifetime: super::lifetime::Lifetime::new(instance),
             workspaces: RwLock::new(BTreeMap::new()),
             listener,
         })
@@ -57,40 +41,43 @@ impl HarnessService {
         Ok(())
     }
 
-    /// Accepts clients until this future is dropped. Client disconnects only cancel their RPC.
+    /// Accepts clients until shutdown. Client disconnects only cancel their RPC.
     pub async fn serve(self: Arc<Self>) -> Result<()> {
+        let mut phase = self.lifetime.begin()?;
         let mut clients = tokio::task::JoinSet::new();
-        loop {
+        let result = loop {
             tokio::select! {
-                socket = self.accept() => {
-                    let socket = socket?;
+                biased;
+                _ = phase.wait_for(|phase| *phase == super::lifetime::Phase::Stopping) => break Ok(()),
+                _ = clients.join_next(), if !clients.is_empty() => {}
+                socket = self.listener.accept() => {
+                    let socket = match socket { Ok(socket) => socket, Err(error) => break Err(error) };
                     let service = self.clone();
                     clients.spawn(async move { service.handle(socket).await });
                 }
-                _ = clients.join_next(), if !clients.is_empty() => {}
             }
-        }
+        };
+        clients.abort_all();
+        while clients.join_next().await.is_some() {}
+        self.listener.close().await;
+        self.lifetime.release()?;
+        result
     }
 
-    async fn accept(&self) -> Result<frames::Connection> {
-        #[cfg(unix)]
-        {
-            self.listener
-                .accept()
-                .await
-                .map(|(socket, _)| frames::connection(socket))
-                .map_err(storage)
+    /// Stops accepting, drains connection tasks and releases the instance lock.
+    pub async fn shutdown(&self) -> Result<()> {
+        if self.lifetime.request_stop() {
+            self.listener.close().await;
+            self.lifetime.release()?;
         }
-        #[cfg(windows)]
-        {
-            let mut listener = self.listener.lock().await;
-            listener.connect().await.map_err(storage)?;
-            let next = pipe(&self.endpoint, false)?;
-            Ok(frames::connection(std::mem::replace(&mut *listener, next)))
-        }
+        self.lifetime.stopped().await
     }
 
-    async fn handle(&self, mut socket: frames::Connection) -> Result<()> {
+    fn handle(&self, socket: frames::Connection) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(self.handle_connection(socket))
+    }
+
+    async fn handle_connection(&self, mut socket: frames::Connection) -> Result<()> {
         let request = frames::receive::<frames::Request>(&mut socket).await?;
         let result = self.dispatch(&mut socket, request).await;
         if let Err(error) = result {
@@ -99,20 +86,28 @@ impl HarnessService {
         Ok(())
     }
 
-    async fn dispatch(
+    fn dispatch<'a>(
+        &'a self,
+        socket: &'a mut frames::Connection,
+        request: frames::Request,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(self.dispatch_call(socket, request))
+    }
+
+    async fn dispatch_call(
         &self,
         socket: &mut frames::Connection,
         request: frames::Request,
     ) -> Result<()> {
+        let method = Method::try_from(request.method)
+            .map_err(|_| Error::Invalid("unknown local RPC".into()))?;
         let api = self
             .workspaces
             .read()
             .await
             .get(&request.workspace)
             .cloned()
-            .ok_or_else(|| Error::NotFound("service workspace".into()))?;
-        let method = Method::try_from(request.method)
-            .map_err(|_| Error::Invalid("unknown local RPC".into()))?;
+            .ok_or_else(|| Error::NotFound("workspace".into()))?;
         match method {
             Method::Handshake => {
                 frames::send(
@@ -128,7 +123,7 @@ impl HarnessService {
                     operation: command.operation.clone(),
                     ..Default::default()
                 };
-                let response = api.submit(command).await?;
+                let response = HarnessWireApi::submit(api.as_ref(), command).await?;
                 wire_api::validate_admission(&expected, &response)?;
                 frames::send(socket, &frames::response(response)).await
             }
@@ -210,18 +205,57 @@ impl HarnessService {
     }
 }
 
-fn decode<M: Message + Default>(payload: bytes::Bytes) -> Result<M> {
-    M::decode(payload).map_err(|error| Error::Invalid(error.to_string()))
+#[cfg(test)]
+mod tests {
+    use super::super::storage;
+    use super::*;
+
+    #[tokio::test]
+    async fn connection_and_dispatch_futures_fit_in_small_stack_frames() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let service = HarnessService::bind(ServiceEndpoint::in_directory(directory.path())?)?;
+        let (socket, _peer) = tokio::io::duplex(64);
+        let handler = service.handle_connection(frames::connection(socket));
+        let handler_bytes = std::mem::size_of_val(&handler);
+        drop(handler);
+        let (socket, _peer) = tokio::io::duplex(64);
+        let mut socket = frames::connection(socket);
+        let dispatch = service.dispatch_call(&mut socket, frames::Request::default());
+        let dispatch_bytes = std::mem::size_of_val(&dispatch);
+        eprintln!("per-connection state: {handler_bytes}; per-call state: {dispatch_bytes} bytes");
+        assert!(
+            handler_bytes < 16 * 1024,
+            "handler state: {handler_bytes} bytes"
+        );
+        assert!(
+            dispatch_bytes < 16 * 1024,
+            "dispatch state: {dispatch_bytes} bytes"
+        );
+        drop(dispatch);
+        let service = Arc::new(service);
+        let server = service.clone().serve();
+        assert!(std::mem::size_of_val(&server) < 16 * 1024);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_before_serve_releases_the_fence_and_prevents_a_late_start() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let endpoint = ServiceEndpoint::in_directory(directory.path())?;
+        let service = Arc::new(HarnessService::bind(endpoint.clone())?);
+        let (first, second) = tokio::join!(service.shutdown(), service.shutdown());
+        first?;
+        second?;
+        assert!(matches!(
+            service.clone().serve().await,
+            Err(Error::Conflict(_))
+        ));
+        let replacement = HarnessService::bind(endpoint)?;
+        replacement.shutdown().await?;
+        Ok(())
+    }
 }
 
-#[cfg(windows)]
-fn pipe(
-    endpoint: &ServiceEndpoint,
-    first: bool,
-) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
-    tokio::net::windows::named_pipe::ServerOptions::new()
-        .first_pipe_instance(first)
-        .reject_remote_clients(true)
-        .create(&endpoint.pipe)
-        .map_err(storage)
+fn decode<M: Message + Default>(payload: bytes::Bytes) -> Result<M> {
+    M::decode(payload).map_err(|error| Error::Invalid(error.to_string()))
 }
