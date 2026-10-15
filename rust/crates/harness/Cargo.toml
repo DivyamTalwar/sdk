@@ -9,7 +9,6 @@ repository.workspace = true
 publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
@@ -26,6 +25,11 @@ required-features = ["filesystem-local", "native-execution"]
 name = "default_tools"
 path = "tests/default_tools.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "context-continuation"
+path = "tests/context_continuation.rs"
+required-features = ["filesystem-local"]
 
 [[test]]
 name = "context-discovery"
@@ -53,14 +57,6 @@ harness = false
 [[example]]
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
-
-[[bench]]
-name = "harness"
-harness = false
-
-[[bench]]
-name = "client_demand"
-harness = false
 
 [features]
 test-support = []
@@ -128,7 +124,6 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true
-divan.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
