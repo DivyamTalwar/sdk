@@ -9,7 +9,7 @@ use acyclic_harness::{
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::{TaskStateProvider, ToolContext},
-    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
+    tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use serde_json::{Value, json};
@@ -131,16 +131,6 @@ impl ToolExecutor for Echo {
         Box::pin(async { Ok(None) })
     }
 }
-impl ToolProjection for Echo {
-    fn project(
-        &self,
-        _: &ToolInvocation,
-        result: &ToolResult,
-        _: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
-        Ok((result.value.clone(), None))
-    }
-}
 fn tool(name: &str) -> Tool {
     Tool {
         definition: ToolDefinition {
@@ -154,7 +144,7 @@ fn tool(name: &str) -> Tool {
             ),
         },
         executor: Arc::new(Echo),
-        projection: Arc::new(Echo),
+        projection: Arc::new(JsonToolProjection),
     }
 }
 
