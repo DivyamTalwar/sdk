@@ -286,8 +286,10 @@ mod argv;
 mod capture;
 mod history;
 mod incremental;
-#[cfg(all(feature = "model-checking", unix))]
+#[cfg(loom)]
 mod model;
+#[cfg(loom)]
+mod model_store;
 mod properties;
 mod state;
 mod tree;
