@@ -1,6 +1,9 @@
 //! Shared optimistic-concurrency primitives for versioned control-plane records.
 
+#[cfg(all(test, feature = "model-checking", unix))]
+use loom::sync::Mutex;
 use std::collections::BTreeMap;
+#[cfg(not(all(test, feature = "model-checking", unix)))]
 use std::sync::Mutex;
 
 /// Bounded compare-and-swap retries before a coordinator reports contention.
@@ -47,6 +50,8 @@ pub(crate) fn next_revision(revision: &mut u64) -> u64 {
 pub(crate) struct Poisoned;
 
 /// Process-local revision-checked record map behind every memory adapter.
+/// Lock order: a leaf lock. No other record lock, callback, or await is held
+/// inside `locked`; callers receive owned values after releasing the guard.
 pub(crate) struct MemoryRecords<K, V>(pub(crate) Mutex<BTreeMap<K, V>>);
 
 impl<K, V> Default for MemoryRecords<K, V> {

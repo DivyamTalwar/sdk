@@ -7,8 +7,12 @@ use acyclic_fs::{
     demand::native::NativeDemandSource,
     model::{Lifecycle, VolumeConfig},
 };
+use acyclic_harness::Error;
 use acyclic_harness::tools::git;
 use std::{borrow::Cow, sync::Arc};
+
+#[path = "../src/tools/git/path.rs"]
+mod workspace_paths;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
