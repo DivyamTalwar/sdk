@@ -9,7 +9,6 @@ repository.workspace = true
 publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
@@ -18,9 +17,34 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "local-recursive-fork"
+path = "tests/local_recursive_fork.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
+name = "context-continuation"
+path = "tests/context_continuation.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client-commands"
+path = "tests/client_commands.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "task-workflow"
+path = "tests/task_workflow.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["filesystem", "test-support"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -44,14 +68,6 @@ harness = false
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
-[[bench]]
-name = "harness"
-harness = false
-
-[[bench]]
-name = "client_demand"
-harness = false
-
 [features]
 test-support = []
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
@@ -66,14 +82,15 @@ native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio
 # Native lifecycle commands can also be embedded without filesystem mounts.
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
-mcp-http = ["dep:reqwest"]
-mcp-stdio = ["tokio/process", "tokio/io-util"]
+mcp-http = ["dep:reqwest", "dep:toml"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
@@ -120,8 +137,8 @@ tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
-divan.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"

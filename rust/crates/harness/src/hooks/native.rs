@@ -12,104 +12,7 @@ use std::{
     time::Duration,
 };
 
-/// Native hook locations and explicit authority to execute project commands.
-pub struct HooksConfig {
-    workspace: PathBuf,
-    home: PathBuf,
-    codex_home: PathBuf,
-    trust_project_hooks: bool,
-}
-
-impl HooksConfig {
-    /// Loads user configuration by default. Project configuration is untrusted.
-    pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
-        let home = home.into();
-        let codex_home = codex_directory(&home, std::env::var_os("CODEX_HOME").as_deref());
-        Self {
-            workspace: workspace.into(),
-            home,
-            codex_home,
-            trust_project_hooks: false,
-        }
-    }
-
-    /// Selects an explicit Codex directory instead of CODEX_HOME or ~/.codex.
-    #[must_use]
-    pub fn codex_home(mut self, directory: impl Into<PathBuf>) -> Self {
-        self.codex_home = directory.into();
-        self
-    }
-
-    /// Explicitly permits commands supplied by the workspace's configuration.
-    #[must_use]
-    pub fn trust_project_hooks(mut self, trust: bool) -> Self {
-        self.trust_project_hooks = trust;
-        self
-    }
-}
-
 impl Hooks {
-    /// Loads user hooks, and project hooks only with explicit trust in `config`.
-    pub async fn load(config: HooksConfig) -> Result<Self> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-        run_blocking_io(
-            move || {
-                let mut hooks = Self::default();
-                let user = [
-                    config.home.join(".claude/settings.json"),
-                    config.codex_home.join("hooks.json"),
-                    config.codex_home.join("config.toml"),
-                ];
-                let project = [
-                    ".claude/settings.json",
-                    ".claude/settings.local.json",
-                    ".codex/hooks.json",
-                    ".codex/config.toml",
-                ];
-                let paths = user.into_iter().chain(
-                    project
-                        .into_iter()
-                        .filter(|_| config.trust_project_hooks)
-                        .map(|path| config.workspace.join(path)),
-                );
-                let mut seen = std::collections::BTreeSet::new();
-                for path in paths {
-                    let toml = path
-                        .extension()
-                        .is_some_and(|extension| extension == "toml");
-                    let path = match std::fs::canonicalize(path) {
-                        Ok(path) => path,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(error) => return Err(Error::process_io(error)),
-                    };
-                    if !seen.insert(path.clone()) {
-                        continue;
-                    }
-                    let bytes = match std::fs::read(&path) {
-                        Ok(bytes) => bytes,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(error) => {
-                            return Err(Error::process_io(error));
-                        }
-                    };
-                    if toml {
-                        hooks.add_toml(
-                            std::str::from_utf8(&bytes)
-                                .map_err(|error| Error::Invalid(error.to_string()))?,
-                        )?;
-                    } else {
-                        hooks.add_json(&bytes)?;
-                    }
-                }
-                Ok(hooks)
-            },
-            None,
-        )
-        .map_err(Error::process_io)?
-        .await
-        .map_err(Error::process_io)?
-    }
-
     /// Runs matching hooks concurrently, merging decisions in configuration order.
     /// `workspace` is the project root; `cwd` is the individual tool's directory.
     pub async fn run(
@@ -180,13 +83,6 @@ pub(super) async fn run_hook(
     .map_err(Error::process_io)?
     .await
     .map_err(Error::process_io)?
-}
-
-fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf {
-    configured
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"))
 }
 
 fn hook_command(hook: &HookSpec, workspace: &Path) -> Result<Command> {
@@ -306,19 +202,5 @@ mod tests {
         assert!(expand_exec_path("${CLAUDE_PLUGIN_ROOT}", workspace, |_| None).is_err());
         assert!(expand_exec_path("${CLAUDE_PLUGIN_DATA}", workspace, |_| None).is_err());
         Ok(())
-    }
-
-    #[test]
-    fn codex_home_uses_the_configured_environment_path() {
-        let home = Path::new("home");
-        assert_eq!(
-            codex_directory(home, Some(std::ffi::OsStr::new("custom"))),
-            Path::new("custom")
-        );
-        assert_eq!(codex_directory(home, None), home.join(".codex"));
-        assert_eq!(
-            codex_directory(home, Some(std::ffi::OsStr::new(""))),
-            home.join(".codex")
-        );
     }
 }

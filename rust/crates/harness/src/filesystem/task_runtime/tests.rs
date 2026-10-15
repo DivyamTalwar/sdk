@@ -769,6 +769,7 @@ impl ModelProvider for PendingModel {
 mod mail_tests;
 
 mod admission;
+mod future_sizes;
 mod model;
 mod settlement;
 mod worker;
