@@ -16,6 +16,8 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 type Lazy = LazyWorkspace<
     acyclic_fs::LocalAuthorityBackend,
     acyclic_fs::LocalObjectBackend,
@@ -23,16 +25,82 @@ type Lazy = LazyWorkspace<
     LocalCoreStateStore,
 >;
 
+#[tokio::test]
+async fn branch_switch_accepts_only_the_destination_workspace() -> Result<()> {
+    use acyclic_fs::{
+        Digest, GenerationId, GitCommand, GitCompatError, GitCompatRepository, GitFilesystemResult,
+        GitTreeRef, MemoryGitCompatStore, WorkspaceId,
+    };
+    let main = WorkspaceId::from_bytes([1; 16]);
+    let child = WorkspaceId::from_bytes([2; 16]);
+    let foreign = WorkspaceId::from_bytes([3; 16]);
+    let generation = GenerationId::new(Digest::from_bytes([4; 32]));
+    let repository = GitCompatRepository::new(main, MemoryGitCompatStore::default());
+    repository
+        .register_branch_workspace("agents/child", child, None, false)
+        .await?;
+    let GitCommandOutput::Prepared { transition, .. } = repository
+        .execute(
+            GitCommand::Switch {
+                branch: "agents/child".into(),
+                create: false,
+            },
+            GitTreeRef::exact(main, generation),
+        )
+        .await?
+    else {
+        return Err("expected a prepared branch switch".into());
+    };
+    for wrong in [main, foreign] {
+        assert!(matches!(
+            repository
+                .complete_transition_result(
+                    transition,
+                    &GitFilesystemResult::Applied {
+                        tree: Some(GitTreeRef::exact(wrong, generation)),
+                        tracked_paths: None
+                    }
+                )
+                .await,
+            Err(GitCompatError::WorkspaceMismatch)
+        ));
+        assert_eq!(
+            repository
+                .pending_transition()
+                .await?
+                .map(|pending| pending.id),
+            Some(transition)
+        );
+    }
+    repository
+        .complete_transition_result(
+            transition,
+            &GitFilesystemResult::Applied {
+                tree: Some(GitTreeRef::exact(child, generation)),
+                tracked_paths: None,
+            },
+        )
+        .await?;
+    let GitCommandOutput::Status(status) = repository
+        .execute(GitCommand::Status, GitTreeRef::exact(child, generation))
+        .await?
+    else {
+        return Err("expected branch status".into());
+    };
+    assert_eq!(status.branch, "agents/child");
+    Ok(())
+}
+
 async fn run(
     fs: &LocalFs,
     store: &LocalCoreStateStore,
     lazy: &Lazy,
     repository_id: acyclic_fs::WorkspaceId,
     args: &[&str],
-) -> (GitCommandOutput, Option<Lazy>) {
+) -> Result<(GitCommandOutput, Option<Lazy>)> {
     let argv: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let tree = git_workspace_tree(lazy, &argv, None).await.unwrap();
-    let (ignore, merge_drivers) = git_policy(lazy).await.unwrap();
+    let tree = git_workspace_tree(lazy, &argv, None).await?;
+    let (ignore, merge_drivers) = git_policy(lazy).await?;
     let executor = WorkspaceGitExecutor {
         fs,
         store,
@@ -56,13 +124,14 @@ async fn run(
         &executor,
     )
     .await
-    .unwrap()
-    .unwrap();
-    (output, executor.switched_workspace().unwrap())
+    .map_err(|error| format!("fs {args:?}: {error}"))?
+    .ok_or("pending git transition")?;
+    Ok((output, executor.switched_workspace()?))
 }
 
 #[tokio::test]
-async fn facade_commits_branches_merges_and_inspects_managed_files() {
+async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("root");
     std::fs::create_dir(&root).unwrap();
@@ -105,10 +174,13 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() {
     )
     .await
     .unwrap();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
     let repo = main.workspace().id();
     assert!(matches!(
         run(&fs, &store, &main, repo, &["commit", "-m", "base"])
-            .await
+            .await?
             .0,
         GitCommandOutput::Committed(_)
     ));
@@ -119,7 +191,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() {
         repo,
         &["checkout", "-b", "agents/child"],
     )
-    .await;
+    .await?;
     let child = child.unwrap();
     child
         .write(
@@ -131,9 +203,9 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() {
         )
         .await
         .unwrap();
-    run(&fs, &store, &child, repo, &["commit", "-m", "child edit"]).await;
-    run(&fs, &store, &child, repo, &["checkout", "main"]).await;
-    run(&fs, &store, &main, repo, &["merge", "agents/child"]).await;
+    run(&fs, &store, &child, repo, &["commit", "-m", "child edit"]).await?;
+    run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+    run(&fs, &store, &main, repo, &["merge", "agents/child"]).await?;
     assert_eq!(
         main.read("/file.txt", 64, &mut work)
             .await
@@ -149,8 +221,9 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() {
         &["blame", "file.txt"],
     ] {
         assert!(matches!(
-            run(&fs, &store, &main, repo, args).await.0,
+            run(&fs, &store, &main, repo, args).await?.0,
             GitCommandOutput::Filesystem(_)
         ));
     }
+    Ok(())
 }
