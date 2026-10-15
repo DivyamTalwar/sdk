@@ -52,7 +52,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     std::str::from_utf8(name.as_bytes()).map_err(|_| MountSourceError::Stale)?;
                 let folded = inputs
                     .carrier
-                    .with_work(|leaf| crate::demand::lowercase_unicode_with_work(text, leaf))
+                    .with_work(|leaf| crate::demand::case_fold_unicode_with_work(text, leaf))
                     .map_err(MountSourceError::from)?;
                 inputs.bytes = inputs
                     .bytes
