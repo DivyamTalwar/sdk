@@ -1,9 +1,6 @@
 use super::{InvalidPolicy, PathTrie};
-#[cfg(loom)]
-use loom::sync::RwLock;
+use crate::sync::RwLock;
 use std::sync::Arc;
-#[cfg(not(loom))]
-use std::sync::RwLock;
 
 /// Published compiled access for one authenticated mount binding.
 /// The trusted policy owner installs revisions; new operations load the latest
@@ -33,7 +30,7 @@ impl AccessView {
 
     // Negative control: checking before the publication lock lets a stale
     // writer replace a newer revision. This is never compiled into the library.
-    #[cfg(all(test, loom))]
+    #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn publish_unfenced(&self, view: PathTrie) -> Result<(), InvalidPolicy> {
         let current = self.current()?;
         if !view.same_binding(&current) || view.policy_version() < current.policy_version() {

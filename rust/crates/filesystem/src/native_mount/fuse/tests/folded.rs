@@ -329,9 +329,13 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ))?;
-    let source = MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new(
+            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+            config,
+        )?,
+        vec![],
+        None,
     )?;
     let work = fuse_fixture_work();
     for _ in 0..2 {
