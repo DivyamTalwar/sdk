@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{future::Future, sync::Arc};
 
-mod imports;
+pub(crate) mod imports;
 use imports::Document;
 mod spec;
 pub use spec::{HookFailure, HookRule, HookRun, HookSpec};
@@ -390,6 +390,5 @@ fn take_string(value: &mut Value, name: &str) -> Option<String> {
 }
 
 mod native;
-pub use native::HooksConfig;
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,16 @@
 //! MCP clients over the ordinary tool, execution and interaction owners.
 pub mod callbacks;
 mod catalog;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub(crate) mod config;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub use config::{McpConfig, McpServer, McpTransport};
 pub mod http;
 #[cfg(all(feature = "mcp-oauth", not(target_arch = "wasm32")))]
 pub mod oauth;

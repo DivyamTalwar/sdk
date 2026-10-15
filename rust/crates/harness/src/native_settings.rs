@@ -1,0 +1,325 @@
+//! One native settings snapshot for hooks and MCP connection declarations.
+
+use crate::{
+    Error, Result,
+    mcp::config::{Dialect, ImportedServer, McpConfig},
+};
+use serde::Deserialize;
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    io::Read as _,
+    path::{Path, PathBuf},
+};
+
+/// Native user locations and independent trust for repository-supplied commands.
+pub struct SettingsConfig {
+    workspace: PathBuf,
+    home: PathBuf,
+    codex_home: PathBuf,
+    trust_project_hooks: bool,
+    trust_project_mcp: bool,
+    maximum_file_bytes: u64,
+}
+
+impl SettingsConfig {
+    /// Selects user settings by default; repository settings require explicit trust.
+    pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let codex_home = codex_directory(&home, std::env::var_os("CODEX_HOME").as_deref());
+        Self {
+            workspace: workspace.into(),
+            home,
+            codex_home,
+            trust_project_hooks: false,
+            trust_project_mcp: false,
+            maximum_file_bytes: 1_048_576,
+        }
+    }
+
+    /// Overrides CODEX_HOME or ~/.codex for this snapshot.
+    #[must_use]
+    pub fn codex_home(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.codex_home = directory.into();
+        self
+    }
+
+    /// Permits repository-supplied hooks, independently of MCP server trust.
+    #[must_use]
+    pub fn trust_project_hooks(mut self, trust: bool) -> Self {
+        self.trust_project_hooks = trust;
+        self
+    }
+
+    /// Permits repository-supplied MCP servers, including native executables.
+    #[must_use]
+    pub fn trust_project_mcp(mut self, trust: bool) -> Self {
+        self.trust_project_mcp = trust;
+        self
+    }
+
+    /// Replaces the positive per-file read bound.
+    #[must_use]
+    pub fn maximum_file_bytes(mut self, maximum: u64) -> Self {
+        self.maximum_file_bytes = maximum;
+        self
+    }
+}
+
+/// Host-owned parsed configuration; connection secrets stay outside task records.
+#[derive(Default)]
+pub struct NativeSettings {
+    /// Normalized, compiled lifecycle hooks.
+    #[cfg(feature = "hooks")]
+    pub hooks: crate::hooks::Hooks,
+    /// Enabled MCP declarations after whole-entry scope overrides.
+    pub mcp: McpConfig,
+}
+
+#[derive(Deserialize)]
+struct Document {
+    #[cfg(feature = "hooks")]
+    #[serde(flatten)]
+    hooks: crate::hooks::imports::Document,
+    #[serde(default, rename = "mcpServers")]
+    claude: BTreeMap<String, ImportedServer>,
+    #[serde(default)]
+    mcp_servers: BTreeMap<String, ImportedServer>,
+    #[serde(default)]
+    projects: BTreeMap<String, Project>,
+}
+
+#[derive(Deserialize)]
+struct Project {
+    #[serde(default, rename = "mcpServers")]
+    servers: BTreeMap<String, ImportedServer>,
+}
+
+struct Source {
+    path: PathBuf,
+    hooks: bool,
+    mcp: Option<Dialect>,
+    local: bool,
+}
+
+struct ReadPolicy {
+    toml: bool,
+    hooks: bool,
+    mcp: Option<Dialect>,
+    mcp_order: usize,
+    local: bool,
+    order: usize,
+}
+
+impl NativeSettings {
+    /// Reads each resolved file once, selecting its parser from the configured filename.
+    pub async fn load(config: SettingsConfig) -> Result<Self> {
+        if config.maximum_file_bytes == 0 || config.maximum_file_bytes == u64::MAX {
+            return Err(Error::Invalid(
+                "settings require a finite positive byte bound".into(),
+            ));
+        }
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+        acyclic_native_runtime::run_blocking_io(move || Self::read(config), None)
+            .map_err(Error::process_io)?
+            .await
+            .map_err(Error::process_io)?
+    }
+
+    fn read(mut config: SettingsConfig) -> Result<Self> {
+        let configured_workspace = config.workspace.clone();
+        config.workspace = std::fs::canonicalize(&config.workspace).map_err(Error::process_io)?;
+        let hooks = cfg!(feature = "hooks");
+        let mut sources = vec![
+            Source {
+                path: config.home.join(".claude.json"),
+                hooks: false,
+                mcp: Some(Dialect::Claude),
+                local: true,
+            },
+            Source {
+                path: config.home.join(".claude/settings.json"),
+                hooks,
+                mcp: None,
+                local: false,
+            },
+            Source {
+                path: config.codex_home.join("hooks.json"),
+                hooks,
+                mcp: None,
+                local: false,
+            },
+            Source {
+                path: config.codex_home.join("config.toml"),
+                hooks,
+                mcp: Some(Dialect::Codex),
+                local: false,
+            },
+        ];
+        if hooks && config.trust_project_hooks {
+            for name in [
+                ".claude/settings.json",
+                ".claude/settings.local.json",
+                ".codex/hooks.json",
+            ] {
+                sources.push(Source {
+                    path: config.workspace.join(name),
+                    hooks: true,
+                    mcp: None,
+                    local: false,
+                });
+            }
+        }
+        if config.trust_project_mcp {
+            sources.push(Source {
+                path: config.workspace.join(".mcp.json"),
+                hooks: false,
+                mcp: Some(Dialect::Claude),
+                local: false,
+            });
+        }
+        if hooks && config.trust_project_hooks || config.trust_project_mcp {
+            sources.push(Source {
+                path: config.workspace.join(".codex/config.toml"),
+                hooks: hooks && config.trust_project_hooks,
+                mcp: config.trust_project_mcp.then_some(Dialect::Codex),
+                local: false,
+            });
+        }
+        let mut snapshot = Self::default();
+        let mut selected = BTreeMap::new();
+        let mut unique = BTreeMap::<PathBuf, ReadPolicy>::new();
+        for (order, source) in sources
+            .into_iter()
+            .filter(|source| source.hooks || source.mcp.is_some())
+            .enumerate()
+        {
+            let toml = source
+                .path
+                .extension()
+                .is_some_and(|extension| extension == "toml");
+            let path = match std::fs::canonicalize(&source.path) {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(Error::process_io(error)),
+            };
+            match unique.entry(path) {
+                Entry::Vacant(entry) => {
+                    entry.insert(ReadPolicy {
+                        toml,
+                        hooks: source.hooks,
+                        mcp: source.mcp,
+                        mcp_order: order,
+                        local: source.local,
+                        order,
+                    });
+                }
+                Entry::Occupied(mut entry) => {
+                    let prior = entry.get_mut();
+                    if prior.toml != toml
+                        || prior.mcp.is_some() && source.mcp.is_some() && prior.mcp != source.mcp
+                    {
+                        return Err(Error::Invalid(
+                            "one settings file declares conflicting formats".into(),
+                        ));
+                    }
+                    prior.hooks |= source.hooks;
+                    prior.mcp = prior.mcp.or(source.mcp);
+                    if source.mcp.is_some() {
+                        prior.mcp_order = order;
+                    }
+                    prior.local |= source.local;
+                }
+            }
+        }
+        let mut unique: Vec<_> = unique.into_iter().collect();
+        unique.sort_unstable_by_key(|(_, policy)| policy.order);
+        for (path, source) in unique {
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path)
+                .map_err(Error::process_io)?
+                .take(config.maximum_file_bytes + 1)
+                .read_to_end(&mut bytes)
+                .map_err(Error::process_io)?;
+            if bytes.len() as u64 > config.maximum_file_bytes {
+                return Err(Error::Invalid(
+                    "settings file exceeds its read bound".into(),
+                ));
+            }
+            #[cfg(feature = "hooks")]
+            if source.mcp.is_none() {
+                snapshot.hooks.add_document(parse(&bytes, source.toml)?)?;
+                continue;
+            }
+            let document: Document = parse(&bytes, source.toml)?;
+            #[cfg(feature = "hooks")]
+            if source.hooks {
+                snapshot.hooks.add_document(document.hooks)?;
+            }
+            if let Some(dialect) = source.mcp {
+                let servers = match dialect {
+                    Dialect::Claude => document.claude,
+                    Dialect::Codex => document.mcp_servers,
+                };
+                select(&mut selected, servers, dialect, source.mcp_order);
+                if source.local
+                    && let Some(project) = document.projects.into_iter().find(|(path, _)| {
+                        Path::new(path) == configured_workspace
+                            || Path::new(path) == config.workspace
+                    })
+                {
+                    select(
+                        &mut selected,
+                        project.1.servers,
+                        Dialect::Claude,
+                        usize::MAX,
+                    );
+                }
+            }
+        }
+        for (name, (_, dialect, imported)) in selected {
+            snapshot.mcp.insert(name, imported, dialect)?;
+        }
+        Ok(snapshot)
+    }
+}
+
+fn select(
+    selected: &mut BTreeMap<String, (usize, Dialect, ImportedServer)>,
+    declarations: BTreeMap<String, ImportedServer>,
+    dialect: Dialect,
+    order: usize,
+) {
+    for (name, declaration) in declarations {
+        match selected.entry(name) {
+            Entry::Vacant(entry) => {
+                entry.insert((order, dialect, declaration));
+            }
+            Entry::Occupied(mut entry) if entry.get().0 <= order => {
+                entry.insert((order, dialect, declaration));
+            }
+            Entry::Occupied(_) => {}
+        }
+    }
+}
+
+fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8], toml: bool) -> Result<T> {
+    if toml {
+        toml::from_str(
+            std::str::from_utf8(bytes)
+                .map_err(|_| Error::Invalid("settings must be UTF-8".into()))?,
+        )
+        .map_err(|error| Error::Invalid(format!("settings: {error}")))
+    } else {
+        serde_json::from_slice(bytes).map_err(|error| Error::Invalid(format!("settings: {error}")))
+    }
+}
+
+fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf {
+    configured
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
+#[cfg(test)]
+mod tests;

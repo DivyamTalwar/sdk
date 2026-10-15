@@ -287,7 +287,7 @@ pub(crate) fn native_work_error_code(
 impl Error {
     #[cfg(all(
         not(target_arch = "wasm32"),
-        any(feature = "hooks", feature = "mcp-stdio")
+        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn process_io(error: std::io::Error) -> Self {
         let kind = match error.kind() {
