@@ -134,6 +134,7 @@ impl MemoryHarnessStorage {
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
         Tool {
+            hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
                 revision: "2".into(),

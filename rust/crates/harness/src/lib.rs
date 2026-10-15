@@ -36,6 +36,8 @@ pub mod filesystem;
 pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub mod hooks;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
