@@ -41,7 +41,6 @@ tempfile = "3.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 loom = "0.7.2"
-shuttle = "0.9.6"
 proptest.workspace = true
 
 [lints]

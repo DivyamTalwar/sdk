@@ -1,85 +1,106 @@
-//! Exhaustive async schedules of the production refresh guard using Tokio's mutex.
+//! Production guard with the cfg(loom) instrumented mutex implementation.
 #![cfg(not(target_arch = "wasm32"))]
-#[path = "../src/refresh.rs"]
-mod refresh;
+#[cfg(loom)]
+#[path = "../src/sync.rs"]
+mod sync;
+#[cfg(not(loom))]
+#[path = "../src/sync/loom.rs"]
+pub mod sync;
 
-use std::sync::{
-    Arc,
+mod refresh {
+    include!("../src/refresh.rs");
+
+    // Mutation: release ownership before the operation's I/O.
+    pub async fn released_early<T>(
+        lock: &crate::sync::AsyncMutex<()>,
+        operation: impl std::future::Future<Output = T>,
+    ) -> T {
+        drop(lock.lock().await);
+        operation.await
+    }
+}
+
+use std::task::{Context, Poll, Wake, Waker};
+use sync::{
+    Arc, AsyncMutex,
     atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::Mutex;
+
+fn exclusion_model(broken: bool) {
+    loom::model(move || {
+        let lock = Arc::new(AsyncMutex::new(()));
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for fail in [false, true] {
+            let (lock, active) = (lock.clone(), active.clone());
+            tasks.push(loom::thread::spawn(move || {
+                let operation = async {
+                    assert_eq!(
+                        active.fetch_add(1, Ordering::SeqCst),
+                        0,
+                        "refresh ownership overlapped"
+                    );
+                    // Model an I/O suspension while the production guard owns credentials.
+                    loom::thread::yield_now();
+                    assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
+                    if fail { Err(()) } else { Ok(()) }
+                };
+                let result = if broken {
+                    futures::executor::block_on(refresh::released_early(&lock, operation))
+                } else {
+                    futures::executor::block_on(refresh::serialized(&lock, operation))
+                };
+                assert_eq!(result.is_err(), fail);
+            }));
+        }
+        for task in tasks {
+            task.join().unwrap();
+        }
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(lock.try_lock().is_ok());
+    });
+}
 
 #[test]
 fn refresh_retains_exclusive_ownership_across_io_and_error_returns() {
-    shuttle::check_dfs(
-        || {
-            shuttle::future::block_on(async {
-                let lock = Arc::new(Mutex::new(()));
-                let rotated = Arc::new(AtomicUsize::new(0));
-                let active = Arc::new(AtomicUsize::new(0));
-                let mut tasks = Vec::new();
-                for fail in [false, true] {
-                    let (lock, rotated, active) = (lock.clone(), rotated.clone(), active.clone());
-                    tasks.push((
-                        fail,
-                        shuttle::future::spawn(async move {
-                            refresh::serialized(&lock, async {
-                                assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
-                                let before = rotated.load(Ordering::SeqCst);
-                                shuttle::future::yield_now().await;
-                                assert_eq!(rotated.load(Ordering::SeqCst), before);
-                                if !fail && before == 0 {
-                                    rotated.store(1, Ordering::SeqCst);
-                                }
-                                assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
-                                if fail { Err(()) } else { Ok(()) }
-                            })
-                            .await
-                        }),
-                    ));
-                }
-                for (fail, task) in tasks {
-                    assert_eq!(task.await.unwrap().is_err(), fail);
-                }
-                assert_eq!(rotated.load(Ordering::SeqCst), 1);
-                assert_eq!(active.load(Ordering::SeqCst), 0);
-                assert!(lock.try_lock().is_ok());
-            });
-        },
-        None,
-    );
+    exclusion_model(false);
+}
+
+#[test]
+#[should_panic(expected = "refresh ownership overlapped")]
+fn negative_control_detects_a_guard_released_before_io() {
+    exclusion_model(true);
+}
+
+struct Noop;
+impl Wake for Noop {
+    fn wake(self: std::sync::Arc<Self>) {}
 }
 
 #[test]
 fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
-    shuttle::check_dfs(
-        || {
-            shuttle::future::block_on(async {
-                let lock = Arc::new(Mutex::new(()));
-                let (entered, entry) = futures::channel::oneshot::channel();
-                let (abort, registration) = futures::future::AbortHandle::new_pair();
-                let holder_lock = lock.clone();
-                let holder = shuttle::future::spawn(futures::future::Abortable::new(
-                    async move {
-                        refresh::serialized(&holder_lock, async move {
-                            entered.send(()).unwrap();
-                            futures::future::pending::<()>().await;
-                        })
-                        .await;
-                    },
-                    registration,
-                ));
-                let waiter_lock = lock.clone();
-                let waiter = shuttle::future::spawn(async move {
-                    refresh::serialized(&waiter_lock, async {}).await;
-                });
-                entry.await.unwrap();
-                abort.abort();
-                assert!(holder.await.unwrap().is_err());
-                waiter.await.unwrap();
-                assert!(lock.try_lock().is_ok());
-            });
-        },
-        None,
-    );
+    loom::model(|| {
+        let lock = Arc::new(AsyncMutex::new(()));
+        let holder_lock = lock.clone();
+        let holder = loom::thread::spawn(move || {
+            let mut operation = Box::pin(refresh::serialized(
+                &holder_lock,
+                std::future::pending::<()>(),
+            ));
+            let waker = Waker::from(std::sync::Arc::new(Noop));
+            assert_eq!(
+                operation.as_mut().poll(&mut Context::from_waker(&waker)),
+                Poll::Pending
+            );
+            loom::thread::yield_now();
+            drop(operation);
+        });
+        let waiter_lock = lock.clone();
+        let waiter = loom::thread::spawn(move || {
+            futures::executor::block_on(refresh::serialized(&waiter_lock, async {}));
+        });
+        holder.join().unwrap();
+        waiter.join().unwrap();
+        assert!(lock.try_lock().is_ok());
+    });
 }

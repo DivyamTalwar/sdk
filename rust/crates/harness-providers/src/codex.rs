@@ -20,7 +20,7 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 pub struct CodexLogin {
     path: PathBuf,
     account: OnceLock<Option<String>>,
-    refresh: tokio::sync::Mutex<()>,
+    refresh: crate::sync::AsyncMutex<()>,
 }
 
 impl CodexLogin {
@@ -29,7 +29,7 @@ impl CodexLogin {
         Self {
             path,
             account: OnceLock::new(),
-            refresh: tokio::sync::Mutex::new(()),
+            refresh: crate::sync::AsyncMutex::new(()),
         }
     }
 
