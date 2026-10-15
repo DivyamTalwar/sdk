@@ -26,7 +26,7 @@ serde_json.workspace = true
 url = "2.5.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [dev-dependencies]
 tokio.workspace = true
