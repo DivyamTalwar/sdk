@@ -279,6 +279,12 @@ fn cycle(document: &mut Map<String, Value>, key: &str, choices: &str) -> Result<
         .and_then(Value::as_array)
         .filter(|values| !values.is_empty() && values.iter().all(Value::is_string))
         .ok_or_else(|| Error::Invalid(format!("{choices} requires nonempty string choices")))?;
+    let distinct: BTreeSet<_> = values.iter().filter_map(Value::as_str).collect();
+    if distinct.len() != values.len() {
+        return Err(Error::Invalid(format!(
+            "{choices} contains duplicate choices"
+        )));
+    }
     let next = values
         .iter()
         .position(|value| Some(value) == document.get(key))

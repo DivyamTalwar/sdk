@@ -157,6 +157,33 @@ fn catalog_files_cannot_disable_delete_confirmation_or_add_approval_prompts() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
+    // Arbitrary catalog descriptions cannot bypass destructive confirmation or
+    // turn ordinary requests into approval prompts.
+    #[test]
+    fn confirmation_is_a_catalog_invariant(kind in 0_usize..3, confirmation in any::<bool>(), description in "[a-z]{1,80}") {
+        let kind = ["new", "delete", "clear_all"][kind];
+        let bytes = serde_json::to_vec(&json!([{"name":"action","description":description,"arguments":"none","action":{"kind":"request","request":{"kind":kind},"confirmation":confirmation}}])).unwrap();
+        prop_assert_eq!(CommandCatalog::from_bytes(&bytes, 2048).is_ok(), confirmation == (kind != "new"));
+    }
+
+    // Cycling every configured choice returns to the original file value,
+    // never invents a mode and preserves unrelated settings.
+    #[test]
+    fn configured_cycles_close(choices in proptest::collection::btree_set("[a-z]{1,12}", 1..8), selected in any::<usize>(), extra in ".{0,40}") {
+        let choices: Vec<_> = choices.into_iter().collect();
+        let selected = selected % choices.len();
+        let initial = choices[selected].clone();
+        let mut snapshot = BTreeMap::from([("settings.json".into(), json!({"agent_modes":choices,"agent_mode":initial,"extra":extra}))]);
+        let resolution = CommandResolution::Submit { request: acyclic_harness::client::CommandRequest::CycleMode };
+        for _ in 0..choices.len() {
+            let changes = resolution.file_changes(&snapshot, OperationId::new()).unwrap();
+            prop_assert_eq!(&changes[0].contents["extra"], &snapshot["settings.json"]["extra"]);
+            prop_assert!(choices.iter().any(|choice| changes[0].contents["agent_mode"] == json!(choice)));
+            snapshot.insert("settings.json".into(), changes[0].contents.clone());
+        }
+        prop_assert_eq!(&snapshot["settings.json"]["agent_mode"], &json!(initial));
+    }
+
     // Accepted definition files round-trip through the same validated loader;
     // canonicalization preserves every command and alias.
     #[test]
