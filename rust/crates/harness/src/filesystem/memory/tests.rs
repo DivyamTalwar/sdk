@@ -606,12 +606,11 @@ impl ModelProvider for ReadFileModel {
                     .any(|tool| tool.name == "acyclic.read_file")
             );
             Box::pin(stream::iter(vec![
-                Ok(ModelEvent::ToolCall {
-                    metadata: serde_json::Value::Null,
-                    call_id: "read".into(),
-                    name: "acyclic.read_file".into(),
-                    arguments: json!({"file": file}),
-                }),
+                Ok(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "read".into(),
+                    "acyclic.read_file".into(),
+                    json!({"file": file}),
+                ))),
                 Ok(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),

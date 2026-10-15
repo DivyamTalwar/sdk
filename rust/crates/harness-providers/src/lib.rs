@@ -32,7 +32,7 @@ fn http_error(status: u16) -> Error {
     let message = format!("model HTTP status {status}");
     match status {
         401 | 403 => Error::Unauthorized(message),
-        429 | 500..=599 => Error::Storage(message),
+        408 | 429 | 500..=599 => Error::Storage(message),
         _ => Error::Invalid(message),
     }
 }

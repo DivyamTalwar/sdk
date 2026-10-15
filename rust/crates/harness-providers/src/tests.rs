@@ -87,16 +87,11 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             );
             assert_eq!(
                 events[2],
-                ModelEvent::ToolCall {
-                    metadata: if adapter == Adapter::Anthropic {
-                        json!({"anthropic_thinking":[{"type":"thinking","thinking":"think","signature":""}]})
-                    } else {
-                        serde_json::Value::Null
-                    },
-                    call_id: "call".into(),
-                    name: "echo".into(),
-                    arguments: json!({"value":1})
-                }
+                ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    "call".into(), "echo".into(), json!({"value":1})
+                ).with_metadata(if adapter == Adapter::Anthropic {
+                    json!({"anthropic_thinking":[{"type":"thinking","thinking":"think","signature":""}]})
+                } else { serde_json::Value::Null }))
             );
             let ModelEvent::Completed { metadata } = &events[3] else {
                 return Err(invalid("missing completion"));
@@ -399,12 +394,13 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 },
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall {
-                        metadata: serde_json::Value::Null,
-                        call_id: "call".into(),
-                        name: "echo".into(),
-                        arguments: json!({"value":1}),
-                    }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        acyclic_harness::model::ToolCall::new(
+                            "call".into(),
+                            "echo".into(),
+                            json!({"value":1}),
+                        ),
+                    )),
                 },
                 ModelMessage {
                     role: ModelRole::Tool,
@@ -546,5 +542,5 @@ fn parser_dispatch() -> ModelDispatch {
     }
 }
 
-#[path = "review_tests.rs"]
-mod review;
+#[path = "protocol_tests.rs"]
+mod protocol;

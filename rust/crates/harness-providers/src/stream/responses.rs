@@ -52,6 +52,9 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
             state.identity(response);
             state.usage(&response["usage"]);
             if value["type"] == "response.incomplete" || response["status"] == "incomplete" {
+                if response["incomplete_details"]["reason"] != "max_output_tokens" {
+                    return Err(invalid("Responses generation was incomplete"));
+                }
                 state
                     .metadata
                     .insert("finish_reason".into(), Value::String("length".into()));

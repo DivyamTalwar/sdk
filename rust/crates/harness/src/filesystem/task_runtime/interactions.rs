@@ -301,12 +301,12 @@ where
             }
         }
         for event in retained.events {
-            if let crate::model::ModelEvent::ToolCall {
+            if let crate::model::ModelEvent::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
                 ..
-            } = event
+            }) = event
             {
                 let invocation = crate::tool::ToolInvocation::for_model_call(
                     operation, step, call_id, name, arguments, work,

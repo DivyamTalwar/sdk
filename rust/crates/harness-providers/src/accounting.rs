@@ -11,10 +11,10 @@ pub(crate) struct TokenEstimator {
 impl TokenEstimator {
     pub(crate) fn new(adapter: Adapter) -> Self {
         let initial: f64 = match adapter {
-            Adapter::Anthropic => 3.0,
-            Adapter::Responses => 3.0,
-            Adapter::Chat => 3.0,
-            Adapter::Gemini => 3.0,
+            Adapter::Anthropic => 2.0,
+            Adapter::Responses => 2.0,
+            Adapter::Chat => 2.0,
+            Adapter::Gemini => 2.0,
         };
         Self {
             adapter,
@@ -44,8 +44,10 @@ impl TokenEstimator {
             // Leave ten percent headroom around observed tokenizer/framing behavior.
             let ratio = bytes as f64 / input as f64 * 0.9;
             if ratio.is_finite() && ratio > 0.0 {
+                // Positive finite IEEE-754 encodings preserve numeric order. A sparse
+                // prompt must never loosen the estimate for a later dense prompt.
                 self.bytes_per_token
-                    .store(ratio.to_bits(), Ordering::Relaxed);
+                    .fetch_min(ratio.to_bits(), Ordering::Relaxed);
             }
         }
     }

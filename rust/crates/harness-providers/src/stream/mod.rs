@@ -79,7 +79,7 @@ pub(crate) fn events<'a>(
             if adapter == Adapter::Anthropic && position == 0 && !state.thinking.is_empty() {
                 call.metadata = json!({"anthropic_thinking": state.thinking.values().collect::<Vec<_>>()});
             }
-            calls.push(ModelEvent::ToolCall { call_id: call.id, name: call.name, arguments, metadata: call.metadata });
+            calls.push(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(call.id, call.name, arguments).with_metadata(call.metadata)));
         }
         for call in calls { yield call; }
         yield ModelEvent::Completed { metadata: Value::Object(state.metadata) };
