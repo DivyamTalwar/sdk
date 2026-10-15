@@ -167,10 +167,9 @@ semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
 undocumented_unsafe_blocks = "deny"
 
-# Unoptimized code runs the heavy fork and filesystem tests several times
-# slower; basic optimization costs little more to compile and keeps backtraces.
+# Keep large workspace test crates cheap to compile; optimize only hot dependencies.
 [profile.dev]
-opt-level = 1
+opt-level = 0
 # Keep panic/backtrace file:line information without full type/variable debuginfo.
 debug = "line-tables-only"
 
