@@ -390,13 +390,16 @@ case "$lane" in
     }
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
+        RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
         harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
+      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
         --test client_public_consumer identical_public_harness_trace
     harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
-    cargo test -p acyclic-harness-providers --features browser \
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      cargo test -p acyclic-harness-providers --features browser \
       --target wasm32-unknown-unknown --lib --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked

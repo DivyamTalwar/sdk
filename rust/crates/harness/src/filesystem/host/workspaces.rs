@@ -462,7 +462,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 },
                             )
                             .await,
-                    )?
+                        break 'commit,
+                    )?;
                 };
                 Ok(commit)
             })?

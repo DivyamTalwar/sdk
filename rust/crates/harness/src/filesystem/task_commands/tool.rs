@@ -1,6 +1,8 @@
 use super::*;
 use crate::filesystem::PreparationIo;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::filesystem::task_runtime::observed::boundary;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::wire::ErrorCode;
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
@@ -89,7 +91,12 @@ where
                 task,
                 Arc::clone(&journal),
             )?;
-            ToolContext::new(Arc::new(task_context), operation, &invocation.call_id, None)?
+            break 'context ToolContext::new(
+                Arc::new(task_context),
+                operation,
+                &invocation.call_id,
+                None,
+            )?;
         };
         if !reconciliation_only || io.is_none() {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -107,7 +114,7 @@ where
                             .authorize_tool(definition, &invocation, work)
                             .await;
                     }
-                    context.task().authorize_tool(definition, &invocation).await
+                    break 'approval context.task().authorize_tool(definition, &invocation).await;
                 };
                 match approved {
                     Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
@@ -119,7 +126,7 @@ where
         }
         let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, work)?
             .with_limits(limits)?;
-        let (outcome, custody) = runner
+        let (outcome, _native_custody) = runner
             .run(
                 task,
                 definition,
@@ -131,7 +138,7 @@ where
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
-            io.absorb_native_custody(custody.ok_or_else(|| {
+            io.absorb_native_custody(_native_custody.ok_or_else(|| {
                 boundary(
                     Some(io),
                     ErrorCode::Storage,
