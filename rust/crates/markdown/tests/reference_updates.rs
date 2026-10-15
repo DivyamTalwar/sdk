@@ -78,6 +78,24 @@ fn batch_replacements_preserve_unchanged_line_allocations() {
     assert_eq!(pointer(&markdown), before);
 }
 
+#[test]
+fn one_batch_can_expand_and_shrink_different_blocks() {
+    let source = "[outer [x][ref]](u&#10;v)\n\n[x][a&#10;b]\n\n[keep]\n\n";
+    let definitions = "[ref]: /r\n\n[a&#10;b]: /a\n\n[keep]: /k\n\n";
+    let mut markdown = Markdown::default();
+    markdown.push(source);
+    let old = markdown.cached.first().map(|cache| cache.lines.len());
+    let lines = markdown.lines.len();
+    markdown.push(definitions);
+    assert!(markdown.cached.first().map(|cache| cache.lines.len()) > old);
+    assert_eq!(markdown.lines.len(), lines);
+    assert_eq!(
+        markdown.lines(),
+        full_parse(&format!("{source}{definitions}"))
+    );
+    check_chunks(&format!("{source}{definitions}"), &[1, 3, 7]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
