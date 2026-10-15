@@ -233,6 +233,7 @@ mod source_graph;
 mod sources;
 mod timer;
 mod volumes;
+mod wire;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use readonly::TaskAdmissionReadonlyWitness;
 mod workflow;

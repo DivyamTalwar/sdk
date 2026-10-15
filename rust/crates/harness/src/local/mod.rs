@@ -30,6 +30,7 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 mod turn;
+mod wire;
 #[cfg(feature = "native-execution")]
 mod workspace;
 pub use config::{LocalHarnessConfig, LocalProject};
@@ -45,6 +46,7 @@ pub(crate) type LocalTaskRuntime =
 /// A checkout or volume, durable authority, journals and stock executor.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
+    stream: Arc<LocalStream>,
     runtime: Arc<LocalTaskRuntime>,
     project: VolumeRef,
     scratch: VolumeRef,
@@ -174,7 +176,7 @@ impl LocalHarness {
         let verifier = issuer.verifier(&mut None)?;
         let (runtime, signed) = runtime::open(runtime::Configuration {
             files: files.clone(),
-            stream,
+            stream: stream.clone(),
             issuer: &issuer,
             verifier: &verifier,
             agent: owner.agent,
@@ -191,6 +193,7 @@ impl LocalHarness {
         .await?;
         Ok(Self {
             files,
+            stream,
             runtime,
             project: owner.project.clone(),
             scratch,

@@ -173,6 +173,23 @@ impl Scope {
     }
 }
 
+impl From<&Scope> for crate::wire::Scope {
+    fn from(scope: &Scope) -> Self {
+        Self {
+            id: scope.id.clone(),
+            capabilities: scope.capabilities.iter().map(str::to_owned).collect(),
+            issuer: scope.issuer.clone(),
+            agent_id: scope
+                .agent
+                .map_or_else(String::new, |agent| agent.to_string()),
+            parent_proof: scope
+                .parent_proof
+                .map_or_else(Vec::new, |proof| proof.to_vec()),
+            proof: scope.proof.to_vec(),
+        }
+    }
+}
+
 /// Explicit host authority capable of issuing unforgeable scopes.
 #[derive(Clone)]
 pub struct AuthorityIssuer {

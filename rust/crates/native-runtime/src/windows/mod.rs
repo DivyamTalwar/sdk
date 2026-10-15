@@ -14,7 +14,7 @@ pub(super) use io::{
     set_len_once, sync_once, with_overlapped, write_all_at, write_at_known_overlapped,
     write_batch_in_place,
 };
-pub(super) use service::{spawn_service_process, take_standard_output};
+pub(super) use service::{spawn_service_process, take_standard_output, wait_named_pipe};
 
 #[cfg(test)]
 mod tests;

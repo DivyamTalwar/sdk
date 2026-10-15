@@ -68,6 +68,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(config.journal.capability(operation, &mut None)?);
     }
+    grants.push("lifecycle:manage".to_owned());
     let signed = config.issuer.issue(
         "owner",
         &Capabilities::new(grants),

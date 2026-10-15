@@ -62,6 +62,8 @@ pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
+#[cfg(all(feature = "service", not(target_arch = "wasm32")))]
+pub mod service;
 pub mod source_authorization;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]
