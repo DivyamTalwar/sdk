@@ -466,7 +466,11 @@ impl LocalMount {
 
     pub(crate) async fn sync(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.sync().await.map_err(display)?;
+            if let Err(error) = mount.sync().await {
+                return Err(mount
+                    .take_callback_failure()
+                    .map_or_else(|| display(error), |(cause, _work)| display(cause)));
+            }
         }
         Ok(())
     }
