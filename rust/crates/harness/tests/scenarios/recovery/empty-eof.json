@@ -1,0 +1,7 @@
+{
+  "prompt":"Recover an empty interrupted stream.",
+  "turns":[[]],
+  "recoveries":[{"observed":[],"continuation":[{"kind":"content","delta":"restored"},{"kind":"completed","metadata":null}]}],
+  "resume":["operation outcome is indeterminate"],
+  "expect":{"text":"restored","request_count":1,"reconciliation_count":1}
+}

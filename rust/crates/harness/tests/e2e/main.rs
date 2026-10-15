@@ -6,6 +6,7 @@ mod scenario;
 use acyclic_harness::{
     AgentId, OperationId,
     context::{CompactionPolicy, ContextPipeline},
+    conversation::Limits,
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelContent},
@@ -50,20 +51,9 @@ async fn run(case: Scenario) -> TestResult {
             )
             .await?;
     }
-    let provider = Arc::new(ScriptedModelProvider::new(case.turns));
-    let executor = StockExecutor::new(
-        Model::new(
-            "scripted".into(),
-            "scenario".into(),
-            "1".into(),
-            Value::Null,
-        )?,
-        provider.clone(),
-        ContextPipeline::default(),
-        ToolRegistry::default(),
-    )
-    .with_compaction_policy(CompactionPolicy::Disabled)
-    .with_limits(limits);
+    let provider =
+        Arc::new(ScriptedModelProvider::new(case.turns).with_reconciliations(case.recoveries));
+    let mut executor = make_executor(provider.clone(), limits)?;
     let input = TurnInput {
         operation_id: OperationId::new(),
         input: ModelContent::Text(case.prompt),
@@ -73,6 +63,18 @@ async fn run(case: Scenario) -> TestResult {
     let journal = storage.journal();
     let operation = input.operation_id;
     let replay_input = case.replay.then(|| input.clone());
+    for expected_error in case.resume {
+        match executor.execute(input.clone(), journal.as_ref()).await {
+            Err(error) if error.to_string().contains(&expected_error) => {}
+            actual => {
+                return Err(format!(
+                    "expected interrupted attempt {expected_error:?}, got {actual:?}"
+                )
+                .into());
+            }
+        }
+        executor = make_executor(provider.clone(), limits)?;
+    }
     let result = executor.execute(input, journal.as_ref()).await;
     match (&case.expect.text, &case.expect.error, result) {
         (Some(expected), None, Ok(actual)) => {
@@ -86,8 +88,12 @@ async fn run(case: Scenario) -> TestResult {
             }
             if let Some(input) = replay_input {
                 let requests = provider.request_count();
+                let reconciliations = provider.reconciliation_count();
                 let replay = executor.execute(input, journal.as_ref()).await?;
-                if replay != actual || provider.request_count() != requests {
+                if replay != actual
+                    || provider.request_count() != requests
+                    || provider.reconciliation_count() != reconciliations
+                {
                     return Err("replay changed the result or dispatched the model again".into());
                 }
             }
@@ -97,6 +103,29 @@ async fn run(case: Scenario) -> TestResult {
     }
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
+    }
+    if provider.remaining_reconciliations() != 0 {
+        return Err(format!(
+            "{} unused reconciliation replies",
+            provider.remaining_reconciliations()
+        )
+        .into());
+    }
+    for (label, expected, actual) in [
+        (
+            "requests",
+            case.expect.request_count,
+            provider.request_count(),
+        ),
+        (
+            "reconciliations",
+            case.expect.reconciliation_count,
+            provider.reconciliation_count(),
+        ),
+    ] {
+        if expected.is_some_and(|expected| expected != actual) {
+            return Err(format!("{label}: expected {expected:?}, got {actual}").into());
+        }
     }
     if !case.expect.requests.is_empty() {
         let requests = provider
@@ -148,6 +177,25 @@ async fn run(case: Scenario) -> TestResult {
     Ok(())
 }
 
+fn make_executor(
+    provider: Arc<ScriptedModelProvider>,
+    limits: Limits,
+) -> acyclic_harness::Result<StockExecutor> {
+    Ok(StockExecutor::new(
+        Model::new(
+            "scripted".into(),
+            "scenario".into(),
+            "1".into(),
+            Value::Null,
+        )?,
+        provider,
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_compaction_policy(CompactionPolicy::Disabled)
+    .with_limits(limits))
+}
+
 #[tokio::test]
 async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turns() -> TestResult {
     let baseline = include_bytes!("../scenarios/core/text.json");
@@ -160,6 +208,10 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
         "result",
         "files",
         "turns",
+        "request_count",
+        "reconciliation_count",
+        "recoveries",
+        "resume",
     ] {
         let mut case = Scenario::parse(baseline)?;
         match field {
@@ -182,7 +234,36 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
                 .push(acyclic_harness::test_support::ScriptedTurn::Text(
                     "unused".into(),
                 )),
+            "request_count" => case.expect.request_count = Some(0),
+            "reconciliation_count" => case.expect.reconciliation_count = Some(1),
+            "recoveries" => {
+                case.recoveries
+                    .push(acyclic_harness::test_support::ScriptedReconciliation {
+                        observed: vec![],
+                        continuation: None,
+                    })
+            }
+            "resume" => case.resume.push("interrupted".into()),
             _ => return Err("unknown test mutation".into()),
+        }
+        assert!(run(case).await.is_err(), "accepted incorrect {field}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() -> TestResult {
+    let baseline = include_bytes!("../scenarios/recovery/midstream.json");
+    run(Scenario::parse(baseline)?).await?;
+    for field in ["prefix", "continuation", "count", "resume", "unused"] {
+        let mut case = Scenario::parse(baseline)?;
+        match field {
+            "prefix" => case.recoveries[0].observed.clear(),
+            "continuation" => case.recoveries[0].continuation = None,
+            "count" => case.expect.reconciliation_count = Some(0),
+            "resume" => case.resume[0] = "wrong".into(),
+            "unused" => case.recoveries.push(case.recoveries[0].clone()),
+            _ => return Err("unknown recovery mutation".into()),
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
     }

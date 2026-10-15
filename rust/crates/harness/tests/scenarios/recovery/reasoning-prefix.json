@@ -1,0 +1,7 @@
+{
+  "prompt":"Restore a response after reasoning.",
+  "turns":[[{"type":"event","kind":"reasoning","delta":"thinking"},{"type":"error","error":"offline"}]],
+  "recoveries":[{"observed":[{"kind":"reasoning","delta":"thinking"}],"continuation":[{"kind":"content","delta":"answer"},{"kind":"completed","metadata":null}]}],
+  "resume":["offline"],
+  "expect":{"text":"answer","request_count":1,"reconciliation_count":1,"events":[{"kind":"model","event":{"kind":"reasoning","delta":"thinking"}},{"kind":"model","event":{"kind":"content","delta":"answer"}}]}
+}

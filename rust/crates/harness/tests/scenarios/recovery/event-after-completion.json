@@ -1,0 +1,7 @@
+{
+  "prompt":"Reject events after a recovered terminal event.",
+  "turns":[[{"type":"error","error":"offline"}]],
+  "recoveries":[{"observed":[],"continuation":[{"kind":"completed","metadata":null},{"kind":"content","delta":"trailing"}]}],
+  "resume":["offline"],
+  "expect":{"error":"model emitted an event after completion","request_count":1,"reconciliation_count":1}
+}

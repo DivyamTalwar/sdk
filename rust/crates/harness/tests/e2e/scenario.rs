@@ -1,4 +1,4 @@
-use acyclic_harness::test_support::ScriptedTurn;
+use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -10,6 +10,10 @@ pub struct Scenario {
     pub seed: BTreeMap<String, String>,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
+    #[serde(default)]
+    pub recoveries: Vec<ScriptedReconciliation>,
+    #[serde(default)]
+    pub resume: Vec<String>,
     #[serde(default)]
     pub limits: BTreeMap<String, Value>,
     #[serde(default = "default_steps")]
@@ -29,6 +33,8 @@ pub struct Expectations {
     pub text: Option<String>,
     pub error: Option<String>,
     pub result: Option<Value>,
+    pub request_count: Option<usize>,
+    pub reconciliation_count: Option<usize>,
     #[serde(default)]
     pub events: Vec<Value>,
     #[serde(default)]
@@ -63,6 +69,9 @@ impl Scenario {
         if scenario.expect.error.as_ref().is_some_and(String::is_empty) {
             return Err("error expectation must not be empty".into());
         }
+        if scenario.resume.iter().any(String::is_empty) {
+            return Err("resume error expectation must not be empty".into());
+        }
         if scenario.expect.error.is_some() && (scenario.expect.result.is_some() || scenario.replay)
         {
             return Err("result and replay require a successful turn".into());
@@ -81,6 +90,7 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"prompt":"x","turns":[],"expect":{"error":""}}"#,
         r#"{"prompt":"x","turns":[],"replay":true,"expect":{"error":"x"}}"#,
         r#"{"prompt":"x","turns":[],"expect":{"error":"x","result":{}}}"#,
+        r#"{"prompt":"x","turns":[],"resume":[""],"expect":{"text":"x"}}"#,
     ] {
         assert!(
             Scenario::parse(input.as_bytes()).is_err(),
