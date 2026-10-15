@@ -25,6 +25,9 @@ required-features = ["filesystem-local", "native-execution"]
 name = "default_tools"
 path = "tests/default_tools.rs"
 required-features = ["filesystem"]
+[[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
 
 [[test]]
 name = "mcp-loom"
@@ -181,7 +184,7 @@ allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
 proptest.workspace = true
 loom = "0.7.2"
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
 
