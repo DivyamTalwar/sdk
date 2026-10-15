@@ -48,8 +48,11 @@ impl HttpTransport for RacingCli {
             };
             if first {
                 // The real CLI does not participate in this provider's in-memory mutex.
-                std::fs::write(&self.path, &self.cli_bytes)
-                    .map_err(|_| invalid("fixture write"))?;
+                // Publish a complete credential document while independent readers run.
+                let mut update = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())
+                    .map_err(|_| invalid("fixture staging"))?;
+                update.write_all(&self.cli_bytes).map_err(|_| invalid("fixture write"))?;
+                update.persist(&self.path).map_err(|_| invalid("fixture replace"))?;
             }
             let (status, value) = self
                 .replies
