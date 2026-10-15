@@ -79,13 +79,17 @@ proptest! {
     }
 }
 
-#[tokio::test]
-async fn publication_failures_are_atomic_for_arbitrary_text_and_budgets() {
+#[test]
+fn publication_failures_are_atomic_for_arbitrary_text_and_budgets() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("property runtime");
     let strategy = (text(), text(), 1_usize..4096, 1_usize..512);
     let mut runner = TestRunner::new(ProptestConfig::with_cases(32));
     runner
         .run(&strategy, |(before, after, work, render_bytes)| {
-            futures::executor::block_on(async {
+            runtime.block_on(async {
                 let fixture = Fixture::new().await.expect("fixture");
                 fixture.put("a.txt", &before, "base").await.expect("base");
                 let base = fixture.source("a.txt").await.expect("base reference");
