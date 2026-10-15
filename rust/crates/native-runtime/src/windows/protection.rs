@@ -28,9 +28,8 @@ pub(crate) fn protect_with_copy<T, E: From<io::Error>>(
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     let input = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "private payload exceeds u32")
-        })?,
+        cbData: u32::try_from(bytes.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         pbData: bytes.as_ptr().cast_mut(),
     };
     let mut output = CRYPT_INTEGER_BLOB {
@@ -70,11 +69,7 @@ pub(crate) fn protect_with_copy<T, E: From<io::Error>>(
         || output.0.pbData.is_null()
         || u64::from(output.0.cbData) > maximum_bytes
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "protected payload exceeds its bound",
-        )
-        .into());
+        return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     // SAFETY: DPAPI returned cbData live bytes owned by output until after copy.
     copy(unsafe { slice::from_raw_parts(output.0.pbData, output.0.cbData as usize) })

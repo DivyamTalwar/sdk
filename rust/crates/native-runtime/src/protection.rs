@@ -1,7 +1,8 @@
 //! User-private payload protection with caller-owned copying.
 use std::io;
 
-/// Protects a nonempty payload for the current user. The callback owns any copy;
+/// Uses current-user DPAPI on Windows; Unix callers must enforce private file
+/// permissions. The nonempty payload is borrowed and the callback owns any copy;
 /// Windows' foreign DPAPI buffer is cleared and released after the callback.
 pub fn protect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
@@ -28,11 +29,7 @@ fn transform<T, E: From<io::Error>>(
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     if bytes.is_empty() || maximum_bytes == 0 || bytes.len() as u64 > maximum_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "private payload exceeds its bound",
-        )
-        .into());
+        return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
     }
     #[cfg(windows)]
     {
