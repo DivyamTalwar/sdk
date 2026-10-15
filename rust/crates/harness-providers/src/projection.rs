@@ -198,12 +198,12 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
         match part {
             ModelContentPart::Text { text } => texts.push(text.clone()),
             ModelContentPart::File { file, policy } => texts.push(file_text(file, policy)?),
-            ModelContentPart::ToolCall {
+            ModelContentPart::ToolCall(acyclic_harness::model::ToolCall {
                 call_id,
                 name,
                 arguments,
                 metadata,
-            } => {
+            }) => {
                 if adapter == Adapter::Anthropic {
                     if let Some(thinking) = metadata["anthropic_thinking"].as_array() {
                         calls.extend(thinking.iter().cloned());

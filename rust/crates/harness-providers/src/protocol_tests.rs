@@ -10,35 +10,104 @@ fn total(count: &acyclic_harness::context::ModelTokenCount) -> u32 {
 }
 
 #[tokio::test]
-async fn token_estimates_start_at_three_bytes_and_calibrate_per_resolved_model() -> Result<()> {
-    for (adapter, _) in fixtures() {
-        let (provider, _) = provider(adapter, 200);
+async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model() -> Result<()> {
+    for (adapter, fixture) in fixtures() {
+        let (mut provider, _) = provider(adapter, 200);
+        assert_eq!(provider.estimator.tokens(1000), Some(500));
+        let dense = fixture
+            .replace("\"input_tokens\":5", "\"input_tokens\":512")
+            .replace("\"prompt_tokens\":5", "\"prompt_tokens\":512")
+            .replace("\"promptTokenCount\":5", "\"promptTokenCount\":512");
+        provider.transport = Arc::new(ToolLoop {
+            replies: Mutex::new(VecDeque::from([dense, fixture.into()])),
+            sent: Mutex::new(Vec::new()),
+        });
         let (prepared, dispatch) = request(&provider)?;
         let initial = total(&provider.count_tokens(&prepared)?);
         let bytes = serde_json::to_vec(&projection::body(&provider, prepared.request())?)
             .expect("encode fixture")
             .len();
-        assert!(initial < bytes as u32 / 2 && initial >= bytes as u32 / 3);
+        assert!(initial >= bytes.div_ceil(2) as u32 && initial < bytes as u32);
         provider
             .generate(prepared.clone(), dispatch)
             .try_collect::<Vec<_>>()
             .await?;
         let calibrated = total(&provider.count_tokens(&prepared)?);
         assert!(
-            calibrated < initial,
+            calibrated > initial,
             "{adapter:?}: {initial} -> {calibrated}"
         );
-        assert!(calibrated >= 5);
+        assert!(calibrated >= 512);
+        provider
+            .generate(prepared.clone(), dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(total(&provider.count_tokens(&prepared)?), calibrated);
         let (other, _) = super::provider(adapter, 200);
         assert_eq!(total(&other.count_tokens(&prepared)?), initial);
     }
     Ok(())
 }
 
+#[test]
+fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Result<()> {
+    use acyclic_harness::context::ThresholdCompaction;
+    for (adapter, _) in fixtures() {
+        // A resumed process resolves a fresh model: no previous usage calibration.
+        let (provider, script) = provider(adapter, 200);
+        let (original, _) = request(&provider)?;
+        let mut resumed = original.request().clone();
+        resumed.messages[1].content = ModelContent::Text("漢".repeat(5000));
+        let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None)?;
+        let count = total(&provider.count_tokens(&prepared)?);
+        let capacity = provider.context_capacity(&provider.model)?;
+        let policy = ThresholdCompaction {
+            response_reserve_tokens: 1024,
+            recent_tokens: 1024,
+            ..ThresholdCompaction::default()
+        };
+        assert!(policy.needs_compaction(capacity, u64::from(count))?);
+        // The previous three-byte estimate admitted this dense history. Two-byte
+        // initial accounting routes it through compaction before any HTTP request.
+        assert!(!policy.needs_compaction(capacity, u64::from(count) * 2 / 3)?);
+        assert!(script.sent.lock().expect("fixture requests").is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
+    for reason in [
+        json!("content_filter"),
+        json!("unknown"),
+        serde_json::Value::Null,
+    ] {
+        for (event_type, status) in [
+            ("response.incomplete", "incomplete"),
+            ("response.completed", "incomplete"),
+        ] {
+            let event = json!({"type":event_type,"response":{
+                "status":status,"incomplete_details":{"reason":reason}
+            }});
+            let fixture = format!("data: {event}\n\n");
+            let error = stream::events(
+                Adapter::Responses,
+                chunks(&fixture, 1),
+                4096,
+                parser_dispatch(),
+            )
+            .try_collect::<Vec<_>>()
+            .await
+            .expect_err("incomplete response");
+            assert!(matches!(error, Error::Invalid(_)));
+        }
+    }
+}
+
 #[tokio::test]
 async fn http_status_classes_are_distinct_and_never_expose_response_payloads() -> Result<()> {
     for (adapter, _) in fixtures() {
-        for status in [401, 403, 429, 500, 502, 503, 400, 404] {
+        for status in [401, 403, 408, 429, 500, 502, 503, 400, 404] {
             let (provider, _) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
@@ -51,7 +120,7 @@ async fn http_status_classes_are_distinct_and_never_expose_response_payloads() -
             assert!(!error.to_string().contains("usage"));
             match status {
                 401 | 403 => assert!(matches!(error, Error::Unauthorized(_))),
-                429 | 500..=599 => assert!(matches!(error, Error::Storage(_))),
+                408 | 429 | 500..=599 => assert!(matches!(error, Error::Storage(_))),
                 _ => assert!(matches!(error, Error::Invalid(_))),
             }
         }
@@ -104,7 +173,7 @@ async fn token_limits_complete_uniformly_without_publishing_partial_tool_batches
             ),
             Adapter::Responses => fixture
                 .replace("response.completed", "response.incomplete")
-                .replace("\"status\":\"completed\"", "\"status\":\"incomplete\""),
+                .replace("\"status\":\"completed\"", "\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}"),
             Adapter::Gemini => fixture.replace(
                 "\"finishReason\":\"STOP\"",
                 "\"finishReason\":\"MAX_TOKENS\"",
@@ -116,7 +185,7 @@ async fn token_limits_complete_uniformly_without_publishing_partial_tool_batches
         assert!(
             !events
                 .iter()
-                .any(|event| matches!(event, ModelEvent::ToolCall { .. }))
+                .any(|event| matches!(event, ModelEvent::ToolCall(_)))
         );
         let Some(ModelEvent::Completed { metadata }) = events.last() else {
             return Err(invalid("no completion"));
@@ -208,14 +277,14 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_both_pr
                 .expect("decode events");
         let call = events
             .into_iter()
-            .find(|event| matches!(event, ModelEvent::ToolCall { .. }))
+            .find(|event| matches!(event, ModelEvent::ToolCall(_)))
             .ok_or_else(|| invalid("missing tool call"))?;
-        let ModelEvent::ToolCall {
+        let ModelEvent::ToolCall(acyclic_harness::model::ToolCall {
             call_id,
             name,
             arguments,
             metadata,
-        } = call
+        }) = call
         else {
             unreachable!()
         };
@@ -234,12 +303,10 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_both_pr
         next.messages.extend([
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Part(ModelContentPart::ToolCall {
-                    call_id: call_id.clone(),
-                    name: name.clone(),
-                    arguments,
-                    metadata,
-                }),
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness::model::ToolCall::new(call_id.clone(), name.clone(), arguments)
+                        .with_metadata(metadata),
+                )),
             },
             ModelMessage {
                 role: ModelRole::Tool,
