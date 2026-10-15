@@ -305,56 +305,95 @@ async fn content_hints_override_metadata_hints_in_either_order()
 #[tokio::test]
 async fn rename_into_new_directory_hydrates_parents_even_with_create_hints()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = tempfile::tempdir()?;
-    std::fs::create_dir_all(source.path().join("outer/inner"))?;
-    std::fs::write(source.path().join("outer/inner/moved.txt"), b"new")?;
-    for parent_hints in [
-        vec![],
-        vec!["/outer"],
-        vec!["/outer/inner"],
-        vec!["/outer", "/outer/inner"],
-    ] {
-        let mut checkout = checkout(&[("/old.txt", "old")]).await?;
-        let before = checkout
-            .lookup_no_follow(
-                &path("/old.txt")?,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await?
-            .value
-            .record
-            .ok_or("original file")?;
-        let mut changes = parent_hints
-            .into_iter()
-            .map(|parent| Ok(WatchChange::Created(path(parent)?)))
-            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-        changes.push(WatchChange::Renamed {
-            from: path("/old.txt")?,
-            to: path("/outer/inner/moved.txt")?,
-        });
-        replay(&mut checkout, &options(source.path(), 4)?, changes).await?;
-        assert_records(
-            &mut checkout,
-            &[
-                ("/old.txt", None),
-                ("/outer", Some(FileKind::Directory)),
-                ("/outer/inner", Some(FileKind::Directory)),
-                ("/outer/inner/moved.txt", Some(FileKind::Regular)),
-            ],
-        )
-        .await?;
-        let after = checkout
-            .lookup_no_follow(
-                &path("/outer/inner/moved.txt")?,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await?
-            .value
-            .record
-            .ok_or("renamed file")?;
-        assert_eq!(after.file_id, before.file_id);
+    for hints in [vec![], vec![0], vec![1], vec![0, 1]] {
+        rename_with_hints(2, hints, false).await?;
     }
+    Ok(())
+}
+
+// Property: any subset/order/duplication of parent creation hints leaves the
+// same renamed FileId and complete ancestry, within the exact path bound.
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn rename_parent_hints_are_confluent(
+        depth in 1usize..5,
+        hints in proptest::collection::vec(0usize..4, 0..8),
+        rename_first in proptest::bool::ANY,
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(rename_with_hints(depth, hints, rename_first)).unwrap();
+    }
+}
+
+async fn rename_with_hints(
+    depth: usize,
+    hints: Vec<usize>,
+    rename_first: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    let parents: Vec<_> = (1..=depth)
+        .map(|length| format!("/{}", vec!["dir"; length].join("/")))
+        .collect();
+    let destination = format!("{}/moved.txt", parents.last().ok_or("parent")?);
+    std::fs::create_dir_all(
+        source
+            .path()
+            .join(parents.last().ok_or("parent")?.trim_start_matches('/')),
+    )?;
+    std::fs::write(
+        source.path().join(destination.trim_start_matches('/')),
+        b"new",
+    )?;
+    let mut checkout = checkout(&[("/old.txt", "old")]).await?;
+    let before = checkout
+        .lookup_no_follow(
+            &path("/old.txt")?,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value
+        .record
+        .ok_or("original file")?;
+    let mut changes = hints
+        .into_iter()
+        .filter_map(|index| parents.get(index))
+        .map(|parent| Ok(WatchChange::Created(path(parent)?)))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    changes.push(WatchChange::Renamed {
+        from: path("/old.txt")?,
+        to: path(&destination)?,
+    });
+    if rename_first {
+        changes.rotate_right(1);
+    }
+    replay(
+        &mut checkout,
+        &options(source.path(), depth as u32 + 2)?,
+        changes,
+    )
+    .await?;
+    let mut expected = vec![
+        ("/old.txt", None),
+        (destination.as_str(), Some(FileKind::Regular)),
+    ];
+    expected.extend(
+        parents
+            .iter()
+            .map(|parent| (parent.as_str(), Some(FileKind::Directory))),
+    );
+    assert_records(&mut checkout, &expected).await?;
+    let after = checkout
+        .lookup_no_follow(
+            &path(&destination)?,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value
+        .record
+        .ok_or("renamed file")?;
+    assert_eq!(after.file_id, before.file_id);
     Ok(())
 }

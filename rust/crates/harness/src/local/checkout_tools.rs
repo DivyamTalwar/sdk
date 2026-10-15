@@ -11,6 +11,8 @@ use tokio::sync::Mutex as AsyncMutex;
 mod bash;
 mod capture;
 mod git;
+#[cfg(test)]
+mod tests;
 
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
@@ -19,12 +21,20 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    // Lock order: checkout state -> command-local git merge cache -> switched
+    // view. The inner executor cannot acquire checkout state; no reverse edge.
     state: AsyncMutex<State>,
 }
 
 struct State {
     active: Option<workspace::View>,
     watcher: Option<NativeWatch>,
+}
+
+// Keep the whole command, including its publication and cursor replacement,
+// inside one guard. The async model exercises this same boundary.
+async fn serialized<T, R>(state: &AsyncMutex<T>, command: impl AsyncFnOnce(&mut T) -> R) -> R {
+    command(&mut *state.lock().await).await
 }
 
 impl CheckoutTools {
@@ -108,29 +118,31 @@ impl ToolExecutor for CheckoutTools {
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            let mut state = self.state.lock().await;
-            let State { active, watcher } = &mut *state;
-            let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-            self.capture(view, watcher, invocation.operation_id, 0)
-                .await?;
-            if invocation.name == "fs" {
-                let view = state
-                    .active
-                    .as_ref()
-                    .unwrap_or_else(|| self.workspace.view());
-                let (result, switched) = self.fs(view, &command).await?;
-                if let Some(switched) = switched {
-                    state.active = Some(switched);
-                }
-                Ok(result)
-            } else {
-                let result = self.bash(command, maximum).await;
+            serialized(&self.state, async |state| {
                 let State { active, watcher } = &mut *state;
                 let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                self.capture(view, watcher, invocation.operation_id, 1)
+                self.capture(view, watcher, invocation.operation_id, 0)
                     .await?;
-                result
-            }
+                if invocation.name == "fs" {
+                    let view = state
+                        .active
+                        .as_ref()
+                        .unwrap_or_else(|| self.workspace.view());
+                    let (result, switched) = self.fs(view, &command).await?;
+                    if let Some(switched) = switched {
+                        state.active = Some(switched);
+                    }
+                    Ok(result)
+                } else {
+                    let result = self.bash(command, maximum).await;
+                    let State { active, watcher } = &mut *state;
+                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+                    self.capture(view, watcher, invocation.operation_id, 1)
+                        .await?;
+                    result
+                }
+            })
+            .await
         })
     }
 

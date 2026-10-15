@@ -49,3 +49,33 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
     }
     Ok(arguments)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // Quoting is a lossless codec for every non-NUL Unicode argument,
+        // including empty strings, metacharacters and whitespace.
+        #[test]
+        fn quoted_arguments_round_trip(
+            arguments in prop::collection::vec(
+                prop::collection::vec(any::<char>().prop_filter("non-NUL", |c| *c != '\0'), 0..32)
+                    .prop_map(|characters| characters.into_iter().collect::<String>()),
+                1..8,
+            ),
+        ) {
+            let command = arguments.iter().map(|argument| {
+                format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\""))
+            }).collect::<Vec<_>>().join(" ");
+            prop_assert_eq!(parse_command(&command).unwrap(), arguments);
+        }
+
+        #[test]
+        fn nul_is_always_rejected(prefix in ".{0,64}", suffix in ".{0,64}") {
+            prop_assert!(parse_command(&format!("{prefix}\0{suffix}")).is_err());
+        }
+    }
+}
