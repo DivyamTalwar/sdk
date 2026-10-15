@@ -11,10 +11,10 @@ pub(super) fn folded_projection(
     config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
     let mut checkout = memory_checkout(
         config,
-        crate::CheckoutMode {
-            access: crate::AccessMode::ReadWrite,
-            consistency: crate::ConsistencyMode::Pinned,
-            mutations: crate::MutationMode::PrivateOverlay,
+        crate::model::CheckoutMode {
+            access: crate::model::AccessMode::ReadWrite,
+            consistency: crate::model::ConsistencyMode::Pinned,
+            mutations: crate::model::MutationMode::PrivateOverlay,
         },
         1,
     )?
@@ -35,10 +35,12 @@ pub(super) fn folded_projection(
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok::<_, Box<dyn std::error::Error>>(crate::AuthoredMutation::CreateDirectory {
-                    path: crate::kernel::NamespacePath::new(names, config.limits)?,
-                    metadata: FileMetadata::default(),
-                })
+                Ok::<_, Box<dyn std::error::Error>>(
+                    crate::facade::AuthoredMutation::CreateDirectory {
+                        path: crate::kernel::NamespacePath::new(names, config.limits)?,
+                        metadata: FileMetadata::default(),
+                    },
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
