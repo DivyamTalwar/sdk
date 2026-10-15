@@ -4,7 +4,10 @@ use super::{
 };
 use acyclic_harness::{
     AgentId, OperationId,
-    context::{CompactionPolicy, ContextPipeline},
+    context::{
+        CompactionPolicy, Context, ContextPipeline, ContextPlacement, ContextStage,
+        ModelTokenCount, SourceStage,
+    },
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelContent},
@@ -16,8 +19,48 @@ use std::sync::Arc;
 
 pub(super) async fn run(mut case: Scenario) -> TestResult {
     let limits = case.execution_limits()?;
+    let storage = workspace(&case.seed).await?;
+    case.seed.clear();
+    let (executor, provider, source) = configure(&mut case, limits)?;
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text(case.take_instruction()?),
+        selected_context: None,
+        max_steps: case.max_steps.unwrap_or(16),
+    };
+    let journal = storage.journal();
+    let operation = input.operation_id;
+    if let Some(source) = source {
+        run_summary(
+            &executor,
+            provider.as_ref(),
+            journal.as_ref(),
+            input,
+            source,
+            &case,
+        )
+        .await?;
+    } else {
+        run_turn(&executor, provider.as_ref(), journal.as_ref(), input, &case).await?;
+    }
+    check_provider(&case.expect, &provider, journal.as_ref()).await?;
+    check_events(&case.expect, journal.as_ref(), operation).await?;
+    check_files(&case.expect.files, &storage).await
+}
+
+pub(super) async fn workspace(
+    seed: &std::collections::BTreeMap<String, String>,
+) -> TestResult<MemoryHarnessStorage> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?;
-    for (path, contents) in &case.seed {
+    publish(&storage, seed).await?;
+    Ok(storage)
+}
+
+pub(super) async fn publish(
+    storage: &MemoryHarnessStorage,
+    files: &std::collections::BTreeMap<String, String>,
+) -> TestResult {
+    for (path, contents) in files {
         storage
             .stage(
                 OperationId::new(),
@@ -28,31 +71,49 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
             )
             .await?;
     }
-    case.seed.clear();
-    let (executor, provider) = configure(&mut case, limits)?;
-    let input = TurnInput {
-        operation_id: OperationId::new(),
-        input: ModelContent::Text(std::mem::take(&mut case.prompt)),
-        selected_context: None,
-        max_steps: case.max_steps,
-    };
-    let journal = storage.journal();
-    let operation = input.operation_id;
-    run_turn(&executor, provider.as_ref(), journal.as_ref(), input, &case).await?;
-    check_provider(&case.expect, &provider)?;
-    check_events(&case.expect, journal.as_ref(), operation).await?;
-    check_files(&case.expect, &storage).await
+    Ok(())
 }
 
 fn configure(
     case: &mut Scenario,
     limits: acyclic_harness::conversation::Limits,
-) -> acyclic_harness::Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
-    let provider = Arc::new(
-        ScriptedModelProvider::new(std::mem::take(&mut case.turns))
-            .with_reconciliations(std::mem::take(&mut case.recoveries)),
-    );
-    let executor = StockExecutor::new(
+) -> acyclic_harness::Result<(StockExecutor, Arc<ScriptedModelProvider>, Option<Context>)> {
+    let mut provider = ScriptedModelProvider::new(std::mem::take(&mut case.turns))
+        .with_reconciliations(std::mem::take(&mut case.recoveries));
+    if let Some(capacity) = case.capacity {
+        provider = provider.with_context_capacity(capacity);
+    }
+    if let Some(tokens) = case.message_tokens {
+        provider = provider.with_token_counter(move |request| {
+            Ok(ModelTokenCount {
+                request_digest: request.request_digest(),
+                fixed_tokens: 0,
+                message_tokens: vec![tokens; request.request().messages.len()],
+            })
+        });
+    }
+    let provider = Arc::new(provider);
+    let mut summary_source = None;
+    let context = if case.kind == scenario::Kind::Summary {
+        summary_source = Some(Context {
+            messages: std::mem::take(&mut case.context),
+            ..Context::default()
+        });
+        ContextPipeline::default()
+    } else if case.context.is_empty() {
+        ContextPipeline::default()
+    } else {
+        ContextPipeline::new([Arc::new(SourceStage::new(
+            "history",
+            "1",
+            Arc::new(Context {
+                messages: std::mem::take(&mut case.context),
+                ..Context::default()
+            }),
+            ContextPlacement::Prepend,
+        )) as Arc<dyn ContextStage>])
+    };
+    let mut executor = StockExecutor::new(
         Model::new(
             "scripted".into(),
             "scenario".into(),
@@ -60,12 +121,63 @@ fn configure(
             Value::Null,
         )?,
         provider.clone(),
-        ContextPipeline::default(),
+        context,
         ToolRegistry::default(),
     )
-    .with_compaction_policy(CompactionPolicy::Disabled)
+    .with_compaction_policy(case.compaction.take().unwrap_or(CompactionPolicy::Disabled))
     .with_limits(limits);
-    Ok((executor, provider))
+    if let Some(maximum) = case.max_output_tokens {
+        executor = executor.with_max_output_tokens(maximum)?;
+    }
+    Ok((executor, provider, summary_source))
+}
+
+async fn run_summary(
+    executor: &StockExecutor,
+    provider: &ScriptedModelProvider,
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    input: TurnInput,
+    source: Context,
+    case: &Scenario,
+) -> TestResult {
+    let operation = input.operation_id;
+    let replay_input = case.replay.then(|| input.clone());
+    let replay_source = case.replay.then(|| source.clone());
+    for expected_error in &case.resume {
+        let attempt = (*executor).clone();
+        check_interruption(
+            expected_error,
+            attempt
+                .summarize(journal, operation, source.clone(), input.input.clone())
+                .await,
+        )?;
+    }
+    let result = executor
+        .summarize(journal, operation, source, input.input)
+        .await;
+    if let Some(actual) = check_result(&case.expect, result)? {
+        let text = journal.load(&actual.output, None)?.await?;
+        check_text(&case.expect, text.as_ref())?;
+        if let Some(input) = replay_input {
+            let counts = (provider.requests().len(), provider.reconciliations().len());
+            let replay = executor
+                .summarize(
+                    journal,
+                    operation,
+                    replay_source.ok_or("missing replay source")?,
+                    input.input,
+                )
+                .await?;
+            if replay != actual
+                || counts != (provider.requests().len(), provider.reconciliations().len())
+            {
+                return Err(
+                    "summary replay changed the result or invoked the provider again".into(),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run_turn(
@@ -101,9 +213,10 @@ async fn run_turn(
     Ok(())
 }
 
-fn check_provider(
+async fn check_provider(
     expected: &scenario::Expectations,
     provider: &ScriptedModelProvider,
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
 ) -> TestResult {
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
@@ -132,6 +245,33 @@ fn check_provider(
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
         matchers::ordered(expected, &requests, "requests")?;
+    }
+    if let Some(expected) = &expected.request_files {
+        if expected.len() != requests.len() {
+            return Err("request_files must match the number of observed requests".into());
+        }
+        for (index, (expected, request)) in expected.iter().zip(&requests).enumerate() {
+            let mut files = request
+                .messages
+                .iter()
+                .flat_map(|message| message.content.file_refs());
+            for (file_index, expected) in expected.iter().enumerate() {
+                let file = files
+                    .next()
+                    .ok_or_else(|| format!("request_files[{index}][{file_index}]: missing file"))?;
+                let actual = journal.load(file, None)?.await?;
+                if actual.as_ref() != expected.as_bytes() {
+                    return Err(format!(
+                        "request_files[{index}][{file_index}]: expected {expected:?}, got {:?}",
+                        String::from_utf8_lossy(&actual)
+                    )
+                    .into());
+                }
+            }
+            if files.next().is_some() {
+                return Err(format!("request_files[{index}]: unexpected file").into());
+            }
+        }
     }
     Ok(())
 }
@@ -174,11 +314,11 @@ async fn check_events(
     Ok(())
 }
 
-async fn check_files(
-    expected: &scenario::Expectations,
+pub(super) async fn check_files(
+    expected: &std::collections::BTreeMap<String, Option<String>>,
     storage: &MemoryHarnessStorage,
 ) -> TestResult {
-    for (path, expected) in &expected.files {
+    for (path, expected) in expected {
         let actual = storage
             .read_delegated_path(storage.owner_scope(), "", path, None)
             .await;
