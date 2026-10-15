@@ -61,7 +61,7 @@ impl Cached {
         range: Range<usize>,
         lines: Range<usize>,
         state: render::Renderer,
-        paragraph: bool,
+        events: &[(Event<'_>, Range<usize>)],
     ) -> Option<Self> {
         let quotes = source
             .get(line_start(source, range.start)..range.start)
@@ -74,7 +74,7 @@ impl Cached {
             return None;
         }
         Some(Self {
-            template: Template::new(raw, quotes, paragraph),
+            template: Template::new(raw, quotes, events),
             state,
             lines,
         })
@@ -159,6 +159,11 @@ impl Markdown {
             .rposition(|line| !line.spans.is_empty())
             .map_or(0, |index| index + 1);
         self.lines.get(..end).unwrap_or_default()
+    }
+
+    /// Recover the Markdown source with CRLF and CR normalized to LF.
+    pub fn into_source(self) -> String {
+        self.source
     }
 
     /// Discard this presentation when a query resets or selects another turn.
@@ -248,34 +253,30 @@ impl Markdown {
         let mut caches: Vec<(usize, Cached)> = Vec::new();
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
-            if let Event::Start(tag) = event
-                && range.start < prefix.len()
-            {
-                synthetic_leaf = is_leaf(tag);
-                continue;
-            }
-            if synthetic_leaf {
-                if let Event::End(end) = event
-                    && is_leaf_end(*end)
-                {
-                    synthetic_leaf = false;
-                }
+            if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
                 continue;
             }
             if let Event::Start(tag) = event {
                 if is_leaf(tag) {
+                    let closed =
+                        stream_code::closed(&source, events.get(index..).unwrap_or_default());
                     leaf = Some((
                         range.start,
                         self.lines.len() + out.lines.len(),
                         out.checkpoint(),
+                        index,
+                        closed
+                            && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n'),
                     ));
-                    if self.start_fence(
-                        &source,
-                        (base, prefix.len()),
-                        events.get(index..).unwrap_or_default(),
-                        &mut out,
-                        &stack,
-                    ) {
+                    if !closed
+                        && self.start_fence(
+                            &source,
+                            (base, prefix.len()),
+                            events.get(index..).unwrap_or_default(),
+                            &mut out,
+                            &stack,
+                        )
+                    {
                         for (end, cache) in caches {
                             if base + end.saturating_sub(prefix.len()) <= self.offset {
                                 self.cache(cache);
@@ -292,14 +293,15 @@ impl Markdown {
                     stack.pop();
                 }
                 let leaf_end = is_leaf_end(*end);
+                let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
                 if leaf_end
-                    && let Some((start, first, state)) = leaf.take()
+                    && let Some((start, first, state, begin, _)) = leaf.take()
                     && let Some(cache) = Cached::new(
                         &source,
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
                         state,
-                        *end == TagEnd::Paragraph,
+                        events.get(begin..=index).unwrap_or_default(),
                     )
                 {
                     caches.push((range.end, cache));
@@ -311,7 +313,7 @@ impl Markdown {
                 let next_block = next_block_complete(&source, following);
                 if range.end >= prefix.len()
                     && (leaf_end || (stack.is_empty() && next_block))
-                    && sealed(&source, range.end, *end, following)
+                    && (closed || sealed(&source, range.end, *end, following))
                 {
                     candidate = Some((
                         base + range.end - prefix.len(),
@@ -427,7 +429,7 @@ impl Markdown {
                 .rev()
                 .find(|(event, _)| !matches!(event, Event::End(_)))
                 .is_some_and(|(event, range)| {
-                    matches!(event, Event::Text(_))
+                    matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
                         && range.end == source.trim_end_matches(' ').len()
                 });
         self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
@@ -450,6 +452,24 @@ impl Markdown {
 
 fn plain_text(text: &str) -> bool {
     text.chars().all(plain_character)
+}
+
+fn context_event(event: &Event<'_>, range: &Range<usize>, prefix: usize, leaf: &mut bool) -> bool {
+    if let Event::Start(tag) = event
+        && range.start < prefix
+    {
+        *leaf = is_leaf(tag);
+        return true;
+    }
+    if *leaf {
+        if let Event::End(end) = event
+            && is_leaf_end(*end)
+        {
+            *leaf = false;
+        }
+        return true;
+    }
+    false
 }
 
 fn definition_candidate(source: &str) -> bool {
@@ -582,12 +602,19 @@ fn sealed(source: &str, end: usize, tag: TagEnd, following: &[(Event<'_>, Range<
         } else {
             rest.strip_prefix('\n').unwrap_or(rest)
         };
-        return rest.starts_with('\n') || next_complete;
+        return blank_line(rest) || next_complete;
     }
-    if rest.starts_with('\n') || rest.starts_with("\r\n") {
+    if blank_line(rest) {
         return true;
     }
     next_complete
+}
+
+fn blank_line(source: &str) -> bool {
+    source.split_once('\n').is_some_and(|(line, _)| {
+        line.chars()
+            .all(|character| character == '>' || character.is_ascii_whitespace())
+    })
 }
 
 fn next_block_complete(source: &str, following: &[(Event<'_>, Range<usize>)]) -> bool {

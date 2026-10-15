@@ -6,7 +6,7 @@ fn full_parse(source: &str) -> Vec<Line> {
     let source = source.replace("\r\n", "\n").replace('\r', "\n");
     let mut lines = Vec::new();
     for (_, events) in blocks(Parser::new_ext(&source, options()).into_offset_iter()) {
-        lines.extend(render::render(&events));
+        lines.extend(render::render_styled(&events, Style::default()));
         lines.push(Line::default());
     }
     while lines.last().is_some_and(|line| line.spans.is_empty()) {
@@ -81,6 +81,10 @@ fn incremental_frontier_matches_full_commonmark_parse() {
         "[r][x](url)[r]: url\ntext 🦀> quote\n- item\n- item\ntext 🦀\n| a | b |\n| - | - |\n[r]: url\n\n[r]: u",
         "[r][x][y](url) more\n\n[r]: /r\n\n[y]: /y\n\n[x]: /x\n\nend",
         "- item\n<div>\nhello\n</div>\n",
+        "  ```text\n\tfoo\n  ```\n\nend",
+        "   ```text\n \tfoo\n   ```\n\nend",
+        "- [x] task [r]\n\n[r]: /url\n\n",
+        "3. [ ] task [r]\n\n   more\n\n[r]: /url\n\n",
     ] {
         let mut markdown = Markdown::default();
         let mut end = 0;
@@ -364,8 +368,177 @@ fn indented_code_retains_lines_and_defers_blank_lines() {
     }
 }
 
+#[test]
+fn completed_fences_in_one_chunk_have_linear_parse_work() {
+    for count in [10, 100, 1000] {
+        let source = "```text\nx\n```\n\n".repeat(count);
+        let mut markdown = Markdown::default();
+        let highlighted = code::HIGHLIGHTED.get();
+        markdown.push(&source);
+        assert_eq!(markdown.parsed_bytes, source.len());
+        assert_eq!(code::HIGHLIGHTED.get() - highlighted, count);
+        assert_eq!(markdown.lines(), full_parse(&source));
+        let before = markdown.parsed_bytes;
+        markdown.push("next");
+        assert_eq!(markdown.parsed_bytes - before, 4);
+    }
+}
+
+#[test]
+fn reference_updates_preserve_task_list_events() {
+    for source in [
+        "- [x] task [r]\n\n",
+        "- [X] task [r]\n\n",
+        "- [ ] task [r]\n\n",
+        "> - [x] task [r]\n>\n\n",
+        "100. [x] task [r]\n\n",
+    ] {
+        let mut markdown = Markdown::default();
+        markdown.push(source);
+        let before = markdown.parsed_bytes;
+        assert!(
+            markdown.offset > 0,
+            "task paragraph was not finalized: {source:?}"
+        );
+        let budget = "[r]: /url\n\n".len() + context_prefix(&markdown.context).len() + source.len()
+            - markdown.offset;
+        markdown.push("[r]: /url\n\n");
+        assert!(
+            markdown.parsed_bytes - before <= budget,
+            "source {source:?}"
+        );
+        assert_eq!(
+            markdown.lines(),
+            full_parse(&format!("{source}[r]: /url\n\n"))
+        );
+    }
+}
+
+#[test]
+fn numbered_tasks_align_continuations_to_checkbox_width() {
+    for number in [3u32, 100] {
+        let prefix = " ".repeat(number.to_string().len() + 2);
+        let source = format!(
+            "{number}. [ ] task\n\n{prefix}more\n\n{prefix}```text\n{prefix}code\n{prefix}```\n"
+        );
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let text = markdown
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text, "[ ] task\n    more\n    ┌─ text\n    │ code\n    └─");
+        check_chunks(&source, &[1, 7]);
+    }
+}
+
+#[test]
+fn quoted_table_cells_inherit_surrounding_style() {
+    let source = "> | a | **b** |\n> | - | - |\n> | [r] | d |\n>\n\n";
+    let mut markdown = Markdown::default();
+    markdown.push(source);
+    markdown.push("[r]: /url\n\n");
+    for text in ["a", "b", "r", "d"] {
+        let span = markdown
+            .lines()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.text == text);
+        assert!(
+            span.is_some_and(|span| span.style.italic && span.style.dim),
+            "cell {text}"
+        );
+    }
+    assert_eq!(
+        markdown.lines(),
+        full_parse(&format!("{source}[r]: /url\n\n"))
+    );
+    check_chunks(&format!("{source}[r]: /url\n\n"), &[1, 7]);
+}
+
+#[test]
+fn decoded_newlines_keep_the_display_line_contract() {
+    for (source, count) in [("before&NewLine;after", 2), ("before&#13;&#10;after", 3)] {
+        let mut markdown = Markdown::default();
+        markdown.push(source);
+        assert_eq!(markdown.lines().len(), count);
+        assert!(
+            markdown
+                .lines()
+                .iter()
+                .flat_map(|line| &line.spans)
+                .all(|span| !span.text.contains(['\r', '\n']))
+        );
+        check_chunks(source, &[1]);
+    }
+}
+
+#[test]
+fn adjacent_reference_alternatives_share_suffixes() {
+    let mut previous = 0;
+    for count in [16, 32, 64] {
+        let mut source: String = (0..count)
+            .map(|index| format!("[text{index}][ref{index}]"))
+            .collect();
+        source.push_str("\n\n");
+        let mut markdown = Markdown::default();
+        let before = references::COMPILED_NODES.get();
+        markdown.push(&source);
+        let nodes = references::COMPILED_NODES.get() - before;
+        assert!(
+            nodes < count * 64,
+            "{count} references compiled {nodes} nodes"
+        );
+        if previous > 0 {
+            assert!(nodes * 10 <= previous * 22, "{previous} -> {nodes} nodes");
+        }
+        previous = nodes;
+        assert_eq!(markdown.lines(), full_parse(&source));
+        let before = references::COMPILED_NODES.get();
+        let definitions = format!("[ref0]: /zero\n\n[ref{}]: /last\n\n", count - 1);
+        markdown.push(&definitions);
+        assert_eq!(references::COMPILED_NODES.get(), before);
+        source.push_str(&definitions);
+        assert_eq!(markdown.lines(), full_parse(&source));
+    }
+}
+
+#[test]
+fn nested_reference_fuzz_regression() {
+    let data = b"[a][b][c\xec\xec\xec\xec\xec[]\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec[a][b]\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec](url)[d*[e]\n\x08[b]: /one\n\n[e]: /two\n\n";
+    let source = String::from_utf8_lossy(data);
+    let cuts: Vec<_> = data
+        .iter()
+        .map(|byte| usize::from(*byte) % 31 + 1)
+        .collect();
+    check_chunks(&source, &cuts);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn nested_links_match_random_chunkings(
+        prefix in "[a-z ]{0,8}",
+        suffix in "[a-z ]{0,8}",
+        defined in prop::array::uniform3(any::<bool>()),
+        cuts in prop::collection::vec(1usize..20, 1..8),
+    ) {
+        let mut source = format!("[a][b][{prefix}[a][b]{suffix}](url)[d*[e]\n\n");
+        for (label, present) in ["a", "b", "e"].into_iter().zip(defined) {
+            if present {
+                source.push_str(&format!("[{label}]: /{label}\n\n"));
+            }
+        }
+        check_chunks(&source, &cuts);
+    }
+
     #[test]
     fn random_chunks_match_the_full_parser(parts in prop::collection::vec(0usize..20, 1..20), cuts in prop::collection::vec(1usize..20, 1..12)) {
         let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n", "[r]", "<div>\nhello\n</div>\n", "> quote\n", "[a\u{a0}b]: /two\n", LAZY_LIST, "    indented\n\n    more", "word, ", "word. yes! x: y - z + 2 = 4? "];
@@ -383,8 +556,8 @@ proptest! {
     }
 
     #[test]
-    fn review_cases_match_random_chunkings(case in 0usize..3, cuts in prop::collection::vec(1usize..20, 1..12)) {
-        let cases = [LAZY_LIST, "    indented\n\n    more", "paragraph word, word. yes! x: y - z + 2 = 4? "];
+    fn review_cases_match_random_chunkings(case in 0usize..8, cuts in prop::collection::vec(1usize..20, 1..12)) {
+        let cases = [LAZY_LIST, "    indented\n\n    more", "paragraph word, word. yes! x: y - z + 2 = 4? ", "```text\na\n```\n\n```text\nb\n```\n\n", "- [x] task [r]\n\n[r]: /url\n\n", "> | a | b |\n> | - | - |\n> | [r] | d |\n>\n\n[r]: /url\n\n", "100. [x] task\n\n     more\n", "[r][r][r][r]\n\n[r]: /url\n\n"];
         check_chunks(cases.get(case).copied().unwrap_or_default(), &cuts);
     }
 
@@ -394,5 +567,28 @@ proptest! {
         let mut source = String::from("paragraph ");
         for index in parts { source.push_str(punctuation.get(index).copied().unwrap_or_default()); }
         check_chunks(&source, &cuts);
+    }
+
+    // Source serialization preserves normalized input, and replaying it must
+    // preserve every styled span and link regardless of the original chunking.
+    #[test]
+    fn markdown_source_round_trip(source in any::<String>(), cuts in prop::collection::vec(1usize..32, 1..8)) {
+        let mut markdown = Markdown::default();
+        let mut offset = 0;
+        for size in cuts.iter().cycle() {
+            if offset == source.len() { break; }
+            let mut end = (offset + size).min(source.len());
+            while !source.is_char_boundary(end) { end += 1; }
+            markdown.push(source.get(offset..end).unwrap_or_default());
+            prop_assert_eq!(markdown.lines(), full_parse(source.get(..end).unwrap_or_default()));
+            offset = end;
+        }
+        let expected = markdown.lines().to_vec();
+        let serialized = markdown.into_source();
+        prop_assert_eq!(&serialized, &source.replace("\r\n", "\n").replace('\r', "\n"));
+        let mut replay = Markdown::default();
+        replay.push(&serialized);
+        prop_assert_eq!(replay.lines(), expected);
+        prop_assert_eq!(replay.into_source(), serialized);
     }
 }

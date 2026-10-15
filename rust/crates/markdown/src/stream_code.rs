@@ -1,5 +1,45 @@
 use super::*;
 
+pub(super) fn closed(source: &str, events: &[(Event<'_>, Range<usize>)]) -> bool {
+    let Some((Event::Start(Tag::CodeBlock(kind)), opening)) = events.first() else {
+        return false;
+    };
+    let Some(end) = events
+        .iter()
+        .position(|(event, _)| matches!(event, Event::End(TagEnd::CodeBlock)))
+    else {
+        return false;
+    };
+    if events
+        .get(end + 1..)
+        .unwrap_or_default()
+        .iter()
+        .any(|(event, _)| !matches!(event, Event::End(_)))
+    {
+        return true;
+    }
+    let CodeBlockKind::Fenced(_) = kind else {
+        return false;
+    };
+    let row = source.get(opening.start..).unwrap_or_default();
+    let Some((marker, _, _, _)) = code::opening(row) else {
+        return false;
+    };
+    let opening_end = opening.start + row.find('\n').map_or(row.len(), |end| end + 1);
+    let text_end = events
+        .get(1..end)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(event, range)| matches!(event, Event::Text(_)).then_some(range.end))
+        .max()
+        .unwrap_or(opening_end);
+    // Only the parser's consumed closing delimiter can contain fence markers
+    // beyond its last code-text event. EOF indentation contains no markers.
+    source
+        .get(text_end..opening.end)
+        .is_some_and(|tail| tail.as_bytes().contains(&marker))
+}
+
 impl Markdown {
     pub(super) fn start_fence(
         &mut self,
@@ -209,7 +249,7 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
         return if code::closing(line, fence.marker, fence.count) {
             FenceLine::Close
         } else {
-            FenceLine::Text(code::dedent(line, fence.indent).into())
+            FenceLine::Text(code::dedent(line, fence.indent))
         };
     }
     let source = format!("{}{line}", fence.parser_opening);

@@ -6,14 +6,16 @@ pub(crate) struct Table {
     alignments: Vec<Alignment>,
     rows: Vec<Vec<Line>>,
     cell: Vec<Event<'static>>,
+    style: Style,
 }
 
 impl Table {
-    pub(crate) fn new(alignments: Vec<Alignment>) -> Self {
+    pub(crate) fn new(alignments: Vec<Alignment>, style: Style) -> Self {
         Self {
             alignments,
             rows: Vec::new(),
             cell: Vec::new(),
+            style,
         }
     }
 
@@ -22,7 +24,7 @@ impl Table {
             Event::Start(Tag::TableHead | Tag::TableRow) => self.rows.push(Vec::new()),
             Event::Start(Tag::TableCell) => self.cell.clear(),
             Event::End(TagEnd::TableCell) => {
-                let mut lines = render::render(&self.cell);
+                let mut lines = render::render_styled(&self.cell, self.style);
                 if let Some(row) = self.rows.last_mut() {
                     row.push(lines.pop().unwrap_or_default());
                 }

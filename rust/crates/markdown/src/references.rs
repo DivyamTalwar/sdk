@@ -82,28 +82,69 @@ impl References {
     }
 }
 
-// Keep both interpretations of a reference at the first parse. Later definitions
-// select cached nodes; they never send a finalized block through the parser.
+// Cache alternatives as a graph. A failed reference can expose its following
+// reference; that suffix is shared by both branches instead of copied recursively.
+type Shared = std::sync::Arc<[Node]>;
+
 pub(crate) struct Template {
-    nodes: Vec<Node>,
+    nodes: Shared,
     pub(crate) keys: HashSet<Key>,
 }
 
 enum Node {
     Event(Event<'static>),
+    Choice {
+        key: Key,
+        present: Shared,
+        missing: Shared,
+    },
     Reference {
         key: Key,
         start: Event<'static>,
         end: Event<'static>,
-        content: Vec<Node>,
-        following: Vec<Node>,
-        missing: Vec<Node>,
+        content: Shared,
+        following: Shared,
+        missing: Shared,
     },
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Blocked {
+    key: Key,
+    start: usize,
+    end: usize,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct MemoKey {
+    start: usize,
+    end: usize,
+    context: String,
+    blocked: Vec<Blocked>,
+}
+
+#[derive(Default)]
+struct Compiler {
+    keys: HashSet<Key>,
+    memo: HashMap<MemoKey, Shared>,
+    #[cfg(test)]
+    nodes: usize,
+}
+
 impl Template {
-    pub(crate) fn new(source: &str, quotes: usize, paragraph: bool) -> Self {
+    pub(crate) fn new(
+        source: &str,
+        quotes: usize,
+        events: &[(Event<'_>, std::ops::Range<usize>)],
+    ) -> Self {
+        let paragraph = matches!(events.first(), Some((Event::Start(Tag::Paragraph), _)));
+        let task = events
+            .iter()
+            .any(|(event, _)| matches!(event, Event::TaskListMarker(_)));
         let mut normalized = String::new();
+        if task {
+            normalized.push_str("- ");
+        }
         for (index, mut line) in source.split_inclusive('\n').enumerate() {
             if index > 0 {
                 for _ in 0..quotes {
@@ -117,9 +158,14 @@ impl Template {
             }
             normalized.push_str(line);
         }
-        let mut keys = HashSet::new();
-        let nodes = parse(&normalized, &HashSet::new(), &mut keys, false, paragraph);
-        Self { nodes, keys }
+        let mut compiler = Compiler::default();
+        let nodes = compiler.parse(&normalized, 0, &[], (false, paragraph, task));
+        #[cfg(test)]
+        COMPILED_NODES.with(|count| count.set(count.get() + compiler.nodes));
+        Self {
+            nodes,
+            keys: compiler.keys,
+        }
     }
 
     pub(crate) fn events(&self, references: &References) -> Vec<Event<'static>> {
@@ -129,156 +175,289 @@ impl Template {
     }
 }
 
-fn parse(
-    source: &str,
-    blocked: &HashSet<Key>,
-    keys: &mut HashSet<Key>,
-    inline: bool,
-    paragraph: bool,
-) -> Vec<Node> {
-    // A recovery group can end in the middle of an existing text event. Keep
-    // its trailing spaces, which an isolated paragraph parse would otherwise trim.
-    let padded = (inline && source.ends_with([' ', '\t'])).then(|| format!("{source}x"));
-    let source = padded.as_deref().unwrap_or(source);
-    let mut callback = |link: BrokenLink<'_>| {
-        (!blocked.contains(&normalize(&link.reference))).then(|| ("".into(), "".into()))
-    };
-    // A lazy continuation has already been classified as paragraph content by
-    // the enclosing block parser. It cannot become a table when references change.
-    let mut options = crate::options();
-    if paragraph {
-        options.remove(pulldown_cmark::Options::ENABLE_TABLES);
-    }
-    let mut events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
-            .into_offset_iter()
-            .map(|(event, range)| (event.into_static(), range))
-            .collect();
-    if padded.is_some()
-        && let Some((Event::Text(text), range)) = events
-            .iter_mut()
-            .rev()
-            .find(|(event, _)| !matches!(event, Event::End(_)))
-    {
-        let mut content = text.to_string();
-        content.pop();
-        *text = content.into();
-        range.end = range.end.saturating_sub(1);
-    }
-    let mut index = 0;
-    let mut nodes = nodes(source, &events, &mut index, blocked, keys);
-    if inline
-        && matches!(
-            nodes.first(),
-            Some(Node::Event(Event::Start(Tag::Paragraph)))
-        )
-    {
-        nodes.remove(0);
-        if matches!(
-            nodes.last(),
-            Some(Node::Event(Event::End(TagEnd::Paragraph)))
-        ) {
-            nodes.pop();
-        }
-    }
-    nodes
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static COMPILED_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn nodes(
-    source: &str,
-    events: &[(Event<'static>, std::ops::Range<usize>)],
-    index: &mut usize,
-    blocked: &HashSet<Key>,
-    keys: &mut HashSet<Key>,
-) -> Vec<Node> {
-    let mut result = Vec::new();
-    while let Some((event, range)) = events.get(*index) {
-        let reference = match event {
+impl Compiler {
+    fn parse(
+        &mut self,
+        source: &str,
+        offset: usize,
+        blocked: &[Blocked],
+        (inline, paragraph, task): (bool, bool, bool),
+    ) -> Shared {
+        let blocked = relevant(blocked, offset, offset + source.len());
+        let key = MemoKey {
+            start: offset,
+            end: offset + source.len(),
+            context: format!("parse:{inline}:{paragraph}:{task}"),
+            blocked: blocked.clone(),
+        };
+        if let Some(nodes) = self.memo.get(&key) {
+            return nodes.clone();
+        }
+        let padded = (inline && source.ends_with([' ', '\t'])).then(|| format!("{source}x"));
+        let source = padded.as_deref().unwrap_or(source);
+        let mut callback = |link: BrokenLink<'_>| {
+            let label = normalize(&link.reference);
+            (!blocked.iter().any(|entry| {
+                entry.key == label
+                    && entry.start <= offset + link.span.start
+                    && entry.end >= offset + link.span.end
+            }))
+            .then(|| ("".into(), "".into()))
+        };
+        let mut options = crate::options();
+        if paragraph {
+            options.remove(pulldown_cmark::Options::ENABLE_TABLES);
+        }
+        let mut events: Vec<_> =
+            Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
+                .into_offset_iter()
+                .map(|(event, range)| (event.into_static(), range))
+                .collect();
+        if task {
+            events = crate::events::paragraphs(source, &events);
+            events.drain(..2);
+            events.truncate(events.len().saturating_sub(2));
+        }
+        if padded.is_some()
+            && let Some((Event::Text(text), range)) = events
+                .iter_mut()
+                .rev()
+                .find(|(event, _)| !matches!(event, Event::End(_)))
+        {
+            let mut content = text.to_string();
+            content.pop();
+            *text = content.into();
+            range.end = range.end.saturating_sub(1);
+        }
+        if inline && matches!(events.first(), Some((Event::Start(Tag::Paragraph), _))) {
+            events.remove(0);
+            if matches!(events.last(), Some((Event::End(TagEnd::Paragraph), _))) {
+                events.pop();
+            }
+        }
+        // Resolving an inner link disables enclosing link brackets in CommonMark.
+        // Its missing alternative therefore needs the enclosing source context,
+        // rather than just the reference's own span.
+        let nested = events.iter().find_map(|(event, range)| {
+            let Event::Start(Tag::Link { link_type, id, .. }) = event else {
+                return None;
+            };
+            if matches!(
+                link_type,
+                LinkType::Inline | LinkType::Autolink | LinkType::Email
+            ) {
+                return None;
+            }
+            enclosed(source, range.start).then(|| (normalize(id), range.clone()))
+        });
+        let present = self.nodes(source, offset, &events, &blocked);
+        let nodes = if let Some((label, range)) = nested {
+            let mut denied = blocked.clone();
+            denied.push(Blocked {
+                key: label.clone(),
+                start: offset + range.start,
+                end: offset + range.end,
+            });
+            let missing = self.parse(
+                source.get(..key.end - offset).unwrap_or_default(),
+                offset,
+                &denied,
+                (inline, paragraph, task),
+            );
+            Shared::from([Node::Choice {
+                key: label,
+                present,
+                missing,
+            }])
+        } else {
+            present
+        };
+        self.memo.insert(key, nodes.clone());
+        nodes
+    }
+
+    fn nodes(
+        &mut self,
+        source: &str,
+        offset: usize,
+        events: &[(Event<'static>, std::ops::Range<usize>)],
+        blocked: &[Blocked],
+    ) -> Shared {
+        let (Some((first, begin)), Some((last, end))) = (events.first(), events.last()) else {
+            return Shared::from([]);
+        };
+        let blocked = relevant(blocked, offset + begin.start, offset + end.end);
+        let memo = MemoKey {
+            start: offset + begin.start,
+            end: offset + end.end,
+            context: format!(
+                "nodes:{}:{}:{}",
+                event_kind(first),
+                event_kind(last),
+                events.len()
+            ),
+            blocked: blocked.clone(),
+        };
+        if let Some(nodes) = self.memo.get(&memo) {
+            return nodes.clone();
+        }
+        let mut result = Vec::new();
+        let mut index = 0;
+        while let Some((event, _)) = events.get(index) {
+            if let Some((node, after)) = self.reference(source, offset, events, index, &blocked) {
+                result.push(node);
+                index = after;
+            } else {
+                result.push(Node::Event(event.clone()));
+                index += 1;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.nodes += result.len();
+        }
+        let result = Shared::from(result);
+        self.memo.insert(memo, result.clone());
+        result
+    }
+    fn reference(
+        &mut self,
+        source: &str,
+        offset: usize,
+        events: &[(Event<'static>, std::ops::Range<usize>)],
+        index: usize,
+        blocked: &[Blocked],
+    ) -> Option<(Node, usize)> {
+        let (event, range) = events.get(index)?;
+        let key = match event {
             Event::Start(Tag::Link { link_type, id, .. } | Tag::Image { link_type, id, .. })
                 if !matches!(
                     link_type,
                     LinkType::Inline | LinkType::Autolink | LinkType::Email
                 ) =>
             {
-                Some(normalize(id))
+                normalize(id)
             }
-            _ => None,
+            _ => return None,
         };
-        *index += 1;
-        if let Some(key) = reference {
-            keys.insert(key.clone());
-            let mut nesting = 1usize;
-            let begin = *index;
-            let mut end = begin;
-            while let Some((event, _)) = events.get(end) {
-                match event {
-                    Event::Start(_) => nesting += 1,
-                    Event::End(_) => nesting -= 1,
-                    _ => {}
-                }
-                if nesting == 0 {
-                    break;
-                }
-                end += 1;
-            }
-            let content = nodes(
-                source,
-                events.get(begin..end).unwrap_or_default(),
-                &mut 0,
-                blocked,
-                keys,
-            );
-            let mut denied = blocked.clone();
-            denied.insert(key.clone());
-            // A failed full reference may expose an adjacent inline link or
-            // reference. Cache that recovery with its original lookahead.
-            let target = recovery_end(source, range.end);
-            let mut after = end + 1;
-            let mut depth = 0usize;
-            let mut recovery = range.end;
-            while let Some((event, following)) = events.get(after) {
-                if depth == 0 && (following.start >= target || matches!(event, Event::End(_))) {
-                    break;
-                }
-                match event {
-                    Event::Start(_) => depth += 1,
-                    Event::End(_) => depth -= 1,
-                    _ => {}
-                }
-                recovery = recovery.max(following.end);
-                after += 1;
-            }
-            let following = nodes(
-                source,
-                events.get(end + 1..after).unwrap_or_default(),
-                &mut 0,
-                blocked,
-                keys,
-            );
-            let missing = parse(
-                source.get(range.start..recovery).unwrap_or_default(),
-                &denied,
-                keys,
-                true,
-                true,
-            );
-            let closing = events
-                .get(end)
-                .map_or(Event::End(TagEnd::Link), |(event, _)| event.clone());
-            result.push(Node::Reference {
-                key,
-                start: event.clone(),
-                end: closing,
-                content,
-                following,
-                missing,
-            });
-            *index = after;
+        self.keys.insert(key.clone());
+        let end = matching_end(events, index + 1);
+        let content = self.nodes(
+            source,
+            offset,
+            events.get(index + 1..end).unwrap_or_default(),
+            blocked,
+        );
+        let target = recovery_end(source, range.end);
+        let (after, recovery) = recovery_range(events, end + 1, target, range.end);
+        let following = self.nodes(
+            source,
+            offset,
+            events.get(end + 1..after).unwrap_or_default(),
+            blocked,
+        );
+        let mut denied = blocked.to_vec();
+        denied.push(Blocked {
+            key: key.clone(),
+            start: offset + range.start,
+            end: offset + range.end,
+        });
+        let missing = self.parse(
+            source.get(range.start..recovery).unwrap_or_default(),
+            offset + range.start,
+            &denied,
+            (true, true, false),
+        );
+        let closing = events
+            .get(end)
+            .map_or(Event::End(TagEnd::Link), |(event, _)| event.clone());
+        let node = Node::Reference {
+            key,
+            start: event.clone(),
+            end: closing,
+            content,
+            following,
+            missing,
+        };
+        Some((node, after))
+    }
+}
+
+fn relevant(blocked: &[Blocked], start: usize, end: usize) -> Vec<Blocked> {
+    blocked
+        .iter()
+        .filter(|entry| entry.start < end && entry.end > start)
+        .cloned()
+        .collect()
+}
+
+fn enclosed(source: &str, end: usize) -> bool {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for byte in source.bytes().take(end) {
+        if escaped {
+            escaped = false;
         } else {
-            result.push(Node::Event(event.clone()));
+            match byte {
+                b'\\' => escaped = true,
+                b'[' => depth += 1,
+                b']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
         }
     }
-    result
+    depth > 0
+}
+
+fn event_kind(event: &Event<'_>) -> String {
+    match event {
+        Event::Start(tag) => format!("start:{:?}", tag.to_end()),
+        Event::End(tag) => format!("end:{tag:?}"),
+        _ => format!("{:?}", std::mem::discriminant(event)),
+    }
+}
+
+fn matching_end(events: &[(Event<'static>, std::ops::Range<usize>)], mut end: usize) -> usize {
+    let mut depth = 1usize;
+    while let Some((event, _)) = events.get(end) {
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            break;
+        }
+        end += 1;
+    }
+    end
+}
+
+fn recovery_range(
+    events: &[(Event<'static>, std::ops::Range<usize>)],
+    mut after: usize,
+    target: usize,
+    mut recovery: usize,
+) -> (usize, usize) {
+    let mut depth = 0usize;
+    while let Some((event, following)) = events.get(after) {
+        if depth == 0 && (following.start >= target || matches!(event, Event::End(_))) {
+            break;
+        }
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+        recovery = recovery.max(following.end);
+        after += 1;
+    }
+    (after, recovery)
 }
 
 fn recovery_end(source: &str, mut end: usize) -> usize {
@@ -315,10 +494,35 @@ fn recovery_end(source: &str, mut end: usize) -> usize {
     end
 }
 
+enum Emit<'a> {
+    Node(&'a Node),
+    Event(&'a Event<'static>),
+}
+
 fn emit(nodes: &[Node], references: &References, events: &mut Vec<Event<'static>>) {
-    for node in nodes {
+    let mut pending: Vec<_> = nodes.iter().rev().map(Emit::Node).collect();
+    while let Some(next) = pending.pop() {
+        let node = match next {
+            Emit::Event(event) => {
+                events.push(event.clone());
+                continue;
+            }
+            Emit::Node(node) => node,
+        };
         match node {
             Node::Event(event) => events.push(event.clone()),
+            Node::Choice {
+                key,
+                present,
+                missing,
+            } => {
+                let selected = if references.get(key).is_some() {
+                    present
+                } else {
+                    missing
+                };
+                pending.extend(selected.iter().rev().map(Emit::Node));
+            }
             Node::Reference {
                 key,
                 start,
@@ -346,11 +550,11 @@ fn emit(nodes: &[Node], references: &References, events: &mut Vec<Event<'static>
                         *label = title.clone().into();
                     }
                     events.push(start);
-                    emit(content, references, events);
-                    events.push(end.clone());
-                    emit(following, references, events);
+                    pending.extend(following.iter().rev().map(Emit::Node));
+                    pending.push(Emit::Event(end));
+                    pending.extend(content.iter().rev().map(Emit::Node));
                 } else {
-                    emit(missing, references, events);
+                    pending.extend(missing.iter().rev().map(Emit::Node));
                 }
             }
         }

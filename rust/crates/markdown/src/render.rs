@@ -4,8 +4,11 @@ use crate::{
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
 
-pub(crate) fn render(events: &[Event<'_>]) -> Vec<Line> {
-    let mut out = Renderer::default();
+pub(crate) fn render_styled(events: &[Event<'_>], style: Style) -> Vec<Line> {
+    let mut out = Renderer {
+        style,
+        ..Renderer::default()
+    };
     for event in events {
         out.event(event);
     }
@@ -47,10 +50,23 @@ impl Renderer {
     }
 
     fn text(&mut self, text: &str) {
-        if self.line.spans.is_empty() {
-            self.line.push(&self.prefix(), MUTED, None);
+        for part in text.split_inclusive(['\r', '\n']) {
+            if self.line.spans.is_empty() {
+                self.line.push(&self.prefix(), MUTED, None);
+            }
+            self.line.push(
+                part.trim_end_matches(['\r', '\n']),
+                self.style,
+                self.link.as_deref(),
+            );
+            if part.ends_with(['\r', '\n']) {
+                if self.line.spans.is_empty() {
+                    self.lines.push(Line::default());
+                } else {
+                    self.flush();
+                }
+            }
         }
-        self.line.push(text, self.style, self.link.as_deref());
     }
 
     fn prefix(&self) -> String {
@@ -90,18 +106,10 @@ impl Renderer {
                     self.text(text);
                 }
             }
-            Event::Html(text) | Event::InlineHtml(text) => {
-                for part in text.split_inclusive('\n') {
-                    self.text(part.trim_end_matches('\n'));
-                    if part.ends_with('\n') {
-                        if self.line.spans.is_empty() {
-                            self.lines.push(Line::default());
-                        } else {
-                            self.flush();
-                        }
-                    }
-                }
-            }
+            Event::Html(text)
+            | Event::InlineHtml(text)
+            | Event::InlineMath(text)
+            | Event::DisplayMath(text) => self.text(text),
             Event::Code(text) => {
                 let previous = self.style;
                 self.style.foreground = Some(YELLOW);
@@ -120,12 +128,11 @@ impl Renderer {
                     marker.text.clear();
                 }
                 if let Some(indent) = self.prefixes.last_mut() {
-                    indent.push_str("  ");
+                    *indent = "    ".into();
                 }
                 self.text(if *done { "[✓] " } else { "[ ] " });
             }
             Event::FootnoteReference(text) => self.text(&format!("[{text}]")),
-            Event::InlineMath(text) | Event::DisplayMath(text) => self.text(text),
         }
     }
 
@@ -202,7 +209,7 @@ impl Renderer {
             }
             Tag::Table(alignments) => {
                 self.flush();
-                self.table = Some(crate::table::Table::new(alignments.clone()));
+                self.table = Some(crate::table::Table::new(alignments.clone(), self.style));
             }
             _ => {}
         }

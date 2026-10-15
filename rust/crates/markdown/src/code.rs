@@ -133,11 +133,24 @@ pub(crate) fn closing(text: &str, marker: u8, count: usize) -> bool {
     !Parser::new(&candidate).any(|event| matches!(event, Event::Text(_)))
 }
 
-pub(crate) fn dedent(text: &str, indent: usize) -> &str {
-    let spaces = text
-        .bytes()
-        .take(indent)
-        .take_while(|byte| *byte == b' ')
-        .count();
-    text.get(spaces..).unwrap_or_default()
+pub(crate) fn dedent(text: &str, indent: usize) -> std::borrow::Cow<'_, str> {
+    let mut column = 0;
+    let mut bytes = 0;
+    for byte in text.bytes() {
+        if column >= indent {
+            break;
+        }
+        column += match byte {
+            b' ' => 1,
+            b'\t' => 4 - column % 4,
+            _ => break,
+        };
+        bytes += 1;
+    }
+    let rest = text.get(bytes..).unwrap_or_default();
+    if column > indent {
+        format!("{}{rest}", " ".repeat(column - indent)).into()
+    } else {
+        rest.into()
+    }
 }
