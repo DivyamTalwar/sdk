@@ -437,7 +437,7 @@ async fn output_runtime(
 ) -> Result<acyclic_harness::local::LocalTaskRuntime> {
     let limits = acyclic_harness::conversation::Limits::default();
     acyclic_harness::local::LocalTaskRuntime::open(
-        harness.stream.clone(),
+        harness.runtime.task_host().workflow_stream(),
         harness.filesystem().clone(),
         harness.journal_volume(),
         &harness.verifier,
@@ -539,7 +539,7 @@ async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "native-execution"))]
 #[tokio::test]
 async fn owner_credentials_are_private_and_never_created_in_the_checkout() -> Result<()> {
     use std::os::unix::fs::MetadataExt;
