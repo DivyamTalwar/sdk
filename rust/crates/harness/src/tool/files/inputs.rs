@@ -66,7 +66,7 @@ pub struct FileResult {
     pub file: FileRef,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod codec_tests {
     use super::*;
     use crate::{
