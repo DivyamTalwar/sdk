@@ -3,7 +3,7 @@ use acyclic_harness::{
     AgentId,
     context::CompactionPolicy,
     filesystem::MemoryHarnessStorage,
-    model::{Model, ModelEvent},
+    model::{Model, ModelEvent, ToolCall},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
     tool::files,
 };
@@ -52,14 +52,14 @@ async fn run(case: Case) -> Result<()> {
     let mut turns = Vec::new();
     for (index, text) in case.writes.iter().enumerate() {
         turns.push(ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: format!("write-{index}"),
-                name: "acyclic.write_file".into(),
-                arguments: json!({
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                format!("write-{index}"),
+                "acyclic.write_file".into(),
+                json!({
                     "path":"GOAL.md", "text":text,
                     "media_type":"text/markdown", "display_name":"GOAL.md",
                 }),
-            }),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: Value::Null,
             }),
