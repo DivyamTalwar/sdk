@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(feature = "filesystem")]
 impl AgentHarness {
     pub(crate) fn bind_output(
         &mut self,

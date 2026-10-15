@@ -179,6 +179,20 @@ async fn defaults_are_additive_and_opt_out_retains_custom_grants() -> Result<()>
         );
         assert!(admission.grants.contains("tool:call:test.custom"));
         assert!(
+            admission.grants.contains(
+                &harness
+                    .journal_volume()
+                    .directory_read_capability("inputs", &mut None)?
+            )
+        );
+        assert!(
+            !admission.grants.contains(
+                &harness
+                    .journal_volume()
+                    .directory_read_capability("", &mut None)?
+            )
+        );
+        assert!(
             !admission.grants.contains(
                 &harness
                     .journal_volume()
