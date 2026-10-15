@@ -242,7 +242,10 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 &journal,
                 input.operation_id,
                 "tool-start",
-                &invocation,
+                &crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &Value::Null,
+                },
                 None,
             )
             .await?;
@@ -860,8 +863,17 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             json!({}),
             None,
         )?;
-        let invocation_ref =
-            stage_json(&journal, operation, "invocation", &invocation, None).await?;
+        let invocation_ref = stage_json(
+            &journal,
+            operation,
+            "invocation",
+            &crate::tool::RecordedInvocation {
+                invocation: &invocation,
+                metadata: &Value::Null,
+            },
+            None,
+        )
+        .await?;
         let result = stage_json(
             &journal,
             operation,
@@ -901,7 +913,10 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             &journal,
             &records,
             0,
-            &invocation,
+            crate::tool::RecordedInvocation {
+                invocation: &invocation,
+                metadata: &Value::Null,
+            },
             std::slice::from_ref(&definition),
             Limits::default(),
             None,

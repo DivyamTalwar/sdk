@@ -305,7 +305,7 @@ where
                 call_id,
                 name,
                 arguments,
-                ..
+                metadata,
             }) = event
             {
                 let invocation = crate::tool::ToolInvocation::for_model_call(
@@ -341,7 +341,10 @@ where
                         journal.as_ref(),
                         &records,
                         step,
-                        &invocation,
+                        crate::tool::RecordedInvocation {
+                            invocation: &invocation,
+                            metadata: &metadata,
+                        },
                         &request.request().tools,
                         if native {
                             limits

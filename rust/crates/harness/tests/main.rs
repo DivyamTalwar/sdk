@@ -6,7 +6,6 @@ mod stream_fixture;
 
 mod client_public_consumer;
 mod client_transitions;
-mod context_continuation;
 mod durable_extension_scope;
 mod effects;
 mod execution_journal;
@@ -23,6 +22,7 @@ mod portable_text_variants;
 mod project_workspaces;
 mod recursive_fork;
 mod retained_content;
+mod saved_tool_metadata;
 mod scheduler_results;
 mod task_workflow;
 mod volume_composition;
