@@ -1,4 +1,5 @@
 use super::*;
+use crate::Fs;
 
 async fn comparison_peak(
     workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
