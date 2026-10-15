@@ -1,29 +1,38 @@
 #![no_main]
+//! Fuzz the production frame codec, protobuf records and native tool/path parsers.
 
-use acyclic_harness::{Error, InteractionRejection, OperationId, Result, encode_error, wire};
+use acyclic_harness::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message as _;
 use tokio_util::codec::Decoder as _;
 
-fn storage(error: impl std::fmt::Display) -> Error {
-    Error::Storage(error.to_string())
-}
-
 // Compile the actual private transport boundary, without exposing a fuzz API.
-#[path = "../../rust/crates/harness/src/service/frames.rs"]
+#[path = "../../rust/crates/harness/src/service/frames/protocol.rs"]
 mod frames;
 
 fuzz_target!(|input: &[u8]| {
     if input.len() > frames::MAX_FRAME_BYTES + 4 {
         return;
     }
-    let mut codec = tokio_util::codec::LengthDelimitedCodec::builder()
-        .length_field_length(4)
-        .big_endian()
-        .max_frame_length(frames::MAX_FRAME_BYTES)
-        .new_codec();
+    let mut codec = frames::codec();
     let mut bytes = bytes::BytesMut::from(input);
     if let Ok(Some(frame)) = codec.decode(&mut bytes) {
+        if let Ok(call) = frames::Call::<wire::ObserveRequest>::decode(frame.clone()) {
+            assert_eq!(
+                frames::Call::<wire::ObserveRequest>::decode(call.encode_to_vec().as_slice())
+                    .as_ref()
+                    .ok(),
+                Some(&call)
+            );
+        }
+        if let Ok(reply) = frames::Reply::<wire::ObserveResponse>::decode(frame.clone()) {
+            assert_eq!(
+                frames::Reply::<wire::ObserveResponse>::decode(reply.encode_to_vec().as_slice())
+                    .as_ref()
+                    .ok(),
+                Some(&reply)
+            );
+        }
         if let Ok(request) = frames::Request::decode(frame.clone()) {
             assert_eq!(
                 frames::Request::decode(request.encode_to_vec().as_slice())

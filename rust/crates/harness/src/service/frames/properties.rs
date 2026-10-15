@@ -19,8 +19,7 @@ proptest! {
         encoded.extend_from_slice(&bytes);
         let split = split % (encoded.len() + 1);
         let mut pending = encoded.split_to(split);
-        let mut codec = LengthDelimitedCodec::builder().length_field_length(4)
-            .big_endian().max_frame_length(MAX_FRAME_BYTES).new_codec();
+        let mut codec = codec();
         let first = codec.decode(&mut pending)?;
         if !encoded.is_empty() {
             prop_assert!(first.is_none());
@@ -41,14 +40,16 @@ proptest! {
         if let Ok(request) = Request::decode(bytes.as_slice()) {
             prop_assert_eq!(Request::decode(request.encode_to_vec().as_slice())?, request);
         }
+        if let Ok(response) = Response::decode(bytes.as_slice()) {
+            prop_assert_eq!(Response::decode(response.encode_to_vec().as_slice())?, response);
+        }
     }
 
     #[test]
     fn oversized_prefix_is_rejected_without_a_body(extra in 1_u32..1024) {
         let mut input = bytes::BytesMut::new();
         input.put_u32(u32::try_from(MAX_FRAME_BYTES)? + extra);
-        let mut codec = LengthDelimitedCodec::builder().length_field_length(4)
-            .big_endian().max_frame_length(MAX_FRAME_BYTES).new_codec();
+        let mut codec = codec();
         prop_assert!(codec.decode(&mut input).is_err());
     }
 }
