@@ -29,6 +29,17 @@ impl From<&PathBuf> for LocalProject {
     }
 }
 
+impl From<&str> for LocalProject {
+    fn from(path: &str) -> Self {
+        Self::Workspace(path.into())
+    }
+}
+impl From<String> for LocalProject {
+    fn from(path: String) -> Self {
+        Self::Workspace(path.into())
+    }
+}
+
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) project: LocalProject,
