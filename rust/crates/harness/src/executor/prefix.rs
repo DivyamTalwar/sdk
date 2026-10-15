@@ -59,7 +59,10 @@ impl StockExecution<'_> {
                 journal,
                 &records,
                 step,
-                &invocation,
+                crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &metadata,
+                },
                 &request.tools,
                 self.stock.limits,
                 self.io,
