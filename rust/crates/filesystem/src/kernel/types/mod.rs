@@ -12,7 +12,6 @@ use crate::{CancellationToken, WorkCounters};
 use thiserror::Error;
 
 mod name;
-#[cfg(any(feature = "native-mount", feature = "native-watch"))]
 pub(crate) use name::utf16le_units;
 pub use name::{LogicalName, NameEncoding};
 mod lowercase;
