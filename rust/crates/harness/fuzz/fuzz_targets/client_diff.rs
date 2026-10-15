@@ -1,7 +1,19 @@
 #![no_main]
 
-use acyclic_harness::client::FileDiff;
 use libfuzzer_sys::fuzz_target;
+
+// Compile the production pure module without pulling in unrelated providers.
+#[path = "../../src/client/diff/compute.rs"]
+mod compute;
+#[path = "../../src/client/diff/file.rs"]
+mod file;
+use file::{DiffHunk, FileDiff, PatchText, render_bound};
+
+#[derive(Debug)]
+pub enum Error {
+    Invalid(String),
+}
+pub type Result<T> = std::result::Result<T, Error>;
 
 fuzz_target!(|input: &[u8]| {
     if let Ok(diff) = serde_json::from_slice::<FileDiff>(input) {

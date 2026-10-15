@@ -10,12 +10,11 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-acyclic-harness = { path = "..", features = ["filesystem", "test-support"] }
 diffy = "=0.5.2"
 libfuzzer-sys = "0.4"
 bytes = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 which = "=8.0.6"
