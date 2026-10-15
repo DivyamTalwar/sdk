@@ -1,0 +1,5 @@
+{
+  "prompt": "Report usage.",
+  "turns": [[{"kind":"content","delta":"ok"},{"kind":"completed","metadata":{"usage":{"input_tokens":12,"output_tokens":1},"finish":"stop"}}]],
+  "expect": {"text":"ok", "result":{"metadata":{"usage":{"input_tokens":12,"output_tokens":1},"finish":"stop"},"steps":1}}
+}

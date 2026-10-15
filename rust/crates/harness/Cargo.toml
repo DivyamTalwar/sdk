@@ -17,6 +17,11 @@ build = "build.rs"
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["filesystem", "test-support"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

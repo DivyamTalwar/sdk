@@ -1,0 +1,5 @@
+{
+  "prompt": "Count to three.",
+  "turns": [[{"kind":"content","delta":"one "},{"kind":"content","delta":"two "},{"kind":"content","delta":"three"},{"kind":"completed","metadata":{"finish":"stop"}}]],
+  "expect": {"text":"one two three", "events":[{"kind":"model","event":{"kind":"content","delta":"one "}},{"kind":"model","event":{"kind":"content","delta":"three"}}]}
+}
