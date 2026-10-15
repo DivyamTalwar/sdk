@@ -28,6 +28,7 @@ use std::{
 mod checkout_tools;
 mod config;
 mod owner;
+mod owner_record;
 mod runtime;
 #[cfg(test)]
 mod tests;
