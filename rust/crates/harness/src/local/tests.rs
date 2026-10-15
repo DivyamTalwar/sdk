@@ -538,3 +538,49 @@ async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
     ));
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn owner_credentials_are_private_and_never_created_in_the_checkout() -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let checkout = tempfile::tempdir().map_err(super::storage)?;
+    let config = LocalHarnessConfig::new(checkout.path(), (model()?, text()));
+    let directory = super::owner::state_directory(&config.project)?;
+    let harness = LocalHarness::open(config).await?;
+    assert_eq!(
+        std::fs::read_dir(checkout.path())
+            .map_err(super::storage)?
+            .count(),
+        0
+    );
+    assert!(
+        directory.starts_with(
+            dirs::data_local_dir()
+                .ok_or_else(|| Error::NotFound("user data".into()))?
+                .join("acyclic/harness")
+        )
+    );
+    assert_eq!(
+        std::fs::metadata(directory.join("owner.json"))
+            .map_err(super::storage)?
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&directory)
+            .map_err(super::storage)?
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let original = harness.signed.clone();
+    drop(harness);
+    let reopened = LocalHarness::open(LocalHarnessConfig::new(
+        checkout.path().join("."),
+        (model()?, text()),
+    ))
+    .await?;
+    assert_eq!(original, reopened.signed);
+    Ok(())
+}

@@ -13,8 +13,7 @@ volume with `filesystem-local`. Both selections create an owner issuer, signed
 tool grants, durable task host, execution journals and private scratch.
 
 `tool(tool)` and `tools(iter)` add custom tools; `without_default_tools()` disables
-only the default set. Duplicate contracts fail registration. The coding defaults
-are composed at one internal `defaults()` call site pending the tools lane.
+only the default set. Duplicate contracts fail registration. The default coding set comes from `tools::defaults()`.
 `run(prompt)` admits and drives a stock turn; `submit(operation, prompt)` and
 `resume(task)` expose durable admission and recovery separately. Reopening the
 same project retains the owner and admitted work.

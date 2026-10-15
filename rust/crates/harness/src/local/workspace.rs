@@ -53,7 +53,7 @@ pub(super) async fn open(
         .load_lazy_workspace(id, &mut accounting)
         .await
         .map_err(storage)?;
-    let mut source = NativeDemandSource::open(
+    let source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(&path),
         acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable).profile,
         acyclic_fs::VolumeLimits::default(),
@@ -68,22 +68,6 @@ pub(super) async fn open(
         return Err(Error::Unauthorized(
             "local checkout root was replaced during open".into(),
         ));
-    }
-    if let Ok(relative) = directory.strip_prefix(&path) {
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        let excluded = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
-            &acyclic_fs::path::PortablePath::parse(
-                &format!("/{relative}"),
-                acyclic_fs::VolumeLimits::default(),
-            )
-            .map_err(storage)?,
-            acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable).profile,
-            acyclic_fs::VolumeLimits::default(),
-        )
-        .map_err(storage)?;
-        source = source
-            .exclude(vec![excluded], &&work, &cancellation)
-            .map_err(storage)?;
     }
     let source = Arc::new(source);
     let view = match original {

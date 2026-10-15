@@ -30,7 +30,14 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     let canonical = fs::canonicalize(path).map_err(storage)?;
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.state/v1\0");
-    hash.update(canonical.as_os_str().as_encoded_bytes());
+    hash.update(if volume.is_some() {
+        b"volume\0"
+    } else {
+        b"checkout\0"
+    });
+    let path_bytes = canonical.as_os_str().as_encoded_bytes();
+    hash.update(&(path_bytes.len() as u64).to_le_bytes());
+    hash.update(path_bytes);
     if let Some(volume) = volume {
         hash.update(volume.storage_name(&mut None)?.as_bytes());
     }
