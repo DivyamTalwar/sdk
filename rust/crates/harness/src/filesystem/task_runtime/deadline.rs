@@ -90,11 +90,13 @@ async fn wait_until<P>(host: &CoordinatorTaskHost<P>, deadline: u64) -> Result<(
 where
     P: StreamProvider + 'static,
 {
-    let remaining = deadline.saturating_sub(host.now_unix_millis());
-    if remaining == 0 {
-        return Ok(());
+    loop {
+        let now = host.now_unix_millis();
+        if now >= deadline {
+            return Ok(());
+        }
+        sleep_millis(deadline.saturating_sub(now).min(1_000)).await?;
     }
-    sleep_millis(remaining).await
 }
 
 fn expire<'a, P: StreamProvider + 'static>(
