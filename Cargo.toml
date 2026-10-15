@@ -136,7 +136,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_fs_loom)"] }
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_fs_loom)"] }
 missing_docs = "warn"
 
 [workspace.lints.clippy]
