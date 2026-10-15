@@ -84,7 +84,7 @@ pub(crate) fn count(
     })
 }
 
-fn encoded_len(value: &Value) -> Result<usize> {
+pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -146,6 +146,17 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             }
         }
         Adapter::Responses => {
+            let include = map
+                .entry("include")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| invalid("Responses include must be an array"))?;
+            if !include
+                .iter()
+                .any(|item| item == "reasoning.encrypted_content")
+            {
+                include.push(json!("reasoning.encrypted_content"));
+            }
             map.insert("input".into(), json!(messages));
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
@@ -207,6 +218,11 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
                 if adapter == Adapter::Anthropic {
                     if let Some(thinking) = metadata["anthropic_thinking"].as_array() {
                         calls.extend(thinking.iter().cloned());
+                    }
+                }
+                if adapter == Adapter::Responses {
+                    if let Some(reasoning) = metadata["openai_reasoning"].as_array() {
+                        calls.extend(reasoning.iter().cloned());
                     }
                 }
                 let mut call = match adapter {
