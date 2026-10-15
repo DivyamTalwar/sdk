@@ -120,3 +120,46 @@ fn saturated(broken: bool) {
 fn notification_negative_control_wakes_while_locked() {
     registration(2);
 }
+
+#[test]
+fn disabling_an_idle_source_preserves_its_next_record() {
+    disabling(false);
+}
+#[test]
+#[should_panic(expected = "a disabled source must not consume a record")]
+fn disabling_negative_control_keeps_polling_the_provider() {
+    disabling(true);
+}
+fn disabling(broken: bool) {
+    use futures::{StreamExt, stream};
+    use std::future::Future;
+    loom::model(move || {
+        let gate = super::Arc::new(Gate::new());
+        gate.set(true).unwrap();
+        let records = super::Arc::new(super::signal::Signal::new());
+        let source = super::Arc::clone(&records);
+        let mut source = stream::once(async { source.next().await.unwrap() }).boxed();
+        let mut read = Box::pin(async {
+            if broken {
+                Ok(source.next().await)
+            } else {
+                gate.next(&mut source).await
+            }
+        });
+        let (_, wake) = super::wake_count();
+        let mut context = Context::from_waker(&wake);
+        assert!(read.as_mut().poll(&mut context).is_pending());
+        let disabled = super::Arc::clone(&gate);
+        let disabled = loom::thread::spawn(move || disabled.set(false).unwrap());
+        let appended = super::Arc::clone(&records);
+        let appended = loom::thread::spawn(move || appended.send(7_u8).unwrap());
+        disabled.join().unwrap();
+        appended.join().unwrap();
+        assert!(
+            read.as_mut().poll(&mut context).is_pending(),
+            "a disabled source must not consume a record"
+        );
+        drop(read);
+        assert_eq!(loom::future::block_on(records.next()).unwrap(), 7);
+    });
+}
