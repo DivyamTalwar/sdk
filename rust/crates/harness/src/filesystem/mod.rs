@@ -81,7 +81,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider};
+pub use native_process::{NativeProcessAuthority, NativeProcessObserver, NativeProcessProvider};
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(all(
