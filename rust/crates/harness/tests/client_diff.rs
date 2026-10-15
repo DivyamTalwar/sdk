@@ -3,7 +3,7 @@
 use acyclic_fs::Fs;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
-    client::{DiffLimits, DiffPath, DiffPublication, DiffView, FileDiff},
+    client::{DiffHunk, DiffLimits, DiffPath, DiffPublication, DiffView, FileDiff},
     context::{ContextRoot, PinnedContextPath},
     conversation::{
         ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
@@ -27,6 +27,7 @@ struct Golden {
     added: u64,
     removed: u64,
     patch: String,
+    hunks: Vec<DiffHunk>,
 }
 
 #[test]
@@ -52,7 +53,7 @@ fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(diff.removed, case.removed);
         assert_eq!(serde_json::to_value(diff.kind)?, case.kind);
         assert!(!diff.binary);
-        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(diff.hunks, case.hunks);
     }
     for (before, after, exists, binary) in [
         (None, None, false, false),
