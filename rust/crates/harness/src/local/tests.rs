@@ -588,10 +588,10 @@ impl crate::filesystem::TaskCommandHost for PendingCommand {
     ) -> BoxProviderFuture<'a, Result<crate::filesystem::TaskCommandProgress>> {
         Box::pin(async move {
             use crate::filesystem::TaskCommandProgress;
-            if command.kind == crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND {
-                return Ok(TaskCommandProgress::Ready(json!({"Succeeded":null})));
-            }
-            assert_eq!(command.kind, crate::filesystem::MODEL_TASK_COMMAND_KIND);
+            assert_eq!(
+                command.kind,
+                crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
+            );
             let calls = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             assert!(calls < 2, "pending command was retried without progress");
             Ok(TaskCommandProgress::Pending)
@@ -626,7 +626,12 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
         .workflow_suspension(task, &mut None)
         .await?
         .ok_or_else(|| Error::NotFound("pending command suspension".into()))?;
-    assert_eq!(suspension.waiting_command, Some(operation));
+    let admission = harness.runtime.task_host().observe_admission(task).await?;
+    let receive = serde_json::from_value::<crate::workflow::WorkflowCommand>(
+        admission.input["receive"].clone(),
+    )
+    .map_err(super::storage)?;
+    assert_eq!(suspension.waiting_command, Some(receive.operation_id));
     assert!(!harness.runtime.poll_task_wake(task, None).await?);
     let worker = crate::distributed::Worker {
         id: "pending-test".into(),
