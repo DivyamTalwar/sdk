@@ -128,3 +128,34 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<()> {
+    let (_, transport) = provider(Adapter::Responses, 200);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let before = registry.catalog().keys().cloned().collect::<Vec<_>>();
+    let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"context_tokens":4096,"output_tokens":512}},"max_event_bytes":4096});
+    let mut bad = valid.clone();
+    bad["models"]["fixture"]["context_tokens"] = json!(0);
+    let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog I/O"))?;
+    std::fs::write(
+        file.path(),
+        serde_json::to_vec(&json!({"aaa":valid,"zzz":bad})).expect("catalog fixture"),
+    )
+    .map_err(|_| invalid("fixture catalog I/O"))?;
+    assert!(registry.load_catalog(file.path()).is_err());
+    assert_eq!(
+        registry.catalog().keys().cloned().collect::<Vec<_>>(),
+        before
+    );
+    std::fs::write(file.path(), b"{sensitive fixture content")
+        .map_err(|_| invalid("fixture catalog I/O"))?;
+    assert_eq!(
+        registry
+            .load_catalog(file.path())
+            .expect_err("malformed catalog")
+            .to_string(),
+        "invalid request: invalid provider catalog"
+    );
+    Ok(())
+}
