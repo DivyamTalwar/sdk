@@ -30,6 +30,7 @@ where
                 self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?,
             )?,
             permissions,
+            created.node.file_id,
             true,
             work,
         )
@@ -121,7 +122,7 @@ where
                 ));
             }
             let raw = self.attached_file(lookup.node.file_id, inputs.carrier)?;
-            let (file, bytes) = authorize_file(raw, permissions, false, work)?;
+            let (file, bytes) = authorize_file(raw, permissions, lookup.node.file_id, false, work)?;
             Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
         })
     }
@@ -197,7 +198,13 @@ where
             }
             let file: Arc<dyn MountOpenFile> =
                 self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
-            authorize_file(wrap((file, 0))?, permissions, false, work)
+            authorize_file(
+                wrap((file, 0))?,
+                permissions,
+                lookup.record.file_id,
+                false,
+                work,
+            )
         })
     }
 }

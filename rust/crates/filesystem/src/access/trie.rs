@@ -47,12 +47,17 @@ pub struct PreparedPath<'a> {
 }
 
 /// Immutable permission state retained by an open native handle.
+#[derive(Clone)]
 pub struct PinnedPath {
     view: std::sync::Arc<PathTrie>,
     state: usize,
 }
 
 impl PinnedPath {
+    pub(crate) fn volume(&self) -> &str {
+        self.view.volume()
+    }
+
     /// Check the pinned policy, including its original expiry, without allocation.
     #[must_use]
     pub fn decide(&self, action: Action, now: u64) -> Decision<'_> {

@@ -4,6 +4,7 @@ use crate::access::{Action, PinnedPath};
 struct AuthorizedFile {
     file: Arc<dyn MountOpenFile>,
     permissions: PinnedPath,
+    file_id: FileId,
     created: bool,
     _allocation: crate::NativeAllocation,
 }
@@ -11,6 +12,7 @@ struct AuthorizedFile {
 pub(in crate::native_mount) fn authorize_file(
     (file, bytes): (Arc<dyn MountOpenFile>, u64),
     permissions: PinnedPath,
+    file_id: FileId,
     created: bool,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
@@ -23,11 +25,37 @@ pub(in crate::native_mount) fn authorize_file(
         Arc::new(AuthorizedFile {
             file,
             permissions,
+            file_id,
             created,
             _allocation: allocation,
         }),
         bytes,
     ))
+}
+
+pub(in crate::native_mount) fn retarget_file(
+    old: &dyn MountOpenFile,
+    replacement: &dyn MountOpenFile,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+    let old = (old as &dyn std::any::Any)
+        .downcast_ref::<AuthorizedFile>()
+        .ok_or(MountSourceError::Stale)?;
+    let replacement = (replacement as &dyn std::any::Any)
+        .downcast_ref::<AuthorizedFile>()
+        .ok_or(MountSourceError::Stale)?;
+    if old.file_id != replacement.file_id
+        || old.permissions.volume() != replacement.permissions.volume()
+    {
+        return Err(MountSourceError::Stale);
+    }
+    authorize_file(
+        (Arc::clone(&replacement.file), 0),
+        old.permissions.clone(),
+        old.file_id,
+        old.created,
+        work,
+    )
 }
 
 impl AuthorizedFile {

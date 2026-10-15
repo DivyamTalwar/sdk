@@ -304,7 +304,7 @@ impl FuseProjection {
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached);
+            state.retain_detached_handles(inode, &detached, work)?;
         }
         removed?;
         work.charge(Items.delta(1))?;
@@ -349,7 +349,7 @@ impl FuseProjection {
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached);
+            state.retain_detached_handles(inode, &detached, work)?;
         }
         renamed?;
         if from.key() != to.key() {

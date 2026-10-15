@@ -162,7 +162,7 @@ include!("source.rs");
 pub(in crate::native_mount) mod access;
 mod authorized_file;
 mod source_factory;
-pub(in crate::native_mount) use authorized_file::authorize_file;
+pub(in crate::native_mount) use authorized_file::{authorize_file, retarget_file};
 include!("work.rs");
 include!("locks.rs");
 include!("view_changes.rs");

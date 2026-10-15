@@ -211,12 +211,18 @@ impl ProjectionState {
         }
     }
 
-    pub(super) fn retain_detached_handles(&mut self, inode: u64, detached: &FuseOpenFile) {
-        for file in self.files.values_mut() {
-            if file.inode == inode {
-                file.open_file = detached.clone();
-            }
+    pub(super) fn retain_detached_handles(
+        &mut self,
+        inode: u64,
+        detached: &FuseOpenFile,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        for file in self.files.values_mut().filter(|file| file.inode == inode) {
+            let replacement =
+                super::super::adapter::retarget_file(file.open_file.file(), detached.file(), work)?;
+            file.open_file = FuseOpenFile(fuse_open_file(replacement, work)?);
         }
+        Ok(())
     }
 }
 

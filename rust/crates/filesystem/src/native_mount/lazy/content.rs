@@ -28,9 +28,9 @@ where
     ) -> Result<(crate::native_mount::MountOpenClaim, Option<MountLookup>), MountSourceError> {
         let permissions = self.authored.permissions_for_path(path, work)?;
         adapter::access::require_open(&permissions, access)?;
-        let (file, lookup) = self.open_proven(path, work)?;
+        let (file, lookup, file_id) = self.open_proven(path, work)?;
         let (file, bytes) =
-            adapter::authorize_file((file.file, file.bytes), permissions, false, work)?;
+            adapter::authorize_file((file.file, file.bytes), permissions, file_id, false, work)?;
         Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
     }
 
@@ -120,7 +120,14 @@ where
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(crate::native_mount::MountOpenClaim, Option<MountLookup>), MountSourceError> {
+    ) -> Result<
+        (
+            crate::native_mount::MountOpenClaim,
+            Option<MountLookup>,
+            FileId,
+        ),
+        MountSourceError,
+    > {
         let (text, mut allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -155,7 +162,11 @@ where
                 return self
                     .bind_open_file(file, Some(lookup.node.file_id), generation, work)
                     .map(|(file, bytes)| {
-                        (crate::native_mount::MountOpenClaim { file, bytes }, None)
+                        (
+                            crate::native_mount::MountOpenClaim { file, bytes },
+                            None,
+                            lookup.node.file_id,
+                        )
                     });
             }
             Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
@@ -166,7 +177,13 @@ where
         if let Some(file) = self.detached_by_id(id)? {
             return self
                 .bind_open_file((file, 0), Some(id), generation, work)
-                .map(|(file, bytes)| (crate::native_mount::MountOpenClaim { file, bytes }, None));
+                .map(|(file, bytes)| {
+                    (
+                        crate::native_mount::MountOpenClaim { file, bytes },
+                        None,
+                        id,
+                    )
+                });
         }
         if let LazyLookup::Source { node, source } = lookup {
             if node.kind != SourceNodeKind::RegularFile {
@@ -209,6 +226,7 @@ where
             return Ok((
                 crate::native_mount::MountOpenClaim { file, bytes: 0 },
                 Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
+                id,
             ));
         }
         drop(lease);
@@ -221,7 +239,13 @@ where
             generation,
             work,
         )
-        .map(|(file, bytes)| (crate::native_mount::MountOpenClaim { file, bytes }, None))
+        .map(|(file, bytes)| {
+            (
+                crate::native_mount::MountOpenClaim { file, bytes },
+                None,
+                id,
+            )
+        })
     }
 
     pub(super) fn bind_open_file(

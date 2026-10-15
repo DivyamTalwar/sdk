@@ -738,3 +738,64 @@ fn native_access_fuse_cached_content_cannot_bypass_new_open_revocation()
     );
     Ok(())
 }
+
+#[test]
+fn native_access_fuse_detaching_preserves_each_open_handle_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    for rename in [false, true] {
+        let (source, _) = shared_sources(posix_config())?;
+        let source = Arc::new(source);
+        let work = fuse_fixture_work();
+        let path = name("retained");
+        source.create_file(&path, FileMetadata::default(), None, &work)?;
+        source.write_range(&path, 0, Bytes::from_static(b"original"))?;
+        source.create_file(&name("replacement"), FileMetadata::default(), None, &work)?;
+        publish_test_access(
+            &source,
+            vec![deny(
+                "read-only",
+                &[Action::Write, Action::Append],
+                "retained",
+            )],
+        )?;
+        let projection = crate::native_mount::fuse::FuseProjection {
+            core: projection_core(
+                source.clone(),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )?,
+            skips_open: false,
+            skips_opendir: false,
+        };
+        let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("retained"), &work)?;
+        let inode = entry.attr.ino.0;
+        let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+        publish_test_access(&source, vec![])?;
+        if rename {
+            projection.rename_name(
+                ROOT_INODE,
+                std::ffi::OsStr::new("replacement"),
+                ROOT_INODE,
+                std::ffi::OsStr::new("retained"),
+                0,
+                &work,
+            )?;
+        } else {
+            projection.remove_name(ROOT_INODE, std::ffi::OsStr::new("retained"), &work)?;
+        }
+        let file = projection
+            .core
+            .state()?
+            .file_handle(inode, handle)?
+            .open_file
+            .clone();
+        assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
+        assert!(matches!(
+            file.file().write_range(0, Bytes::from_static(b"denied")),
+            Err(MountSourceError::AccessDenied)
+        ));
+    }
+    Ok(())
+}

@@ -520,3 +520,38 @@ fn native_access_open_checks_requested_content_rights() -> Result<(), Box<dyn st
     }
     Ok(())
 }
+
+#[test]
+fn native_access_retarget_preserves_grants_and_checks_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    seed(&source, "file", b"original")?;
+    seed(&source, "other", b"other")?;
+    publish_test_access(
+        &source,
+        vec![deny("read-only", &[Action::Write, Action::Append], "file")],
+    )?;
+    let path = native_test_path("file");
+    let old = source.open_file(&path)?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    publish_test_access(&source, vec![])?;
+    let detached = source.detach_file(&path)?;
+    let rebound = retarget_file(old.as_ref(), detached.as_ref(), &work)?.0;
+    assert!(
+        rebound
+            .write_range(0, Bytes::from_static(b"denied"))
+            .is_err()
+    );
+    assert_eq!(rebound.read_range(0, 8)?.as_ref(), b"original");
+    publish_test_access(&source, vec![deny("no-read", &[Action::Read], "file")])?;
+    let detached = source.detach_file(&path)?;
+    assert!(detached.read_range(0, 8).is_err());
+    let rebound = retarget_file(old.as_ref(), detached.as_ref(), &work)?.0;
+    assert_eq!(rebound.read_range(0, 8)?.as_ref(), b"original");
+    let other = source.detach_file(&native_test_path("other"))?;
+    assert!(matches!(
+        retarget_file(old.as_ref(), other.as_ref(), &work),
+        Err(MountSourceError::Stale)
+    ));
+    Ok(())
+}

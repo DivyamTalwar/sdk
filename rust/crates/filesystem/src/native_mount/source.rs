@@ -164,7 +164,7 @@ pub enum MountOpenAccess {
 }
 
 /// Path-independent regular-file handle used for every native open operation.
-pub trait MountOpenFile: Send + Sync + 'static {
+pub trait MountOpenFile: std::any::Any + Send + Sync + 'static {
     /// Returns a readable same-volume clone source without disclosing metadata.
     fn clone_source(
         &self,
