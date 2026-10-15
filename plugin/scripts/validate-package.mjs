@@ -53,20 +53,24 @@ if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} cha
   fail(`missing or invalid package changelog: ${changelog}`);
 }
 const assets = {};
+const hostManifests = [
+  join(plugin, "plugin.json"),
+  join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json"),
+];
 for (const relativePath of ["pi/index.ts", "pi/README.md"]) {
   const path = join(plugin, relativePath);
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
 }
 for (const path of [
-  join(plugin, "plugin.json"),
-  join(plugin, ".codex-plugin", "plugin.json"),
+  ...hostManifests,
   join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
-for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json")]) {
+for (const path of hostManifests) {
   if (assets[path].version !== packageManifest.version) {
     fail(`host plugin manifest version mismatch: ${path}`);
   }

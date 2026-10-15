@@ -32,6 +32,10 @@ name = "service"
 path = "tests/service.rs"
 required-features = ["service", "test-support"]
 
+[[test]]
+name = "external_hooks"
+path = "tests/external_hooks.rs"
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

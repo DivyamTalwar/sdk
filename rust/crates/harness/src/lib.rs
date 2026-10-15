@@ -30,6 +30,7 @@ pub mod durable_tool;
 pub mod effect_host;
 pub mod effects;
 pub mod executor;
+pub mod external_executor;
 pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;

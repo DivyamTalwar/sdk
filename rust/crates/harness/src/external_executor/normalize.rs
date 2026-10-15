@@ -1,0 +1,129 @@
+use super::{ExternalAction, ExternalHost, ExternalRequest, HookAction, hooks};
+use crate::{Error, OperationId, Result};
+use serde_json::{Map, Value};
+
+/// Converts a hook without retaining native host state or unrelated input fields.
+pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<ExternalRequest> {
+    let spec = hooks(host)
+        .find(|spec| spec.event == event)
+        .ok_or_else(|| Error::Invalid(format!("unknown {} hook: {event}", host.name())))?;
+    let Value::Object(mut input) = input else {
+        return Err(Error::Invalid(
+            "external hook input must be an object".into(),
+        ));
+    };
+    let session_id = text(&mut input, &["session_id", "sessionId"])?;
+    let turn_id = optional_text(&mut input, &["turn_id", "turnId"])?;
+    let caller = optional_text(
+        &mut input,
+        match spec.action {
+            HookAction::Fork | HookAction::Join => &["parent_agent_id", "parentAgentId"],
+            _ => &["agent_id", "agentId", "thread_id", "threadId"],
+        },
+    )?;
+    let action = match spec.action {
+        HookAction::Attach => ExternalAction::Attach {
+            workspace: text(&mut input, &["cwd"])?,
+        },
+        HookAction::RunTool => ExternalAction::RunTool {
+            call_id: text(&mut input, &["tool_use_id", "toolCallId"])?,
+            name: text(&mut input, &["tool_name", "toolName"])?,
+            arguments: value(&mut input, &["tool_input", "input"])?
+                .ok_or_else(|| Error::Invalid("external tool arguments are missing".into()))?,
+        },
+        HookAction::ToolFinished => {
+            let failed = failed(&mut input)?;
+            ExternalAction::ToolFinished {
+                call_id: text(&mut input, &["tool_use_id", "toolCallId"])?,
+                failed: event == "PostToolUseFailure" || failed,
+                result: value(&mut input, &["tool_response", "result"])?,
+            }
+        }
+        HookAction::Fork => ExternalAction::Fork {
+            child_id: text(&mut input, &["agent_id", "agentId"])?,
+            kind: optional_text(&mut input, &["agent_type", "agentType"])?,
+        },
+        HookAction::Join => ExternalAction::Join {
+            child_id: text(&mut input, &["agent_id", "agentId"])?,
+        },
+        HookAction::Detach => ExternalAction::Detach,
+    };
+    let operation_id = operation(host, &session_id, &caller, &action);
+    Ok(ExternalRequest {
+        operation_id,
+        host,
+        session_id,
+        turn_id,
+        caller,
+        action,
+    })
+}
+
+fn value(input: &mut Map<String, Value>, fields: &[&str]) -> Result<Option<Value>> {
+    let mut found = None;
+    for field in fields {
+        if let Some(value) = input.remove(*field) {
+            if found.is_some() {
+                return Err(Error::Invalid(format!(
+                    "duplicate external hook field: {field}"
+                )));
+            }
+            found = Some(value);
+        }
+    }
+    Ok(found)
+}
+
+fn optional_text(input: &mut Map<String, Value>, fields: &[&str]) -> Result<Option<String>> {
+    match value(input, fields)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) if !text.is_empty() && !text.contains('\0') => Ok(Some(text)),
+        _ => Err(Error::Invalid("invalid external hook text field".into())),
+    }
+}
+
+fn text(input: &mut Map<String, Value>, fields: &[&str]) -> Result<String> {
+    optional_text(input, fields)?
+        .ok_or_else(|| Error::Invalid("required external hook field is missing".into()))
+}
+
+fn failed(input: &mut Map<String, Value>) -> Result<bool> {
+    match input.remove("isError") {
+        None | Some(Value::Bool(false)) => Ok(false),
+        Some(Value::Bool(true)) => Ok(true),
+        _ => Err(Error::Invalid(
+            "external tool failure flag must be a boolean".into(),
+        )),
+    }
+}
+
+fn operation(
+    host: ExternalHost,
+    session: &str,
+    caller: &Option<String>,
+    action: &ExternalAction,
+) -> OperationId {
+    let (kind, invocation) = match action {
+        ExternalAction::Attach { .. } => ("attach", ""),
+        ExternalAction::RunTool { call_id, .. } => ("tool", call_id.as_str()),
+        ExternalAction::ToolFinished { call_id, .. } => ("tool-finished", call_id.as_str()),
+        ExternalAction::Fork { child_id, .. } => ("fork", child_id.as_str()),
+        ExternalAction::Join { child_id } => ("join", child_id.as_str()),
+        ExternalAction::Detach => ("detach", ""),
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.external-executor.request/v1\0");
+    for field in [
+        host.name(),
+        session,
+        caller.as_deref().unwrap_or(""),
+        kind,
+        invocation,
+    ] {
+        hash.update(&(field.len() as u64).to_le_bytes());
+        hash.update(field.as_bytes());
+    }
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
