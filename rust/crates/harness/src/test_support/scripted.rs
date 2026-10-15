@@ -90,12 +90,14 @@ struct State {
     reconciliations: Vec<ModelDispatch>,
 }
 
+type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
+
 /// Replays responses once and retains the exact requests delivered by the executor.
 /// Exhaustion fails instead of silently repeating the final response.
 pub struct ScriptedModelProvider {
     state: Mutex<State>,
     capacity: ModelContextCapacity,
-    token_counter: Arc<dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync>,
+    token_counter: Arc<TokenCounter>,
 }
 
 impl ScriptedModelProvider {
