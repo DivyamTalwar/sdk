@@ -211,13 +211,16 @@ impl HookOutput {
         if text.is_empty() {
             return Ok(());
         }
-        let Ok(value) = serde_json::from_str::<Value>(text) else {
+        let Ok(mut value) = serde_json::from_str::<Value>(text) else {
             if event == HookEvent::SessionStart {
                 self.additional_context.push(text.into());
             }
             return Ok(());
         };
-        let specific = &value["hookSpecificOutput"];
+        let mut specific = value
+            .get_mut("hookSpecificOutput")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
         if specific
             .get("hookEventName")
             .and_then(Value::as_str)
@@ -227,11 +230,7 @@ impl HookOutput {
         }
         if value.get("continue").and_then(Value::as_bool) == Some(false) {
             self.blocked = Some(
-                value
-                    .get("stopReason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Stopped by hook")
-                    .into(),
+                take_string(&mut value, "stopReason").unwrap_or_else(|| "Stopped by hook".into()),
             );
         }
         if matches!(event, HookEvent::PreToolUse | HookEvent::Stop)
@@ -239,27 +238,33 @@ impl HookOutput {
                 || specific.get("permissionDecision").and_then(Value::as_str) == Some("deny"))
         {
             self.blocked = Some(
-                specific
-                    .get("permissionDecisionReason")
-                    .or_else(|| value.get("reason"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("Blocked by hook")
-                    .into(),
+                take_string(&mut specific, "permissionDecisionReason")
+                    .or_else(|| take_string(&mut value, "reason"))
+                    .unwrap_or_else(|| "Blocked by hook".into()),
             );
         }
-        if let Some(context) = specific.get("additionalContext").and_then(Value::as_str) {
-            self.additional_context.push(context.into());
+        if let Some(context) = take_string(&mut specific, "additionalContext") {
+            self.additional_context.push(context);
         }
         if event == HookEvent::PreToolUse
-            && let Some(input) = specific.get("updatedInput")
+            && let Some(input) = specific
+                .as_object_mut()
+                .and_then(|fields| fields.remove("updatedInput"))
         {
             if !input.is_object() {
                 return Err(Error::Invalid("hook updatedInput must be an object".into()));
             }
-            self.updated_input = Some(input.clone());
+            self.updated_input = Some(input);
         }
         Ok(())
     }
+}
+
+fn take_string(value: &mut Value, name: &str) -> Option<String> {
+    let Value::String(text) = value.as_object_mut()?.remove(name)? else {
+        return None;
+    };
+    Some(text)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
