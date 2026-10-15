@@ -245,23 +245,25 @@ impl HookOutput {
         if text.is_empty() {
             return Ok(());
         }
-        let Ok(mut value) = serde_json::from_str::<Value>(text) else {
-            if event == HookEvent::SessionStart {
-                self.additional_context.push(text.into());
+        let mut value = match serde_json::from_str::<Value>(text) {
+            Ok(value) => value,
+            Err(error) => {
+                if text.starts_with(['{', '[']) {
+                    return Err(Error::Invalid(format!(
+                        "hook output JSON is invalid: {error}"
+                    )));
+                }
+                if event == HookEvent::SessionStart {
+                    self.additional_context.push(text.into());
+                }
+                return Ok(());
             }
-            return Ok(());
         };
+        validate_output(&value, event)?;
         let mut specific = value
             .get_mut("hookSpecificOutput")
             .map(Value::take)
             .unwrap_or(Value::Null);
-        if specific
-            .get("hookEventName")
-            .and_then(Value::as_str)
-            .is_some_and(|name| name != event.name())
-        {
-            return Err(Error::Invalid("hook output names another event".into()));
-        }
         if value.get("continue").and_then(Value::as_bool) == Some(false) {
             self.blocked.get_or_insert_with(|| {
                 take_string(&mut value, "stopReason").unwrap_or_else(|| "Stopped by hook".into())
@@ -293,9 +295,6 @@ impl HookOutput {
                 .as_object_mut()
                 .and_then(|fields| fields.remove("updatedInput"))
         {
-            if !input.is_object() {
-                return Err(Error::Invalid("hook updatedInput must be an object".into()));
-            }
             self.updated_input = Some(input);
         }
         Ok(())
@@ -307,6 +306,74 @@ fn exit_error(code: Option<i32>, stderr: &[u8]) -> Error {
         kind: "exit",
         message: format!("exit {code:?}: {}", String::from_utf8_lossy(stderr)),
     }
+}
+
+fn validate_output(value: &Value, event: HookEvent) -> Result<()> {
+    if !value.is_object() {
+        return Err(Error::Invalid(
+            "hook structured output must be an object".into(),
+        ));
+    }
+    validate_strings(value, &["stopReason", "decision", "reason"])?;
+    if value
+        .get("continue")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(Error::Invalid("hook continue must be a boolean".into()));
+    }
+    if value
+        .get("decision")
+        .and_then(Value::as_str)
+        .is_some_and(|decision| !matches!(decision, "approve" | "block"))
+    {
+        return Err(Error::Invalid("unknown hook decision".into()));
+    }
+    if let Some(specific) = value.get("hookSpecificOutput") {
+        if !specific.is_object() {
+            return Err(Error::Invalid(
+                "hookSpecificOutput must be an object".into(),
+            ));
+        }
+        validate_strings(
+            specific,
+            &[
+                "hookEventName",
+                "permissionDecision",
+                "permissionDecisionReason",
+                "additionalContext",
+            ],
+        )?;
+        if specific
+            .get("hookEventName")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name != event.name())
+        {
+            return Err(Error::Invalid("hook output names another event".into()));
+        }
+        if specific
+            .get("permissionDecision")
+            .and_then(Value::as_str)
+            .is_some_and(|decision| !matches!(decision, "allow" | "ask" | "deny"))
+        {
+            return Err(Error::Invalid("unknown hook permissionDecision".into()));
+        }
+        if specific
+            .get("updatedInput")
+            .is_some_and(|input| !input.is_object())
+        {
+            return Err(Error::Invalid("hook updatedInput must be an object".into()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_strings(value: &Value, names: &[&str]) -> Result<()> {
+    for name in names {
+        if value.get(name).is_some_and(|value| !value.is_string()) {
+            return Err(Error::Invalid(format!("hook {name} must be a string")));
+        }
+    }
+    Ok(())
 }
 
 fn take_string(value: &mut Value, name: &str) -> Option<String> {
