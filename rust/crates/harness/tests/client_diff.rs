@@ -15,7 +15,7 @@ use acyclic_harness::{
 };
 use serde::Deserialize;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -134,6 +134,41 @@ fn equal_size_replacements_stop_at_the_computation_budget() {
     );
 }
 
+#[test]
+fn additions_deletions_and_asymmetric_inputs_fit_a_linear_work_budget()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let lines = "a\n".repeat(2000);
+    let anchored = format!("{lines}anchor\n");
+    let existing = "anchor\n".repeat(2000);
+    let appended = format!("{existing}{lines}");
+    for (before, after, added, removed) in [
+        (None, Some(lines.as_str()), 2000, 0),
+        (Some(lines.as_str()), None, 0, 2000),
+        (Some("anchor\n"), Some(anchored.as_str()), 2000, 0),
+        (Some(anchored.as_str()), Some("anchor\n"), 0, 2000),
+        (Some("different\n"), Some(lines.as_str()), 2000, 1),
+        (Some(lines.as_str()), Some("different\n"), 1, 2000),
+        (Some(existing.as_str()), Some(appended.as_str()), 2000, 0),
+        (Some(appended.as_str()), Some(existing.as_str()), 0, 2000),
+    ] {
+        let actual = FileDiff::between(
+            before.map(str::as_bytes),
+            after.map(str::as_bytes),
+            8192,
+            100_000,
+        )?
+        .ok_or("expected changed file")?;
+        assert_eq!((actual.added, actual.removed), (added, removed));
+        let patch = diffy::Patch::from_str(&actual.patch)?;
+        assert_eq!(
+            diffy::apply(before.unwrap_or_default(), &patch)?,
+            after.unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()> {
     let fixture = Fixture::new().await?;
@@ -154,6 +189,7 @@ async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()>
         let reader = Reader {
             inner: fixture.reader.as_ref(),
             reads: AtomicUsize::new(0),
+            requested_bytes: Mutex::new(Vec::new()),
             pause_first: false,
         };
         let mut result = Ok(Vec::new());
@@ -171,6 +207,7 @@ async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()>
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Result<()> {
     let fixture = Fixture::new().await?;
@@ -202,6 +239,7 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
         let reader = Reader {
             inner: fixture.reader.as_ref(),
             reads: AtomicUsize::new(0),
+            requested_bytes: Mutex::new(Vec::new()),
             pause_first: false,
         };
         let limits = DiffLimits {
@@ -310,6 +348,7 @@ impl Fixture {
 struct Reader<'a> {
     inner: &'a dyn ContentResidencyVerifier,
     reads: AtomicUsize,
+    requested_bytes: Mutex<Vec<u64>>,
     pause_first: bool,
 }
 impl ContentResidencyVerifier for Reader<'_> {
@@ -335,6 +374,10 @@ impl ContentResidencyVerifier for Reader<'_> {
         'io: 'a,
     {
         let index = self.reads.fetch_add(1, Ordering::SeqCst);
+        self.requested_bytes
+            .lock()
+            .expect("read bounds")
+            .push(maximum_bytes);
         let read =
             self.inner
                 .read_private_path(volume, prefix, path, generation, maximum_bytes, io)?;
@@ -359,6 +402,135 @@ fn limits() -> DiffLimits {
 }
 
 #[tokio::test]
+async fn a_large_addition_does_not_terminate_the_follow() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let base = fixture.source("added.txt").await?;
+    fixture.put("added.txt", &"a\n".repeat(2000), "add").await?;
+    let current = fixture.source("added.txt").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: current.generation.clone(),
+        paths: vec![DiffPath {
+            path: "added.txt".into(),
+            base: None,
+            current: Some(current),
+        }],
+    };
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation)?;
+    let source = futures::stream::iter([Ok(publication.clone()), Ok(publication.clone())]);
+    let mut follow = view.follow(
+        Box::pin(source),
+        fixture.reader.as_ref(),
+        DiffLimits {
+            file_bytes: 8192,
+            ..limits()
+        },
+    );
+    assert_eq!(
+        follow.next().await.transpose()?,
+        Some(vec!["added.txt".into()])
+    );
+    assert_eq!(follow.view().line_counts(), (2000, 0));
+    assert_eq!(follow.view().generation(), &publication.generation);
+    assert_eq!(follow.next().await.transpose()?, Some(vec![]));
+    assert!(follow.next().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn exhausted_work_stops_before_reading_the_next_file() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let base = fixture.source("absent").await?;
+    fixture.put("binary", "\0", "binary").await?;
+    fixture.put("large", &"x".repeat(16_384), "large").await?;
+    let current = fixture.source("large").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: current.generation.clone(),
+        paths: ["binary", "large"]
+            .into_iter()
+            .map(|path| DiffPath {
+                path: path.into(),
+                base: None,
+                current: Some(PinnedContextPath {
+                    path: path.into(),
+                    ..current.clone()
+                }),
+            })
+            .collect(),
+    };
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
+        pause_first: false,
+    };
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation)?;
+    let before = view.clone();
+    let result = view
+        .apply(
+            &publication,
+            &reader,
+            DiffLimits {
+                file_bytes: 32_768,
+                work: 1,
+                ..limits()
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(acyclic_harness::Error::Invalid(reason))
+        if reason == "diff computation work bound exceeded")
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(*reader.requested_bytes.lock().expect("read bounds"), [1]);
+    assert_eq!(view, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn endpoint_reads_use_only_the_remaining_input_allowance() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("a.txt", "a", "base").await?;
+    let base = fixture.source("a.txt").await?;
+    fixture.put("a.txt", "bc", "edit").await?;
+    let current = fixture.source("a.txt").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: current.generation.clone(),
+        paths: vec![DiffPath {
+            path: "a.txt".into(),
+            base: Some(base.clone()),
+            current: Some(current),
+        }],
+    };
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
+        pause_first: false,
+    };
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation)?;
+    let before = view.clone();
+    assert!(
+        view.apply(
+            &publication,
+            &reader,
+            DiffLimits {
+                work: 2,
+                ..limits()
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(*reader.requested_bytes.lock().expect("read bounds"), [2, 1]);
+    assert_eq!(view, before);
+    Ok(())
+}
+
+#[tokio::test]
 async fn unchanged_baseline_snapshot_initializes_once_without_reads() -> Result<()> {
     let fixture = Fixture::new().await?;
     let base = fixture.source("not-present.txt").await?;
@@ -377,6 +549,7 @@ async fn unchanged_baseline_snapshot_initializes_once_without_reads() -> Result<
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
         pause_first: false,
     };
     {
@@ -442,6 +615,7 @@ async fn render_bound_stops_before_reading_later_files_and_preserves_the_view() 
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
         pause_first: false,
     };
     let before = serde_json::to_string(&view)
@@ -489,6 +663,7 @@ async fn cancelling_a_read_keeps_the_received_publication_for_the_next_read() ->
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
         pause_first: true,
     };
     let mut follow = view.follow(
@@ -539,6 +714,7 @@ async fn deletion_only_publications_keep_the_published_generation() -> Result<()
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
         pause_first: false,
     };
     assert_eq!(
@@ -610,6 +786,7 @@ async fn publications_update_only_named_files_and_keep_the_fork_base() -> Result
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        requested_bytes: Mutex::new(Vec::new()),
         pause_first: false,
     };
     for (index, current, expected) in [

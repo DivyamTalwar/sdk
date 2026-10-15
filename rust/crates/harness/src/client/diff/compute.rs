@@ -26,9 +26,20 @@ fn lines<'a>(text: &'a str, work: &mut usize) -> Result<Vec<&'a str>> {
     Ok(lines)
 }
 
-// A frontier stores only its reachable diagonals. Retaining earlier frontiers
-// permits exact traceback; every retained entry is charged before allocation.
-fn step(previous: &[isize], index: usize, degree: usize, n: isize, m: isize) -> (isize, bool) {
+// A frontier omits unreachable edge diagonals. Retaining earlier frontiers
+// permits exact traceback; every candidate entry is charged before allocation.
+struct Frontier {
+    start: usize,
+    values: Vec<isize>,
+}
+
+impl Frontier {
+    fn get(&self, index: usize) -> Option<&isize> {
+        self.values.get(index.checked_sub(self.start)?)
+    }
+}
+
+fn step(previous: &Frontier, index: usize, degree: usize, n: isize, m: isize) -> (isize, bool) {
     let diagonal = 2 * index as isize - degree as isize;
     let down = previous.get(index).copied().unwrap_or(-1);
     let right = index
@@ -48,6 +59,14 @@ fn step(previous: &[isize], index: usize, degree: usize, n: isize, m: isize) -> 
 }
 
 fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut usize) -> Result<Vec<Edit<'a>>> {
+    if old.is_empty() {
+        charge(work, new.len())?;
+        return Ok(new.iter().map(|line| Edit::Add(line)).collect());
+    }
+    if new.is_empty() {
+        charge(work, old.len())?;
+        return Ok(old.iter().map(|line| Edit::Remove(line)).collect());
+    }
     let maximum = old.len().checked_add(new.len()).ok_or_else(work_bound)?;
     let n = isize::try_from(old.len()).map_err(|_| work_bound())?;
     let m = isize::try_from(new.len()).map_err(|_| work_bound())?;
@@ -55,11 +74,22 @@ fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut usize) -> Result<Vec<E
     if maximum > isize::MAX as usize / 2 {
         return Err(work_bound());
     }
-    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut trace: Vec<Frontier> = Vec::new();
     for degree in 0..=maximum {
-        charge(work, degree + 1)?;
-        let mut frontier = Vec::with_capacity(degree + 1);
-        for index in 0..=degree {
+        // An index is the number of deletions; the other edits are insertions.
+        // Neither count can exceed its input, even after matching a snake.
+        let (start, end) = trace.last().map_or((0, 0), |previous| {
+            (
+                previous.start.max(degree.saturating_sub(new.len())),
+                (previous.start + previous.values.len()).min(degree.min(old.len())),
+            )
+        });
+        charge(work, end - start + 1)?;
+        let mut frontier = Frontier {
+            start,
+            values: Vec::with_capacity(end - start + 1),
+        };
+        for index in start..=end {
             let mut x = match trace.last() {
                 Some(previous) => step(previous, index, degree, n, m).0,
                 None => 0,
@@ -78,11 +108,21 @@ fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut usize) -> Result<Vec<E
                     y += 1;
                 }
             }
-            frontier.push(x);
+            if x < 0 && frontier.values.is_empty() {
+                frontier.start += 1;
+                continue;
+            }
+            frontier.values.push(x);
             if x == n && y == m {
                 trace.push(frontier);
                 return traceback(&trace, old, new, work);
             }
+        }
+        while frontier.values.last().is_some_and(|x| *x < 0) {
+            frontier.values.pop();
+        }
+        if frontier.values.is_empty() {
+            return Err(work_bound());
         }
         trace.push(frontier);
     }
@@ -90,7 +130,7 @@ fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut usize) -> Result<Vec<E
 }
 
 fn traceback<'a>(
-    trace: &[Vec<isize>],
+    trace: &[Frontier],
     old: &[&'a str],
     new: &[&'a str],
     work: &mut usize,

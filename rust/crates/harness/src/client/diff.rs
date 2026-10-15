@@ -104,6 +104,13 @@ impl FileDiff {
         maximum_render_bytes: usize,
         mut maximum_work: usize,
     ) -> Result<Option<Self>> {
+        compute::charge(
+            &mut maximum_work,
+            base.unwrap_or_default()
+                .len()
+                .checked_add(current.unwrap_or_default().len())
+                .ok_or_else(compute::work_bound)?,
+        )?;
         Self::between_work(base, current, maximum_render_bytes, &mut maximum_work)
     }
 
@@ -115,13 +122,6 @@ impl FileDiff {
     ) -> Result<Option<Self>> {
         let before = base.unwrap_or_default();
         let after = current.unwrap_or_default();
-        compute::charge(
-            work,
-            before
-                .len()
-                .checked_add(after.len())
-                .ok_or_else(compute::work_bound)?,
-        )?;
         if base == current {
             return Ok(None);
         }
@@ -338,8 +338,8 @@ impl DiffView {
             return Err(Error::Invalid("diff view exceeds retained bounds".into()));
         }
         for change in &publication.paths {
-            let before = read(&change.base, reader, limits.file_bytes).await?;
-            let after = read(&change.current, reader, limits.file_bytes).await?;
+            let before = read(&change.base, reader, limits.file_bytes, &mut work).await?;
+            let after = read(&change.current, reader, limits.file_bytes, &mut work).await?;
             let diff = FileDiff::between_work(
                 before.as_deref(),
                 after.as_deref(),
@@ -435,12 +435,18 @@ async fn read(
     source: &Option<PinnedContextPath>,
     reader: &dyn ContentResidencyVerifier,
     maximum_bytes: u64,
+    work: &mut usize,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     match source {
-        Some(source) => source
-            .read(reader, maximum_bytes)
-            .await
-            .map(|(_, bytes)| Some(bytes)),
+        Some(source) => {
+            if *work == 0 {
+                return Err(compute::work_bound());
+            }
+            let maximum_bytes = maximum_bytes.min(u64::try_from(*work).unwrap_or(u64::MAX));
+            let (_, bytes) = source.read(reader, maximum_bytes).await?;
+            compute::charge(work, bytes.len())?;
+            Ok(Some(bytes))
+        }
         None => Ok(None),
     }
 }
