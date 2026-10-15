@@ -37,6 +37,66 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        self.transport.supports_native(work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn context_capacity_with_native_work(
+        &self,
+        model: &Model,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<ModelContextCapacity> {
+        work.remaining()?;
+        if model != &self.model {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "request model differs from resolved selection",
+            });
+        }
+        Ok(self.capacity)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn count_tokens_with_native_work(
+        &self,
+        request: &PreparedModelRequest,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ModelTokenCount, acyclic_fs::NativeAllocation)> {
+        crate::native::count(self, request, work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn generate_with_native_work<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: ModelDispatch,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_harness::NativeFutureBundle<'a, acyclic_harness::model::NativeModelStream<'a>>,
+    > {
+        crate::native::generate(self, request, dispatch, work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconcile_with_native_work<'a>(
+        &'a self,
+        _: ModelDispatch,
+        _: &'a [ModelEvent],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_harness::NativeFutureBundle<
+            'a,
+            (Option<Vec<ModelEvent>>, acyclic_fs::NativeAllocation),
+        >,
+    > {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
+            Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
+        })
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
         Ok(self.capacity)

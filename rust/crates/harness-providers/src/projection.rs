@@ -132,7 +132,8 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
                     if let (Some(previous), Some(parts)) =
                         (messages.last_mut(), projected["parts"].as_array_mut())
                     {
-                        previous["parts"].as_array_mut()
+                        previous["parts"]
+                            .as_array_mut()
                             .ok_or_else(|| invalid("invalid projected Gemini parts"))?
                             .append(parts);
                     }

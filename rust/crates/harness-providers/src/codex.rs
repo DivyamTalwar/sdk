@@ -70,7 +70,7 @@ impl CodexLogin {
                 headers: BTreeMap::new(),
                 body: serde_json::to_vec(&json!({"grant_type":"refresh_token", "client_id":CLIENT_ID,
                     "refresh_token":refresh,"refresh_reason":if force {"unauthorized"} else {"proactive_expiry"}}))
-                    .map_err(|_| invalid("Codex refresh encoding failed"))?,
+                    .map_err(|_| invalid("Codex refresh encoding failed"))?.into(),
             }).await?;
             if response.status != 200 {
                 if attempt == 0 && matches!(response.status, 400 | 401) {

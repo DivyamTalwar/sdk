@@ -41,7 +41,9 @@ pub(crate) fn generate(
     })
 }
 
-async fn authenticate(provider: &ResolvedModel) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
+pub(crate) async fn authenticate(
+    provider: &ResolvedModel,
+) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(login) = &provider.codex_login {
         let (key, account) = login.bearer(provider.transport.as_ref(), None).await?;
@@ -50,13 +52,33 @@ async fn authenticate(provider: &ResolvedModel) -> Result<(Option<Cow<'_, str>>,
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
 }
 
-async fn send(
+pub(crate) async fn send(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
 ) -> Result<(HttpResponse, usize)> {
+    let (url, headers, body) = self::request(provider, request, dispatch, key, account)?;
+    let input_bytes = body.len();
+    let response = provider
+        .transport
+        .send(HttpRequest {
+            url,
+            headers,
+            body: body.into(),
+        })
+        .await?;
+    Ok((response, input_bytes))
+}
+
+pub(crate) fn request(
+    provider: &ResolvedModel,
+    request: &PreparedModelRequest,
+    dispatch: ModelDispatch,
+    key: Option<&str>,
+    account: Option<&str>,
+) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
     let body = projection::body(provider, request.request())?;
     let mut headers = BTreeMap::from([("accept".into(), "text/event-stream".into())]);
     if let Some(key) = key {
@@ -93,15 +115,6 @@ async fn send(
         );
     }
     let _ = dispatch;
-    let body = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
-    let input_bytes = body.len();
-    let response = provider
-        .transport
-        .send(HttpRequest {
-            url: projection::endpoint(provider)?,
-            headers,
-            body,
-        })
-        .await?;
-    Ok((response, input_bytes))
+    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
+    Ok((projection::endpoint(provider)?, headers, encoded))
 }

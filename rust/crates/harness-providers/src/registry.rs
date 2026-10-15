@@ -31,7 +31,11 @@ impl Registry {
             .map(|(id, spec)| (id, Arc::new(spec)))
             .collect();
         #[cfg(not(target_arch = "wasm32"))]
-        let codex_login = credentials.allows_native_sources().then(crate::CodexLogin::discover).flatten().map(Arc::new);
+        let codex_login = credentials
+            .allows_native_sources()
+            .then(crate::CodexLogin::discover)
+            .flatten()
+            .map(Arc::new);
         Self {
             providers,
             credentials,
@@ -95,15 +99,28 @@ impl Registry {
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
         let codex_login = if provider == "openai" && key.is_none() {
-            self.codex_login.as_ref().map(|login| Arc::new(login.fresh()))
-        } else { None };
+            self.codex_login
+                .as_ref()
+                .map(|login| Arc::new(login.fresh()))
+        } else {
+            None
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let config = if codex_login.is_some() {
-            if config.adapter != crate::Adapter::Responses || config.base_url != "https://api.openai.com/v1" {
-                return Err(invalid("Codex CLI credentials require the built-in Responses route"));
+            if config.adapter != crate::Adapter::Responses
+                || config.base_url != "https://api.openai.com/v1"
+            {
+                return Err(invalid(
+                    "Codex CLI credentials require the built-in Responses route",
+                ));
             }
-            Arc::new(ProviderSpec { base_url: "https://chatgpt.com/backend-api/codex".into(), ..config.as_ref().clone() })
-        } else { config };
+            Arc::new(ProviderSpec {
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                ..config.as_ref().clone()
+            })
+        } else {
+            config
+        };
         let authenticated = key.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();

@@ -74,10 +74,33 @@ fn assert_call(provider: &ScriptedModelProvider, metadata: &Value) {
             _ => None,
         })
         .collect();
-    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].call_id, "signed-call");
     assert_eq!(calls[0].arguments, json!({"value":1}));
     assert_eq!(&calls[0].metadata, metadata);
+    assert_eq!(calls[1].call_id, "parallel-call");
+    assert!(calls[1].metadata.is_null());
+    let exchange: Vec<_> = requests
+        .last()
+        .expect("model request")
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolCall(call) => Some(("call", call.call_id.as_str())),
+            ModelContentPart::ToolResult { call_id, .. } => Some(("result", call_id.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        exchange,
+        [
+            ("call", "signed-call"),
+            ("call", "parallel-call"),
+            ("result", "signed-call"),
+            ("result", "parallel-call")
+        ]
+    );
 }
 
 #[tokio::test]
@@ -95,6 +118,11 @@ async fn completed_turn_retains_provider_metadata_in_next_conversation_and_repla
             ScriptedModelProvider::new([
                 ScriptedTurn::Events(vec![
                     ScriptedEvent::Event(ModelEvent::ToolCall(call)),
+                    ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                        "parallel-call".into(),
+                        "echo".into(),
+                        json!({"value":2}),
+                    ))),
                     ScriptedEvent::Event(ModelEvent::Completed {
                         metadata: Value::Null,
                     }),
@@ -169,7 +197,7 @@ async fn completed_turn_retains_provider_metadata_in_next_conversation_and_repla
         );
         assert_eq!(next.remaining(), 0);
         assert_call(&next, &metadata);
-        assert_eq!(echo.0.load(Ordering::SeqCst), 1);
+        assert_eq!(echo.0.load(Ordering::SeqCst), 2);
     }
     Ok(())
 }

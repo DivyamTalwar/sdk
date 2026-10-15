@@ -12,6 +12,8 @@ mod codex_dispatch_tests;
 mod credentials;
 mod dispatch;
 mod http;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
 mod projection;
 mod registry;
 mod resolved;
