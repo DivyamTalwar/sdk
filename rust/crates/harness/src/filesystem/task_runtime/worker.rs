@@ -75,16 +75,10 @@ where
             ));
         }
         let wake = self.poll_task_wake_page(cursor, maximum_events).await?;
-        let work = match self.host.pull_work(worker, None, &mut None).await? {
-            crate::distributed::WorkPull::Idle => None,
-            crate::distributed::WorkPull::Claimed(lease) => Some(
-                self.resume_task(lease, commands, maximum_transitions, None)
-                    .await,
-            ),
-            crate::distributed::WorkPull::Unresolved { lease, error } => {
-                Some(TaskWorkerAttempt::Unresolved { lease, error })
-            }
-        };
+        let pulled = self.host.pull_work(worker, None, &mut None).await?;
+        let work = self
+            .resume_pulled(pulled, commands, maximum_transitions, None)
+            .await;
         Ok(TaskWorkerTick { wake, work })
     }
 
@@ -178,16 +172,34 @@ where
             .await?
         };
 
-        Ok(match pulled {
-            crate::distributed::WorkPull::Idle => None,
-            crate::distributed::WorkPull::Claimed(lease) => Some(
+        Ok(self
+            .resume_pulled(pulled, commands, maximum_transitions, io)
+            .await)
+    }
+
+    fn resume_pulled<'a>(
+        &'a self,
+        pulled: crate::distributed::WorkPull,
+        commands: &'a dyn TaskCommandHost,
+        maximum_transitions: u32,
+        io: Option<&'a super::super::PreparationIo>,
+    ) -> impl std::future::Future<Output = Option<TaskWorkerAttempt>> + 'a {
+        use futures::{FutureExt as _, future::Either};
+        // Select before constructing the state machine so the pull result does
+        // not remain live alongside the resumed task across its awaits.
+        match pulled {
+            crate::distributed::WorkPull::Claimed(lease) => Either::Left(
                 self.resume_task(lease, commands, maximum_transitions, io)
-                    .await,
+                    .map(Some),
             ),
+            crate::distributed::WorkPull::Idle => Either::Right(std::future::ready(None)),
             crate::distributed::WorkPull::Unresolved { lease, error } => {
-                Some(TaskWorkerAttempt::Unresolved { lease, error })
+                Either::Right(std::future::ready(Some(TaskWorkerAttempt::Unresolved {
+                    lease,
+                    error,
+                })))
             }
-        })
+        }
     }
 
     /// Resumes only this original lease and returns it unchanged on failure.
