@@ -1,4 +1,5 @@
 use crate::{Color, Line, Style, style::MUTED};
+use pulldown_cmark::{Event, Parser};
 use std::sync::OnceLock;
 use syntect::{
     easy::HighlightLines,
@@ -112,6 +113,7 @@ pub(crate) fn opening(text: &str) -> Option<(u8, usize, usize, &str)> {
 }
 
 pub(crate) fn closing(text: &str, marker: u8, count: usize) -> bool {
+    let input = text;
     let text = text.trim_end_matches(['\r', '\n']);
     let indent = text.len() - text.trim_start_matches(' ').len();
     if indent > 3 {
@@ -119,7 +121,14 @@ pub(crate) fn closing(text: &str, marker: u8, count: usize) -> bool {
     }
     let text = text.trim_start_matches(' ');
     let found = text.bytes().take_while(|byte| *byte == marker).count();
-    found >= count && text.get(found..).is_some_and(|tail| tail.trim().is_empty())
+    if found < count {
+        return false;
+    }
+    // Share the parser's closing-fence grammar, including incomplete EOF lines.
+    // Ordinary code lines never allocate or invoke this candidate parse.
+    let opening = if marker == b'`' { "```" } else { "~~~" };
+    let candidate = format!("{opening}\n{input}");
+    !Parser::new(&candidate).any(|event| matches!(event, Event::Text(_)))
 }
 
 pub(crate) fn dedent(text: &str, indent: usize) -> &str {

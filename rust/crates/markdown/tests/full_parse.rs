@@ -48,6 +48,8 @@ fn incremental_frontier_matches_full_commonmark_parse() {
         "```rust\r/* comment\rstill */\r```\rend",
         "```rust\nlet x = 1;\n````\n\nend",
         "```rust\nlet x = 1;\n``` trailing\n```\nend",
+        "```rust\nlet x = 1;\n```\u{a0}\nstill code\n```\nend",
+        "```rust\nlet x = 1;\n```\t\nend",
         "[r]\n\n[r]: /url\n\n[r]",
         "[r]: /old\n\n# Heading\n\n[r]: /new\n\n[r]",
         "[SS]: /case\n\n# Heading\n\nparagraph\n\n[ß]",
