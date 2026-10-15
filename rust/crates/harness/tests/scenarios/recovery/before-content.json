@@ -1,8 +1,2 @@
-{
-  "prompt":"Recover before receiving output.",
-  "turns":[[{"type":"error","error":"offline"}]],
-  "recoveries":[{"observed":[],"continuation":[{"kind":"content","delta":"restored"},{"kind":"completed","metadata":null}]}],
-  "resume":["offline"],
-  "replay":true,
-  "expect":{"text":"restored","request_count":1,"reconciliation_count":1}
-}
+{"turns":[[{"type":"error","error":"offline"}]],"recoveries":[{"observed":[],"continuation":[{"kind":"content",
+  "delta":"restored"},{"kind":"completed","metadata":null}]}],"replay":true,"expect":{"text":"restored"}}

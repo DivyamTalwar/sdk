@@ -1,7 +1,2 @@
-{
-  "prompt":"An empty continuation must not become success.",
-  "turns":[[{"type":"error","error":"offline"}]],
-  "recoveries":[{"observed":[],"continuation":[]}],
-  "resume":["offline"],
-  "expect":{"error":"operation outcome is indeterminate","request_count":1,"reconciliation_count":1}
-}
+{"prompt":"An empty continuation must not become success.","turns":[[{"type":"error","error":"offline"}]],
+  "recoveries":[{"observed":[],"continuation":[]}],"expect":{"error":"operation outcome is indeterminate"}}

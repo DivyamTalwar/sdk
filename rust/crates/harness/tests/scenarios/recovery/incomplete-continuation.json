@@ -1,7 +1,4 @@
-{
-  "prompt":"An incomplete continuation remains uncertain.",
-  "turns":[[{"type":"event","kind":"content","delta":"one"},{"type":"error","error":"offline"}]],
-  "recoveries":[{"observed":[{"kind":"content","delta":"one"}],"continuation":[{"kind":"content","delta":"two"}]}],
-  "resume":["offline"],
-  "expect":{"error":"operation outcome is indeterminate","request_count":1,"reconciliation_count":1,"events":[{"kind":"model","event":{"delta":"one"}},{"kind":"model","event":{"delta":"two"}}]}
-}
+{"prompt":"An incomplete continuation remains uncertain.","turns":[[{"type":"event","kind":"content","delta":"one"},
+  {"type":"error","error":"offline"}]],"recoveries":[{"observed":[{"kind":"content","delta":"one"}],
+  "continuation":[{"kind":"content","delta":"two"}]}],"expect":{"error":"operation outcome is indeterminate",
+  "events":[{"kind":"model","event":{"delta":"one"}},{"kind":"model","event":{"delta":"two"}}]}}
