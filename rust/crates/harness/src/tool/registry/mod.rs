@@ -3,6 +3,8 @@ use super::*;
 /// One tool assembled from three independently replaceable values.
 #[derive(Clone)]
 pub struct Tool {
+    /// Additional lifecycle-hook names declared by this tool's implementation.
+    pub hook_names: &'static [&'static str],
     /// Model-visible contract.
     pub definition: ToolDefinition,
     /// Execution implementation.
@@ -31,6 +33,8 @@ mod merge;
 mod native;
 mod registration;
 mod selection;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 const OWNERSHIP_OVERFLOW: Error = Error::NativeBoundary {

@@ -232,6 +232,7 @@ impl ToolExecutor for Echo {
 }
 fn tool(name: &str) -> Tool {
     Tool {
+        hook_names: &[],
         definition: ToolDefinition {
             name: name.into(),
             revision: "1".into(),

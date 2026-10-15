@@ -4,10 +4,12 @@ mod follow;
 mod heads;
 mod schema;
 mod segment;
+mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use schema::{Channel, Component, FileKey, Owner, Query, SCHEMA, TaskFile, ToolFile};
 
+use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -15,7 +17,6 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// Task-volume failure; reset requires a fresh bounded snapshot.
@@ -23,7 +24,7 @@ use uuid::Uuid;
 pub enum Error {
     /// Underlying durable storage failure.
     #[error(transparent)]
-    Storage(#[from] StreamError),
+    Storage(StreamError),
     /// Noncanonical logical path or identifier.
     #[error("invalid task-volume path")]
     InvalidPath,
@@ -52,6 +53,17 @@ pub enum Error {
 
 /// Task-volume operation result.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<StreamError> for Error {
+    fn from(error: StreamError) -> Self {
+        match error {
+            StreamError::NotFound | StreamError::OutOfRange | StreamError::PrefixNotRetained => {
+                Self::ResetRequired
+            }
+            error => Self::Storage(error),
+        }
+    }
+}
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -150,14 +162,16 @@ struct Index {
 pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
+    // Lock order: index -> provider visibility -> provider state; never held across commit acknowledgement.
     index: Mutex<Index>,
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
-        let initialize = match provider.tail(path.clone()).await {
-            Ok(0) | Err(StreamError::NotFound) => true,
+        let initialize = match provider.watermarks(path.clone()).await {
+            Ok(acyclic_stream::StreamWatermarks { accepted: 0, .. })
+            | Err(StreamError::NotFound) => true,
             Ok(_) => false,
             Err(error) => return Err(error.into()),
         };
@@ -187,7 +201,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 limit: 1,
             })
             .await?;
-        let record = records.next().await.ok_or(Error::InvalidSegment)??;
+        let record = records.next().await.ok_or(Error::ResetRequired)??;
         if record.sequence != 0 {
             return Err(Error::InvalidSegment);
         }
@@ -229,28 +243,24 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if tail < index.next {
             return Err(Error::ResetRequired);
         }
-        let mut anchor = self
-            .provider
-            .read(ReadRequest {
-                path: self.path.clone(),
-                from: index.next - 1,
-                limit: 1,
-            })
-            .await?;
-        let anchor = anchor.next().await.ok_or(Error::ResetRequired)??;
-        if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
-            return Err(Error::ResetRequired);
-        }
-        while index.next < tail {
+        loop {
+            // Anchor and suffix belong to one immutable provider read. Separate
+            // reads could splice a replaced accepted history into the cached files.
             let mut records = self
                 .provider
                 .read(ReadRequest {
                     path: self.path.clone(),
-                    from: index.next,
-                    limit: u32::try_from((tail - index.next).min(acyclic_stream::MAX_ITEMS as u64))
-                        .map_err(|_| Error::LimitExceeded)?,
+                    from: index.next - 1,
+                    limit: u32::try_from(
+                        (tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64),
+                    )
+                    .map_err(|_| Error::LimitExceeded)?,
                 })
                 .await?;
+            let anchor = records.next().await.ok_or(Error::ResetRequired)??;
+            if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
+                return Err(Error::ResetRequired);
+            }
             let before = index.next;
             while let Some(record) = records.next().await {
                 let record = record?;
@@ -258,7 +268,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     break;
                 }
                 if record.sequence != index.next {
-                    return Err(Error::InvalidSegment);
+                    return Err(Error::ResetRequired);
                 }
                 let files = segment::decode(&record.value)?;
                 validate_file(index, &files)?;
@@ -266,11 +276,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 index.commit = record.commit_id;
                 index.next += 1;
             }
+            if index.next == tail {
+                return Ok(());
+            }
             if index.next == before {
-                return Err(Error::InvalidSegment);
+                return Err(Error::ResetRequired);
             }
         }
-        Ok(())
     }
 
     /// Accepts one file event in its own append, without a batching boundary.
@@ -298,9 +310,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let segment = segment::encode(write)?;
         // Decode before durable action, so the accepted event is locally applicable.
         let files = segment::decode(&segment)?;
-        conditions.push(CommitCondition::Tail {
+        conditions.push(CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
+            commit_id: CommitId::from_bytes(expected.commit),
         });
         let request = CommitRequest {
             conditions,
@@ -340,38 +353,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 } else {
                     Err(Error::Conflict(self.generation(&index)))
                 }
-            }
-        }
-    }
-
-    /// Appends one immutable request to the caller-selected inbox stream. A request's
-    /// logical file identity deduplicates retries; provider watermarks confirm persistence.
-    pub async fn submit(
-        &self,
-        task: Component,
-        request: Component,
-        bytes: OwnedBytes,
-    ) -> Result<Generation> {
-        let write = Write::new(
-            FileKey::Task {
-                task,
-                file: TaskFile::Request(request),
-            },
-            bytes,
-        );
-        loop {
-            let generation = {
-                let mut index = self.index.lock().await;
-                self.refresh(&mut index).await?;
-                validate_file(&index, &write)?;
-                if index.files.get(&write.key) == Some(&write) {
-                    return Ok(self.generation(&index));
-                }
-                self.generation(&index)
-            };
-            match self.append(generation, &write).await {
-                Err(Error::Conflict(_)) => continue,
-                result => return result,
             }
         }
     }
