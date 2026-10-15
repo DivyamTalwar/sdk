@@ -12,19 +12,116 @@ fn invalid(error: impl std::fmt::Display) -> Error {
     Error::Invalid(error.to_string())
 }
 
+#[tokio::test(start_paused = true)]
+async fn deadlines_cancel_each_remote_request_once_and_preserve_the_connection() -> Result<()> {
+    let (transport, server) = fixture("timeout").await?;
+    for _ in 0..8 {
+        let operation = OperationId::new();
+        assert!(
+            matches!(transport.rpc(operation, "tools/list", json!({}), None).await,
+            Err(Error::Indeterminate(id)) if id == operation)
+        );
+        assert!(!transport.service.is_closed());
+    }
+    transport
+        .rpc(
+            OperationId::new(),
+            "tools/list",
+            json!({"cursor":"recover"}),
+            None,
+        )
+        .await?;
+    drop(transport);
+    let methods = server.await.map_err(invalid)??;
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| *method == "notifications/cancelled")
+            .count(),
+        8
+    );
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| *method == "tools/list")
+            .count(),
+        9
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn blocked_cancellation_delivery_closes_the_connection_within_the_cleanup_bound() -> Result<()>
+{
+    let (transport, server) = fixture("stalled-cancel").await?;
+    let operation = OperationId::new();
+    assert!(
+        matches!(transport.rpc(operation, "tools/list", json!({}), None).await,
+        Err(Error::Indeterminate(id)) if id == operation)
+    );
+    assert!(transport.service.is_closed());
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cleanup_runs_off_the_async_runtime_thread() -> Result<()> {
+    struct Probe(Option<tokio::sync::oneshot::Sender<std::thread::ThreadId>>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(std::thread::current().id());
+            }
+        }
+    }
+    let caller = std::thread::current().id();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    drop_on_worker(&tokio::runtime::Handle::current(), Probe(Some(sender)));
+    assert_ne!(receiver.await.map_err(invalid)?, caller);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_runtime() -> Result<()>
+{
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(Error::process_io)?;
+    let address = listener.local_addr().map_err(Error::process_io)?;
+    let mut command = Command::new(std::env::current_exe().map_err(Error::process_io)?);
+    command.args(["--exact", "mcp::stdio::native::tests::native_child_is_initialized_once_and_kept_until_the_transport_drops",
+        "--nocapture", "--skip", &format!("mcp-child:{address}")]);
+    let mut future = Box::pin(StdioMcpTransport::spawn(command, 4096, 5000));
+    let (mut stream, _) = tokio::select! {
+        accepted = listener.accept() => accepted.map_err(Error::process_io)?,
+        _ = &mut future => return Err(invalid("MCP child exited before initialization handshake")),
+    };
+    assert_eq!(stream.read_u8().await.map_err(Error::process_io)?, 1);
+    drop(future);
+    let result = tokio::time::timeout(Duration::from_millis(500), stream.read_u8())
+        .await
+        .map_err(invalid)?;
+    assert!(
+        matches!(result, Err(error) if matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset))
+    );
+    Ok(())
+}
+
 async fn fixture(
     mode: &'static str,
 ) -> Result<(
     StdioMcpTransport,
     tokio::task::JoinHandle<Result<Vec<String>>>,
 )> {
-    let (client, server) = tokio::io::duplex(1024);
+    let (client, server) = tokio::io::duplex(if mode == "stalled-cancel" { 1 } else { 1024 });
     let (read, mut write) = tokio::io::split(server);
     let server = tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(read).lines();
         let mut methods = Vec::new();
         let mut calls = 0;
         let mut pending = None;
+        let mut unanswered = None;
         while let Some(line) = lines.next_line().await.map_err(Error::process_io)? {
             let mut request: Value = serde_json::from_str(&line).map_err(invalid)?;
             let method = request
@@ -35,8 +132,25 @@ async fn fixture(
             let id = request.get_mut("id").map(Value::take);
             methods.push(method.clone());
             let Some(id) = id else {
+                if method == "notifications/cancelled" {
+                    assert_eq!(
+                        unanswered.take().as_ref(),
+                        request
+                            .get("params")
+                            .and_then(|params| params.get("requestId"))
+                    );
+                }
                 continue;
             };
+            if method != "initialize" {
+                assert!(
+                    unanswered.is_none(),
+                    "previous server work was not cancelled"
+                );
+                if mode == "stalled-cancel" {
+                    std::future::pending::<()>().await;
+                }
+            }
             let result = match method.as_str() {
                 "initialize" => json!({
                     "protocolVersion":"2025-11-25", "capabilities":{"tools":{}},
@@ -53,28 +167,34 @@ async fn fixture(
                 }
                 _ => return Err(invalid("unexpected fixture method")),
             };
-            let bytes = if method == "initialize" || matches!(mode, "success" | "reverse") {
-                serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "result":result}))
-                    .map_err(invalid)?
-            } else {
-                match mode {
-                    "oversize" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+            let recovered = request["params"]["cursor"] == "recover";
+            let bytes =
+                if method == "initialize" || matches!(mode, "success" | "reverse") || recovered {
+                    serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "result":result}))
+                        .map_err(invalid)?
+                } else {
+                    match mode {
+                        "oversize" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
                         "result":{"tools":[{"name":"large","description":"x".repeat(8192),
                         "inputSchema":{"type":"object"}}]}}))
-                    .map_err(invalid)?,
-                    "malformed" => b"not json".to_vec(),
-                    "rpc-error" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+                        .map_err(invalid)?,
+                        "malformed" => b"not json".to_vec(),
+                        "rpc-error" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
                         "error":{"code":-32602,"message":"invalid fixture cursor"}}))
-                    .map_err(invalid)?,
-                    "wrong-id" => {
-                        serde_json::to_vec(&json!({"jsonrpc":"2.0","id":999,"result":result}))
-                            .map_err(invalid)?
+                        .map_err(invalid)?,
+                        "wrong-id" => {
+                            unanswered = Some(id);
+                            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":999,"result":result}))
+                                .map_err(invalid)?
+                        }
+                        "timeout" => {
+                            unanswered = Some(id);
+                            continue;
+                        }
+                        "closed" => break,
+                        _ => return Err(invalid("unknown fixture mode")),
                     }
-                    "timeout" => continue,
-                    "closed" => break,
-                    _ => return Err(invalid("unknown fixture mode")),
-                }
-            };
+                };
             let first = if mode == "reverse" && method != "initialize" {
                 if pending.is_none() {
                     pending = Some(bytes);
@@ -200,7 +320,10 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
     assert_eq!(result.value["content"][0]["text"], "1");
     let operation = OperationId::from_bytes([3; 16]);
     let result = transport.call(operation, "echo", json!({}), None).await?;
-    assert_eq!(result["content"][0]["text"], "2");
+    assert_eq!(
+        serde_json::to_value(result).map_err(invalid)?["content"][0]["text"],
+        "2"
+    );
     assert!(transport.reconcile(operation, None).await?.is_none());
     assert!(matches!(
         transport
@@ -277,6 +400,15 @@ fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> R
 
 #[tokio::test]
 async fn native_child_is_initialized_once_and_kept_until_the_transport_drops() -> Result<()> {
+    if let Some(address) =
+        std::env::args().find_map(|arg| arg.strip_prefix("mcp-child:").map(str::to_owned))
+    {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).map_err(Error::process_io)?;
+        stream.write_all(&[1]).map_err(Error::process_io)?;
+        stream.read_exact(&mut [0]).map_err(Error::process_io)?;
+        return Err(invalid("MCP fixture was released instead of terminated"));
+    }
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
     let initialize = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}"#;
     let tools = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;

@@ -279,15 +279,14 @@ impl McpToolTransport for HttpMcpTransport {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>> {
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
         Box::pin(async move {
-            self.rpc(
-                operation,
-                "tools/call",
-                json!({"name":name,"arguments":arguments}),
-                context,
-            )
-            .await
+            super::validate_operation_context(operation, context.as_ref())?;
+            let params = json!({"name":name,"arguments":arguments});
+            super::services::validate_params("tools/call", &params, None)?;
+            let request = self.request("POST", request(operation, "tools/call", params)?)?;
+            let response = self.provider.exchange(operation, request).await?;
+            super::services::tool_result(self.response(operation, response, context).await?)
         })
     }
 
@@ -295,16 +294,14 @@ impl McpToolTransport for HttpMcpTransport {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
         Box::pin(async move {
             super::validate_operation_context(operation, context.as_ref())?;
             match self.provider.reconcile(operation).await? {
-                Some(response) => super::services::validate_result(
-                    "tools/call",
-                    self.response(operation, response, None).await?,
-                    None,
-                )
-                .map(Some),
+                Some(response) => {
+                    super::services::tool_result(self.response(operation, response, None).await?)
+                        .map(Some)
+                }
                 None => Ok(None),
             }
         })

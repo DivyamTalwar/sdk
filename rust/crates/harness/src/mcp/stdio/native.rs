@@ -5,12 +5,14 @@ use futures::StreamExt as _;
 use rmcp::{
     RoleClient, ServiceExt as _,
     model::{
-        ClientConfig, ClientJsonRpcMessage, ClientRequest, CustomRequest, Implementation,
-        ProtocolVersion, ServerJsonRpcMessage,
+        CallToolRequest, CallToolRequestParams, ClientConfig, ClientJsonRpcMessage, ClientRequest,
+        Implementation, ProtocolVersion, ServerJsonRpcMessage, ServerResult,
     },
-    service::RunningService,
+    service::{PeerRequestOptions, RunningService, RunningServiceCancellationToken},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{
     process::{Command, Stdio},
     time::Duration,
@@ -25,7 +27,7 @@ use codec::BoundedCodec;
 pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
     timeout: Duration,
-    _process: Option<std::sync::Mutex<ProcessTree>>,
+    _process: Option<ProcessOwner>,
 }
 
 impl StdioMcpTransport {
@@ -35,6 +37,7 @@ impl StdioMcpTransport {
         validate_bounds(maximum_bytes, timeout_ms)?;
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
         let timeout = Duration::from_millis(u64::from(timeout_ms));
+        let runtime = tokio::runtime::Handle::current();
         tokio::time::timeout(timeout, async move {
             let mut process = run_blocking_io(
                 move || {
@@ -42,7 +45,10 @@ impl StdioMcpTransport {
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit());
-                    ProcessTree::spawn(&mut command)
+                    ProcessTree::spawn(&mut command).map(|tree| ProcessOwner {
+                        tree: std::sync::Mutex::new(Some(tree)),
+                        runtime,
+                    })
                 },
                 None,
             )
@@ -50,10 +56,16 @@ impl StdioMcpTransport {
             .await
             .map_err(Error::process_io)?
             .map_err(Error::process_io)?;
-            let input = process
+            let tree = process
+                .tree
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut()
+                .ok_or_else(|| Error::Invalid("MCP child missing".into()))?;
+            let input = tree
                 .take_stdin()
                 .ok_or_else(|| Error::Invalid("MCP stdin pipe missing".into()))?;
-            let output = process
+            let output = tree
                 .take_stdout()
                 .ok_or_else(|| Error::Invalid("MCP stdout pipe missing".into()))?;
             let input = tokio::process::ChildStdin::from_std(input).map_err(Error::process_io)?;
@@ -73,7 +85,7 @@ impl StdioMcpTransport {
         write: W,
         maximum_bytes: u32,
         timeout: Duration,
-        process: Option<ProcessTree>,
+        process: Option<ProcessOwner>,
     ) -> Result<Self>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -109,7 +121,7 @@ impl StdioMcpTransport {
         Ok(Self {
             service,
             timeout,
-            _process: process.map(std::sync::Mutex::new),
+            _process: process,
         })
     }
 
@@ -122,20 +134,52 @@ impl StdioMcpTransport {
         context: Option<ToolContext>,
     ) -> Result<Value> {
         crate::mcp::validate_operation_context(operation, context.as_ref())?;
-        super::services::validate_params(method, &params, None)?;
-        let request = ClientRequest::CustomRequest(CustomRequest::new(method, Some(params)));
-        let result = tokio::time::timeout(self.timeout, self.service.send_request(request))
-            .await
-            .map_err(|_| Error::Indeterminate(operation))?
-            .map_err(|error| match error {
-                rmcp::ServiceError::McpError(error) => {
-                    Error::Invalid(format!("MCP {method}: {error}"))
-                }
-                _ => Error::Indeterminate(operation),
-            })?;
-        let result =
-            serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;
-        super::services::validate_result(method, result, None)
+        let request = requests::request(method, params)?;
+        let result = self.exchange(operation, method, request).await?;
+        requests::result(method, result)
+    }
+
+    async fn exchange(
+        &self,
+        operation: OperationId,
+        method: &str,
+        request: ClientRequest,
+    ) -> Result<ServerResult> {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let mut cancellation = CancelOnDrop {
+            service: Some(self.service.cancellation_token()),
+            process: self._process.as_ref(),
+        };
+        let mut handle = tokio::time::timeout_at(
+            deadline,
+            self.service
+                .send_request_with_option(request, PeerRequestOptions::with_timeout(self.timeout)),
+        )
+        .await
+        .map_err(|_| Error::Indeterminate(operation))?
+        .map_err(|_| Error::Indeterminate(operation))?;
+        handle.options.timeout =
+            Some(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        // rmcp sends notifications/cancelled and retires its pending responder.
+        // If notification delivery stalls, close the connection within a bounded grace period.
+        let result = tokio::time::timeout_at(
+            deadline + self.timeout.min(Duration::from_millis(100)),
+            handle.await_response(),
+        )
+        .await
+        .map_err(|_| Error::Indeterminate(operation))?;
+        if result.is_ok()
+            || matches!(
+                &result,
+                Err(rmcp::ServiceError::Timeout { .. } | rmcp::ServiceError::McpError(_))
+            )
+        {
+            cancellation.service.take();
+        }
+        result.map_err(|error| match error {
+            rmcp::ServiceError::McpError(error) => Error::Invalid(format!("MCP {method}: {error}")),
+            _ => Error::Indeterminate(operation),
+        })
     }
 }
 
@@ -146,15 +190,30 @@ impl McpToolTransport for StdioMcpTransport {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>> {
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
         Box::pin(async move {
-            self.rpc(
-                operation,
-                "tools/call",
-                json!({"name":name, "arguments":arguments}),
-                context,
-            )
-            .await
+            crate::mcp::validate_operation_context(operation, context.as_ref())?;
+            let Value::Object(arguments) = arguments else {
+                return Err(Error::Invalid(
+                    "MCP tool arguments must be an object".into(),
+                ));
+            };
+            let request = CallToolRequest::new(
+                CallToolRequestParams::new(name.to_owned()).with_arguments(arguments),
+            );
+            match self
+                .exchange(
+                    operation,
+                    "tools/call",
+                    ClientRequest::CallToolRequest(request),
+                )
+                .await?
+            {
+                ServerResult::CallToolResult(result) => Ok(result),
+                _ => Err(Error::Invalid(
+                    "MCP tools/call returned another result type".into(),
+                )),
+            }
         })
     }
 
@@ -162,7 +221,7 @@ impl McpToolTransport for StdioMcpTransport {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
         Box::pin(async move {
             crate::mcp::validate_operation_context(operation, context.as_ref())?;
             // A protocol request ID is not a durable server receipt.
@@ -170,6 +229,56 @@ impl McpToolTransport for StdioMcpTransport {
         })
     }
 }
+
+struct CancelOnDrop<'a> {
+    service: Option<RunningServiceCancellationToken>,
+    process: Option<&'a ProcessOwner>,
+}
+impl Drop for CancelOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(token) = self.service.take() {
+            token.cancel();
+            if let Some(process) = self.process {
+                process.close();
+            }
+        }
+    }
+}
+
+struct ProcessOwner {
+    tree: std::sync::Mutex<Option<ProcessTree>>,
+    runtime: tokio::runtime::Handle,
+}
+impl ProcessOwner {
+    fn close(&self) {
+        let tree = self
+            .tree
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(tree) = tree {
+            drop_on_worker(&self.runtime, tree);
+        }
+    }
+}
+impl Drop for ProcessOwner {
+    fn drop(&mut self) {
+        if let Some(tree) = self
+            .tree
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            drop_on_worker(&self.runtime, tree);
+        }
+    }
+}
+
+fn drop_on_worker<T: Send + 'static>(runtime: &tokio::runtime::Handle, value: T) {
+    drop(runtime.spawn_blocking(move || drop(value)));
+}
+
+mod requests;
 
 fn validate_bounds(maximum_bytes: u32, timeout_ms: u32) -> Result<()> {
     if maximum_bytes == 0
