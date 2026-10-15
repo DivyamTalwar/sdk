@@ -1,1 +1,10 @@
-{"turns":["Settled",[{"type":"event","kind":"tool_call","call_id":"goal-write","name":"acyclic.write_file","arguments":{"path":"GOAL.md","text":"Ship the change and all tests\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"Settled"],"settles":2,"policy":{"max_continuations":1},"expect":{"result":{"continuations":1,"requests":3,"settles":2,"actions":["continue","block"]},"view":{"status":"blocked","reason":"Maximum goal continuations reached (limit 1).","markdown":"Ship the change and all tests\n"},"files":{"GOAL.md":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 1).\"\n---\nShip the change and all tests\n"}}}
+{
+  "turns":["Settled",[{"type":"event","kind":"tool_call","call_id":"goal-write","name":"acyclic.write_file","arguments":{"path":"GOAL.md",
+    "text":"Ship the change and all tests\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":"completed",
+    "metadata":null}],"Settled"],
+  "settles":2,
+  "policy":{"max_continuations":1},
+  "expect":{"result":{"continuations":1,"requests":3,"settles":2,"actions":["continue","block"]},"view":{"status":"blocked","reason":
+    "Maximum goal continuations reached (limit 1).","markdown":"Ship the change and all tests\n"},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 1).\"\n---\nShip the change and all tests\n"}}
+}

@@ -5,7 +5,6 @@ use acyclic_harness::{
     conversation::VolumeClass,
     goal::{GoalContinuation, GoalContinuationPolicy, GoalStatus, GoalView},
 };
-use serde::Deserialize;
 
 #[path = "goal_files/parsing.rs"]
 mod parsing;

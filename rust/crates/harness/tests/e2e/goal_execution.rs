@@ -44,11 +44,11 @@ async fn run_turn(
         )
         .into());
     }
-    let requests = provider.requests().len();
+    let dispatches = provider.dispatches();
     let replay = storage
         .run_conversation(bundle, operation, input, Vec::new(), 16)
         .await?;
-    if replay != output || provider.requests().len() != requests {
+    if replay != output || provider.dispatches() != dispatches {
         return Err("replayed goal admission dispatched again or changed output".into());
     }
     Ok(())
