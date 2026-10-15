@@ -15,9 +15,11 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "api_key_tests.rs"]
+mod api_key_tests;
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
-
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]

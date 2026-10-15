@@ -148,9 +148,30 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"done\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1}}\n\n",
         ),
     ] {
-        let (mut provider, _) = provider(adapter, 200);
         let transport = Arc::new(Fixture::new(response));
-        provider.transport = transport.clone();
+        let provider = if adapter == Adapter::Responses {
+            let mut registry = Registry::with_transport(
+                Credentials::explicit(BTreeMap::from([(
+                    "openai".into(),
+                    "fixture-api-key".into(),
+                )])),
+                transport.clone(),
+            );
+            let catalog = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
+            std::fs::write(catalog.path(), include_str!("fixtures/luna-catalog.json"))
+                .map_err(|_| invalid("fixture catalog"))?;
+            registry.load_catalog(catalog.path())?;
+            let selected = registry.resolve("openai/gpt-6-luna")?;
+            assert_eq!(
+                selected.context_capacity(selected.model())?.context_tokens,
+                8192
+            );
+            selected
+        } else {
+            let (mut provider, _) = provider(adapter, 200);
+            provider.transport = transport.clone();
+            provider
+        };
         let model = provider.model().clone();
         let provider = Arc::new(provider);
         let storage_provider = ProviderRef::new(
@@ -169,7 +190,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             )?,
             None,
         )?;
-        let agent = AgentId::new();
+        let agent = AgentId::from_bytes([2; 16]);
         let volume = VolumeRef::new(
             storage_provider,
             "private".into(),
@@ -204,7 +225,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
         let work = work(&CancellationToken::new())?;
         let io = PreparationIo::from_native_work(&work)?;
-        let operation = OperationId::new();
+        let operation = OperationId::from_bytes([1; 16]);
         let payloads = FilesystemContentPublisher::new(
             host.clone(),
             &volume,
@@ -237,7 +258,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             },
             schema: json!({"type":"boolean"}),
             command: WorkflowCommand {
-                operation_id: OperationId::new(),
+                operation_id: OperationId::from_bytes([3; 16]),
                 kind: MODEL_TASK_COMMAND_KIND.into(),
                 payload,
             },

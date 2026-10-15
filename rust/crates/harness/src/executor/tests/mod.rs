@@ -701,6 +701,7 @@ fn echo_tools(
     tools.register(
         (
             crate::tool::Tool {
+                hook_names: &[],
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
                     revision: "1".into(),
