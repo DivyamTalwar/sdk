@@ -101,7 +101,7 @@ fn value(input: &mut Map<String, Value>, fields: &[&str]) -> Result<Option<Value
 fn optional_text(input: &mut Map<String, Value>, fields: &[&str]) -> Result<Option<String>> {
     match value(input, fields)? {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) if !text.is_empty() && !text.contains('\0') => Ok(Some(text)),
+        Some(Value::String(text)) if super::request::valid_text(&text) => Ok(Some(text)),
         _ => Err(Error::Invalid("invalid external hook text field".into())),
     }
 }
@@ -122,7 +122,7 @@ fn failed(input: &mut Map<String, Value>, required: bool) -> Result<bool> {
     }
 }
 
-fn operation(
+pub(super) fn operation(
     host: ExternalHost,
     session: &str,
     caller: &Option<String>,

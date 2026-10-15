@@ -4,6 +4,7 @@ mod catalog;
 mod manifest;
 mod normalize;
 mod request;
+mod volume;
 
 pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
 pub use manifest::{claude_hooks, claude_manifest};

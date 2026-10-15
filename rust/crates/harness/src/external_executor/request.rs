@@ -21,6 +21,38 @@ pub struct ExternalRequest {
     pub action: ExternalAction,
 }
 
+pub(super) fn valid_text(text: &str) -> bool {
+    !text.is_empty() && !text.contains('\0')
+}
+
+impl ExternalRequest {
+    pub(super) fn valid(&self) -> bool {
+        let action = match &self.action {
+            ExternalAction::Attach { workspace } => valid_text(workspace),
+            ExternalAction::RunTool { call_id, name, .. } => {
+                valid_text(call_id) && valid_text(name)
+            }
+            ExternalAction::ToolFinished { call_id, .. } => valid_text(call_id),
+            ExternalAction::Fork { child_id, kind } => {
+                valid_text(child_id) && kind.as_deref().is_none_or(valid_text)
+            }
+            ExternalAction::Join { child_id } => valid_text(child_id),
+            ExternalAction::Detach => true,
+        };
+        action
+            && valid_text(&self.session_id)
+            && self.turn_id.as_deref().is_none_or(valid_text)
+            && self.caller.as_deref().is_none_or(valid_text)
+            && self.operation_id
+                == super::normalize::operation(
+                    self.host,
+                    &self.session_id,
+                    &self.caller,
+                    &self.action,
+                )
+    }
+}
+
 /// Requests consumed by the shared task owner, never by a plugin state machine.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]

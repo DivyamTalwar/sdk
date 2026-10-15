@@ -5,6 +5,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+#[path = "external_hooks/volume.rs"]
+mod volume;
+
 #[derive(Deserialize)]
 struct Scenario {
     host: ExternalHost,
