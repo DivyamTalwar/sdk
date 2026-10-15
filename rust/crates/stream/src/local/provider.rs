@@ -16,6 +16,33 @@ impl StreamProvider for LocalStream {
         self.visible(self.inner.provider.bounds(path)).await?
     }
 
+    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        let accepted = self.inner.provider.tail(path.clone()).await?;
+        let synced = {
+            let journal = self
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            journal.synced >= journal.appended
+        };
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails.entry(path).or_default();
+        if synced {
+            *durable = (*durable).max(accepted);
+        }
+        Ok(crate::StreamWatermarks {
+            accepted,
+            durable: *durable,
+        })
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.append",
@@ -101,7 +128,10 @@ impl StreamProvider for LocalStream {
                 done: false,
                 span: span.clone(),
             };
-            if let Err(error) = self.tail(state.path.clone()).await {
+            if let Err(error) = self
+                .accepted(self.inner.provider.tail(state.path.clone()))
+                .await?
+            {
                 state.failed(&error);
                 return Err(error);
             }
@@ -111,7 +141,7 @@ impl StreamProvider for LocalStream {
                         loop {
                             if let Some(record) = state
                                 .provider
-                                .visible(
+                                .accepted(
                                     state
                                         .provider
                                         .inner

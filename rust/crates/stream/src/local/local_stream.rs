@@ -135,6 +135,7 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 synced: watch::channel(0_u64).0,
                 changed,
+                durable_tails: Mutex::new(Default::default()),
                 poisoned: AtomicBool::new(false),
             }),
             work: None,
@@ -363,6 +364,14 @@ impl LocalStream {
         })?
     }
 
+    /// Observes accepted publications without joining their durability wait.
+    async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        Ok(read.await)
+    }
+
     /// Runs one read under shared visibility, then returns its result once
     async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
         self.check_available()?;
@@ -377,6 +386,6 @@ impl LocalStream {
     }
 
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.visible(self.inner.provider.read(request)).await?
+        self.accepted(self.inner.provider.read(request)).await?
     }
 }

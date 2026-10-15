@@ -17,6 +17,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
+
+[[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
 required-features = ["filesystem-local"]
@@ -118,7 +122,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true
 proptest.workspace = true
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
 tokio.workspace = true
 
