@@ -68,6 +68,10 @@ impl<P: StreamProvider> Session<P> {
                 && let Some(old) = self.pending.remove(index)
             {
                 self.pending_bytes -= old.frame.encoded_len();
+                self.channels
+                    .get_mut(&identity.channel_id)
+                    .ok_or(StreamError::Unavailable)?
+                    .pending -= 1;
             }
         }
         if self.pending_bytes.saturating_add(frame.encoded_len()) > self.limits.pending_bytes
@@ -77,6 +81,11 @@ impl<P: StreamProvider> Session<P> {
         }
         self.pending_bytes += frame.encoded_len();
         self.pending.push_back(Pending { frame, key });
+        self.channels
+            .get_mut(&identity.channel_id)
+            .ok_or(StreamError::Unavailable)?
+            .pending += 1;
+        self.refresh(Some(identity.channel_id));
         Ok(())
     }
 
@@ -141,10 +150,12 @@ impl<P: StreamProvider> Session<P> {
                 .get_mut(&pending.frame.channel_id)
                 .ok_or(StreamError::Unavailable)?;
             channel.credit = local;
+            channel.pending -= 1;
             if let Some(Body::Data(data)) = &pending.frame.body {
                 channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
             }
             self.finish_if_drained(pending.frame.channel_id);
+            self.refresh(Some(pending.frame.channel_id));
             return Ok(Some(pending.frame));
         }
         Ok(None)

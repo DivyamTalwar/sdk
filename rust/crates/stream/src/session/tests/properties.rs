@@ -4,6 +4,7 @@ use proptest::prelude::*;
 
 fn empty_session(latest: bool) -> Session<MemoryStream> {
     let (cancel, _) = oneshot::channel();
+    let (enabled, _) = watch::channel(false);
     Session {
         provider: Arc::new(MemoryStream::default()),
         limits: Limits::default(),
@@ -16,6 +17,8 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
             Channel {
                 generation: 1,
                 latest,
+                enabled,
+                pending: 0,
                 credit: wire::SessionWindow::default(),
                 sent: cursor(0),
                 applied: cursor(0),
@@ -29,6 +32,7 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
         controls: VecDeque::new(),
         pending: VecDeque::new(),
         pending_bytes: 0,
+        readiness: (false, false, false),
     }
 }
 

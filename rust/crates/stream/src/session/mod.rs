@@ -11,9 +11,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
+mod admission;
 mod client;
 mod interest;
 mod queue;
@@ -46,6 +47,8 @@ impl Default for Limits {
 struct Channel {
     generation: u64,
     latest: bool,
+    pending: usize,
+    enabled: watch::Sender<bool>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
@@ -76,6 +79,7 @@ struct Session<P> {
     controls: VecDeque<wire::SessionFrame>,
     pending: VecDeque<Pending>,
     pending_bytes: usize,
+    readiness: (bool, bool, bool),
 }
 
 /// Opens one bidirectional node session over the canonical provider.
@@ -107,6 +111,7 @@ pub fn serve<P: StreamProvider>(
         controls: VecDeque::new(),
         pending: VecDeque::new(),
         pending_bytes: 0,
+        readiness: (false, false, false),
     };
     Ok(stream::try_unfold(session, |mut session| async move {
         loop {
@@ -116,15 +121,7 @@ pub fn serve<P: StreamProvider>(
             if let Some(frame) = session.ready()? {
                 return Ok(Some((frame, session)));
             }
-            // Reserve the largest record frame before polling a lossless source.
-            // Full queues stop source reads; control grants/removals remain live.
-            let can_read = session.pending.len() < session.limits.pending_frames
-                && session.pending_bytes
-                    <= session
-                        .limits
-                        .pending_bytes
-                        .saturating_sub(crate::MAX_RECORD_BYTES + 128);
-            if session.sources.is_empty() || !can_read {
+            if session.sources.is_empty() {
                 let Some(frame) = session.incoming.next().await else {
                     return Ok(None);
                 };
@@ -206,6 +203,7 @@ impl<P: StreamProvider> Session<P> {
                         .map_err(|_| StreamError::Capacity)?,
                 }),
             ));
+            self.refresh(None);
             return Ok(());
         }
         if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
@@ -223,11 +221,15 @@ impl<P: StreamProvider> Session<P> {
                 self.interest(interest)
             }
             Body::Window(grant) if input.channel_id == 0 && input.generation == 0 => {
-                wire_codec::session::grant_credit(&mut self.credit, &grant)
+                wire_codec::session::grant_credit(&mut self.credit, &grant)?;
+                self.refresh(None);
+                Ok(())
             }
             Body::Window(grant) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
-                wire_codec::session::grant_credit(&mut channel.credit, &grant)
+                wire_codec::session::grant_credit(&mut channel.credit, &grant)?;
+                self.refresh(Some(input.channel_id));
+                Ok(())
             }
             Body::Ack(ack) => {
                 let channel = self.channel(input.channel_id, input.generation)?;

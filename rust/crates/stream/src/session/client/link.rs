@@ -42,26 +42,7 @@ impl Pool {
                     Some(channel) => channel,
                     None => connect(node).await?,
                 };
-                for attempt in 0..3 {
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(1),
-                        open_link(
-                            channel.clone(),
-                            &name,
-                            identity.clone(),
-                            authorization.clone(),
-                        ),
-                    )
-                    .await
-                    .unwrap_or(Err(StreamError::Unavailable));
-                    match result {
-                        Err(StreamError::Unavailable) if attempt < 2 => {
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                        }
-                        result => return result,
-                    }
-                }
-                Err(StreamError::Unavailable)
+                open_link(channel, &name, identity, authorization).await
             }
             .await;
             (name, outcome)
@@ -211,6 +192,34 @@ impl Pool {
 }
 
 async fn open_link(
+    channel: TransportChannel,
+    destination: &str,
+    identity: Bytes,
+    authorization: MetadataValue<Ascii>,
+) -> Result<Ready, StreamError> {
+    for attempt in 0..3 {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            handshake(
+                channel.clone(),
+                destination,
+                identity.clone(),
+                authorization.clone(),
+            ),
+        )
+        .await
+        .unwrap_or(Err(StreamError::Unavailable));
+        match result {
+            Err(StreamError::Unavailable) if attempt < 2 => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
+    Err(StreamError::Unavailable)
+}
+
+async fn handshake(
     channel: TransportChannel,
     destination: &str,
     identity: Bytes,

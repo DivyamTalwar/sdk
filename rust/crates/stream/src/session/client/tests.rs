@@ -12,6 +12,7 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 struct Counts {
     connections: AtomicUsize,
     sessions: AtomicUsize,
+    sent: AtomicUsize,
     follows: AtomicUsize,
     actors: AtomicUsize,
     acknowledgements: AtomicUsize,
@@ -24,6 +25,7 @@ struct Host<P> {
     counts: Arc<Counts>,
     node: String,
     controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
+    withhold_welcome: bool,
 }
 #[tonic::async_trait]
 impl<P: StreamProvider> StreamSessionService for Host<P> {
@@ -40,6 +42,19 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             Some("Bearer fixture")
         );
         self.counts.sessions.fetch_add(1, Ordering::Relaxed);
+        if self.withhold_welcome {
+            let input = request.into_inner();
+            return Ok(Reply::new(
+                stream::unfold(input, |mut input| async move {
+                    while input.message().await.ok().flatten().is_some() {}
+                    None::<(
+                        Result<wire::SessionFrame, Status>,
+                        Streaming<wire::SessionFrame>,
+                    )>
+                })
+                .boxed(),
+            ));
+        }
         let counts = Arc::clone(&self.counts);
         let input = request
             .into_inner()
@@ -97,9 +112,19 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         let controls = stream::unfold(self.controls.subscribe(), |mut receiver| async move {
             receiver.recv().await.ok().map(|frame| (frame, receiver))
         });
+        let sent = Arc::clone(&self.counts);
         Ok(Reply::new(
             stream::select(
-                output.map(|item| item.map_err(|error| Status::failed_precondition(error.code()))),
+                output.map(move |item| {
+                    if item
+                        .as_ref()
+                        .is_ok_and(|value| matches!(value.body, Some(Body::Data(_))))
+                    {
+                        sent.sent.fetch_add(1, Ordering::Relaxed);
+                        sent.changed.notify_one();
+                    }
+                    item.map_err(|error| Status::failed_precondition(error.code()))
+                }),
                 controls,
             )
             .boxed(),
@@ -116,6 +141,13 @@ impl Fixture {
     async fn open<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::configured(provider, node, false).await
+    }
+    async fn configured<P: StreamProvider>(
+        provider: Arc<P>,
+        node: &str,
+        withhold_welcome: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -137,6 +169,7 @@ impl Fixture {
             counts: Arc::clone(&counts),
             node: node.into(),
             controls: controls.clone(),
+            withhold_welcome,
         };
         let server = tokio::spawn(
             tonic::transport::Server::builder()
@@ -486,5 +519,60 @@ async fn translating_follow_releases_credit_without_application_acknowledgements
     }
     assert_eq!(fixture.counts.acknowledgements.load(Ordering::Relaxed), 0);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
+    let memory = Arc::new(MemoryStream::default());
+    append(&memory, "unread", 1).await?;
+    append(&memory, "healthy", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
+    let client = fixture.client()?;
+    let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
+    for sequence in 1..=crate::MAX_ITEMS + 8 {
+        let before = fixture.counts.sent.load(Ordering::Relaxed);
+        let unread = client.follow(StreamPath::new("unread")?, 0).await?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let changed = fixture.counts.changed.notified();
+                if fixture.counts.sent.load(Ordering::Relaxed) > before {
+                    break;
+                }
+                changed.await;
+            }
+        })
+        .await?;
+        // This marker follows the unread data on the same physical response.
+        // Consuming it proves the earlier delivery is buffered in the client.
+        append(&memory, "healthy", 1).await?;
+        assert_eq!(next(&mut healthy).await?.sequence, sequence as u64);
+        drop(unread);
+    }
+    append(&memory, "healthy", 1).await?;
+    assert_eq!(
+        next(&mut healthy).await?.sequence,
+        (crate::MAX_ITEMS + 9) as u64
+    );
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResult {
+    let fixture = Fixture::configured(Arc::new(MemoryStream::default()), "silent", true).await?;
+    let client = fixture.client()?;
+    let started = tokio::time::Instant::now();
+    let one = StreamPath::new("one")?;
+    let two = StreamPath::new("two")?;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(client.follow(one, 0), client.follow(two, 0))
+    })
+    .await?;
+    assert!(matches!(first, Err(StreamError::Unavailable)));
+    assert!(matches!(second, Err(StreamError::Unavailable)));
+    assert!(started.elapsed() >= Duration::from_secs(3));
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert!(fixture.counts.sessions.load(Ordering::Relaxed) >= 3);
     Ok(())
 }

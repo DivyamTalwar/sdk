@@ -154,15 +154,20 @@ impl StreamProvider for Client {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.sessions
-            .get_or_try_init(|| {
+        // Include waiting behind another initializer in this call's deadline.
+        let session = tokio::time::timeout(
+            Duration::from_secs(4),
+            self.sessions.get_or_try_init(|| {
                 crate::session::Client::open(
                     self.channel.clone(),
                     self.authorization.clone(),
                     self.session_ca.clone(),
                 )
-            })
-            .await?
+            }),
+        )
+        .await
+        .map_err(|_| StreamError::Unavailable)??;
+        session
             .follow_with_ack(path, from, self.acknowledge_deliveries)
             .await
     }

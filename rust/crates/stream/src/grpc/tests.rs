@@ -338,24 +338,28 @@ async fn persistent_unknown_expires_at_the_operation_deadline() -> TestResult {
 
 #[tokio::test]
 async fn retry_attempts_record_independent_spans() -> TestResult {
+    use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     let captured = acyclic_grpc_observability::tests::Capture::default();
-    let _default = tracing::subscriber::set_default(
-        tracing_subscriber::Registry::default().with(captured.clone()),
-    );
-    let client = unconnected()?;
-    let mut first = true;
-    let response = client
-        .unary(ATTEMPT_TIMEOUT, (), |_, _| {
-            let result = if std::mem::take(&mut first) {
-                Err(Status::unavailable("retry"))
-            } else {
-                Ok(Response::new(()))
-            };
-            Box::pin(async move { result })
-        })
-        .await?;
-    decode_response(response, Ok)?;
+    let subscriber = tracing_subscriber::Registry::default().with(captured.clone());
+    async {
+        let client = unconnected()?;
+        let mut first = true;
+        let response = client
+            .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                let result = if std::mem::take(&mut first) {
+                    Err(Status::unavailable("retry"))
+                } else {
+                    Ok(Response::new(()))
+                };
+                Box::pin(async move { result })
+            })
+            .await?;
+        decode_response(response, Ok)?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .with_subscriber(subscriber)
+    .await?;
     let attempts = captured.all("acyclic.stream.grpc.call");
     assert_eq!(attempts.len(), 2);
     for (attempt, (number, outcome, code)) in
@@ -504,5 +508,46 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
         );
     }
     assert_eq!(result.last(), Some(&Err(StreamError::Unavailable)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let first = acyclic_grpc_observability::tests::Capture::default();
+    let second = acyclic_grpc_observability::tests::Capture::default();
+    let capture = |captured: acyclic_grpc_observability::tests::Capture| async move {
+        async {
+            let client = unconnected()?;
+            let mut first = true;
+            let response = client
+                .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                    let result = if std::mem::take(&mut first) {
+                        Err(Status::unavailable("retry"))
+                    } else {
+                        Ok(Response::new(()))
+                    };
+                    Box::pin(async move {
+                        tokio::task::yield_now().await;
+                        result
+                    })
+                })
+                .await?;
+            decode_response(response, Ok)?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        }
+        .with_subscriber(tracing_subscriber::Registry::default().with(captured))
+        .await
+    };
+    let (one, two) = tokio::join!(capture(first.clone()), capture(second.clone()));
+    one?;
+    two?;
+    for capture in [first, second] {
+        let attempts = capture.all("acyclic.stream.grpc.call");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].get("attempt").map(String::as_str), Some("1"));
+        assert_eq!(attempts[1].get("attempt").map(String::as_str), Some("2"));
+    }
     Ok(())
 }

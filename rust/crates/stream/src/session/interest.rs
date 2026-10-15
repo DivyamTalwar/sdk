@@ -63,6 +63,7 @@ impl<P: StreamProvider> Session<P> {
             }
             let path = StreamPath::new(follow.path)?;
             let (cancel, cancelled) = oneshot::channel();
+            let (enabled, ready) = watch::channel(false);
             let identity = channel;
             let source = follow_source(
                 Arc::clone(&self.provider),
@@ -70,12 +71,15 @@ impl<P: StreamProvider> Session<P> {
                 resume.next,
                 identity,
                 cancelled,
+                ready,
             );
             opened.push((
                 identity,
                 Channel {
                     generation: identity.generation,
                     latest: delivery == wire::SessionDelivery::Latest,
+                    pending: 0,
+                    enabled,
                     credit: wire::SessionWindow::default(),
                     sent: resume.clone(),
                     applied: resume,
@@ -92,6 +96,7 @@ impl<P: StreamProvider> Session<P> {
             self.remove(identity.channel_id);
             self.channels.insert(identity.channel_id, channel);
             self.sources.push(source);
+            self.refresh(Some(identity.channel_id));
         }
         self.revision = interest.revision;
         self.controls.push_back(frame(
@@ -113,6 +118,7 @@ impl<P: StreamProvider> Session<P> {
             .iter()
             .map(|pending| pending.frame.encoded_len())
             .sum();
+        self.refresh(None);
     }
 }
 
@@ -123,6 +129,7 @@ fn follow_source<P: StreamProvider>(
     from: u64,
     identity: wire::SessionChannel,
     cancelled: oneshot::Receiver<()>,
+    enabled: watch::Receiver<bool>,
 ) -> Source {
     let state = (
         provider,
@@ -131,10 +138,11 @@ fn follow_source<P: StreamProvider>(
         None::<crate::RecordStream>,
         false,
         0_u8,
+        enabled,
     );
     stream::try_unfold(
         state,
-        |(provider, path, mut next, mut records, mut opened, mut ended)| async move {
+        |(provider, path, mut next, mut records, mut opened, mut ended, mut enabled)| async move {
             loop {
                 if records.is_none() {
                     records = Some(provider.follow(path.clone(), next).await?);
@@ -142,17 +150,17 @@ fn follow_source<P: StreamProvider>(
                         opened = true;
                         return Ok(Some((
                             Event::Opened,
-                            (provider, path, next, records, opened, ended),
+                            (provider, path, next, records, opened, ended, enabled),
                         )));
                     }
                 }
-                match records
-                    .as_mut()
-                    .ok_or(StreamError::Unavailable)?
-                    .next()
-                    .await
+                match admission::next_record(
+                    records.as_mut().ok_or(StreamError::Unavailable)?,
+                    &mut enabled,
+                )
+                .await?
                 {
-                    Some(Ok(record)) => {
+                    Some(record) => {
                         next = record
                             .sequence
                             .checked_add(1)
@@ -160,10 +168,9 @@ fn follow_source<P: StreamProvider>(
                         ended = 0;
                         return Ok(Some((
                             Event::Record(record),
-                            (provider, path, next, records, opened, ended),
+                            (provider, path, next, records, opened, ended, enabled),
                         )));
                     }
-                    Some(Err(error)) => return Err(error),
                     None => {
                         // EOF is transport recovery, never an idle record wakeup.
                         // Keep already queued records on this generation intact.

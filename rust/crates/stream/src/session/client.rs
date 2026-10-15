@@ -12,6 +12,9 @@ use tonic::{
     transport::Channel as TransportChannel,
 };
 
+mod credit;
+use credit::{Credit, Released};
+type ReleaseSender = mpsc::UnboundedSender<Released>;
 mod link;
 mod pool;
 mod progress;
@@ -46,10 +49,8 @@ pub struct Client {
 }
 struct Delivery {
     record: crate::Record,
-    bytes: u64,
-    epoch: u64,
-    node: String,
     generation: u64,
+    credit: Credit,
 }
 enum Command {
     Open {
@@ -59,13 +60,6 @@ enum Command {
         progress: Arc<Progress>,
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
-    },
-    Consumed {
-        id: u64,
-        node: String,
-        bytes: u64,
-        epoch: u64,
-        generation: u64,
     },
 }
 struct Route {
@@ -106,6 +100,8 @@ struct Pool {
     next_link: u64,
     commands: mpsc::Receiver<Command>,
     removed: mpsc::UnboundedReceiver<u64>,
+    released: mpsc::UnboundedReceiver<Released>,
+    release_sender: ReleaseSender,
 }
 impl Client {
     pub(crate) async fn open(
@@ -131,6 +127,7 @@ impl Client {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         // Drop produces at most one removal per admitted channel; it must never block.
         let (removed, removals) = mpsc::unbounded_channel();
+        let (release_sender, released) = mpsc::unbounded_channel();
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
@@ -146,6 +143,8 @@ impl Client {
             next_link: 1,
             commands: receiver,
             removed: removals,
+            released,
+            release_sender,
         };
         pool.home = pool.add_link(channel, "").await?;
         tokio::spawn(async move {
@@ -203,23 +202,12 @@ impl Client {
                     .recv()
                     .await
                     .ok_or(StreamError::Unavailable)??;
-                cursor
-                    .client
-                    .commands
-                    .send(Command::Consumed {
-                        id: cursor.id,
-                        node: delivery.node,
-                        bytes: delivery.bytes,
-                        epoch: delivery.epoch,
-                        generation: delivery.generation,
-                    })
-                    .await
-                    .map_err(|_| StreamError::Unavailable)?;
-                // Advance only at the yield boundary; cancellation of the send
-                // above cannot mark an undelivered record as applied.
+                // Delivery disposal returns capacity on every exit, including
+                // stale-generation suppression and cancellation of the cursor.
                 let fresh = cursor
                     .progress
                     .consume(delivery.generation, delivery.record.sequence)?;
+                drop(delivery.credit);
                 if fresh {
                     return Ok(Some((delivery.record, cursor)));
                 }

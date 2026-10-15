@@ -5,6 +5,7 @@ impl Pool {
         loop {
             tokio::select! {
                 command = self.commands.recv() => match command { Some(command) => self.command(command).await?, None => return Ok(()) },
+                released = self.released.recv() => { if let Some(released) = released { self.released(released).await?; } },
                 id = self.removed.recv() => match id { Some(id) => self.remove(id).await?, None => return Ok(()) },
                 ready = self.dials.next(), if !self.dials.is_empty() => {
                     let (node,result) = ready.ok_or(StreamError::Unavailable)?;
@@ -80,44 +81,41 @@ impl Pool {
                     Ok(())
                 }
             }
-            Command::Consumed {
-                id,
-                node,
-                bytes,
-                epoch,
-                generation,
-            } => {
-                self.release(&node, epoch, bytes).await?;
-                let Some(route) = self.routes.get_mut(&id) else {
-                    return Ok(());
-                };
-                let owner = route.node.clone();
-                let current = route.generation;
-                if node == owner
-                    && generation == current
-                    && route.acknowledge
-                    && route.credit.frames == 0
-                {
-                    let applied = route.progress.next()?;
-                    if applied <= route.acknowledged {
-                        return self.grant(id).await;
-                    }
-                    route.acknowledged = applied;
-                    self.send(
-                        &owner,
-                        frame(
-                            id,
-                            current,
-                            Body::Ack(wire::SessionAck {
-                                applied: Some(cursor(applied)),
-                            }),
-                        ),
-                    )
-                    .await?;
-                }
-                self.grant(id).await
-            }
         }
+    }
+    async fn released(&mut self, released: Released) -> Result<(), StreamError> {
+        let Released {
+            id,
+            node,
+            bytes,
+            epoch,
+            generation,
+        } = released;
+        self.release(&node, epoch, bytes).await?;
+        let Some(route) = self.routes.get_mut(&id) else {
+            return Ok(());
+        };
+        let owner = route.node.clone();
+        let current = route.generation;
+        if node == owner && generation == current && route.acknowledge && route.credit.frames == 0 {
+            let applied = route.progress.next()?;
+            if applied <= route.acknowledged {
+                return self.grant(id).await;
+            }
+            route.acknowledged = applied;
+            self.send(
+                &owner,
+                frame(
+                    id,
+                    current,
+                    Body::Ack(wire::SessionAck {
+                        applied: Some(cursor(applied)),
+                    }),
+                ),
+            )
+            .await?;
+        }
+        self.grant(id).await
     }
     async fn receive(&mut self, node: &str, input: wire::SessionFrame) -> Result<(), StreamError> {
         let id = input.channel_id;
@@ -248,20 +246,27 @@ impl Pool {
             return Err(StreamError::Unavailable);
         }
         route.received = after.next;
-        if route.records.is_closed() {
-            return self.remove(id).await;
+        let delivery = Delivery {
+            record,
+            generation,
+            credit: Credit::new(
+                self.release_sender.clone(),
+                Released {
+                    id,
+                    node: node.into(),
+                    bytes: length,
+                    epoch,
+                    generation,
+                },
+            ),
+        };
+        match route.records.try_send(Ok(delivery)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id).await,
+            Err(mpsc::error::TrySendError::Full(_)) => Err(StreamError::Capacity),
         }
-        route
-            .records
-            .try_send(Ok(Delivery {
-                record,
-                bytes: length,
-                epoch,
-                node: node.into(),
-                generation,
-            }))
-            .map_err(|_| StreamError::Capacity)
     }
+
     fn fail_node(&mut self, node: &str, error: &StreamError) {
         let ids = self
             .routes
