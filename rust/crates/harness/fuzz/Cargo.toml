@@ -51,3 +51,11 @@ path = "fuzz_targets/mcp_executable.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "notification_scenario"
+path = "fuzz_targets/notification_scenario.rs"
+required-features = ["scenarios"]
+test = false
+doc = false
+bench = false

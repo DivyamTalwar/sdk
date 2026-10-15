@@ -6,6 +6,8 @@ mod execution;
 mod goal_execution;
 mod goals;
 mod matchers;
+mod notification_history;
+mod notifications;
 mod scenario;
 use acyclic_harness::context::CompactionPolicy;
 use execution::run;

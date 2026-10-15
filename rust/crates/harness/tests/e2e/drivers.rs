@@ -1,4 +1,4 @@
-use super::{TestResult, composer::Composer, execution, scenario};
+use super::{TestResult, composer::Composer, execution, notifications::Notifications, scenario};
 use serde_json::Value;
 
 pub(super) async fn run(mut value: Value) -> TestResult {
@@ -13,6 +13,7 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("goal-executor") => {
             super::goal_execution::run(super::goals::GoalCase::parse(value)?).await
         }
+        Some("notifications") => Notifications::parse(value)?.run(),
         _ => Err("unknown scenario driver".into()),
     }
 }
