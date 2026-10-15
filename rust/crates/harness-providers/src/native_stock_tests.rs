@@ -190,7 +190,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             )?,
             None,
         )?;
-        let agent = AgentId::new();
+        let agent = AgentId::from_bytes([2; 16]);
         let volume = VolumeRef::new(
             storage_provider,
             "private".into(),
@@ -225,7 +225,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
         let work = work(&CancellationToken::new())?;
         let io = PreparationIo::from_native_work(&work)?;
-        let operation = OperationId::new();
+        let operation = OperationId::from_bytes([1; 16]);
         let payloads = FilesystemContentPublisher::new(
             host.clone(),
             &volume,
@@ -258,7 +258,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             },
             schema: json!({"type":"boolean"}),
             command: WorkflowCommand {
-                operation_id: OperationId::new(),
+                operation_id: OperationId::from_bytes([3; 16]),
                 kind: MODEL_TASK_COMMAND_KIND.into(),
                 payload,
             },
