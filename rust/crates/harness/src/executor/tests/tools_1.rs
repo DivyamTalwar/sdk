@@ -84,7 +84,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     ));
     assert_eq!(journal.0.lock().unwrap().len(), retained);
     assert_eq!(journal.3.load(Ordering::SeqCst), reads);
-    assert_eq!(model.request_count(), 1);
+    assert_eq!(model.requests().len(), 1);
     let result = executor.execute(input.clone(), &journal).await?;
     assert_eq!(result.text, "done");
     let reads = journal.3.load(Ordering::SeqCst);
@@ -95,7 +95,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     assert_eq!(executor.execute(input, &journal).await?, result);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     assert_eq!(tool.reconciles.load(Ordering::SeqCst), 1);
-    assert_eq!(model.request_count(), 2);
+    assert_eq!(model.requests().len(), 2);
     Ok(())
 }
 
@@ -179,7 +179,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
         assert!(
             matches!(executor.execute(input.clone(), &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
         );
-        assert_eq!(model.request_count(), 1);
+        assert_eq!(model.requests().len(), 1);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
         let (id, request) = {
             let interactions = journal.2.lock().unwrap();
@@ -205,7 +205,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 executor.execute_progress(input.clone(), &journal).await?,
                 ExecutionProgress::Ready(TurnOutput { steps: 2, .. })
             ));
-            assert_eq!(model.request_count(), 2);
+            assert_eq!(model.requests().len(), 2);
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
             executor.execute(input, &journal).await?;
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
@@ -214,7 +214,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 executor.execute_progress(input.clone(), &journal).await?,
                 ExecutionProgress::Rejected(crate::InteractionRejection::Denied)
             ));
-            assert_eq!(model.request_count(), 1);
+            assert_eq!(model.requests().len(), 1);
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
             let reference = stage_json(
                 &journal,
@@ -406,7 +406,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         first.bytes()
     );
     assert_eq!(unavailable.0.lock().unwrap().len(), records.len());
-    assert_eq!(model.request_count(), 2);
+    assert_eq!(model.requests().len(), 2);
     assert_eq!(tool.0.load(Ordering::SeqCst), 2);
     Ok(())
 }
@@ -447,7 +447,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
             .await
             .is_err()
     );
-    assert_eq!(model.request_count(), 0);
+    assert_eq!(model.requests().len(), 0);
     let first = executor.execute(input.clone(), &journal).await?;
     let completed_prefix = executor
         .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
@@ -492,7 +492,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
     assert!(replay_context.is_empty());
     let replayed = executor.execute(input.clone(), &journal).await?;
     assert_eq!(first, replayed);
-    assert_eq!(model.request_count(), 2);
+    assert_eq!(model.requests().len(), 2);
     assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
     let reopened = Journal(
         Mutex::new(journal.0.lock().unwrap().clone()),
@@ -578,7 +578,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         executor.execute(input, &reopened).await,
         Err(Error::NotFound(_))
     ));
-    assert_eq!(model.request_count(), 2);
+    assert_eq!(model.requests().len(), 2);
     assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
     let durable = serde_json::to_string(&*journal.0.lock().unwrap())
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -688,7 +688,7 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
                 && matches!(right, Err(Error::Indeterminate(_)))
     );
     let _ = executor.execute(input, &journal).await?;
-    assert_eq!(model.request_count(), 2);
+    assert_eq!(model.requests().len(), 2);
     assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -733,7 +733,7 @@ async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
         Err(Error::Invalid(_))
     ));
     assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
-    assert_eq!(model.request_count(), 1);
+    assert_eq!(model.requests().len(), 1);
     Ok(())
 }
 

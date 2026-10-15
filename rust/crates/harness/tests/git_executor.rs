@@ -230,3 +230,32 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
     }
     Ok(())
 }
+
+#[test]
+fn native_directory_rejects_foreign_cleanup_with_a_permission_error() -> Result<()> {
+    use acyclic_harness::{Error, filesystem::NativeDirectory};
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("managed");
+    let child = root.join("child");
+    let foreign = temp.path().join("foreign");
+    std::fs::create_dir_all(&child)?;
+    std::fs::create_dir(&foreign)?;
+    let directory = NativeDirectory(&root);
+    assert!(matches!(
+        directory.remove(&foreign),
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(foreign.is_dir());
+    directory.remove(&child)?;
+    assert!(!child.exists());
+    let operation = OperationId::new();
+    assert_eq!(
+        directory.publication_directory(operation)?.parent(),
+        Some(directory.publication_root()?.as_path()),
+    );
+    assert!(matches!(
+        NativeDirectory(std::path::Path::new("/")).publication_root(),
+        Err(Error::Invalid(_)),
+    ));
+    Ok(())
+}

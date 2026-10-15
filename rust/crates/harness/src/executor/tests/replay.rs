@@ -169,7 +169,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(model.request_count(), 0);
+    assert_eq!(model.requests().len(), 0);
     let _ = base.execute(input.clone(), &journal).await?;
     assert!(
         model
