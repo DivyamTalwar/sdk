@@ -69,6 +69,9 @@ pub enum ScriptedEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedReconciliation {
+    /// Explicitly permits recovery on a fresh provider that never generated this dispatch.
+    #[serde(default)]
+    pub orphan: bool,
     /// Exact durable prefix that the executor must supply.
     pub observed: Vec<ModelEvent>,
     /// Remaining events, or `None` when the provider cannot recover the request.
@@ -154,24 +157,14 @@ impl ScriptedModelProvider {
         self.lock().turns.len()
     }
 
-    /// Number of recorded requests without copying their context.
-    pub fn request_count(&self) -> usize {
-        self.lock().requests.len()
-    }
-
     /// Snapshots interrupted dispatches submitted for reconciliation.
     pub fn reconciliations(&self) -> Vec<ModelDispatch> {
         self.lock().reconciliations.clone()
     }
 
-    /// Number of reconciliation calls without copying their dispatches.
-    pub fn reconciliation_count(&self) -> usize {
-        self.lock().reconciliations.len()
-    }
-
-    /// Number of recovery replies not yet consumed.
-    pub fn remaining_reconciliations(&self) -> usize {
-        self.lock().recoveries.len()
+    /// Snapshots the scripted recovery replies that have not been consumed.
+    pub fn recoveries(&self) -> Vec<ScriptedReconciliation> {
+        self.lock().recoveries.iter().cloned().collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -247,6 +240,13 @@ impl ModelProvider for ScriptedModelProvider {
                     "scripted reconciliation dispatch mismatch".into(),
                 ));
             }
+            if !state.dispatches.contains(&dispatch)
+                && !state.recoveries.front().is_some_and(|reply| reply.orphan)
+            {
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch was not generated".into(),
+                ));
+            }
             let reply = state
                 .recoveries
                 .pop_front()
@@ -266,16 +266,6 @@ fn serialized_tokens(request: &PreparedModelRequest) -> Result<ModelTokenCount> 
     Ok(request.serialized_token_upper_bound(None)?.0)
 }
 
-#[test]
-fn poisoned_state_remains_observable() {
-    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]);
-    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = provider.lock();
-        std::panic::resume_unwind(Box::new(()));
-    }));
-    assert!(poisoned.is_err());
-    assert_eq!(provider.remaining(), 1);
-    assert!(provider.requests().is_empty());
-    assert!(provider.dispatches().is_empty());
-    assert_eq!(provider.request_count(), 0);
-}
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
