@@ -256,14 +256,7 @@ impl HttpMcpTransport {
         params: Value,
         context: Option<ToolContext>,
     ) -> Result<Value> {
-        if context
-            .as_ref()
-            .is_some_and(|context| context.operation_id() != operation)
-        {
-            return Err(Error::Unauthorized(
-                "MCP task context operation mismatch".into(),
-            ));
-        }
+        super::validate_operation_context(operation, context.as_ref())?;
         super::services::validate_params(method, &params, None)?;
         let request = self.request("POST", request(operation, method, params)?)?;
         let response = self.provider.exchange(operation, request).await?;
@@ -304,14 +297,7 @@ impl McpToolTransport for HttpMcpTransport {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
-            if context
-                .as_ref()
-                .is_some_and(|context| context.operation_id() != operation)
-            {
-                return Err(Error::Unauthorized(
-                    "MCP task context operation mismatch".into(),
-                ));
-            }
+            super::validate_operation_context(operation, context.as_ref())?;
             match self.provider.reconcile(operation).await? {
                 Some(response) => super::services::validate_result(
                     "tools/call",

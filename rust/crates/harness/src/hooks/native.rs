@@ -37,7 +37,7 @@ impl HooksConfig {
 impl Hooks {
     /// Loads user hooks, and project hooks only with explicit trust in `config`.
     pub async fn load(config: HooksConfig) -> Result<Self> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(process_error)?;
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
         run_blocking_io(
             move || {
                 let mut hooks = Self::default();
@@ -63,7 +63,7 @@ impl Hooks {
                         Ok(bytes) => bytes,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                         Err(error) => {
-                            return Err(process_error(error));
+                            return Err(Error::process_io(error));
                         }
                     };
                     if path
@@ -82,9 +82,9 @@ impl Hooks {
             },
             None,
         )
-        .map_err(process_error)?
+        .map_err(Error::process_io)?
         .await
-        .map_err(process_error)?
+        .map_err(Error::process_io)?
     }
 
     /// Runs matching hooks concurrently, merging decisions in configuration order.
@@ -119,24 +119,11 @@ impl Hooks {
     }
 }
 
-pub(super) fn process_error(error: std::io::Error) -> Error {
-    let kind = match error.kind() {
-        std::io::ErrorKind::TimedOut => "timeout",
-        std::io::ErrorKind::NotFound => "not_found",
-        std::io::ErrorKind::PermissionDenied => "permission_denied",
-        _ => "io",
-    };
-    Error::Process {
-        kind,
-        message: error.to_string(),
-    }
-}
-
 async fn run_hook(
     hook: Arc<CommandHook>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
-    acyclic_native_runtime::initialize_native_io_services().map_err(process_error)?;
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     run_blocking_io(
         move || {
             let mut command = shell_command(&hook.command, hook.shell.as_deref());
@@ -146,7 +133,7 @@ async fn run_hook(
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            let mut tree = ProcessTree::spawn(&mut command).map_err(process_error)?;
+            let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
             let output = tree
                 .wait_with_output(
                     Duration::from_secs(hook.timeout),
@@ -157,12 +144,12 @@ async fn run_hook(
                     None,
                     None,
                 )
-                .map_err(|failure| process_error(failure.error))?;
+                .map_err(|failure| Error::process_io(failure.error))?;
             Ok((output.status.code(), output.stdout, output.stderr))
         },
         None,
     )
-    .map_err(process_error)?
+    .map_err(Error::process_io)?
     .await
-    .map_err(process_error)?
+    .map_err(Error::process_io)?
 }

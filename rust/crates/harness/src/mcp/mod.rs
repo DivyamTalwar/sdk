@@ -40,3 +40,15 @@ fn charge(work: NativeWork<'_>, items: u64, read: u64, copied: u64) -> Result<()
     let _ = (work, items, read, copied);
     Ok(())
 }
+
+fn validate_operation_context(
+    operation: crate::OperationId,
+    context: Option<&crate::runtime::ToolContext>,
+) -> Result<()> {
+    if context.is_some_and(|context| context.operation_id() != operation) {
+        return Err(Error::Unauthorized(
+            "MCP task context operation mismatch".into(),
+        ));
+    }
+    Ok(())
+}

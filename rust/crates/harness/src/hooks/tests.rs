@@ -126,7 +126,7 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
 
 #[test]
 fn non_blocking_failures_return_diagnostics() -> Result<()> {
-    let timeout = super::native::process_error(std::io::ErrorKind::TimedOut.into());
+    let timeout = Error::process_io(std::io::ErrorKind::TimedOut.into());
     assert_eq!(timeout.code(), crate::wire::ErrorCode::Invalid);
     assert!(matches!(
         timeout,
@@ -315,7 +315,7 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
 
 #[tokio::test]
 async fn native_hooks_default_user_guards_and_project_trust_use_one_shared_script() -> Result<()> {
-    use super::native::process_error;
+    let process_error = Error::process_io;
     let fixture = tempfile::tempdir().map_err(process_error)?;
     let home = fixture.path().join("home");
     let workspace = fixture.path().join("project");
