@@ -147,12 +147,20 @@ async fn workspace_commands_reject_unbound_and_forged_calls_without_native_alloc
                 Err(Error::Unsupported(_))
             ));
             let cancellation = acyclic_fs::CancellationToken::new();
+            assert!(
+                acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::WorkBudget::default(),
+                    &cancellation
+                )
+                .is_err()
+            );
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::default(),
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let before = work.receipt();
+            let before_live = work.live_allocation_bytes();
             assert!(matches!(
                 tool.executor
                     .authorize(None, Some(&context), &invocation, Some(&work)),
@@ -171,7 +179,7 @@ async fn workspace_commands_reject_unbound_and_forged_calls_without_native_alloc
                 })
             ));
             assert_eq!(work.receipt(), before);
-            assert_eq!(work.live_allocation_bytes(), 0);
+            assert_eq!(work.live_allocation_bytes(), before_live);
         }
         Ok(())
     })
