@@ -27,7 +27,7 @@ fn tool() -> Result<ExternalRequest> {
     )?)
 }
 
-fn file(task: &Component, request: &ExternalRequest) -> Result<FileValue> {
+pub(super) fn file(task: &Component, request: &ExternalRequest) -> Result<FileValue> {
     Ok(FileValue::new(
         FileKey::Task {
             task: task.clone(),

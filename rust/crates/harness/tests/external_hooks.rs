@@ -5,6 +5,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "external_hooks/properties.rs"]
+mod properties;
 #[path = "external_hooks/volume.rs"]
 mod volume;
 
@@ -21,7 +24,9 @@ fn host_events_create_the_same_task_request_actions() -> Result<()> {
     let scenarios: Vec<Scenario> = serde_json::from_str(include_str!("external_hooks.json"))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut operations = HashSet::new();
+    let mut covered = HashSet::new();
     for scenario in scenarios {
+        assert!(covered.insert((scenario.host.name(), scenario.event.clone())));
         let actual = request(scenario.host, &scenario.event, scenario.input)?;
         assert_eq!(actual.session_id, "session");
         assert_eq!(
@@ -37,6 +42,15 @@ fn host_events_create_the_same_task_request_actions() -> Result<()> {
             serde_json::from_slice::<ExternalRequest>(&bytes).map_err(|error| invalid(&error))?,
             actual
         );
+    }
+    for host in [
+        ExternalHost::Codex,
+        ExternalHost::ClaudeCode,
+        ExternalHost::Pi,
+    ] {
+        for spec in hooks(host) {
+            assert!(covered.contains(&(host.name(), spec.event.to_owned())));
+        }
     }
     Ok(())
 }
