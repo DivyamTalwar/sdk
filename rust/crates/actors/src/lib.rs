@@ -9,6 +9,9 @@ pub use contract::{
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
+/// In-process runtime-owned actor socket state and checkpoint transactions.
+pub mod local;
+
 /// Rust-owned Actors contract declarations and schema renderer.
 pub mod contract;
 
