@@ -24,6 +24,7 @@ async fn fixture(
         let mut lines = tokio::io::BufReader::new(read).lines();
         let mut methods = Vec::new();
         let mut calls = 0;
+        let mut pending = None;
         while let Some(line) = lines.next_line().await.map_err(Error::process_io)? {
             let mut request: Value = serde_json::from_str(&line).map_err(invalid)?;
             let method = request
@@ -41,6 +42,9 @@ async fn fixture(
                     "protocolVersion":"2025-11-25", "capabilities":{"tools":{}},
                     "serverInfo":{"name":"fixture", "version":"1"}
                 }),
+                "tools/list" if mode == "reverse" => {
+                    json!({"tools":[],"nextCursor":request["params"]["cursor"]})
+                }
                 "tools/list" => json!({"tools":[{"name":"echo", "description":"Count calls",
                     "inputSchema":{"type":"object"}}]}),
                 "tools/call" => {
@@ -49,12 +53,15 @@ async fn fixture(
                 }
                 _ => return Err(invalid("unexpected fixture method")),
             };
-            let bytes = if method == "initialize" || mode == "success" {
+            let bytes = if method == "initialize" || matches!(mode, "success" | "reverse") {
                 serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "result":result}))
                     .map_err(invalid)?
             } else {
                 match mode {
-                    "oversize" => vec![b'x'; 8192],
+                    "oversize" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+                        "result":{"tools":[{"name":"large","description":"x".repeat(8192),
+                        "inputSchema":{"type":"object"}}]}}))
+                    .map_err(invalid)?,
                     "malformed" => b"not json".to_vec(),
                     "wrong-id" => {
                         serde_json::to_vec(&json!({"jsonrpc":"2.0","id":999,"result":result}))
@@ -65,13 +72,24 @@ async fn fixture(
                     _ => return Err(invalid("unknown fixture mode")),
                 }
             };
-            if let Err(error) = write.write_all(&bytes).await {
-                if mode == "oversize" {
-                    break;
+            let first = if mode == "reverse" && method != "initialize" {
+                if pending.is_none() {
+                    pending = Some(bytes);
+                    continue;
                 }
-                return Err(Error::process_io(error));
+                pending.take()
+            } else {
+                None
+            };
+            for bytes in std::iter::once(bytes).chain(first) {
+                if let Err(error) = write.write_all(&bytes).await {
+                    if mode == "oversize" {
+                        return Ok(methods);
+                    }
+                    return Err(Error::process_io(error));
+                }
+                write.write_all(b"\n").await.map_err(Error::process_io)?;
             }
-            write.write_all(b"\n").await.map_err(Error::process_io)?;
             write.flush().await.map_err(Error::process_io)?;
         }
         Ok(methods)
@@ -80,6 +98,39 @@ async fn fixture(
     let client =
         StdioMcpTransport::bind(read, write, 4096, Duration::from_millis(50), None).await?;
     Ok((client, server))
+}
+
+#[tokio::test(start_paused = true)]
+async fn concurrent_requests_receive_their_own_out_of_order_responses() -> Result<()> {
+    let (transport, server) = fixture("reverse").await?;
+    let (first, second) = tokio::join!(
+        transport.rpc(
+            OperationId::from_bytes([5; 16]),
+            "tools/list",
+            json!({"cursor":"first"}),
+            None
+        ),
+        transport.rpc(
+            OperationId::from_bytes([6; 16]),
+            "tools/list",
+            json!({"cursor":"second"}),
+            None
+        ),
+    );
+    assert_eq!(first?["nextCursor"], "first");
+    assert_eq!(second?["nextCursor"], "second");
+    drop(transport);
+    let methods = server.await.map_err(invalid)??;
+    assert_eq!(
+        methods,
+        [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/list"
+        ]
+    );
+    Ok(())
 }
 
 #[tokio::test(start_paused = true)]
