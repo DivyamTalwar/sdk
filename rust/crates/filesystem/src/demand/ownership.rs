@@ -135,6 +135,10 @@ impl NativeMountAllocationCustody {
                 &mut work.work,
                 work.budget,
             )?;
+            // A failed admission leaves this placeholder to be reclaimed.
+            if let Some(dirty) = &work.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
             work.scope(
                 |work| &mut work.roots.native_mount_admission_pending,
                 true,
