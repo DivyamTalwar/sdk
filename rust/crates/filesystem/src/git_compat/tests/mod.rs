@@ -286,6 +286,9 @@ mod argv;
 mod capture;
 mod history;
 mod incremental;
+#[cfg(all(feature = "model-checking", unix))]
+mod model;
+mod properties;
 mod state;
 mod tree;
 mod wire;

@@ -63,6 +63,7 @@ pub(crate) fn bind_defaults(
 fn command(name: &'static str, description: &str) -> Tool {
     let output = json!({"type":"object"});
     Tool {
+        hook_names: if name == "bash" { &["Bash"] } else { &[] },
         definition: ToolDefinition {
             name: name.into(),
             revision: "1".into(),
