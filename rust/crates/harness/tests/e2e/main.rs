@@ -35,7 +35,9 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
     for field in [
         "text",
         "requests",
+        "empty_requests",
         "events",
+        "empty_events",
         "not_events",
         "result",
         "files",
@@ -49,9 +51,12 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
         match field {
             "text" => case.expect.text = Some("wrong".into()),
             "requests" => {
-                case.expect.requests = vec![serde_json::json!({"messages":[{"content":"wrong"}]})];
+                case.expect.requests =
+                    Some(vec![serde_json::json!({"messages":[{"content":"wrong"}]})]);
             }
-            "events" => case.expect.events = vec![serde_json::json!({"kind":"wrong"})],
+            "empty_requests" => case.expect.requests = Some(vec![]),
+            "events" => case.expect.events = Some(vec![serde_json::json!({"kind":"wrong"})]),
+            "empty_events" => case.expect.events = Some(vec![]),
             "not_events" => {
                 case.expect.not_events = vec![serde_json::json!({"kind":"model_started"})];
             }
@@ -138,6 +143,29 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
             _ => return Err("unknown compaction mutation".into()),
         }
         assert!(run(case).await.is_err(), "accepted incorrect {field}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = root.join("compaction/recover-summary.json");
+    run(Scenario::load(&root, &baseline)?).await?;
+    for files in [
+        vec![],
+        vec![vec![], vec![]],
+        vec![vec![], vec!["partial-".into()]],
+        vec![vec![], vec!["restored".into()]],
+        vec![vec![], vec!["wrong".into()]],
+        vec![vec!["partial-restored".into()], vec![]],
+    ] {
+        let mut case = Scenario::load(&root, &baseline)?;
+        case.expect.request_files = Some(files);
+        assert!(
+            run(case).await.is_err(),
+            "accepted incorrect summary attachment"
+        );
     }
     Ok(())
 }
