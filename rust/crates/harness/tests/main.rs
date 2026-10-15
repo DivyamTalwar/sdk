@@ -14,6 +14,7 @@ mod execution_journal;
 mod fork_preparer;
 mod history_selection;
 mod local_conversation_fork;
+mod local_harness;
 mod local_recursive_fork;
 mod mcp_durable;
 mod native_media_boundary;

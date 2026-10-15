@@ -4,15 +4,20 @@
 `filesystem-local` adds local providers. Generation-pinned references and signed
 volume grants govern reads and writes, including replay.
 
-`LocalHarness::new(model, provider).await` creates an ephemeral private volume and
-conversation. Use `run` for text or `run_with_attachments` for staged files.
-`with_limits` and `with_tools` accept explicit limits and compaction policy.
-Use durable providers for resumable deployments.
+`LocalHarness::open(LocalHarnessConfig::workspace(path).model(model, provider)).await`
+opens a normal checkout lazily with `filesystem-local,native-execution`. Durable
+state defaults to `.acyclic/harness`; `state_directory(path)` selects another
+location. `LocalHarnessConfig::volume(state_directory, project)` opens an existing
+local project volume with `filesystem-local`. Both presets create an owner issuer,
+signed tool grants, durable task host, execution journals and private scratch.
 
-The default tools list, read, edit and write authorized files. Operation-bound
-publication preserves retry identity. Stock model execution uses provider token
-accounting and `CompactionPolicy::default()`; unsupported accounting fails before
-dispatch. `HarnessBuilder::compaction` selects another policy.
+`default_tools(Vec<Tool>)` supplies the coding toolset hook; `tools(Vec<Tool>)` adds
+custom tools. `without_default_tools()` disables only the default set. Duplicate
+contracts fail registration. `run(prompt)` admits and drives a stock turn;
+`submit(operation, prompt)` and `resume(task)` expose durable admission and recovery
+separately. Reopening the same state retains the owner and admitted work.
+Stock execution uses provider token accounting and `CompactionPolicy::default()`;
+unsupported accounting fails before dispatch.
 
 `native-execution` enables approved native processes. Approval pins the request
 and volume manifest; the host supplies credentials and publication permits.

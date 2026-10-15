@@ -457,7 +457,7 @@ where
             })
     }
 
-    pub(super) fn tool_registry(&self) -> &ToolRegistry {
+    pub(crate) fn tool_registry(&self) -> &ToolRegistry {
         &self.tools
     }
 
