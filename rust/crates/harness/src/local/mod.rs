@@ -26,6 +26,7 @@ use std::{
 
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod compaction;
 mod config;
 mod owner;
 mod owner_record;
@@ -75,20 +76,21 @@ impl LocalHarness {
             }
             let (model, provider) = config.model;
             model.validate()?;
-            let compaction = match config.compaction {
-                Some(crate::context::CompactionPolicy::Disabled) => {
-                    crate::context::CompactionPolicy::Disabled
-                }
-                Some(crate::context::CompactionPolicy::Threshold(policy)) => {
-                    policy.validate(provider.context_capacity(&model)?, None)?;
-                    crate::context::CompactionPolicy::Threshold(policy)
-                }
-                None => crate::context::CompactionPolicy::Threshold(
-                    crate::context::ThresholdCompaction::for_capacity(
-                        provider.context_capacity(&model)?,
-                    )?,
-                ),
+            let mut tools = if config.default_tools {
+                crate::tools::defaults()?
+            } else {
+                ToolRegistry::default()
             };
+            for tool in config.tools {
+                tools.register((tool, None), &mut None, None)?;
+            }
+            let compaction = compaction::select(
+                config.compaction,
+                &model,
+                provider.as_ref(),
+                &tools,
+                config.limits,
+            )?;
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(feature = "native-execution")]
             acyclic_fs::initialize_native_mount_services().map_err(storage)?;
@@ -160,14 +162,6 @@ impl LocalHarness {
                     .await
                     .map_err(storage)?,
             );
-            let mut tools = if config.default_tools {
-                crate::tools::defaults()?
-            } else {
-                ToolRegistry::default()
-            };
-            for tool in config.tools {
-                tools.register((tool, None), &mut None, None)?;
-            }
             let issuer = AuthorityIssuer::new(
                 "acyclic.local",
                 owner.key,

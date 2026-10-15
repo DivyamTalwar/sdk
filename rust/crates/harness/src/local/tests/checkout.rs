@@ -42,7 +42,13 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         COMMANDS
             .iter()
             .enumerate()
-            .map(|(index, (name, command))| call(index, name, command))
+            .flat_map(|(index, (name, command))| {
+                // The real 32K model's tool catalog leaves a smaller history
+                // budget. Supply the admitted automatic summary between diffs.
+                (index == 5).then(|| ScriptedTurn::Text(
+                    "Committed note.txt, changed it, moved doomed.txt into nested, and inspected the first diff. Repeat the diff, delete the moved file, write the final note and inspect status.".into()
+                )).into_iter().chain([call(index, name, command)])
+            })
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
     let harness = LocalHarness::open(LocalHarnessConfig::new(
@@ -71,22 +77,22 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     }
     assert_eq!(output?.text, "commands completed");
     let requests = provider.requests();
-    assert_eq!(requests.len(), COMMANDS.len() + 1);
-    let results: Vec<_> = requests
-        .last()
-        .ok_or_else(|| Error::NotFound("final model request".into()))?
-        .messages
+    assert_eq!(requests.len(), COMMANDS.len() + 2);
+    let results: std::collections::BTreeMap<_, _> = requests
         .iter()
+        .flat_map(|request| &request.messages)
         .flat_map(|message| message.content.parts())
         .filter_map(|part| match part {
-            crate::model::ModelContentPart::ToolResult { name, content, .. } => {
-                Some((name, content))
-            }
+            crate::model::ModelContentPart::ToolResult {
+                call_id,
+                name,
+                content,
+            } => Some((call_id.as_str(), (name, content))),
             _ => None,
         })
         .collect();
     assert_eq!(results.len(), COMMANDS.len());
-    for (name, result) in &results {
+    for (name, result) in results.values() {
         let encoded = serde_json::to_string(result).map_err(super::super::storage)?;
         assert!(
             !encoded.contains("workspace tools are not bound"),
@@ -96,10 +102,14 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     }
     assert!(
         serde_json::to_string(
-            results[COMMANDS
-                .iter()
-                .position(|(_, command)| command.ends_with("printf visible"))
-                .unwrap()]
+            results[format!(
+                "checkout-{}",
+                COMMANDS
+                    .iter()
+                    .position(|(_, command)| command.ends_with("printf visible"))
+                    .unwrap()
+            )
+            .as_str()]
             .1
         )
         .map_err(super::super::storage)?

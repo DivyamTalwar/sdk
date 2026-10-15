@@ -86,15 +86,22 @@ fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -
         output_tokens: 4096,
     };
     let explicit = acyclic_harness::context::ThresholdCompaction::default();
-    let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity)?;
+    let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity, 24_000)?;
     assert_eq!(automatic.validate(capacity, None)?, capacity.output_tokens);
-    assert_eq!(automatic.recent_tokens, explicit.recent_tokens);
+    assert!(automatic.recent_tokens < explicit.recent_tokens);
+    assert!(
+        24_000 + automatic.response_reserve_tokens + 2 * automatic.recent_tokens
+            <= capacity.context_tokens
+    );
     assert!(explicit.validate(capacity, None).is_err());
     assert!(
-        acyclic_harness::context::ThresholdCompaction::for_capacity(ModelContextCapacity {
-            context_tokens: 2,
-            output_tokens: 1
-        })
+        acyclic_harness::context::ThresholdCompaction::for_capacity(
+            ModelContextCapacity {
+                context_tokens: 2,
+                output_tokens: 1
+            },
+            0
+        )
         .is_err()
     );
     Ok(())
@@ -114,6 +121,24 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     ));
     assert!(!owner_path.exists());
     assert_eq!(provider.requests().len(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_tool_catalog_fails_before_owner_creation_or_model_dispatch() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let mut oversized = tool("test.oversized");
+    oversized.definition.description = "x".repeat(capacity().context_tokens as usize);
+    let config = volume_config(directory.path(), project, provider.clone())?.tool(oversized);
+    let owner = super::owner::state_directory(&config.project)?.join("owner.json");
+    assert!(matches!(
+        LocalHarness::open(config).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(!owner.exists());
+    assert!(provider.requests().is_empty());
     Ok(())
 }
 
@@ -729,6 +754,6 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
 }
 
 #[cfg(all(feature = "native-execution", unix))]
-mod checkout;
-#[cfg(all(feature = "native-execution", unix))]
 mod checked_commands;
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout;
