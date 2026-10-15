@@ -1,3 +1,7 @@
+use super::compilation::{
+    MAXIMUM_STATE_MEMBERS, MAXIMUM_STATES, MAXIMUM_TEXT_BYTES, MAXIMUM_TRANSITIONS, MAXIMUM_WORK,
+    spend,
+};
 use super::glob::{Nfa, Symbol};
 use super::{
     Action, Capability, Context, Decision, Denial, InvalidPolicy, Policy, Principal, Resource,
@@ -34,6 +38,8 @@ pub struct PathTrie {
 impl PathTrie {
     /// Compile the same decision reducer used by `decide` into terminal states.
     /// `resource.path` is ignored; every other input is pinned for this view.
+    /// Rejects policies whose glob automaton exceeds bounded state, storage or
+    /// compilation work, including short patterns with exponential state growth.
     pub fn compile(
         policy: &Policy,
         principal: &Principal,
@@ -73,37 +79,56 @@ impl PathTrie {
             }
         }
         let (alphabet, ascii, other) = alphabet(&nfa)?;
-        let rule_ids: Vec<_> = rules.keys().map(|id| (*id).to_owned()).collect();
+        let mut text_left = MAXIMUM_TEXT_BYTES;
+        let rule_ids: Vec<_> = rules
+            .keys()
+            .map(|id| {
+                text_left = text_left
+                    .checked_sub(id.len())
+                    .ok_or(InvalidPolicy("compiled rule ids exceed text limit"))?;
+                Ok((*id).to_owned())
+            })
+            .collect::<Result<_, InvalidPolicy>>()?;
         let rule_index: BTreeMap<_, _> = rules
             .keys()
             .enumerate()
             .map(|(index, id)| (*id, index))
             .collect();
-        let states = determinize(&nfa, starts, &alphabet, other, |subset| {
-            Action::ALL.map(|action| {
-                let decision = super::decision::evaluate(
-                    policy,
-                    capability,
-                    context,
-                    action,
-                    resource.generation != resource.head,
-                    |rule| {
-                        rules
-                            .get(rule.id.as_str())
-                            .is_some_and(|end| subset.binary_search(end).is_ok())
-                    },
-                    |grant| {
-                        grants
-                            .get(&std::ptr::from_ref(grant))
-                            .is_some_and(|end| subset.binary_search(end).is_ok())
-                    },
-                );
-                Outcome {
-                    rule: decision.rule_id.and_then(|id| rule_index.get(id).copied()),
-                    denial: decision.denial,
-                }
-            })
-        })?;
+        let states = determinize(
+            &nfa,
+            starts,
+            &alphabet,
+            other,
+            |subset| {
+                Action::ALL.map(|action| {
+                    let decision = super::decision::evaluate(
+                        policy,
+                        capability,
+                        context,
+                        action,
+                        resource.generation != resource.head,
+                        |rule| {
+                            rules
+                                .get(rule.id.as_str())
+                                .is_some_and(|end| subset.binary_search(end).is_ok())
+                        },
+                        |grant| {
+                            grants
+                                .get(&std::ptr::from_ref(grant))
+                                .is_some_and(|end| subset.binary_search(end).is_ok())
+                        },
+                    );
+                    Outcome {
+                        rule: decision.rule_id.and_then(|id| rule_index.get(id).copied()),
+                        denial: decision.denial,
+                    }
+                })
+            },
+            policy.layers.len()
+                + capability.layers.len()
+                + policy.layers.iter().map(Vec::len).sum::<usize>()
+                + capability.layers.iter().map(Vec::len).sum::<usize>(),
+        )?;
         Ok(Self {
             alphabet,
             ascii,
@@ -200,23 +225,39 @@ fn determinize(
     alphabet: &[char],
     other: char,
     decide: impl Fn(&[usize]) -> [Outcome; 12],
+    rules: usize,
 ) -> Result<Vec<State>, InvalidPolicy> {
-    nfa.close(&mut starts)?;
+    let mut work = MAXIMUM_WORK;
+    nfa.close(&mut starts, &mut work)?;
+    let mut members = MAXIMUM_STATE_MEMBERS;
+    spend(&mut members, starts.len())?;
+    let mut transitions_left = MAXIMUM_TRANSITIONS;
     let mut ids = BTreeMap::from([(starts.clone(), 0)]);
     let mut subsets = vec![starts];
     let mut states = Vec::new();
     while states.len() < subsets.len() {
+        spend(
+            &mut work,
+            rules
+                .checked_mul(24)
+                .ok_or(InvalidPolicy("glob compilation exceeds work limit"))?,
+        )?;
         let subset = subsets
             .get(states.len())
             .ok_or(InvalidPolicy("invalid glob state"))?
             .clone();
         let decisions = decide(&subset);
+        spend(&mut transitions_left, alphabet.len() + 1)?;
         let mut transitions = Vec::with_capacity(alphabet.len() + 1);
         for ch in alphabet.iter().copied().chain(std::iter::once(other)) {
-            let next = nfa.step(&subset, ch)?;
+            let next = nfa.step(&subset, ch, &mut work)?;
             let id = if let Some(id) = ids.get(&next) {
                 *id
             } else {
+                if subsets.len() == MAXIMUM_STATES {
+                    return Err(InvalidPolicy("glob compilation exceeds DFA state limit"));
+                }
+                spend(&mut members, next.len())?;
                 let id = subsets.len();
                 ids.insert(next.clone(), id);
                 subsets.push(next);

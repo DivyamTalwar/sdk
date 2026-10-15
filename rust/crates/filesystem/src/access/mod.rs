@@ -6,6 +6,7 @@
 //! new open after a policy change, generation change, or credential expiry.
 
 mod capability;
+mod compilation;
 mod decision;
 mod glob;
 mod trie;
@@ -205,6 +206,15 @@ pub struct Resource<'a> {
 }
 
 impl ResourcePattern {
+    pub(super) fn validate(&self) -> Result<(), InvalidPolicy> {
+        if let Generations::Range(range) = self.generations
+            && range.first > range.last
+        {
+            return Err(InvalidPolicy("generation range is reversed"));
+        }
+        glob::validate(&self.path)
+    }
+
     pub(super) fn matches_view(&self, resource: Resource<'_>) -> bool {
         self.lineage_root
             .as_ref()
@@ -324,7 +334,14 @@ impl Policy {
             {
                 return Err(InvalidPolicy("approval conditions require only merge-into"));
             }
-            glob::validate(&rule.resource.path)?;
+            if rule
+                .conditions
+                .generations
+                .is_some_and(|range| range.first > range.last)
+            {
+                return Err(InvalidPolicy("generation condition is reversed"));
+            }
+            rule.resource.validate()?;
         }
         Ok(())
     }

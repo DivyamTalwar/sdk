@@ -100,7 +100,7 @@ impl Capability {
     /// Check encoding and glob validity before accepting a signed payload.
     pub fn validate(&self) -> Result<(), InvalidPolicy> {
         for grant in self.layers.iter().flatten() {
-            super::glob::validate(&grant.resource.path)?;
+            grant.resource.validate()?;
         }
         Ok(())
     }

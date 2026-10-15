@@ -658,6 +658,130 @@ fn inheritance_history_and_invalid_inputs_fail_closed() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[test]
+fn adversarial_globs_have_bounded_compilation() {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let explosive = format!("*a{}", "?".repeat(24));
+    for (policy_glob, capability_glob) in [(explosive.as_str(), "**"), ("**", explosive.as_str())] {
+        let policy = policy(vec![rule(
+            "bounded",
+            Effect::Allow,
+            &Action::ALL,
+            policy_glob,
+        )]);
+        let cap = Capability {
+            layers: vec![vec![Grant {
+                actions: Action::ALL.into_iter().collect(),
+                resource: pattern(capability_glob),
+            }]],
+            expires_at: None,
+        };
+        assert!(policy.validate().is_ok());
+        assert!(cap.validate().is_ok());
+        assert!(
+            PathTrie::compile(
+                &policy,
+                &caller,
+                resource(&caller.lineage, "", 10),
+                context,
+                &cap
+            )
+            .is_err()
+        );
+    }
+    let oversized = "a".repeat(32_769);
+    let policy = policy(vec![rule(
+        "oversized",
+        Effect::Allow,
+        &Action::ALL,
+        &oversized,
+    )]);
+    assert!(policy.validate().is_ok());
+    assert!(
+        PathTrie::compile(
+            &policy,
+            &caller,
+            resource(&caller.lineage, "", 10),
+            context,
+            &capability()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn compiled_rule_identifiers_have_a_bound() {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let long_id = "x".repeat(1_048_577);
+    let policy = policy(vec![rule(&long_id, Effect::Allow, &Action::ALL, "**")]);
+    assert!(
+        PathTrie::compile(
+            &policy,
+            &caller,
+            resource(&caller.lineage, "", 10),
+            context,
+            &capability()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn malformed_generation_denials_fail_closed() {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let cap = capability();
+    let reversed = GenerationRange { first: 10, last: 9 };
+    for condition in [false, true] {
+        let mut deny = rule("invalid-deny", Effect::Deny, &Action::ALL, "**");
+        if condition {
+            deny.conditions.generations = Some(reversed);
+        } else {
+            deny.resource.generations = Generations::Range(reversed);
+        }
+        let policy = policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**"), deny]);
+        let res = resource(&caller.lineage, "a", 10);
+        assert_eq!(
+            decide(&policy, &caller, Action::Read, res, context, &cap).denial,
+            Some(Denial::Invalid)
+        );
+        assert!(PathTrie::compile(&policy, &caller, res, context, &cap).is_err());
+    }
+    let mut selected = pattern("**");
+    selected.generations = Generations::Range(reversed);
+    let cap = Capability {
+        layers: vec![vec![Grant {
+            actions: Action::ALL.into_iter().collect(),
+            resource: selected,
+        }]],
+        expires_at: None,
+    };
+    let policy = policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
+    assert_eq!(
+        decide(
+            &policy,
+            &caller,
+            Action::Read,
+            resource(&caller.lineage, "a", 10),
+            context,
+            &cap
+        )
+        .denial,
+        Some(Denial::Invalid)
+    );
+}
+
 fn glob_strategy() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop_oneof![
