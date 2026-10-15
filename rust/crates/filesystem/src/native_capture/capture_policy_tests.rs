@@ -301,3 +301,60 @@ async fn content_hints_override_metadata_hints_in_either_order()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn rename_into_new_directory_hydrates_parents_even_with_create_hints()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    std::fs::create_dir_all(source.path().join("outer/inner"))?;
+    std::fs::write(source.path().join("outer/inner/moved.txt"), b"new")?;
+    for parent_hints in [
+        vec![],
+        vec!["/outer"],
+        vec!["/outer/inner"],
+        vec!["/outer", "/outer/inner"],
+    ] {
+        let mut checkout = checkout(&[("/old.txt", "old")]).await?;
+        let before = checkout
+            .lookup_no_follow(
+                &path("/old.txt")?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value
+            .record
+            .ok_or("original file")?;
+        let mut changes = parent_hints
+            .into_iter()
+            .map(|parent| Ok(WatchChange::Created(path(parent)?)))
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        changes.push(WatchChange::Renamed {
+            from: path("/old.txt")?,
+            to: path("/outer/inner/moved.txt")?,
+        });
+        replay(&mut checkout, &options(source.path(), 4)?, changes).await?;
+        assert_records(
+            &mut checkout,
+            &[
+                ("/old.txt", None),
+                ("/outer", Some(FileKind::Directory)),
+                ("/outer/inner", Some(FileKind::Directory)),
+                ("/outer/inner/moved.txt", Some(FileKind::Regular)),
+            ],
+        )
+        .await?;
+        let after = checkout
+            .lookup_no_follow(
+                &path("/outer/inner/moved.txt")?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value
+            .record
+            .ok_or("renamed file")?;
+        assert_eq!(after.file_id, before.file_id);
+    }
+    Ok(())
+}
