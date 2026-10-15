@@ -15,7 +15,23 @@ use crate::sync::{
     Arc, AsyncMutex,
     atomic::{AtomicUsize, Ordering},
 };
-use std::task::{Context, Poll, Wake, Waker};
+use std::{
+    future::Future,
+    task::{Context, Poll, Waker},
+};
+
+fn complete<T>(operation: impl Future<Output = T>) -> T {
+    // Loom's instrumented mutex suspends the modeled thread during acquisition.
+    // A host-thread-local executor would incorrectly treat that as reentrancy.
+    let mut operation = std::pin::pin!(operation);
+    match operation
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!("unexpected suspension outside the modeled mutex"),
+    }
+}
 
 fn exclusion_model(broken: bool) {
     loom::model(move || {
@@ -37,9 +53,9 @@ fn exclusion_model(broken: bool) {
                     if fail { Err(()) } else { Ok(()) }
                 };
                 let result = if broken {
-                    futures::executor::block_on(refresh::released_early(&lock, operation))
+                    complete(refresh::released_early(&lock, operation))
                 } else {
-                    futures::executor::block_on(refresh::serialized(&lock, operation))
+                    complete(refresh::serialized(&lock, operation))
                 };
                 assert_eq!(result.is_err(), fail);
             }));
@@ -63,11 +79,6 @@ fn negative_control_detects_a_guard_released_before_io() {
     exclusion_model(true);
 }
 
-struct Noop;
-impl Wake for Noop {
-    fn wake(self: std::sync::Arc<Self>) {}
-}
-
 #[test]
 fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
     loom::model(|| {
@@ -78,9 +89,10 @@ fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
                 &holder_lock,
                 std::future::pending::<()>(),
             ));
-            let waker = Waker::from(std::sync::Arc::new(Noop));
             assert_eq!(
-                operation.as_mut().poll(&mut Context::from_waker(&waker)),
+                operation
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
                 Poll::Pending
             );
             loom::thread::yield_now();
@@ -88,7 +100,7 @@ fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
         });
         let waiter_lock = lock.clone();
         let waiter = loom::thread::spawn(move || {
-            futures::executor::block_on(refresh::serialized(&waiter_lock, async {}));
+            complete(refresh::serialized(&waiter_lock, async {}));
         });
         holder.join().unwrap();
         waiter.join().unwrap();
