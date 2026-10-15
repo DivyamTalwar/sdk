@@ -98,6 +98,7 @@ async fn reused_accepted_positions_reset_cached_heads_and_resume_cursors() -> Re
         .append(initial.generation, &write("GOAL.md", "lost")?)
         .await?;
     let stale = cached.snapshot(&Query::Root, 1).await?;
+    let cached_resume = TaskVolume::open(provider.clone(), path.clone()).await?;
 
     let replacement = Arc::new(MemoryStream::default());
     replacement
@@ -134,12 +135,19 @@ async fn reused_accepted_positions_reset_cached_heads_and_resume_cursors() -> Re
         Err(Error::ResetRequired)
     ));
     let mut follows = Vec::new();
-    for cursor in [None, Some(stale.cursor)] {
-        let observation = cached.observe(Query::Root, cursor, 1).await?;
+    for (volume, cursor) in [(&cached, None), (&cached_resume, Some(stale.cursor))] {
+        let observation = volume.observe(Query::Root, cursor, 1).await?;
         assert!(observation.reset);
         let snapshot = observation.snapshot.ok_or("missing replacement snapshot")?;
         assert_eq!(snapshot.files, vec![replacement_file.clone()]);
         assert_eq!(snapshot.cursor, current.cursor);
+        let repaired = volume.snapshot(&Query::Root, 1).await?;
+        assert_eq!(repaired.files, current.files);
+        assert_eq!(repaired.cursor, current.cursor);
+        assert_eq!(
+            volume.heads(&Query::Root, None, 1).await?.generation,
+            current.generation
+        );
         follows.push(observation.changes);
     }
     let next = write("GOAL.md", "next")?;
@@ -150,5 +158,32 @@ async fn reused_accepted_positions_reset_cached_heads_and_resume_cursors() -> Re
             Some(next.clone())
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reset_replaces_cached_volume_identity_after_reinitialization() -> Result {
+    let (original, _) = memory().await?;
+    let provider = Arc::new(Restartable(std::sync::RwLock::new(original)));
+    let path = StreamPath::new("task-volume")?;
+    let cached = TaskVolume::open(provider.clone(), path.clone()).await?;
+    let stale = cached.snapshot(&Query::Root, 0).await?;
+    let replacement = Arc::new(MemoryStream::default());
+    let recovered = TaskVolume::open(replacement.clone(), path).await?;
+    let current = recovered.snapshot(&Query::Root, 0).await?;
+    *provider.0.write().map_err(|_| "restart lock poisoned")? = replacement;
+    let observation = cached.observe(Query::Root, Some(stale.cursor), 0).await?;
+    assert!(observation.reset);
+    assert_eq!(
+        observation.snapshot.ok_or("missing reset")?.cursor,
+        current.cursor
+    );
+    assert_eq!(
+        cached.snapshot(&Query::Root, 0).await?.cursor,
+        current.cursor
+    );
+    let file = write("GOAL.md", "new epoch")?;
+    cached.append(current.generation, &file).await?;
+    assert_eq!(cached.snapshot(&Query::Root, 1).await?.files, vec![file]);
     Ok(())
 }

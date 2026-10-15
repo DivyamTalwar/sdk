@@ -101,6 +101,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     ) -> Result<Snapshot> {
         self.validate_cursor(query, &cursor).await?;
         let mut index = Index {
+            volume: cursor.volume,
+            epoch: cursor.epoch,
             next: 1,
             ..Index::default()
         };

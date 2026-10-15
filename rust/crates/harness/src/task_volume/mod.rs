@@ -138,6 +138,8 @@ struct Header {
 
 #[derive(Default)]
 struct Index {
+    volume: [u8; 32],
+    epoch: Uuid,
     next: u64,
     commit: CommitId,
     files: BTreeMap<FileKey, FileValue>,
@@ -148,8 +150,6 @@ struct Index {
 pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
-    header: Header,
-    scope: [u8; 32],
     index: Mutex<Index>,
 }
 
@@ -203,9 +203,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let volume = Self {
             provider,
             path,
-            header,
-            scope,
             index: Mutex::new(Index {
+                volume: scope,
+                epoch: header.epoch,
                 next: 1,
                 commit: record.commit_id,
                 ..Index::default()
@@ -217,8 +217,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     fn generation(&self, index: &Index) -> Generation {
         Generation {
-            volume: self.scope,
-            epoch: self.header.epoch,
+            volume: index.volume,
+            epoch: index.epoch,
             position: index.next,
             commit: *index.commit.as_bytes(),
         }
@@ -321,14 +321,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let mut index = self.index.lock().await;
         match outcome {
             CommitOutcome::Committed(envelope) => {
-                if index.next == expected.position {
+                if self.generation(&index) == expected {
                     apply(&mut index, files);
                     index.next = expected.position + 1;
                     index.commit = envelope.commit_id;
                 }
                 Ok(Generation {
-                    volume: self.scope,
-                    epoch: self.header.epoch,
+                    volume: expected.volume,
+                    epoch: expected.epoch,
                     position: expected.position + 1,
                     commit: *envelope.commit_id.as_bytes(),
                 })

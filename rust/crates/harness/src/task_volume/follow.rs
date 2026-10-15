@@ -91,8 +91,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             return Err(Error::ResetRequired);
         }
         Ok(Cursor {
-            volume: self.scope,
-            epoch: self.header.epoch,
+            volume: generation.volume,
+            epoch: generation.epoch,
             schema: SCHEMA,
             query: query_id(query)?,
             position: generation.position,
@@ -131,9 +131,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 
     pub(super) async fn validate_cursor(&self, query: &Query, cursor: &Cursor) -> Result<()> {
+        let generation = self.generation(&*self.index.lock().await);
         let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
-        if cursor.volume != self.scope
-            || cursor.epoch != self.header.epoch
+        if cursor.volume != generation.volume
+            || cursor.epoch != generation.epoch
             || cursor.schema != SCHEMA
             || cursor.query != query_id(query)?
             || cursor.position == 0
@@ -228,9 +229,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 (snapshot, changes, false)
             }
             Err(Error::ResetRequired) => {
+                let mut index = self.index.lock().await;
                 let fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
-                let snapshot = fresh.snapshot(&query, maximum_files).await?;
-                let changes = fresh.follow(query, snapshot.cursor.clone()).await?;
+                *index = fresh.index.into_inner();
+                drop(index);
+                let snapshot = self.snapshot(&query, maximum_files).await?;
+                let changes = self.follow(query, snapshot.cursor.clone()).await?;
                 (snapshot, changes, true)
             }
             Err(error) => return Err(error),

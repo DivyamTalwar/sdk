@@ -2,6 +2,10 @@ use super::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "../../tests/task_volume/ranges.rs"]
+mod tests;
+
 /// Task namespace and packed-segment format revision.
 pub const SCHEMA: u32 = 1;
 
@@ -486,9 +490,20 @@ impl Query {
                     file: ToolFile::Result,
                 },
             ),
-            Self::Task(task) | Self::Approvals(task) | Self::Notifications(task) => {
-                range(task, TaskFile::Request(minimum), TaskFile::Context(maximum))
-            }
+            Self::Approvals(task) => range(
+                task,
+                TaskFile::ApprovalRequest(minimum),
+                TaskFile::ApprovalDecision {
+                    request: maximum.clone(),
+                    principal: maximum,
+                },
+            ),
+            Self::Notifications(task) => range(
+                task,
+                TaskFile::Notification(minimum),
+                TaskFile::Notification(maximum),
+            ),
+            Self::Task(task) => range(task, TaskFile::Request(minimum), TaskFile::Context(maximum)),
             Self::File(key) => (Included(key.clone()), Included(key.clone())),
             _ => (Unbounded, Unbounded),
         }]
