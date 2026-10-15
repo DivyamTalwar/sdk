@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct Probe {
     submit: AtomicUsize,
     cancel: AtomicUsize,
-    authorize: AtomicUsize,
     mismatch: bool,
     events: usize,
 }
@@ -59,14 +58,6 @@ impl HarnessWireApi for Probe {
         .boxed()
     }
 
-    fn authorize_operation_control<'a>(
-        &'a self,
-        _: &'a acyclic_harness::wire_api::OperationControlRequest,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        self.authorize.fetch_add(1, Ordering::SeqCst);
-        async { Err(Error::Unauthorized("probe denied".into())) }.boxed()
-    }
-
     fn observe<'a>(
         &'a self,
         _: wire::ObserveRequest,
@@ -79,7 +70,7 @@ impl HarnessWireApi for Probe {
         _: wire::CancelRequest,
     ) -> BoxProviderFuture<'a, Result<wire::CancelResponse>> {
         self.cancel.fetch_add(1, Ordering::SeqCst);
-        async { Err(Error::Unsupported("must not dispatch".into())) }.boxed()
+        async { Err(Error::Unauthorized("probe denied".into())) }.boxed()
     }
 }
 
@@ -127,7 +118,7 @@ fn uncertain_submit_is_not_replayed_and_mismatched_admission_is_rejected() {
 }
 
 #[test]
-fn denied_control_does_not_call_cancel() {
+fn denied_control_is_authenticated_by_the_host_once() {
     let api = Probe::default();
     let request = wire::CancelRequest {
         protocol: Some(current_protocol()),
@@ -150,8 +141,7 @@ fn denied_control_does_not_call_cancel() {
         block_on(dispatch(&api, wire::client_frame::Frame::Cancel(request))),
         Err(Error::Unauthorized(_))
     ));
-    assert_eq!(api.cancel.load(Ordering::SeqCst), 0);
-    assert_eq!(api.authorize.load(Ordering::SeqCst), 1);
+    assert_eq!(api.cancel.load(Ordering::SeqCst), 1);
 }
 
 #[test]

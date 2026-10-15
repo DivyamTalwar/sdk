@@ -2,10 +2,7 @@ use super::{
     ServiceEndpoint,
     frames::{self, Method},
 };
-use crate::{
-    Result, wire,
-    wire_api::{HarnessWireApi, OperationControlRequest},
-};
+use crate::{Result, wire, wire_api::HarnessWireApi};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use prost::Message;
 
@@ -95,25 +92,6 @@ impl HarnessWireApi for LocalHarnessClient {
             Ok(Box::pin(stream) as BoxProviderStream<'static, Result<wire::Delivery>>)
         })
     }
-    fn authorize_operation_control<'a>(
-        &'a self,
-        request: &'a OperationControlRequest,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.unary::<_, wire::HandshakeResponse>(
-                Method::Authorize,
-                wire::ObserveRequest {
-                    operation_id: request.operation_id.to_string(),
-                    protocol: Some(crate::wire_api::current_protocol()),
-                    owner: Some(crate::wire_codec::encode_authority(&request.owner)),
-                    scope: Some(wire::Scope::from(&request.scope)),
-                },
-            )
-            .await
-            .map(|_| ())
-        })
-    }
-
     fn observe<'a>(
         &'a self,
         request: wire::ObserveRequest,

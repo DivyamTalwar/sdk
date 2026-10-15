@@ -1,39 +1,29 @@
 use super::*;
-use crate::{
-    wire,
-    wire_api::{self, OperationControlRequest},
-};
+use crate::{wire, wire_api};
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    /// Authenticates a decoded control scope against this durable owner.
-    pub fn authorize_operation_control(&self, request: &OperationControlRequest) -> Result<()> {
-        request.authenticate(&self.verifier)?;
-        Ok(())
-    }
-
     /// Observes an authenticated operation under the coordinator lock.
     pub async fn wire_observe(
         &self,
         request: wire::ObserveRequest,
     ) -> Result<wire::OperationStatus> {
-        let control = wire_api::validate_observe_request(&request)?;
-        control.authenticate(&self.verifier)?;
+        let control = wire_api::validate_observe_request(request)?;
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut None).await?;
-        let state = coordinator.observe_operation(
-            &control.owner,
-            &control.scope,
-            &self.verifier,
-            control.operation_id,
-            &mut None,
-        )?;
+        let state = coordinator
+            .observe_operation_fresh(
+                &control.owner,
+                &control.scope,
+                &self.verifier,
+                control.operation_id,
+                &mut None,
+            )
+            .await?;
         Ok(wire_api::operation_status(state))
     }
 
     /// Cancels an authenticated operation with the caller's retry identity.
     pub async fn wire_cancel(&self, request: wire::CancelRequest) -> Result<wire::CancelResponse> {
-        let control = wire_api::validate_cancel_request(&request)?;
-        control.control.authenticate(&self.verifier)?;
+        let control = wire_api::validate_cancel_request(request)?;
         let mut coordinator = self.coordinator.lock().await;
         let (_, state) = Box::pin(coordinator.cancel_operation(
             &control.control.owner,

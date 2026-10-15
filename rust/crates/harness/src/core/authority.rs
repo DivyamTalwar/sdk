@@ -436,6 +436,8 @@ impl AuthorityVerifier {
         scope: &Scope,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
+        #[cfg(test)]
+        super::authority_probe::record(scope.id());
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let recheck = work
             .as_deref()

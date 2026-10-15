@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     store::{HistoryReader, StreamAggregate},
     wire,
-    wire_api::{self, HarnessWireApi, OperationControlRequest},
+    wire_api::{self, HarnessWireApi},
     wire_codec::{decode_command_envelope, encode_authority, encode_event_envelope},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, StreamProvider as _};
@@ -167,16 +167,6 @@ impl HarnessWireApi for LocalHarness {
             }
             Ok(Box::pin(futures::stream::select_all(streams))
                 as BoxProviderStream<'static, Result<wire::Delivery>>)
-        })
-    }
-    fn authorize_operation_control<'a>(
-        &'a self,
-        request: &'a OperationControlRequest,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.runtime
-                .task_host()
-                .authorize_operation_control(request)
         })
     }
     fn observe<'a>(

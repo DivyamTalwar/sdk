@@ -11,6 +11,8 @@ use harness::{
 };
 use prost::Message as _;
 use std::sync::Arc;
+#[path = "service/control.rs"]
+mod control;
 #[path = "service/paused.rs"]
 mod paused;
 #[path = "service/support.rs"]

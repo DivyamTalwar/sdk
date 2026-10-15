@@ -129,53 +129,13 @@ impl HarnessService {
             }
             Method::Observe => {
                 let request: wire::ObserveRequest = decode(request.payload)?;
-                let control = wire_api::validate_observe_request(&request)?;
-                api.authorize_operation_control(&control).await?;
-                let response = api.observe(request.clone()).await?;
-                wire_api::validate_operation_status(
-                    &request.operation_id,
-                    request.owner.as_ref(),
-                    &response,
-                )?;
+                let response = wire_api::observe(api.as_ref(), request).await?;
                 frames::send(socket, &frames::response(response)).await
             }
             Method::Cancel => {
                 let request: wire::CancelRequest = decode(request.payload)?;
-                let control = wire_api::validate_cancel_request(&request)?;
-                api.authorize_operation_control(&control.control).await?;
-                let response = api.cancel(request.clone()).await?;
-                wire_api::validate_cancel_response(&request, &response)?;
+                let response = wire_api::cancel(api.as_ref(), request).await?;
                 frames::send(socket, &frames::response(response)).await
-            }
-            Method::Authorize => {
-                let request: wire::ObserveRequest = decode(request.payload)?;
-                let control = if request.scope.as_ref().is_some_and(|scope| {
-                    scope
-                        .capabilities
-                        .iter()
-                        .any(|cap| cap == "operation:observe")
-                }) {
-                    wire_api::validate_observe_request(&request)?
-                } else {
-                    wire_api::validate_cancel_request(&wire::CancelRequest {
-                        operation_id: request.operation_id,
-                        protocol: request.protocol,
-                        owner: request.owner,
-                        scope: request.scope,
-                        recursive: false,
-                        idempotency_key: "authorize".into(),
-                    })?
-                    .control
-                };
-                api.authorize_operation_control(&control).await?;
-                frames::send(
-                    socket,
-                    &frames::response(wire::HandshakeResponse {
-                        protocol: Some(wire_api::current_protocol()),
-                        supported: None,
-                    }),
-                )
-                .await
             }
             Method::Replay => {
                 let request: wire::ResumeRequest = decode(request.payload)?;
