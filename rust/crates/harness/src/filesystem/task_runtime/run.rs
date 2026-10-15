@@ -102,7 +102,7 @@ where
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
-        let run = async {
+        let run = || async {
             let fence = &fence;
             #[cfg(not(target_arch = "wasm32"))]
             let context = if let Some(io) = io {

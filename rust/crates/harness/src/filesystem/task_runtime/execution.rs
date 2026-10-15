@@ -151,7 +151,7 @@ where
             Some(&self.fence),
             self.run_limits.deadline_epoch_ms,
             self.operation_id,
-            self.executor.execute_progress(input, &self.journal),
+            || self.executor.execute_progress(input, &self.journal),
             None,
             |_| false,
         )
@@ -167,9 +167,11 @@ where
         if maximum_wait_millis == 0 {
             return Err(Error::Invalid("invalid reconciliation allowance".into()));
         }
-        deadline::observe(maximum_wait_millis, async {
-            self.reconcile_progress(input).await?.into_output()
-        })
+        deadline::observe(
+            maximum_wait_millis,
+            || async { self.reconcile_progress(input).await?.into_output() },
+            None,
+        )
         .await
     }
 

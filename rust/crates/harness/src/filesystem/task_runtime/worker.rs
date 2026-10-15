@@ -8,16 +8,19 @@ where
 {
     /// Reopens the admitted registered task and its bound workflow without requiring a typed definition at the worker boundary.
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
-        let journal = self.workflow_journal(task, fence.clone()).await?;
-        self.harness
-            .open_registered_task(
-                task,
-                &fence,
-                journal,
-                #[cfg(not(target_arch = "wasm32"))]
-                None,
-            )
-            .await
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let journal = self.workflow_journal(task, fence.clone()).await?;
+            self.harness
+                .open_registered_task(
+                    task,
+                    &fence,
+                    journal,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    None,
+                )
+                .await
+        })?
+        .await
     }
 
     /// Opens the original registered task using its one issued shared context.
@@ -35,23 +38,26 @@ where
                 reason: "native task context differs from original task lease",
             });
         }
-        let owner = context.journal_owner::<P>(fence, work)?;
-        let journal = FilesystemWorkflowJournal::for_task(
-            Arc::clone(&owner),
-            Arc::clone(&self.filesystem),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &self.volume,
-                verifier: &self.verifier,
-                scope: &self.signed,
-                maximum_bytes: self
-                    .maximum_payload_bytes
-                    .min(owner.input_limits().file_bytes),
-                io: Some(&super::super::PreparationIo::from_native_work(work)?),
-            },
-        )?;
-        self.harness
-            .open_registered_task(task, fence, journal, Some(context))
-            .await
+        crate::NativeFutureBundle::new(work, || async move {
+            let owner = context.journal_owner::<P>(fence, work)?;
+            let journal = FilesystemWorkflowJournal::for_task(
+                Arc::clone(&owner),
+                Arc::clone(&self.filesystem),
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &self.volume,
+                    verifier: &self.verifier,
+                    scope: &self.signed,
+                    maximum_bytes: self
+                        .maximum_payload_bytes
+                        .min(owner.input_limits().file_bytes),
+                    io: Some(&super::super::PreparationIo::from_native_work(work)?),
+                },
+            )?;
+            self.harness
+                .open_registered_task(task, fence, journal, Some(context))
+                .await
+        })?
+        .await
     }
 
     /// Performs one bounded discovery page followed by at most one owner-scoped admission and worker turn through the trusted command adapter.
@@ -91,93 +97,97 @@ where
         maximum_transitions: u32,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<Option<TaskWorkerAttempt>> {
-        if let Some(io) = io {
-            io.check_cancellation()?;
-        }
-        if worker.id.trim().is_empty() || maximum_transitions == 0 {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "invalid targeted worker allowance or identity",
-                });
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(io) = io {
+                io.check_cancellation()?;
             }
-            return Err(Error::Invalid(
-                "invalid targeted worker allowance or identity".into(),
-            ));
-        }
-        let admission = self.admission_observed(task, io).await?;
-        let terminal = if io.is_some() {
-            self.outcome_observed(task, io)
-                .await?
-                .is_some_and(|outcome| {
+            if worker.id.trim().is_empty() || maximum_transitions == 0 {
+                #[cfg(not(target_arch = "wasm32"))]
+                if io.is_some() {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "invalid targeted worker allowance or identity",
+                    });
+                }
+                return Err(Error::Invalid(
+                    "invalid targeted worker allowance or identity".into(),
+                ));
+            }
+            let admission = self.admission_observed(task, io).await?;
+            let terminal = if io.is_some() {
+                self.outcome_observed(task, io)
+                    .await?
+                    .is_some_and(|outcome| {
+                        matches!(
+                            outcome,
+                            Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled
+                        )
+                    })
+            } else {
+                self.host.outcome(task).await?.is_some_and(|outcome| {
                     matches!(
                         outcome,
                         Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled
                     )
                 })
-        } else {
-            self.host.outcome(task).await?.is_some_and(|outcome| {
-                matches!(
-                    outcome,
-                    Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled
-                )
-            })
-        };
-        if terminal {
-            return Ok(None);
-        }
-        let pulled = deadline::run(
-            &self.host,
-            task,
-            None,
-            admission.run_limits.deadline_epoch_ms,
-            admission.operation_id,
-            async {
-                self.poll_task_wake(task, io).await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "worker pull requires original native work",
-                    })?;
-                    let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work)
-                        .map(crate::store::HistoryWork::new)?;
-                    crate::store::HistoryIo::retain_owned(
-                        &mut operation_io,
-                        std::mem::size_of::<crate::distributed::WorkPull>()
-                            .max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>())
-                            as u64,
-                    )?;
-                    let pull = self
-                        .host
-                        .pull_work(
-                            worker,
-                            Some(admission.operation_id),
-                            &mut Some(&mut operation_io),
-                        )
-                        .await?;
-                    io.absorb_native_custody(operation_io.into_custody()?)?;
-                    return Ok(pull);
-                }
-                self.host
-                    .pull_work(worker, Some(admission.operation_id), &mut None)
-                    .await
-            },
-            io,
-            observed::pull_has_native_failure,
-        )
-        .await?;
-        Ok(match pulled {
-            crate::distributed::WorkPull::Idle => None,
-            crate::distributed::WorkPull::Claimed(lease) => Some(
-                self.resume_task(lease, commands, maximum_transitions, io)
-                    .await,
-            ),
-            crate::distributed::WorkPull::Unresolved { lease, error } => {
-                Some(TaskWorkerAttempt::Unresolved { lease, error })
+            };
+            if terminal {
+                return Ok(None);
             }
-        })
+            let pulled = deadline::run(
+                &self.host,
+                task,
+                None,
+                admission.run_limits.deadline_epoch_ms,
+                admission.operation_id,
+                || async {
+                    self.poll_task_wake(task, io).await?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(io) = io {
+                        let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported,
+                            reason: "worker pull requires original native work",
+                        })?;
+                        let mut operation_io =
+                            crate::filesystem::PreparationIo::from_native_work(work)
+                                .map(crate::store::HistoryWork::new)?;
+                        crate::store::HistoryIo::retain_owned(
+                            &mut operation_io,
+                            std::mem::size_of::<crate::distributed::WorkPull>()
+                                .max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>())
+                                as u64,
+                        )?;
+                        let pull = self
+                            .host
+                            .pull_work(
+                                worker,
+                                Some(admission.operation_id),
+                                &mut Some(&mut operation_io),
+                            )
+                            .await?;
+                        io.absorb_native_custody(operation_io.into_custody()?)?;
+                        return Ok(pull);
+                    }
+                    self.host
+                        .pull_work(worker, Some(admission.operation_id), &mut None)
+                        .await
+                },
+                io,
+                observed::pull_has_native_failure,
+            )
+            .await?;
+            Ok(match pulled {
+                crate::distributed::WorkPull::Idle => None,
+                crate::distributed::WorkPull::Claimed(lease) => Some(
+                    self.resume_task(lease, commands, maximum_transitions, io)
+                        .await,
+                ),
+                crate::distributed::WorkPull::Unresolved { lease, error } => {
+                    Some(TaskWorkerAttempt::Unresolved { lease, error })
+                }
+            })
+        })?
+        .await
     }
 
     /// Resumes only this original lease and returns it unchanged on failure.
@@ -218,10 +228,13 @@ where
         maximum_transitions: u32,
         io: Option<&super::super::PreparationIo>,
     ) -> TaskWorkerAttempt {
-        match self
-            .run_task_observed(&lease, commands, maximum_transitions, io)
-            .await
-        {
+        let result = match crate::conversation::BoundedContentFuture::new(io, || {
+            self.run_task_observed(&lease, commands, maximum_transitions, io)
+        }) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        match result {
             Ok(progress) => TaskWorkerAttempt::Progress(progress.with_lease(lease)),
             Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
         }

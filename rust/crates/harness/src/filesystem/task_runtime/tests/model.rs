@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_TASK_RUNTIME_FUTURE_BYTES: usize = 4096;
+
 #[tokio::test]
 async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_expired_work()
 -> Result<()> {
@@ -152,9 +154,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
             &work,
         )?),
     )?;
-    let (attempt, custody) = runtime
-        .resume_task_with_native_work(lease, custody, &commands, 2, &work)
-        .await?;
+    let recovery = runtime.resume_task_with_native_work(lease, custody, &commands, 2, &work);
+    let bytes = std::mem::size_of_val(&recovery);
+    eprintln!("native resume future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native resume future is {bytes} bytes"
+    );
+    let (attempt, custody) = recovery.await?;
     let lease = match attempt {
         TaskWorkerAttempt::Unresolved {
             lease,
@@ -186,9 +193,15 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
             &work,
         )?),
     )?;
-    let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work)
-        .await?;
+    let recovery =
+        reopened.reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work);
+    let bytes = std::mem::size_of_val(&recovery);
+    eprintln!("native reconciliation future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native reconciliation future is {bytes} bytes"
+    );
+    let (attempt, custody) = recovery.await?;
     if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
         return Err(error);
     }
