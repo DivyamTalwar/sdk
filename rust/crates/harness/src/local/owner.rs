@@ -5,6 +5,8 @@ use std::{
     io::{Read, Write},
 };
 
+const MAXIMUM_OWNER_BYTES: u64 = 65_536;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Owner {
@@ -154,7 +156,7 @@ impl Owner {
                 storage(error)
             }
         })?;
-        if !metadata.is_file() || metadata.len() > 65_536 {
+        if !metadata.is_file() || metadata.len() > MAXIMUM_OWNER_BYTES {
             return Err(Error::Invalid("invalid local owner record".into()));
         }
         #[cfg(unix)]
@@ -169,11 +171,15 @@ impl Owner {
         let mut bytes = Vec::new();
         fs::File::open(path)
             .map_err(storage)?
-            .take(65_537)
+            .take(MAXIMUM_OWNER_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(storage)?;
         let owner =
-            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()));
+            acyclic_native_runtime::unprotect_with_copy(&bytes, MAXIMUM_OWNER_BYTES, |plain| {
+                serde_json::from_slice(plain)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })
+            .map_err(|error| Error::Invalid(error.to_string()));
         bytes.fill(0);
         owner
     }
@@ -190,7 +196,11 @@ impl Owner {
         let result = (|| {
             let mut file = options.open(&temporary)?;
             let mut bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
-            let written = file.write_all(&bytes);
+            let written = acyclic_native_runtime::protect_with_copy(
+                &bytes,
+                MAXIMUM_OWNER_BYTES,
+                |protected| file.write_all(protected),
+            );
             bytes.fill(0);
             written?;
             file.sync_all()?;
