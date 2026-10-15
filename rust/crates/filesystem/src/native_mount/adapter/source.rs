@@ -285,6 +285,15 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
+        if self.folds_names() {
+            checkout
+                .require_unique_folded_path(
+                    path,
+                    &mut crate::kernel::KernelAccounting::native(&work, cancellation),
+                    cancellation,
+                )
+                .await?;
+        }
         let value = checkout
             .lookup_no_follow_with_metadata(path, &work, cancellation)
             .await?;

@@ -448,7 +448,7 @@ impl FuseProjection {
                 if existing.node.kind != MountNodeKind::Regular {
                     return Err(libc::EISDIR.into());
                 }
-                self.confirm_names(child.key(), existing.node, &mut confirmed, work)?;
+                self.confirm_names(&child.spelled, existing.node, &mut confirmed, work)?;
                 let (open_file, lookup, _) =
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
                 (lookup, open_file, flags & libc::O_TRUNC != 0)
@@ -491,8 +491,7 @@ impl FuseProjection {
         let (attr, handle, open_flags) = created.inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
-        state.retain_spelling(inode, child)?;
+        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 }

@@ -33,6 +33,15 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )?;
+            if self.folds_names() {
+                checkout
+                    .require_unique_folded_path(
+                        &path,
+                        &mut crate::kernel::KernelAccounting::native(work, cancellation),
+                        cancellation,
+                    )
+                    .await?;
+            }
             let (page, source_allocation) = checkout
                 .list_directory_records(
                     &path,
@@ -47,6 +56,16 @@ where
             let mut entries = inputs.vec(page.entries.len())?;
             for entry in &page.entries {
                 inputs.items(1)?;
+                if self.folds_names() {
+                    checkout
+                        .require_unique_folded_name(
+                            path.components(),
+                            &entry.name,
+                            &mut crate::kernel::KernelAccounting::native(work, cancellation),
+                            cancellation,
+                        )
+                        .await?;
+                }
                 let (name, mut allocation) = native_mount_name(&entry.name, inputs.carrier)?;
                 inputs
                     .allocation

@@ -100,7 +100,8 @@ impl FuseProjection {
             let mut state = self.core.state()?;
             let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
             work.charge(Items.delta(1))?;
-            if let Some(inode) = state.inode_by_path.get(child.key()).copied()
+            if child.folded.is_none()
+                && let Some(inode) = state.inode_by_path.get(child.key()).copied()
                 && let Some(entry) = state.by_inode.get_mut(&inode)
                 && let Some(stamp) = entry
                     .binding(child.key())
@@ -117,7 +118,7 @@ impl FuseProjection {
                 entry.lookup_references = entry.lookup_references.saturating_add(1);
                 let lookup = entry.lookup;
                 let attr = state.attr(inode, &lookup)?;
-                let ttl = state.admit_entry(source, inode, &child, Some(stamp), work)?;
+                let ttl = state.admit_entry(source, inode, child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
             }
             if let Some(empty) = state
@@ -134,7 +135,7 @@ impl FuseProjection {
         let (found, stamp) = resolve_path(source, &child.spelled, work)?;
         let mut confirmed = HashMap::new();
         if let Some(lookup) = found {
-            self.confirm_names(child.key(), lookup.node, &mut confirmed, work)?;
+            self.confirm_names(&child.spelled, lookup.node, &mut confirmed, work)?;
         }
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
@@ -156,8 +157,7 @@ impl FuseProjection {
         let attr = state.attr(inode, &lookup).inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
-        state.retain_spelling(inode, child)?;
+        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -226,7 +226,7 @@ impl FuseProjection {
             None
         };
         let mut confirmed = HashMap::new();
-        self.confirm_names(child.key(), lookup.node, &mut confirmed, work)?;
+        self.confirm_names(&child.spelled, lookup.node, &mut confirmed, work)?;
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -243,8 +243,7 @@ impl FuseProjection {
         let attr = state.attr(inode, &lookup).inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
-        state.retain_spelling(inode, child)?;
+        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -354,7 +353,7 @@ impl FuseProjection {
         if from.key() != to.key() {
             state.invalidate_prefix(to.key(), work)?;
         }
-        state.rename_prefix(from.key(), to.key(), (&from.spelled, &to.spelled), work)?;
+        state.rename_prefix(from.key(), to.key(), &to.spelled, new_parent, work)?;
         Ok(())
     }
 
@@ -412,8 +411,7 @@ impl FuseProjection {
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
-        let ttl = state.admit_entry(source, inode, &to, current.stamp, work)?;
-        state.retain_spelling(inode, to)?;
+        let ttl = state.admit_entry(source, inode, to, current.stamp, work)?;
         Ok(Entry { attr, ttl })
     }
 }
