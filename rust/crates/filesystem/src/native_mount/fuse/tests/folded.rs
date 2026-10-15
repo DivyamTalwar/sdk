@@ -3,12 +3,55 @@ use crate::native_mount::fuse::FuseProjection;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-pub(super) fn folded_projection()
--> Result<(FuseProjection, Arc<MemorySource>), Box<dyn std::error::Error>> {
+pub(super) fn folded_projection(
+    directories: &[MountPath],
+) -> Result<(FuseProjection, Arc<MemorySource>), Box<dyn std::error::Error>> {
     let mut config = crate::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     config.unicode = crate::model::UnicodePolicy::Preserve;
     config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
-    let source = Arc::new(shared_sources(config)?.0);
+    let mut checkout = memory_checkout(
+        config,
+        crate::CheckoutMode {
+            access: crate::AccessMode::ReadWrite,
+            consistency: crate::ConsistencyMode::Pinned,
+            mutations: crate::MutationMode::PrivateOverlay,
+        },
+        1,
+    )?
+    .pop()
+    .ok_or("one checkout")?;
+    if !directories.is_empty() {
+        let mutations = directories
+            .iter()
+            .map(|path| {
+                let names = path
+                    .components()
+                    .iter()
+                    .map(|name| {
+                        crate::kernel::LogicalName::new(
+                            crate::kernel::NameEncoding::Utf8,
+                            name.clone(),
+                            config.limits.maximum_component_bytes,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, Box<dyn std::error::Error>>(crate::AuthoredMutation::CreateDirectory {
+                    path: crate::kernel::NamespacePath::new(names, config.limits)?,
+                    metadata: FileMetadata::default(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        runtime.block_on(checkout.apply_authored_transaction(
+            mutations,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        ))?;
+    }
+    let source = Arc::new(MemorySource::new(
+        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+        config,
+    )?);
     let core = projection_core(
         source.clone(),
         crate::WorkBudget::UNBOUNDED,
@@ -102,7 +145,7 @@ fn folded_legacy_collisions_cannot_reuse_a_warm_inode() -> TestResult {
 
 #[test]
 fn folded_nested_directory_stream_uses_parent_identity() -> TestResult {
-    let (projection, source) = folded_projection()?;
+    let (projection, source) = folded_projection(&[])?;
     let work = fuse_fixture_work();
     source.create_directory(&name("Dir"), FileMetadata::default(), &work)?;
     source.create_directory(
@@ -125,7 +168,7 @@ fn folded_nested_directory_stream_uses_parent_identity() -> TestResult {
 
 #[test]
 fn folded_alias_rename_rebases_parked_native_streams() -> TestResult {
-    let (projection, source) = folded_projection()?;
+    let (projection, source) = folded_projection(&[])?;
     let work = fuse_fixture_work();
     source.create_directory(&name("Dir"), FileMetadata::default(), &work)?;
     source.create_directory(
@@ -180,7 +223,7 @@ fn folded_alias_rename_rebases_parked_native_streams() -> TestResult {
 
 #[test]
 fn folded_expanding_directory_facts_keep_native_spelling() -> TestResult {
-    let (projection, source) = folded_projection()?;
+    let (projection, source) = folded_projection(&[])?;
     let work = fuse_fixture_work();
     let long = "ΐ".repeat(100);
     source.create_directory(&name(&long), FileMetadata::default(), &work)?;
