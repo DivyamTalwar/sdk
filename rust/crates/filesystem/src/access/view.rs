@@ -31,6 +31,26 @@ impl AccessView {
             .map_err(|_| InvalidPolicy("access view publication failed"))
     }
 
+    // Negative control: checking before the publication lock lets a stale
+    // writer replace a newer revision. This is never compiled into the library.
+    #[cfg(all(test, loom))]
+    pub(super) fn publish_unfenced(&self, view: PathTrie) -> Result<(), InvalidPolicy> {
+        let current = self.current()?;
+        if !view.same_binding(&current) || view.policy_version() < current.policy_version() {
+            return Err(InvalidPolicy("access view binding or revision changed"));
+        }
+        let view = Arc::new(view);
+        let previous = std::mem::replace(
+            &mut *self
+                .current
+                .write()
+                .map_err(|_| InvalidPolicy("access view publication failed"))?,
+            view,
+        );
+        drop(previous);
+        Ok(())
+    }
+
     /// Publish a revision after the owner authorizes and commits its policy edit.
     /// Binding changes and older policy revisions fail closed.
     pub fn publish(&self, view: PathTrie) -> Result<(), InvalidPolicy> {

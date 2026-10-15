@@ -58,18 +58,32 @@ fn compiled(version: u64, allow: bool, volume: &str) -> PathTrie {
     .expect("bounded model policy compiles")
 }
 
+type Publish = fn(&published::AccessView, PathTrie) -> Result<(), InvalidPolicy>;
+
 #[test]
 fn publication_is_atomic_and_pinned_handles_retain_their_view() {
-    loom::model(|| {
+    publication_model(published::AccessView::publish);
+}
+
+#[test]
+#[should_panic(expected = "revocation was lost")]
+fn unfenced_publication_reproduces_lost_revocation() {
+    publication_model(published::AccessView::publish_unfenced);
+}
+
+fn publication_model(publish: Publish) {
+    loom::model(move || {
         let views = loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project")));
         let initial = views.current().expect("initial view");
         let root = NamespacePath::new(Vec::new(), initial.config().limits).expect("root");
         let pinned = initial.pin(&root).expect("pinned handle");
-        let publisher = loom::sync::Arc::clone(&views);
+        let older = loom::sync::Arc::clone(&views);
         let writer = loom::thread::spawn(move || {
-            publisher
-                .publish(compiled(2, false, "project"))
-                .expect("publish revision");
+            let _stale_or_installed = publish(&older, compiled(2, true, "project"));
+        });
+        let newer = loom::sync::Arc::clone(&views);
+        let revoker = loom::thread::spawn(move || {
+            publish(&newer, compiled(3, false, "project")).expect("publish revocation");
         });
         let observed = views.current().expect("concurrent open");
         assert!(matches!(
@@ -77,15 +91,17 @@ fn publication_is_atomic_and_pinned_handles_retain_their_view() {
                 observed.policy_version(),
                 observed.decide(Action::Read, "", 0).allowed
             ),
-            (1, true) | (2, false)
+            (1, true) | (2, true) | (3, false)
         ));
         writer.join().expect("publisher finishes without deadlock");
+        revoker.join().expect("revoker finishes without deadlock");
         assert!(
             !views
                 .current()
                 .expect("new open")
                 .decide(Action::Read, "", 0)
-                .allowed
+                .allowed,
+            "revocation was lost"
         );
         assert!(pinned.decide(Action::Read, 0).allowed);
     });
@@ -93,23 +109,27 @@ fn publication_is_atomic_and_pinned_handles_retain_their_view() {
 
 #[test]
 fn racing_revisions_cannot_roll_back_or_replace_the_binding() {
-    loom::model(|| {
+    revision_model(published::AccessView::publish);
+}
+
+#[test]
+#[should_panic(expected = "policy revision rolled back")]
+fn unfenced_publication_reproduces_a_revision_rollback() {
+    revision_model(published::AccessView::publish_unfenced);
+}
+
+fn revision_model(publish: Publish) {
+    loom::model(move || {
         let views = loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project")));
         let publisher = loom::sync::Arc::clone(&views);
         let writer = loom::thread::spawn(move || {
-            let _stale_or_installed = publisher.publish(compiled(2, true, "project"));
-            assert!(
-                publisher
-                    .publish(compiled(4, true, "other-volume"))
-                    .is_err()
-            );
+            let _stale_or_installed = publish(&publisher, compiled(2, true, "project"));
+            assert!(publish(&publisher, compiled(4, true, "other-volume")).is_err());
         });
-        views
-            .publish(compiled(3, false, "project"))
-            .expect("latest revision");
+        publish(&views, compiled(3, false, "project")).expect("latest revision");
         writer.join().expect("publisher finishes without deadlock");
         let current = views.current().expect("current view");
-        assert_eq!(current.policy_version(), 3);
+        assert_eq!(current.policy_version(), 3, "policy revision rolled back");
         assert!(!current.decide(Action::Read, "", 0).allowed);
         assert_eq!(current.volume(), "project");
     });
