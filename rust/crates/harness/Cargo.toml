@@ -32,6 +32,11 @@ path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "client-commands"
+path = "tests/client_commands.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
