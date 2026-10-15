@@ -2,6 +2,7 @@ use super::*;
 use crate::HttpResponse;
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
+use proptest::prelude::*;
 use std::sync::{Arc, Mutex};
 
 struct Refresh {
@@ -180,4 +181,35 @@ fn unreadable_expiry_uses_eight_day_fallback() {
     assert!(needs_refresh(&auth, now));
     auth["last_refresh"] = json!("invalid");
     assert!(needs_refresh(&auth, now));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn accepted_auth_documents_have_a_lossless_canonical_codec(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+        if let Ok(auth) = decode_auth(&bytes) {
+            let bytes = serde_json::to_vec(&auth).unwrap();
+            prop_assert_eq!(decode_auth(&bytes).unwrap(), auth);
+        }
+    }
+
+    #[test]
+    fn unicode_credentials_and_unrelated_fields_survive_the_auth_codec(text in ".{0,128}") {
+        let mut document = auth(&format!("key{text}"));
+        document["agent_identity"] = json!({"arbitrary":text});
+        prop_assert_eq!(decode_auth(&serde_json::to_vec(&document).unwrap()).unwrap(), document);
+    }
+
+    #[test]
+    fn jwt_refresh_boundary_matches_the_signed_expiry(expiry in any::<i64>()) {
+        prop_assert_eq!(needs_refresh(&auth(&jwt(expiry)), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
+    }
+}
+
+#[test]
+fn checked_in_auth_seed_exercises_an_accepted_document() {
+    let seed = include_bytes!("../fuzz/corpus/provider_stream/auth.json");
+    assert!(decode_auth(&seed[1..]).is_ok());
+    crate::fuzzing::assert_stream_invariants(seed);
 }
