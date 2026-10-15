@@ -312,6 +312,7 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
         )])
         .with_context_capacity(capacity())
         .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
             observed: vec![],
             continuation: Some(vec![
                 ModelEvent::Content {
