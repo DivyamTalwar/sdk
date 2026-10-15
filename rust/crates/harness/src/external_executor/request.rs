@@ -27,7 +27,7 @@ pub struct ExternalRequest {
 pub enum ExternalAction {
     /// Attach a native executor to a task for this workspace.
     Attach {
-        /// Native workspace path resolved by the service.
+        /// Native workspace path resolved through the actor's volume binding.
         workspace: String,
     },
     /// Execute one original tool call.

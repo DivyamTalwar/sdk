@@ -22,16 +22,16 @@ fn host_events_create_the_same_task_request_actions() -> Result<()> {
         let actual = request(scenario.host, &scenario.event, scenario.input)?;
         assert_eq!(actual.session_id, "session");
         assert_eq!(
-            serde_json::to_value(&actual.action).map_err(invalid)?,
+            serde_json::to_value(&actual.action).map_err(|error| invalid(&error))?,
             scenario.action
         );
         assert!(
             operations.insert(actual.operation_id),
             "hook actions must have distinct identities"
         );
-        let bytes = serde_json::to_vec(&actual).map_err(invalid)?;
+        let bytes = serde_json::to_vec(&actual).map_err(|error| invalid(&error))?;
         assert_eq!(
-            serde_json::from_slice::<ExternalRequest>(&bytes).map_err(invalid)?,
+            serde_json::from_slice::<ExternalRequest>(&bytes).map_err(|error| invalid(&error))?,
             actual
         );
     }
@@ -47,18 +47,18 @@ fn retry_identity_does_not_turn_changed_arguments_into_another_operation() -> Re
         original
     );
     let mut changed = input.clone();
-    changed["tool_input"]["command"] = json!("ls");
+    set(&mut changed, "tool_input", json!({"command":"ls"}))?;
     let changed = request(ExternalHost::ClaudeCode, "PreToolUse", changed)?;
     assert_eq!(changed.operation_id, original.operation_id);
     assert_ne!(changed.action, original.action);
     let mut other_session = input.clone();
-    other_session["session_id"] = json!("other");
+    set(&mut other_session, "session_id", json!("other"))?;
     assert_ne!(
         request(ExternalHost::ClaudeCode, "PreToolUse", other_session)?.operation_id,
         original.operation_id
     );
     let mut child = input;
-    child["agent_id"] = json!("child");
+    set(&mut child, "agent_id", json!("child"))?;
     assert_ne!(
         request(ExternalHost::ClaudeCode, "PreToolUse", child)?.operation_id,
         original.operation_id
@@ -116,7 +116,7 @@ fn native_metadata_and_credentials_are_not_copied_into_requests() -> Result<()> 
             "transcript_path":"/private/transcript", "model":"native-model"
         }),
     )?;
-    let encoded = serde_json::to_string(&actual).map_err(invalid)?;
+    let encoded = serde_json::to_string(&actual).map_err(|error| invalid(&error))?;
     for private in [
         "private-secret",
         "transcript",
@@ -134,36 +134,55 @@ fn claude_manifest_drives_every_catalog_hook_without_codex_mcp() -> Result<()> {
         env!("CARGO_MANIFEST_DIR"),
         "/../../../plugin/claude/.claude-plugin/plugin.json"
     )))
-    .map_err(invalid)?;
-    let configured = manifest["hooks"]
-        .as_object()
+    .map_err(|error| invalid(&error))?;
+    let configured = manifest
+        .get("hooks")
+        .and_then(Value::as_object)
         .ok_or_else(|| Error::Invalid("Claude hooks missing".into()))?;
     assert_eq!(manifest, claude_manifest(env!("CARGO_PKG_VERSION")));
     assert_eq!(configured.len(), hooks(ExternalHost::ClaudeCode).count());
     for spec in hooks(ExternalHost::ClaudeCode) {
-        let handler = &configured[spec.event][0]["hooks"][0];
-        assert_eq!(handler["type"], "command");
-        assert_eq!(handler["command"], "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic");
+        let group = configured
+            .get(spec.event)
+            .and_then(Value::as_array)
+            .and_then(|groups| groups.first())
+            .ok_or_else(|| Error::Invalid(format!("{} hook group missing", spec.event)))?;
+        let handler = group
+            .pointer("/hooks/0")
+            .ok_or_else(|| Error::Invalid(format!("{} handler missing", spec.event)))?;
+        assert_eq!(handler.get("type").and_then(Value::as_str), Some("command"));
         assert_eq!(
-            handler["args"],
-            json!(["__hook", "claude-code", spec.event])
+            handler.get("command").and_then(Value::as_str),
+            Some("${CLAUDE_PLUGIN_ROOT}/../bin/acyclic")
         );
         assert_eq!(
-            handler["timeout"],
-            if spec.action == HookAction::Detach {
+            handler.get("args"),
+            Some(&json!(["__hook", "claude-code", spec.event]))
+        );
+        assert_eq!(
+            handler.get("timeout").and_then(Value::as_u64),
+            Some(if spec.action == HookAction::Detach {
                 3
             } else {
                 120
-            }
+            })
         );
         if matches!(spec.action, HookAction::RunTool | HookAction::ToolFinished) {
-            assert_eq!(configured[spec.event][0]["matcher"], ".*");
+            assert_eq!(group.get("matcher").and_then(Value::as_str), Some(".*"));
         }
     }
     assert!(manifest.get("mcpServers").is_none());
     Ok(())
 }
 
-fn invalid(error: serde_json::Error) -> Error {
+fn invalid(error: &serde_json::Error) -> Error {
     Error::Invalid(error.to_string())
+}
+
+fn set(value: &mut Value, field: &str, replacement: Value) -> Result<()> {
+    value
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("hook fixture must be an object".into()))?
+        .insert(field.into(), replacement);
+    Ok(())
 }

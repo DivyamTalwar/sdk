@@ -1,7 +1,7 @@
 {
   "name": "acyclic",
   "version": "0.2.0",
-  "description": "Run tools and fork subagents through the shared Acyclic harness service.",
+  "description": "Run tools and fork subagents through Acyclic harness actors.",
   "author": {
     "name": "Acyclic Labs"
   },
