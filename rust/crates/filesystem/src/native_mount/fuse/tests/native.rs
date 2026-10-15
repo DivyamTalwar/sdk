@@ -787,8 +787,10 @@ fn native_access_fuse_detaching_preserves_each_open_handle_policy()
         }
         let file = projection
             .core
-            .state()?
-            .file_handle(inode, handle)?
+            .state()
+            .map_err(NativeMountError::from)?
+            .file_handle(inode, handle)
+            .map_err(NativeMountError::from)?
             .open_file
             .clone();
         assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
