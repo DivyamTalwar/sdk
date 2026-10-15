@@ -13,7 +13,7 @@ fn commands_publish_generation_and_cursor_without_interleaving() {
                 for _ in 0..2 {
                     let state = state.clone();
                     commands.push(spawn(async move {
-                        serialized(&state, async |state| {
+                        serialized(&state, async |mut state| {
                             assert_eq!(state.1.take(), Some(state.0));
                             yield_now().await;
                             state.0 += 1;
@@ -40,7 +40,7 @@ fn cancellation_releases_the_guard_and_invalidates_the_cursor() {
                 let state = Arc::new(AsyncMutex::new(Some(0)));
                 let writing = state.clone();
                 let command = spawn(async move {
-                    serialized(&writing, async |cursor| {
+                    serialized(&writing, async |mut cursor| {
                         cursor.take();
                         yield_now().await;
                         *cursor = Some(1);
@@ -52,12 +52,52 @@ fn cancellation_releases_the_guard_and_invalidates_the_cursor() {
                 let _ = command.await;
                 // A cancelled capture leaves None, which forces the next
                 // command's baseline. An unstarted/completed capture is valid.
-                serialized(&state, async |cursor| {
+                serialized(&state, async |mut cursor| {
                     assert!(matches!(*cursor, None | Some(0 | 1)));
                     *cursor = Some(2);
                 })
                 .await;
                 assert_eq!(*state.lock().await, Some(2));
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn cancelled_waiter_keeps_a_submitted_jobs_guard_until_cleanup() {
+    shuttle::check_dfs(
+        || {
+            block_on(async {
+                let state = Arc::new(AsyncMutex::new((0, Some(0))));
+                let writing = state.clone();
+                let command = spawn(async move {
+                    serialized(&writing, async |state| {
+                        let backend = shuttle::thread::spawn(move || {
+                            guarded(state, |state| {
+                                assert_eq!(state.1.take(), Some(state.0));
+                                shuttle::thread::yield_now();
+                                state.0 += 1;
+                                state.1 = Some(state.0);
+                            });
+                        });
+                        yield_now().await;
+                        backend.join().unwrap();
+                    })
+                    .await;
+                });
+                yield_now().await;
+                command.abort();
+                let _ = command.await;
+                serialized(&state, async |mut state| {
+                    assert_eq!(state.1, Some(state.0));
+                    state.0 += 1;
+                    state.1 = Some(state.0);
+                })
+                .await;
+                let state = state.lock().await;
+                assert_eq!(state.1, Some(state.0));
+                assert!((1..=2).contains(&state.0));
             });
         },
         None,

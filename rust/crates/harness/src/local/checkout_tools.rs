@@ -6,7 +6,7 @@ use crate::{
 };
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 mod bash;
 mod capture;
@@ -24,7 +24,7 @@ pub(super) struct CheckoutTools {
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. The
     // inner executor cannot acquire checkout state; no reverse edge.
-    state: AsyncMutex<State>,
+    state: Arc<AsyncMutex<State>>,
 }
 
 struct State {
@@ -34,8 +34,21 @@ struct State {
 
 // Keep the whole command, including its publication and cursor replacement,
 // inside one guard. The async model exercises this same boundary.
-async fn serialized<T, R>(state: &AsyncMutex<T>, command: impl AsyncFnOnce(&mut T) -> R) -> R {
-    command(&mut *state.lock().await).await
+async fn serialized<T, R>(
+    state: &Arc<AsyncMutex<T>>,
+    command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> R,
+) -> R {
+    command(Arc::clone(state).lock_owned().await).await
+}
+
+// A submitted blocking job owns the guard until its body and cleanup finish,
+// even when its awaiting task is cancelled.
+fn guarded<T, R>(
+    mut state: OwnedMutexGuard<T>,
+    operation: impl FnOnce(&mut T) -> R,
+) -> (R, OwnedMutexGuard<T>) {
+    let result = operation(&mut *state);
+    (result, state)
 }
 
 impl CheckoutTools {
@@ -52,10 +65,10 @@ impl CheckoutTools {
             capture_policy,
             workspace,
             clock,
-            state: AsyncMutex::new(State {
+            state: Arc::new(AsyncMutex::new(State {
                 active: None,
                 watcher: None,
-            }),
+            })),
         })
     }
 }
@@ -119,7 +132,7 @@ impl ToolExecutor for CheckoutTools {
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            serialized(&self.state, async |state| {
+            serialized(&self.state, async |mut state| {
                 let State { active, watcher } = &mut *state;
                 let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                 self.capture(view, watcher, invocation.operation_id, 0)
@@ -135,7 +148,7 @@ impl ToolExecutor for CheckoutTools {
                     }
                     Ok(result)
                 } else {
-                    let result = self.bash(command, maximum).await;
+                    let (result, mut state) = self.bash(command, maximum, state).await?;
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(view, watcher, invocation.operation_id, 1)

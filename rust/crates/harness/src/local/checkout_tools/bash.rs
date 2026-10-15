@@ -5,9 +5,14 @@ use std::{process::Stdio, time::Duration};
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl CheckoutTools {
-    pub(super) async fn bash(&self, command: String, maximum_output: usize) -> Result<ToolResult> {
+    pub(super) async fn bash(
+        &self,
+        command: String,
+        maximum_output: usize,
+        state: OwnedMutexGuard<State>,
+    ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>)> {
         let workspace = Arc::clone(&self.workspace);
-        acyclic_native_runtime::run_blocking_io(move || {
+        acyclic_native_runtime::run_blocking_io(move || guarded(state, |_| {
             if acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)? != workspace.identity {
                 return Err(Error::Unauthorized("checkout root was replaced".into()));
             }
@@ -30,6 +35,6 @@ impl CheckoutTools {
                 }),
             };
             Ok(ToolResult { value })
-        }, None).map_err(Error::process_io)?.await.map_err(Error::process_io)?
+        }), None).map_err(Error::process_io)?.await.map_err(Error::process_io)
     }
 }
