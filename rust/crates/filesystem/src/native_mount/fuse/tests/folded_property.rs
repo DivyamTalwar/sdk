@@ -10,6 +10,7 @@ proptest! {
     fn directory_validation_agrees_with_volume_identity(
         names in prop::collection::btree_set(prop_oneof![
             "[a-zA-Z]{1,4}",
+            "\\p{L}{1,4}",
             prop::sample::select(vec!["Straße", "STRASSE", "ΟΣ", "ος", "ﬃ", "ffi", "İ", "i\u{307}", "ΐ"])
                 .prop_map(str::to_owned),
         ], 0..16),
