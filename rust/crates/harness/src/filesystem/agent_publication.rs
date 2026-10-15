@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 /// Plans one child root using its ignores and the destination's tracked paths.
 pub async fn plan_agent_merge(
+    filesystem: &LocalFs,
     state: &LocalCoreStateStore,
     source: &LocalLazyWorkspace,
     target: &Workspace<LocalAuthorityBackend, LocalObjectBackend>,
@@ -26,7 +27,21 @@ pub async fn plan_agent_merge(
     let tracked = GitCompatRepository::new(repository, state.clone())
         .tracked_paths()
         .await?;
-    let base = target
+    let ancestor_id = plan.common_ancestor_workspace_id();
+    let resolved;
+    let ancestor = if ancestor_id == target.id() {
+        target
+    } else if ancestor_id == workspace.id() {
+        workspace
+    } else {
+        resolved = acyclic_fs::WorkspaceResolver::resolve(
+            &(filesystem.clone(), WorkspaceGraph::new(state.clone())),
+            ancestor_id,
+        )
+        .await?;
+        &resolved
+    };
+    let base = ancestor
         .generation(
             plan.common_ancestor(),
             WorkBudget::UNBOUNDED,

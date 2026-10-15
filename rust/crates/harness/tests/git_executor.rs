@@ -293,16 +293,16 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .await?;
     }
     let plan =
-        acyclic_harness::filesystem::plan_agent_merge(&store, &child, main.workspace(), repo)
+        acyclic_harness::filesystem::plan_agent_merge(&fs, &store, &child, main.workspace(), repo)
             .await?;
     assert!(
         plan.child_wins_bindings
-            .contains(&"ignored/child.txt".to_owned())
+            .contains(&"/ignored/child.txt".to_owned())
     );
     assert!(
         plan.child_wins_bindings
-            .contains(&".acyclic-sdk/state".to_owned())
+            .contains(&"/.acyclic-sdk/state".to_owned())
     );
-    assert!(!plan.child_wins_bindings.contains(&"result.txt".to_owned()));
+    assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
     Ok(())
 }
