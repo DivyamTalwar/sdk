@@ -174,7 +174,7 @@ async fn real_socket_controls_authenticate_only_in_the_host() -> Result<()> {
     let endpoint = ServiceEndpoint::in_directory(directory.path().join("service"))?;
     let service = Arc::new(HarnessService::bind(endpoint.clone())?);
     let api = Arc::new(ControlProbe::new()?);
-    service.register("probe".into(), api.clone()).await?;
+    service.register("probe".into(), api.clone())?;
     let running = tokio::spawn(service.clone().serve());
     let client = LocalHarnessClient::new(endpoint, "probe".into());
     client.observe(api.request()?).await?;
