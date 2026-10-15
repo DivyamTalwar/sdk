@@ -6,7 +6,7 @@ impl WorkspaceGitExecutor<'_> {
         operation_id: OperationId,
         tree: GitTreeRef,
         paths: &[String],
-    ) -> Result<GitFilesystemResult, GitError> {
+    ) -> Result<GitFilesystemResult, Error> {
         let source = self.generation(tree).await?;
         let current = self
             .current

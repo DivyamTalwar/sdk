@@ -7,14 +7,8 @@ use acyclic_fs::{
     demand::native::NativeDemandSource,
     model::{Lifecycle, VolumeConfig},
 };
-use acyclic_harness::tools::git::{
-    WorkspaceGitExecutor, git_policy, git_workspace_tree, run_git_command,
-};
-use std::{
-    borrow::Cow,
-    sync::{Arc, Mutex},
-};
-use tokio::sync::Mutex as AsyncMutex;
+use acyclic_harness::tools::git;
+use std::{borrow::Cow, sync::Arc};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -99,34 +93,25 @@ async fn run(
     args: &[&str],
 ) -> Result<(GitCommandOutput, Option<Lazy>)> {
     let argv: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let tree = git_workspace_tree(lazy, &argv, None).await?;
-    let (ignore, merge_drivers) = git_policy(lazy).await?;
-    let executor = WorkspaceGitExecutor {
-        fs,
-        store,
-        current: lazy.workspace().clone(),
-        lazy_current: lazy,
-        repository_id,
-        ignore,
-        permit: PublicationPermit::Unrestricted,
-        lease: None,
-        merge_drivers,
-        merge_cache: AsyncMutex::new(Default::default()),
-        switched: Mutex::new(None),
-    };
-    let output = run_git_command(
-        &acyclic_fs::GitCompatRepository::new(repository_id, store.clone()),
+    let output = git::run(
+        git::Workspace {
+            filesystem: fs,
+            store,
+            view: lazy,
+            root: std::path::Path::new("."),
+            repository: repository_id,
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+        },
         &argv,
-        tree,
-        None,
-        "test",
-        1,
-        &executor,
     )
-    .await
-    .map_err(|error| format!("fs {args:?}: {error}"))?
-    .ok_or("pending git transition")?;
-    Ok((output, executor.switched_workspace()?))
+    .await?;
+    Ok((
+        output.command.ok_or("pending git transition")?,
+        output.switched,
+    ))
 }
 
 #[tokio::test]
@@ -214,6 +199,24 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .as_ref(),
         b"child\n"
     );
+    for (args, invalid) in [
+        (&["apply", "../escape.patch"][..], true),
+        (&["apply", "-"][..], true),
+        (&["fetch"][..], false),
+    ] {
+        let error = match run(&fs, &store, &main, repo, args).await {
+            Err(error) => error,
+            Ok(_) => return Err("invalid command unexpectedly succeeded".into()),
+        };
+        let error = error
+            .downcast_ref::<acyclic_harness::Error>()
+            .ok_or("lost harness error type")?;
+        if invalid {
+            assert!(matches!(error, acyclic_harness::Error::Invalid(_)));
+        } else {
+            assert!(matches!(error, acyclic_harness::Error::Unsupported(_)));
+        }
+    }
     for args in [
         &["diff"][..],
         &["grep", "child"],

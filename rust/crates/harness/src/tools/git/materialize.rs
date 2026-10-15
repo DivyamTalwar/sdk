@@ -1,7 +1,7 @@
 use super::*;
 
 /// Publishes git facade mutations into the ordinary checkout.
-pub struct RootMaterializingGitExecutor<'a> {
+pub(crate) struct RootMaterializingGitExecutor<'a> {
     /// Managed workspace executor.
     pub inner: WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
@@ -12,11 +12,11 @@ pub struct RootMaterializingGitExecutor<'a> {
 
 impl RootMaterializingGitExecutor<'_> {
     /// Publishes a generation transition into the checkout.
-    pub async fn materialize(
+    pub(crate) async fn materialize(
         &self,
         operation_id: OperationId,
         from: LocalGeneration,
-    ) -> Result<(), GitError> {
+    ) -> Result<(), Error> {
         let target = self
             .inner
             .switched
@@ -37,8 +37,9 @@ impl RootMaterializingGitExecutor<'_> {
         if from.id() == to {
             return Ok(());
         }
-        let operation_directory =
-            root_materialization_directory(self.root, operation_id).map_err(GitError)?;
+        let operation_directory = NativeDirectory(self.root)
+            .publication_directory(operation_id)
+            .map_err(Error::Storage)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
             expected_root_identity: None,
@@ -74,17 +75,19 @@ impl RootMaterializingGitExecutor<'_> {
             .remove_materialization_async(operation_id)
             .await
             .map_err(display)?;
-        remove_tree_checked(
-            &root_materialization_root(self.root).map_err(GitError)?,
-            &operation_directory,
+        NativeDirectory(
+            &NativeDirectory(self.root)
+                .publication_root()
+                .map_err(Error::Storage)?,
         )
+        .remove(&operation_directory)
         .map_err(display)?;
         Ok(())
     }
 }
 
 impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
-    type Error = GitError;
+    type Error = Error;
 
     async fn execute(
         &self,
