@@ -357,6 +357,12 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
                 format!("{}-0-0", dispatch.operation_id)
             );
         } else if adapter == Adapter::Responses {
+            for request in sent.iter() {
+                assert_eq!(
+                    json(&request.body)?["include"],
+                    json!(["reasoning.encrypted_content"])
+                );
+            }
             assert_eq!(
                 body["input"][2],
                 json!({

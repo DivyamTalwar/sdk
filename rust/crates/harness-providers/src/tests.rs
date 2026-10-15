@@ -15,6 +15,8 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
 
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
@@ -206,12 +208,13 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
             revision: "1".into(),
             options: json!({}),
         },
-        config: ProviderConfig {
+        config: Arc::new(ProviderSpec {
             adapter,
+            authentication: Authentication::ApiKey,
             base_url: "http://127.0.0.1:1234/v1".into(),
             models: BTreeMap::new(),
             max_event_bytes: 4096,
-        },
+        }),
         capacity: ModelContextCapacity {
             context_tokens: 8192,
             output_tokens: 1024,
@@ -340,8 +343,9 @@ async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
 fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
-    let mut config = ProviderConfig {
+    let mut config = ProviderSpec {
         adapter: Adapter::Chat,
+        authentication: Authentication::Optional,
         base_url: "https://example.test/v1".into(),
         models: BTreeMap::from([(
             "org/model".into(),

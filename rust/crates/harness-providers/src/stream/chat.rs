@@ -1,8 +1,8 @@
-use super::{ModelEvent, Result, State, Value, append, index, invalid, json, string, text};
+use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
 
-pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<Vec<ModelEvent>> {
-    state.identity(value);
-    state.usage(&value["usage"]);
+pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
+    state.identity(value)?;
+    state.usage(&value["usage"])?;
     let Some(choice) = value["choices"]
         .as_array()
         .and_then(|values| values.first())
@@ -13,7 +13,7 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
         if matches!(reason, "content_filter" | "error") {
             return Err(invalid("chat generation was blocked"));
         }
-        state.metadata.insert("finish_reason".into(), json!(reason));
+        state.finish_reason(reason)?;
         state.terminal = true;
     }
     let delta = &choice["delta"];
@@ -26,20 +26,20 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
             if raw.get("type").is_some_and(|kind| kind != "function") {
                 return Err(invalid("unsupported chat tool type"));
             }
-            let call = state.calls.entry(index).or_default();
+            let (call, budget) = state.call(index)?;
             if let Some(id) = raw.get("id") {
                 let id = string(id)?;
                 if !call.id.is_empty() && call.id != id {
                     return Err(invalid("tool call ID changed"));
                 }
-                call.id = id.into();
+                budget.string(&mut call.id, id)?;
             }
             if let Some(function) = raw.get("function") {
                 if !function.is_object() {
                     return Err(invalid("tool function must be an object"));
                 }
-                append(&mut call.name, function.get("name"), maximum)?;
-                append(&mut call.arguments, function.get("arguments"), maximum)?;
+                budget.append(&mut call.name, function.get("name"))?;
+                budget.append(&mut call.arguments, function.get("arguments"))?;
             }
         }
     }
