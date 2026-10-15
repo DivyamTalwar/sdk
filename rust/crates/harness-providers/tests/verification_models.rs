@@ -61,3 +61,6 @@ fn calibration_model(broken: bool) {
         );
     });
 }
+
+#[path = "models/refresh.rs"]
+mod refresh;

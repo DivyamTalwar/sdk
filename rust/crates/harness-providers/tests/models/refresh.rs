@@ -1,14 +1,5 @@
-//! Production guard with the cfg(loom) instrumented mutex implementation.
-#![cfg(not(target_arch = "wasm32"))]
-#[cfg(loom)]
-#[path = "../src/sync.rs"]
-mod sync;
-#[cfg(not(loom))]
-#[path = "../src/sync/loom.rs"]
-pub mod sync;
-
 mod refresh {
-    include!("../src/refresh.rs");
+    include!("../../src/refresh.rs");
 
     // Mutation: release ownership before the operation's I/O.
     pub async fn released_early<T>(
@@ -20,11 +11,11 @@ mod refresh {
     }
 }
 
-use std::task::{Context, Poll, Wake, Waker};
-use sync::{
+use crate::sync::{
     Arc, AsyncMutex,
     atomic::{AtomicUsize, Ordering},
 };
+use std::task::{Context, Poll, Wake, Waker};
 
 fn exclusion_model(broken: bool) {
     loom::model(move || {
