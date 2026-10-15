@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "feedback"
+    }
+  },
+  "prompt": "/bug"
+}

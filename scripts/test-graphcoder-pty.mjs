@@ -335,7 +335,7 @@ try {
   report.observations.approval = { operation_id: pending.operation_id, interaction: pending.interaction.id, action_digest: pending.action_digest };
   // Queue through actual interactive prompt while another original task is in the real provider.
   const modelFrom = active.text.length;
-  await active.command(`/resume ${manifest.leases.right}`, /original lease submitted for authoritative reconciliation/);
+  await active.command(`/resume-lease ${manifest.leases.right}`, /original lease submitted for authoritative reconciliation/);
   await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]{64})/, modelFrom);
   const queued = await active.command(`actual PTY queued input ${randomUUID()}`, /queued task=([0-9a-f-]+) admission-operation=([0-9a-f-]+)/);
   assert.ok(!visible(active.text.slice(modelFrom)).includes(`worker completed task=${right}`),
@@ -368,7 +368,7 @@ try {
   assert.deepEqual(await active.commandJson(`/outcome ${right}`, "task"), rightOutcome);
   const rootLeaseHash = hash(manifest.leases.root);
   const dispatchFrom = active.text.length;
-  await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
+  await active.command(`/resume-lease ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
   const dispatch = await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]{64})/, dispatchFrom);
   const rootModelOperation = modelExecutionOperation(root, manifest.callers.root.admission.input.model.operation_id);
   assert.equal(dispatch[1], rootModelOperation, "actual dispatch identity derives from the original admitted WorkflowCommand");
@@ -383,7 +383,7 @@ try {
   active = new PtySession("original-lease-recovery", configPath); await active.ready();
   await active.command(`/reconcile ${root}`, /retained=Some/);
   const recoveryFrom = active.text.length;
-  await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
+  await active.command(`/resume-lease ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
   await active.expect(new RegExp(`worker completed task=${escapeRegex(root)}`), recoveryFrom);
   const rootOutcome = await active.commandJson(`/outcome ${root}`, "task"); assert.ok(rootOutcome.outcome.Succeeded);
   assert.ok(rootOutcome.outcome.Succeeded.text.includes(dispatch[2]), "original root output binds its exact request digest");
@@ -400,7 +400,7 @@ try {
   const outcomes = new Map([[root, rootOutcome], [right, rightOutcome], [queued[1], cancelled]]);
   for (const label of ["left", "grandchild", "bootstrap_seed"]) {
     const from = active.text.length;
-    await active.command(`/resume ${manifest.leases[label]}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume-lease ${manifest.leases[label]}`, /original lease submitted for authoritative reconciliation/);
     await active.expect(new RegExp(`worker completed task=${escapeRegex(manifest.tasks[label])}`), from);
     const outcome = await active.commandJson(`/outcome ${manifest.tasks[label]}`, "task");
     assert.ok(outcome.outcome.Succeeded); outcomes.set(manifest.tasks[label], outcome);

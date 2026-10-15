@@ -154,7 +154,9 @@ pub(super) async fn execute(
     let harness = runtime.harness();
     let (name, argument) = command.split_once(' ').unwrap_or(("", command));
     let path = Path::new(argument);
-    if matches!(name, "/run" | "/claim" | "/resume") && workers.len() >= terminal::MAX_PAGE_EVENTS {
+    if matches!(name, "/run" | "/claim" | "/resume-lease")
+        && workers.len() >= terminal::MAX_PAGE_EVENTS
+    {
         return Err(Error::Invalid(
             "active frontend worker bound reached".into(),
         ));
@@ -249,7 +251,7 @@ pub(super) async fn execute(
                 "admission operation={operation} retained={found:?}\n"
             )));
         }
-        "/resume"  => [] {
+        "/resume-lease"  => [] {
             let lease = read_json(path)?;
             let native = Arc::clone(native);
             workers.spawn(async move { native.resume(lease).await });

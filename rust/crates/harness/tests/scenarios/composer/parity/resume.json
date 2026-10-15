@@ -1,0 +1,12 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "scope": "subtree",
+        "kind": "resume"
+      }
+    }
+  },
+  "prompt": "/resume"
+}

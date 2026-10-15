@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "kind": "cycle_mode"
+      }
+    }
+  },
+  "prompt": "/m"
+}

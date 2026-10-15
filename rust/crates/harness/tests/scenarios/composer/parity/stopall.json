@@ -1,0 +1,12 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "scope": "all",
+        "kind": "pause"
+      }
+    }
+  },
+  "prompt": "/stopall"
+}

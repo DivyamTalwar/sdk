@@ -2,7 +2,7 @@
 
 use acyclic_fs::Fs;
 use acyclic_harness::{
-    AgentId, Capabilities, IdempotencyKey, Result,
+    AgentId, Capabilities, Error, IdempotencyKey, Result,
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope, resolve_file_mentions},
     context::{ContextDiscoveryLimits, ContextRoot},
     conversation::{
@@ -15,6 +15,10 @@ use acyclic_harness::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+mod client_command_parity;
+#[path = "../src/client/commands/syntax.rs"]
+mod command_syntax;
 
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,

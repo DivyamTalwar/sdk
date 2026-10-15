@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "result": {
+      "kind": "confirm",
+      "request": {
+        "kind": "delete"
+      }
+    }
+  },
+  "prompt": "/del"
+}

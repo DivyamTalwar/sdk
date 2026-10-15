@@ -210,7 +210,7 @@ if (session) {
     active = new InstalledSession(session);
     await active.expect(/actual local Harness runtime/);
     await active.command(`/reconcile ${root[2]}`, /retained=Some/);
-    await active.command(`/resume ${lease}`, /worker completed task=/);
+    await active.command(`/resume-lease ${lease}`, /worker completed task=/);
     for (const task of [left[1], grandchild[1]]) {
       await active.command(`/run ${task}`, /worker completed task=/);
     }
@@ -458,14 +458,14 @@ if (scenarioDirectory) {
     const mailboxLeasePath = join(temporary, "mailbox-original-lease.json");
     writeFileSync(mailboxLeasePath, mailboxLeaseBytes);
     const mailboxStart = active.stdout.length;
-    await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume-lease ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     await active.expect(new RegExp(`worker suspended task=${mailbox.task} checkpoint=`), "stdout", mailboxStart);
     await active.commandJson(`/mail ${input({
       caller: root, lease: leases.root, recipient: mailbox.task,
       operation: randomUUID(), payload: manifest.files.root_project_before,
     })}`, "mail");
     const dispatchStart = active.stderr.length, modelStart = active.stdout.length;
-    await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume-lease ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     const mailboxDispatch = await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/, "stderr", dispatchStart);
     const consumed = await modelCheckpoint(active, mailbox.task, mailboxLease);
     await active.commandJson(`/context ${input({
@@ -643,7 +643,7 @@ if (scenarioDirectory) {
     ]) {
       const started = active.stdout.length;
       const dispatchedFrom = active.stderr.length;
-      await active.command(`/resume ${leasePath}`, /original lease submitted for authoritative reconciliation/);
+      await active.command(`/resume-lease ${leasePath}`, /original lease submitted for authoritative reconciliation/);
       const dispatch = await active.expect(
         /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
         "stderr", dispatchedFrom);
@@ -662,7 +662,7 @@ if (scenarioDirectory) {
     const rootLeaseBytes = readFileSync(manifest.leases.root);
     const rootDispatchStart = active.stderr.length;
     const rootStart = active.stdout.length;
-    await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume-lease ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
     const rootDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", rootDispatchStart);
@@ -686,7 +686,7 @@ if (scenarioDirectory) {
     assert.equal(readFileSync(nativeFacts.conflicting_edit_path, "utf8"), before.root);
     assert.equal(digest(nativeFacts.concurrent_edit_path), concurrentEditHash);
     const rootResumeStart = active.stdout.length;
-    await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume-lease ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
     await active.expect(new RegExp(`worker completed task=${root}`), "stdout", rootResumeStart);
     const rootOutcome = await active.commandJson(`/outcome ${root}`, "task");
     assert.ok(rootOutcome.outcome.Succeeded.text.includes(rootDispatch[2]));
@@ -695,7 +695,7 @@ if (scenarioDirectory) {
     snapshotInvocations([rootModelOperation]);
     const bootstrapStart = active.stdout.length;
     const bootstrapDispatchStart = active.stderr.length;
-    await active.command(`/resume ${manifest.leases.bootstrap_seed}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume-lease ${manifest.leases.bootstrap_seed}`, /original lease submitted for authoritative reconciliation/);
     const bootstrapDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", bootstrapDispatchStart);

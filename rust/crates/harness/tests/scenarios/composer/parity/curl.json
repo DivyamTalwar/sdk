@@ -1,0 +1,12 @@
+{
+  "expect": {
+    "result": {
+      "tool": "url_fetch",
+      "kind": "tool",
+      "input": {
+        "url": "echo @missing.txt"
+      }
+    }
+  },
+  "prompt": "/curl echo @missing.txt"
+}

@@ -19,6 +19,8 @@ pub(super) struct Composer {
     #[serde(default)]
     skills: Vec<String>,
     #[serde(default)]
+    themes: Vec<String>,
+    #[serde(default)]
     workspace: String,
     #[serde(default)]
     after_capture: BTreeMap<String, String>,
@@ -107,6 +109,7 @@ impl Composer {
         {
             Err(error) => Err(error),
             Ok(catalog) => {
+                let catalog = catalog.with_themes(self.themes)?;
                 if let Some(prefix) = &self.complete {
                     let names = || catalog.complete(prefix).map(|spec| spec.name.as_str());
                     if !self

@@ -31,3 +31,10 @@ path = "fuzz_targets/mcp_executable.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
+test = false
+doc = false
+bench = false

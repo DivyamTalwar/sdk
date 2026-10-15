@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "result": {
+      "kind": "prompt",
+      "text": "shell echo hi"
+    }
+  },
+  "prompt": "shell echo hi"
+}

@@ -16,7 +16,7 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /checkpoint FILE Observe real machine checkpoint: caller,lease\n\
     /run TASK   Drive one finite ordinary worker turn for this exact task\n\
     /claim TASK Retain/start an actual original owner lease without model dispatch\n\
-    /resume FILE Reconcile the original WorkLease JSON; never guess a new lease\n\
+    /resume-lease FILE Reconcile the original WorkLease JSON; never guess a new lease\n\
     /reconcile OPERATION  Observe a lost admission acknowledgement, without resend\n\
     /outcome TASK Observe the durable task result and distinct admission identity\n\
     /children FILE  Page direct children from task/revision/after JSON (max 16)\n\

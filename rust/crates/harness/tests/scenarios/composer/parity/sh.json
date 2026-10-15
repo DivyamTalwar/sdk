@@ -1,0 +1,12 @@
+{
+  "expect": {
+    "result": {
+      "tool": "bash",
+      "kind": "tool",
+      "input": {
+        "command": "echo @missing.txt"
+      }
+    }
+  },
+  "prompt": "/sh echo @missing.txt"
+}

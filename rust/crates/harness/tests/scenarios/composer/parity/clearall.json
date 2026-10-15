@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "result": {
+      "kind": "confirm",
+      "request": {
+        "kind": "clear_all"
+      }
+    }
+  },
+  "prompt": "/clearall"
+}

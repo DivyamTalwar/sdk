@@ -1,0 +1,12 @@
+{
+  "expect": {
+    "result": {
+      "tool": "web_search",
+      "kind": "tool",
+      "input": {
+        "query": "echo @missing.txt"
+      }
+    }
+  },
+  "prompt": "/search echo @missing.txt"
+}

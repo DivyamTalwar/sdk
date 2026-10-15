@@ -1,0 +1,12 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "kind": "theme",
+        "name": "Solarized Dark"
+      }
+    }
+  },
+  "prompt": "/theme solarized dark"
+}
