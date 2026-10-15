@@ -688,6 +688,55 @@ fn native_access_fuse_cached_content_cannot_bypass_new_open_revocation()
 }
 
 #[test]
+fn native_access_fuse_cached_metadata_requires_current_list_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    let (source, _) = shared_sources(posix_config())?;
+    let source = Arc::new(source);
+    let path = name("cached");
+    let work = fuse_fixture_work();
+    source.create_file(&path, FileMetadata::default(), None, &work)?;
+    let core = projection_core(
+        source.clone(),
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let projection = crate::native_mount::fuse::FuseProjection {
+        core,
+        skips_opendir: false,
+    };
+    let inode = projection
+        .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("cached"), &work)?
+        .attr
+        .ino
+        .0;
+    let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+    projection.node_attributes(inode, None, &work)?;
+    let stamp = source.view_stamp_with_meter(&work)?;
+    publish_test_access(
+        &source,
+        vec![deny("undisclosed", &[Action::List], "cached")],
+    )?;
+    assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
+    for result in [
+        projection
+            .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("cached"), &work)
+            .map(|_| ()),
+        projection.node_attributes(inode, None, &work).map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(NativeMountError::Source(MountSourceError::AccessDenied))
+        ));
+    }
+    // An open handle retains its original List decision; pathname metadata
+    // uses the latest policy even when the underlying namespace is unchanged.
+    projection.node_attributes(inode, Some(handle), &work)?;
+    Ok(())
+}
+
+#[test]
 fn native_access_fuse_detaching_preserves_each_open_handle_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::access::Action;

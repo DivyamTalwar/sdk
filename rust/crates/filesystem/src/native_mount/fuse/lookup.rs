@@ -99,6 +99,7 @@ impl FuseProjection {
         let child = {
             let mut state = self.core.state()?;
             let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
+            source.authorize_with_meter(&[(crate::access::Action::List, &child.spelled)], work)?;
             work.charge(Items.delta(1))?;
             if child.folded.is_none()
                 && let Some(inode) = state.inode_by_path.get(child.key()).copied()
@@ -173,6 +174,10 @@ impl FuseProjection {
             let mut state = self.core.state()?;
             match state.node_facts(source, inode, handle, work)? {
                 NodeFacts::Current(current) => {
+                    if let Some(path) = &current.through {
+                        source
+                            .authorize_with_meter(&[(crate::access::Action::List, path)], work)?;
+                    }
                     let attr = state.attr(inode, &current.lookup)?;
                     let ttl = state.admit_attributes(source, inode, current.stamp, work)?;
                     return Ok((attr, ttl));
