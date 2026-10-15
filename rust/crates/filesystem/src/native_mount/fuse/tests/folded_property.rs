@@ -51,59 +51,116 @@ proptest! {
         prop_assert_eq!(actual, expected);
     }
 
-    // Identity stays equal to the volume key; all I/O and parked streams retain
-    // the native spelling, including after a rename through another alias.
-    #[test]
-    fn aliases_preserve_identity_and_native_paths(
-        prefix in "[a-z]{0,3}",
-        pair in prop::sample::select(vec![
-            ("Dir", "dir"), ("ΟΣ", "ος"), ("Straße", "STRASSE"),
-            ("ﬃ", "FFI"), ("İ", "i\u{307}"), ("ΐ", "ΐ"),
+}
+
+fn alias_cases() -> impl Strategy<Value = (String, (&'static str, &'static str), usize)> {
+    (
+        "[a-z]{0,3}",
+        prop::sample::select(vec![
+            ("Dir", "dir"),
+            ("\u{39f}\u{3a3}", "\u{3bf}\u{3c2}"),
+            ("Stra\u{df}e", "STRASSE"),
+            ("\u{fb03}", "FFI"),
+            ("\u{130}", "i\u{307}"),
+            ("\u{390}", "\u{390}"),
         ]),
-        repetitions in 1..80usize,
-    ) {
-        let repetitions = repetitions.min(240 / pair.0.len().max(pair.1.len()));
-        let spelling = format!("{prefix}{}", pair.0.repeat(repetitions));
-        let alias = format!("{prefix}{}", pair.1.repeat(repetitions));
-        let original = name(&spelling);
-        let (projection, source) = folded::folded_projection(&[
-            original, name(&spelling).child(b"Child".to_vec()), name("new-parent"),
-        ]).map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let work = fuse_fixture_work();
-        let parent = folded::lookup(&projection, ROOT_INODE, &spelling, &work)?;
-        prop_assert_eq!(folded::lookup(&projection, ROOT_INODE, &alias, &work)?, parent);
-        let child = folded::lookup(&projection, parent, "Child", &work)?;
-        prop_assert_eq!(folded::lookup(&projection, parent, "child", &work)?, child);
-        let destination = folded::lookup(&projection, ROOT_INODE, "new-parent", &work)?;
-        {
-            let mut state = projection.core.state().map_err(NativeMountError::from)?;
-            for inode in [parent, child] {
-                let stream = state.directory_stream(source.as_ref(), inode, 0, &work)?;
-                let parking = state.streams.prepare_park(&work)?;
-                state.streams.park(inode, stream, parking);
+        1..80usize,
+    )
+}
+
+// All 64 alias cases retain their strategy, shrinking and assertions. Four
+// independent partitions let libtest run the expensive native fixtures in parallel.
+macro_rules! alias_properties {
+    ($($name:ident),+ $(,)?) => {$(
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(16))]
+            #[test]
+            fn $name((prefix, pair, repetitions) in alias_cases()) {
+                alias_case(prefix, pair, repetitions)?;
             }
         }
-        projection.rename_name(ROOT_INODE, std::ffi::OsStr::new(&alias), destination,
-            std::ffi::OsStr::new("Moved"), 0, &work)?;
+    )+};
+}
+
+alias_properties!(
+    aliases_preserve_identity_and_native_paths_a,
+    aliases_preserve_identity_and_native_paths_b,
+    aliases_preserve_identity_and_native_paths_c,
+    aliases_preserve_identity_and_native_paths_d,
+);
+
+// Identity equals the volume key; I/O and parked streams retain native spelling,
+// including after a rename through another alias.
+fn alias_case(prefix: String, pair: (&str, &str), repetitions: usize) -> TestCaseResult {
+    let repetitions = repetitions.min(240 / pair.0.len().max(pair.1.len()));
+    let spelling = format!("{prefix}{}", pair.0.repeat(repetitions));
+    let alias = format!("{prefix}{}", pair.1.repeat(repetitions));
+    let original = name(&spelling);
+    let (projection, source) = folded::folded_projection(&[
+        original,
+        name(&spelling).child(b"Child".to_vec()),
+        name("new-parent"),
+    ])
+    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let work = fuse_fixture_work();
+    let parent = folded::lookup(&projection, ROOT_INODE, &spelling, &work)?;
+    prop_assert_eq!(
+        folded::lookup(&projection, ROOT_INODE, &alias, &work)?,
+        parent
+    );
+    let child = folded::lookup(&projection, parent, "Child", &work)?;
+    prop_assert_eq!(folded::lookup(&projection, parent, "child", &work)?, child);
+    let destination = folded::lookup(&projection, ROOT_INODE, "new-parent", &work)?;
+    {
         let mut state = projection.core.state().map_err(NativeMountError::from)?;
-        for (inode, expected, parent_inode) in [
-            (parent, name("new-parent").child(b"Moved".to_vec()), destination),
-            (child, name("new-parent").child(b"Moved".to_vec()).child(b"child".to_vec()), parent),
-        ] {
-            let entry = state.by_inode.get(&inode).ok_or_else(|| TestCaseError::fail("missing inode"))?;
-            for binding in entry.bindings.iter() {
-                let (key, _) = source.folded_path_with_meter(binding.native_path(), &work)?
-                    .ok_or_else(|| TestCaseError::fail("expected folded identity"))?;
-                prop_assert_eq!(&*binding.path, &key);
-                prop_assert_eq!(state.inode_by_path.get(&key), Some(&inode));
-                let actual = source.lookup_with_meter(binding.native_path(), &work)?
-                    .ok_or_else(|| TestCaseError::fail("native spelling no longer resolves"))?;
-                prop_assert_eq!(actual.node.file_id, entry.lookup.node.file_id);
-            }
+        for inode in [parent, child] {
             let stream = state.directory_stream(source.as_ref(), inode, 0, &work)?;
-            prop_assert_eq!(&*stream.path, &expected);
-            prop_assert_eq!(stream.parent_inode, parent_inode);
-            source.read_directory_with_meter(&stream.path, None, 16, &work)?;
+            let parking = state.streams.prepare_park(&work)?;
+            state.streams.park(inode, stream, parking);
         }
     }
+    projection.rename_name(
+        ROOT_INODE,
+        std::ffi::OsStr::new(&alias),
+        destination,
+        std::ffi::OsStr::new("Moved"),
+        0,
+        &work,
+    )?;
+    let mut state = projection.core.state().map_err(NativeMountError::from)?;
+    for (inode, expected, parent_inode) in [
+        (
+            parent,
+            name("new-parent").child(b"Moved".to_vec()),
+            destination,
+        ),
+        (
+            child,
+            name("new-parent")
+                .child(b"Moved".to_vec())
+                .child(b"child".to_vec()),
+            parent,
+        ),
+    ] {
+        let entry = state
+            .by_inode
+            .get(&inode)
+            .ok_or_else(|| TestCaseError::fail("missing inode"))?;
+        for binding in entry.bindings.iter() {
+            let (key, _) = source
+                .folded_path_with_meter(binding.native_path(), &work)?
+                .ok_or_else(|| TestCaseError::fail("expected folded identity"))?;
+            prop_assert_eq!(&*binding.path, &key);
+            prop_assert_eq!(state.inode_by_path.get(&key), Some(&inode));
+            let actual = source
+                .lookup_with_meter(binding.native_path(), &work)?
+                .ok_or_else(|| TestCaseError::fail("native spelling no longer resolves"))?;
+            prop_assert_eq!(actual.node.file_id, entry.lookup.node.file_id);
+        }
+        let stream = state.directory_stream(source.as_ref(), inode, 0, &work)?;
+        prop_assert_eq!(&*stream.path, &expected);
+        prop_assert_eq!(stream.parent_inode, parent_inode);
+        source.read_directory_with_meter(&stream.path, None, 16, &work)?;
+    }
+    Ok(())
 }
