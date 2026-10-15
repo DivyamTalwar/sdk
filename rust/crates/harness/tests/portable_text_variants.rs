@@ -255,7 +255,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                     .call::<_, String>(
                         &whole,
                         ReadFileInput {
-                            file: written.file.clone()
+                            file: written.file.clone(),
+                            range: None,
                         }
                     )
                     .await?,

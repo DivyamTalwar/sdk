@@ -92,6 +92,92 @@ fn registry_merge_rejects_duplicates_before_mutating_destination() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Result<()> {
+    let mut custom = ToolRegistry::default();
+    custom.register((example_tool(), None), &mut None, None)?;
+    let mut second = example_tool();
+    second.definition.revision = "2".into();
+    custom.register((second, None), &mut None, None)?;
+    custom.select_model_version("example.echo", "2")?;
+    custom.remove_from_model("example.echo")?;
+    let mut combined = crate::tools::defaults()?;
+    combined.extend(custom)?;
+    assert!(combined.get("example.echo", None, None)?.is_none());
+    assert!(combined.get("example.echo", Some("1"), None)?.is_some());
+    assert!(combined.get("example.echo", Some("2"), None)?.is_some());
+    assert_eq!(combined.definitions(None)?.len(), 5);
+    combined.select_model_version("example.echo", "2")?;
+    assert_eq!(
+        combined
+            .get("example.echo", None, None)?
+            .map(|tool| tool.definition.revision.as_str()),
+        Some("2")
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn workspace_commands_reject_unbound_and_forged_calls_without_native_allocation() -> Result<()>
+{
+    let limits = Limits::default();
+    let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
+    run_admitted_file_case(&storage, limits, |task| async move {
+        let tools = crate::tools::defaults()?;
+        for name in ["bash", "fs"] {
+            let tool = tools
+                .get(name, None, None)?
+                .ok_or_else(|| Error::NotFound(name.into()))?;
+            let mut invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "bound".into(),
+                name: name.into(),
+                arguments: json!({"command":"status"}),
+            };
+            let context = runtime::ToolContext::new(
+                Arc::new(task.clone()),
+                invocation.operation_id,
+                &invocation.call_id,
+                None,
+            )?;
+            assert!(matches!(
+                tool.executor
+                    .authorize(None, Some(&context), &invocation, None),
+                Err(Error::Unsupported(_))
+            ));
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::default(),
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let before = work.receipt();
+            assert!(matches!(
+                tool.executor
+                    .authorize(None, Some(&context), &invocation, Some(&work)),
+                Err(Error::NativeBoundary {
+                    code: wire::ErrorCode::Unsupported,
+                    ..
+                })
+            ));
+            invocation.call_id = "forged".into();
+            assert!(matches!(
+                tool.executor
+                    .authorize(None, Some(&context), &invocation, Some(&work)),
+                Err(Error::NativeBoundary {
+                    code: wire::ErrorCode::Unauthorized,
+                    ..
+                })
+            ));
+            assert_eq!(work.receipt(), before);
+            assert_eq!(work.live_allocation_bytes(), 0);
+        }
+        Ok(())
+    })
+    .await
+}
+
 #[tokio::test]
 async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result<()> {
     struct Workspace(&'static str);
