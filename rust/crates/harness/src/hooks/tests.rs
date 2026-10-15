@@ -541,6 +541,82 @@ fn output_applies_context_tool_decisions_and_stop_blocking() -> Result<()> {
 }
 
 #[tokio::test]
+async fn invalid_structured_output_obeys_failure_policy_without_partial_decisions() -> Result<()> {
+    let invalid: &[&[u8]] = &[
+        b"{\"decision\":\"block\"",
+        b"{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\"}",
+        b"{\"decision\":\"block\"} trailing",
+        b"[",
+        br#"{"hookSpecificOutput":{"permissionDecision":false}}"#,
+        br#"{"hookSpecificOutput":{"permissionDecision":null}}"#,
+        br#"{"hookSpecificOutput":{"permissionDecision":"unknown"}}"#,
+        br#"{"continue":"false"}"#,
+        br#"{"continue":null}"#,
+        br#"{"stopReason":false}"#,
+        br#"{"decision":false}"#,
+        br#"{"decision":"unknown"}"#,
+        br#"{"reason":{}}"#,
+        br#"{"hookSpecificOutput":null}"#,
+        br#"{"hookSpecificOutput":[]}"#,
+        br#"{"hookSpecificOutput":false}"#,
+        br#"{"hookSpecificOutput":{"hookEventName":false}}"#,
+        br#"{"hookSpecificOutput":{"permissionDecisionReason":[]}}"#,
+        br#"{"hookSpecificOutput":{"additionalContext":false}}"#,
+        br#"{"hookSpecificOutput":{"updatedInput":null}}"#,
+        br#"{"decision":"block","hookSpecificOutput":{"updatedInput":[],"additionalContext":"discard"}}"#,
+        br#"{"continue":false,"hookSpecificOutput":{"permissionDecision":false}}"#,
+        b"[]", b"null", b"true", b"42", br#""block""#, b"\xff",
+    ];
+    let registry = registry()?;
+    for event in [
+        HookEvent::SessionStart,
+        HookEvent::PreToolUse,
+        HookEvent::PostToolUse,
+        HookEvent::Stop,
+    ] {
+        for policy in [HookFailure::Report, HookFailure::Block] {
+            let mut hooks = Hooks::default();
+            hooks.add_json(
+                &serde_json::to_vec(&json!({"hooks":{event.name():[{"hooks":[
+                    {"type":"command","command":"guard","failure":policy},
+                    {"type":"command","command":"remaining"}
+                ]}]}}))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            )?;
+            for bytes in invalid {
+                let finished = std::cell::Cell::new(0);
+                let output = hooks
+                    .run_commands(event, &json!({"tool_name":"bash"}), &registry, |hook| {
+                        finished.set(finished.get() + 1);
+                        let stdout = if command(hook) == "guard" {
+                            bytes.to_vec()
+                        } else {
+                            br#"{"hookSpecificOutput":{"additionalContext":"remaining"}}"#.to_vec()
+                        };
+                        std::future::ready(Ok((Some(0), stdout, vec![])))
+                    })
+                    .await?;
+                assert_eq!(finished.get(), 2);
+                assert_eq!(
+                    output.diagnostics.len(),
+                    1,
+                    "{event:?} {policy:?} {bytes:?}: {output:?}"
+                );
+                assert_eq!(
+                    output.blocked.is_some(),
+                    policy == HookFailure::Block,
+                    "{event:?} {policy:?} {bytes:?}: {output:?}"
+                );
+                assert_eq!(output.additional_context, ["remaining"]);
+                assert!(output.updated_input.is_none());
+                assert!(output.approval.is_none());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<()> {
     use futures::{FutureExt as _, channel::oneshot};
     use std::cell::Cell;
