@@ -403,10 +403,17 @@ async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<(
         &mut work,
     )
     .await?;
+    let error = run(&fs, &store, &main, main.workspace().id(), &["status"])
+        .await
+        .err()
+        .ok_or("oversized ignore rules unexpectedly loaded")?;
     assert!(
-        run(&fs, &store, &main, main.workspace().id(), &["status"])
-            .await
-            .is_err()
+        matches!(
+            error.downcast_ref::<acyclic_harness::Error>(),
+            Some(acyclic_harness::Error::NativeSource { source, .. })
+                if matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::TooLarge)
+        ),
+        "{error:?}"
     );
     acyclic_harness::filesystem::workspace_publication_coordinator(
         fs,
