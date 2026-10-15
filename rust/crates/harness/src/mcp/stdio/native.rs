@@ -25,7 +25,7 @@ use codec::BoundedCodec;
 pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
     timeout: Duration,
-    _process: Option<ProcessTree>,
+    _process: Option<std::sync::Mutex<ProcessTree>>,
 }
 
 impl StdioMcpTransport {
@@ -109,7 +109,7 @@ impl StdioMcpTransport {
         Ok(Self {
             service,
             timeout,
-            _process: process,
+            _process: process.map(std::sync::Mutex::new),
         })
     }
 
