@@ -16,3 +16,6 @@ pub use keymap::{Action, Binding, KEYMAP, keymap_help};
 pub use layout::{Cell, Layout, Row};
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
+
+#[cfg(feature = "tui")]
+pub mod term;
