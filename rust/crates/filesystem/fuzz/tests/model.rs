@@ -2,6 +2,9 @@
 #![cfg(acyclic_fs_loom)]
 use acyclic_fs::{Digest, ObjectId, ObjectKind};
 
+#[path = "../../src/sync.rs"]
+mod sync;
+
 fn key(byte: u8) -> ObjectId {
     ObjectId {
         kind: ObjectKind::TreePage,

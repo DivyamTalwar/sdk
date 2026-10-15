@@ -1,11 +1,5 @@
-#[cfg(acyclic_fs_loom)]
-pub(super) use loom::sync::Arc as Shared;
-#[cfg(acyclic_fs_loom)]
-use loom::sync::Mutex;
-#[cfg(not(acyclic_fs_loom))]
-pub(super) use std::sync::Arc as Shared;
-#[cfg(not(acyclic_fs_loom))]
-use std::sync::Mutex;
+pub(super) use crate::sync::Arc as Shared;
+use crate::sync::Mutex;
 
 use crate::ObjectId;
 
