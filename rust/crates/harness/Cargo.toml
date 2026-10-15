@@ -27,6 +27,10 @@ path = "tests/default_tools.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "task_view"
+path = "tests/task_view.rs"
+
+[[test]]
 name = "filesystem_access"
 path = "tests/filesystem_access.rs"
 

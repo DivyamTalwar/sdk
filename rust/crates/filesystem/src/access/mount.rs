@@ -44,6 +44,17 @@ impl MountMode {
 }
 
 impl PathTrie {
+    /// Conservative permission union for a mount and its descendants. This only
+    /// selects physical mount restrictions; callbacks must check the exact path
+    /// with `decide`. The bounded compiled graph is traversed once, without
+    /// opening files. Invalid native names may widen this upper bound.
+    #[must_use]
+    pub fn subtree_mode(&self, path: &str, now: u64) -> MountMode {
+        MountMode {
+            actions: self.subtree_action_mask(path, now),
+        }
+    }
+
     /// Derive native mount metadata, including preparation of the raw path.
     /// A stale, expired or malformed view projects no permissions.
     #[must_use]

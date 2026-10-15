@@ -1,6 +1,19 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub(super) fn work()
+-> std::result::Result<acyclic_fs::NativeMaterializationWork, Box<dyn std::error::Error>> {
+    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
+    if let Some(fields) = allowances.as_object_mut() {
+        for value in fields.values_mut() {
+            *value = json!(1_000_000);
+        }
+    }
+    let budget = serde_json::from_value(allowances)?;
+    acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work }.into())
+}
+
 #[derive(Default)]
 pub(super) struct Output {
     stdout: AtomicUsize,

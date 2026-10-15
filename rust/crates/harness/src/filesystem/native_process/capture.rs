@@ -15,8 +15,30 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
 ) -> Result<Option<NativeProcessResult>> {
     owner.verify(false, &mut None).await?;
     let check_owner = Arc::clone(owner);
-    let invocation = request.clone();
+    let invocation = Invocation::from(request);
     let runtime = tokio::runtime::Handle::current();
+    let control_timeout = Duration::from_millis(u64::from(invocation.control_timeout_ms));
+    let check = move || {
+        runtime
+            .block_on(tokio::time::timeout(
+                control_timeout,
+                check_owner.verify(false, &mut None),
+            ))
+            .map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
+            })?
+            .map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
+            })
+    };
+    capture_checked(invocation, observer, check).await
+}
+
+pub(crate) async fn capture_checked(
+    invocation: Invocation,
+    observer: Option<Arc<NativeProcessObserver>>,
+    check: impl Fn() -> std::io::Result<()> + Send + 'static,
+) -> Result<Option<NativeProcessResult>> {
     let output = tokio::task::spawn_blocking(move || {
         let mut command = Command::new(&invocation.executable);
         command
@@ -33,19 +55,6 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
             )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let check = || {
-            runtime
-                .block_on(tokio::time::timeout(
-                    Duration::from_millis(u64::from(invocation.control_timeout_ms)),
-                    check_owner.verify(false, &mut None),
-                ))
-                .map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-                })?
-                .map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-                })
-        };
         check()?;
         let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
         let mut next_check = std::time::Instant::now();

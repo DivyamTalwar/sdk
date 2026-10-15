@@ -196,12 +196,14 @@ where
             None,
         )
         .await?;
+    let work = capture::work()?;
     let runtime = task::open(
         stream.clone(),
         files.clone(),
         results_volume.clone(),
         &issuer,
         &scope,
+        &work,
     )
     .await?;
     let WorkPull::Claimed(lease) = runtime
@@ -258,16 +260,7 @@ where
     } else {
         tempfile::tempdir()?
     };
-    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
-    if let Some(fields) = allowances.as_object_mut() {
-        for value in fields.values_mut() {
-            *value = json!(1_000_000);
-        }
-    }
-    let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let work_per_volume = work.budget();
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
     let fence = LeaseFence::from(&lease.reservation);
     let owner = runtime

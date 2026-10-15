@@ -28,37 +28,19 @@ impl NativeProcessRequest {
             drop(exchange.exchange(None)?);
         }
         if (self.mcp_stdio.is_some() && self.standard_input.is_some())
-            || !self.executable.is_absolute()
-            || !self.cwd.is_absolute()
-            || !self.view.options.root.is_absolute()
-            || !self.cwd.starts_with(&self.view.options.root)
-            || self
-                .cwd
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
             || !self.has_valid_capture_allowances()
-            || self.environment.iter().any(|(key, value)| {
-                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
-            })
-            || self.argv.iter().any(|arg| arg.contains('\0'))
         {
             return Err(Error::Invalid(
-                "invalid or changed native process invocation".into(),
+                "invalid native process capture allowances".into(),
             ));
         }
-        #[cfg(windows)]
-        if self
-            .environment
-            .keys()
-            .map(|key| key.to_uppercase())
-            .collect::<BTreeSet<_>>()
-            .len()
-            != self.environment.len()
-        {
-            return Err(Error::Invalid(
-                "duplicate native environment key under Windows case folding".into(),
-            ));
-        }
+        invocation::validate(
+            &self.executable,
+            &self.cwd,
+            &self.view.options.root,
+            &self.environment,
+            &self.argv,
+        )?;
         Ok(())
     }
 
@@ -99,8 +81,10 @@ pub struct NativeProcessAuthority {
 }
 
 mod capture;
+mod invocation;
 pub use capture::NativeProcessObserver;
 use capture::capture;
+use invocation::Invocation;
 
 /// Optional provider for one retained task command. Construction launches nothing.
 pub struct NativeProcessProvider<P, A, O> {
