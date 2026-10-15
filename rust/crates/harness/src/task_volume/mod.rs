@@ -156,10 +156,12 @@ pub struct TaskVolume<P: ?Sized> {
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
-        if matches!(
-            provider.tail(path.clone()).await,
-            Err(StreamError::NotFound)
-        ) {
+        let initialize = match provider.tail(path.clone()).await {
+            Ok(0) | Err(StreamError::NotFound) => true,
+            Ok(_) => false,
+            Err(error) => return Err(error.into()),
+        };
+        if initialize {
             let header = Header {
                 volume: Uuid::new_v4(),
                 epoch: Uuid::new_v4(),
@@ -225,6 +227,18 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     async fn refresh(&self, index: &mut Index) -> Result<()> {
         let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
         if tail < index.next {
+            return Err(Error::ResetRequired);
+        }
+        let mut anchor = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from: index.next - 1,
+                limit: 1,
+            })
+            .await?;
+        let anchor = anchor.next().await.ok_or(Error::ResetRequired)??;
+        if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
             return Err(Error::ResetRequired);
         }
         while index.next < tail {

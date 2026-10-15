@@ -70,7 +70,7 @@ pub type ChangeStream = acyclic_stream::BoxProviderStream<'static, Result<Change
 pub struct Observation {
     /// Present for an initial query or explicit reset.
     pub snapshot: Option<Snapshot>,
-    /// A supplied cursor was incompatible with this history or selection.
+    /// The supplied cursor or cached head was incompatible with this history or selection.
     pub reset: bool,
     /// Changes after the supplied cursor or snapshot's atomic cut.
     pub changes: ChangeStream,
@@ -217,18 +217,27 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         // An incompatible accepted cursor may refer to a lost, subsequently reused
         // position. Reconstruct from the provider rather than an old cached head.
-        let fresh;
-        let volume = if supplied {
-            fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
-            &fresh
+        let snapshot = if supplied {
+            Err(Error::ResetRequired)
         } else {
-            self
+            self.snapshot(&query, maximum_files).await
         };
-        let snapshot = volume.snapshot(&query, maximum_files).await?;
-        let changes = volume.follow(query, snapshot.cursor.clone()).await?;
+        let (snapshot, changes, reset) = match snapshot {
+            Ok(snapshot) => {
+                let changes = self.follow(query, snapshot.cursor.clone()).await?;
+                (snapshot, changes, false)
+            }
+            Err(Error::ResetRequired) => {
+                let fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
+                let snapshot = fresh.snapshot(&query, maximum_files).await?;
+                let changes = fresh.follow(query, snapshot.cursor.clone()).await?;
+                (snapshot, changes, true)
+            }
+            Err(error) => return Err(error),
+        };
         Ok(Observation {
             snapshot: Some(snapshot),
-            reset: supplied,
+            reset,
             changes,
         })
     }

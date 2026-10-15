@@ -1,5 +1,7 @@
 //! Task namespace and durable query scenario coverage.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use acyclic_harness::task_volume::{
     Channel, Component, Cursor, Error, FileKey, Owner, Query, TaskVolume, Write,
 };
@@ -18,6 +20,8 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 mod acceptance;
 #[path = "task_volume/heads.rs"]
 mod heads;
+#[path = "task_volume/recovery.rs"]
+mod recovery;
 
 #[derive(Deserialize)]
 struct Input {
