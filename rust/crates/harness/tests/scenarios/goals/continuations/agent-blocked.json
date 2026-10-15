@@ -4,6 +4,6 @@
     "completed","metadata":null}],"Settled"],
   "settles":2,
   "expect":{"result":{"continuations":1,"requests":3,"settles":2,"actions":["continue","stop"]},"view":{"status":"blocked"},"files":
-    {"GOAL.md":"---\nstatus: blocked\n---\nShip the change\n"}},
+    {"GOAL.md":"---\nstatus: blocked\n---\nShip the change\n"},"unchanged_goal":false},
   "max_steps":2
 }

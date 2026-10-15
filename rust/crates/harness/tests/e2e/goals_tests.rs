@@ -32,7 +32,7 @@ proptest! {
         let case = GoalCase::parse(json!({"seed":{"GOAL.md":body},
             "prompt":body, "turns":turns, "max_steps":if streamed { 2 } else { 1 },
             "policy":{"max_continuations":limit},
-            "expect":{"text":answer, "request_prompt":body, "result":{"requests":1},
+            "expect":{"text":answer, "request_prompt":body, "unchanged_goal":!streamed, "result":{"requests":1},
                 "view":{"markdown":body}, "files":{"GOAL.md":body}}})).unwrap();
         let canonical = serde_json::to_value(case).unwrap();
         let bytes = serde_json::to_vec(&canonical).unwrap();
@@ -134,6 +134,14 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
             "accepted changed {mutation}"
         );
     }
+    let mut editing =
+        crate::scenario::load_value(&root, &root.join("goals/continuations/agent-done.json"))?;
+    crate::drivers::run(editing.clone()).await?;
+    editing["expect"]["unchanged_goal"] = json!(true);
+    assert!(
+        crate::drivers::run(editing).await.is_err(),
+        "ignored the per-settle goal revision assertion"
+    );
     Ok(())
 }
 
@@ -142,6 +150,9 @@ fn goal_schema_rejects_unknown_fields_and_vacuous_assertions() {
     let baseline = json!({"prompt":"Continue", "turns":["Settled"],
         "expect":{"text":"Settled", "request_prompt":"Continue", "result":{"requests":1}, "view":{"status":"active"}, "files":{"GOAL.md":"Goal"}}});
     GoalCase::parse(baseline.clone()).unwrap();
+    let mut unseeded = baseline.clone();
+    unseeded["expect"]["unchanged_goal"] = json!(true);
+    assert!(GoalCase::parse(unseeded).is_err());
     for (field, mut replacement) in [
         ("typo", json!(true)),
         ("settles", json!(-1)),

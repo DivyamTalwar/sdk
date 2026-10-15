@@ -86,6 +86,14 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     let mut actions = Vec::new();
     for _ in 0..case.settles {
         let view = read_goal(&storage).await?;
+        if case.expect.unchanged_goal
+            && Some(view.revision())
+                != initial
+                    .as_ref()
+                    .map(|(source, _)| *source.descriptor().sha256())
+        {
+            return Err("goal changed before the continuation policy settled it".into());
+        }
         let action = case
             .policy
             .on_settle(&view, task, settled_turn, admitted.len() as u32);

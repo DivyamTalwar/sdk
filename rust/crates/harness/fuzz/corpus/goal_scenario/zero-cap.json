@@ -1,11 +1,1 @@
-{
-  "driver":"goal-executor",
-  "prompt":"Continue working toward GOAL.md.",
-  "turns":["Settled"],
-  "expect":{"text":"Settled","request_prompt":"Continue working toward GOAL.md.","result":{"continuations":0,"settles":1,"requests":1,
-    "actions":["block"]},"view":{"status":"blocked","markdown":"Ship the change\n","reason":"Maximum goal continuations reached (limit 0)."},
-    "files":{"GOAL.md":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 0).\"\n---\nShip the change\n"}},
-  "seed":{"GOAL.md":"Ship the change\n"},
-  "settles":1,
-  "policy":{"max_continuations":0}
-}
+{"driver":"goal-executor","prompt":"Continue working toward GOAL.md.","turns":["Settled"],"expect":{"text":"Settled","request_prompt":"Continue working toward GOAL.md.","result":{"continuations":0,"settles":1,"requests":1,"actions":["block"]},"view":{"status":"blocked","markdown":"Ship the change\n","reason":"Maximum goal continuations reached (limit 0)."},"files":{"GOAL.md":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 0).\"\n---\nShip the change\n"},"unchanged_goal":true},"seed":{"GOAL.md":"Ship the change\n"},"settles":1,"policy":{"max_continuations":0}}

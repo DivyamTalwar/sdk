@@ -28,6 +28,8 @@ fn one_step() -> u32 {
 pub(super) struct Expectations {
     pub text: String,
     pub request_prompt: String,
+    #[serde(default)]
+    pub unchanged_goal: bool,
     pub result: Value,
     pub view: Option<Value>,
     pub error: Option<String>,
@@ -51,6 +53,9 @@ impl GoalCase {
         }
         if !case.expect.files.contains_key("GOAL.md") {
             return Err("assert final GOAL.md bytes or absence".into());
+        }
+        if case.expect.unchanged_goal && !case.seed.contains_key("GOAL.md") {
+            return Err("unchanged goal assertion requires a GOAL.md seed".into());
         }
         Ok(case)
     }

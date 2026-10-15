@@ -6,6 +6,7 @@
   "policy":{"max_continuations":1},
   "expect":{"result":{"continuations":1,"requests":3,"settles":2,"actions":["continue","block"]},"view":{"status":"blocked","reason":
     "Maximum goal continuations reached (limit 1).","markdown":"Ship the change and all tests\n"},"files":{"GOAL.md":
-    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 1).\"\n---\nShip the change and all tests\n"}},
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 1).\"\n---\nShip the change and all tests\n"},"unchanged_goal":
+    false},
   "max_steps":2
 }
