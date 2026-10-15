@@ -192,7 +192,7 @@ impl StockExecution<'_> {
                 crate::model::charge_items(self.io, 1)?;
                 for part in message.content.parts() {
                     crate::model::charge_items(self.io, 1)?;
-                    if matches!(part, crate::model::ModelContentPart::ToolCall { .. }) {
+                    if matches!(part, crate::model::ModelContentPart::ToolCall(_)) {
                         tools_required = true;
                         break;
                     }

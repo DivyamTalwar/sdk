@@ -115,11 +115,13 @@ impl ModelProvider for PrefixModel {
         requests.push((request, reuse));
         let mut events = Vec::new();
         if requests.len() == 1 {
-            events.push(Ok(ModelEvent::ToolCall {
-                call_id: "fork-plan".into(),
-                name: "example.fork".into(),
-                arguments: self.children.clone(),
-            }));
+            events.push(Ok(ModelEvent::ToolCall(
+                acyclic_harness::model::ToolCall::new(
+                    "fork-plan".into(),
+                    "example.fork".into(),
+                    self.children.clone(),
+                ),
+            )));
         }
         events.push(Ok(ModelEvent::Completed {
             metadata: Value::Null,

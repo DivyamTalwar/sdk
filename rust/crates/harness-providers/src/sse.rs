@@ -39,6 +39,6 @@ pub(crate) fn decode<'a>(
                 }
             }
         }
-        if !line.is_empty() || !data.is_empty() { Err(invalid("truncated SSE event"))?; }
+        if !line.is_empty() || !data.is_empty() { Err(acyclic_harness::Error::Storage("truncated SSE event".into()))?; }
     })
 }

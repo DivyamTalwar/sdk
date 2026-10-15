@@ -37,34 +37,74 @@ pub(crate) fn count(
 ) -> Result<ModelTokenCount> {
     let request = prepared.request();
     let mut fixed = body(provider, request)?;
+    let body_bytes = encoded_len(&fixed)?;
     let field = match provider.config.adapter {
         Adapter::Responses => "input",
         Adapter::Gemini => "contents",
         _ => "messages",
     };
     fixed[field] = json!([]);
-    // One token per encoded byte is a conservative bound for text byte-tokenizers.
-    // Count provider JSON escaping and per-message protocol framing as well.
-    let size = |value: &Value| -> Result<u32> {
-        let bytes = serde_json::to_vec(value).map_err(|error| invalid(error.to_string()))?;
-        u32::try_from(bytes.len().saturating_add(64))
-            .map_err(|_| invalid("token count exceeds u32"))
-    };
-    let message_tokens = request
+    if let Some(map) = fixed.as_object_mut() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if provider.codex_login.is_some() {
+            map.remove("instructions");
+        }
+        match provider.config.adapter {
+            Adapter::Anthropic => {
+                map.remove("system");
+            }
+            Adapter::Gemini => {
+                map.remove("systemInstruction");
+            }
+            _ => {}
+        }
+    }
+    // Include protocol escaping/framing and calibrate the selected model from actual usage.
+    let message_bytes = request
         .messages
         .iter()
         .map(|message| {
-            size(&Value::Array(project_message(
+            encoded_len(&Value::Array(project_message(
                 provider.config.adapter,
                 message,
             )?))
         })
         .collect::<Result<Vec<_>>>()?;
+    let total_messages: usize = message_bytes.iter().sum();
+    let fixed_bytes = encoded_len(&fixed)?.max(body_bytes.saturating_sub(total_messages));
+    let tokens = |bytes| {
+        provider
+            .estimator
+            .tokens(bytes)
+            .ok_or_else(|| invalid("token count exceeds u32"))
+    };
     Ok(ModelTokenCount {
         request_digest: prepared.request_digest(),
-        fixed_tokens: size(&fixed)?,
-        message_tokens,
+        fixed_tokens: tokens(fixed_bytes)?,
+        message_tokens: message_bytes
+            .into_iter()
+            .map(tokens)
+            .collect::<Result<_>>()?,
     })
+}
+
+fn encoded_len(value: &Value) -> Result<usize> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("token size overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Counter(0);
+    serde_json::to_writer(&mut count, value).map_err(|error| invalid(error.to_string()))?;
+    Ok(count.0)
 }
 
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
@@ -72,6 +112,11 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
     let mut messages = Vec::new();
     let mut system = Vec::new();
     for message in &request.messages {
+        #[cfg(not(target_arch = "wasm32"))]
+        if provider.codex_login.is_some() && message.role == ModelRole::System {
+            system.push(text_content(&message.content)?);
+            continue;
+        }
         if message.role == ModelRole::System
             && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         {
@@ -110,6 +155,17 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             }
         }
         Adapter::Responses => {
+            let include = map
+                .entry("include")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| invalid("Responses include must be an array"))?;
+            if !include
+                .iter()
+                .any(|item| item == "reasoning.encrypted_content")
+            {
+                include.push(json!("reasoning.encrypted_content"));
+            }
             map.insert("input".into(), json!(messages));
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
@@ -118,10 +174,12 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
+                map.insert("instructions".into(), json!(system.join("\n\n")));
                 map.insert("tool_choice".into(), json!("auto"));
                 map.insert("parallel_tool_calls".into(), json!(true));
-                map.entry("reasoning").or_insert(Value::Null);
-                map.entry("include").or_insert_with(|| json!([]));
+                if map.get("reasoning").is_some_and(Value::is_null) {
+                    map.remove("reasoning");
+                }
             }
         }
         Adapter::Anthropic => {
@@ -170,15 +228,48 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
         match part {
             ModelContentPart::Text { text } => texts.push(text.clone()),
             ModelContentPart::File { file, policy } => texts.push(file_text(file, policy)?),
-            ModelContentPart::ToolCall { call_id, name, arguments } => calls.push(match adapter {
-                Adapter::Anthropic => json!({"type":"tool_use","id":call_id,"name":name,"input":arguments}),
-                Adapter::Responses => json!({"type":"function_call","call_id":call_id,"name":name,
-                    "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}),
-                Adapter::Chat => json!({"id":call_id,"type":"function","function":{"name":name,
+            ModelContentPart::ToolCall(acyclic_harness::model::ToolCall {
+                call_id,
+                name,
+                arguments,
+                metadata,
+            }) => {
+                if adapter == Adapter::Anthropic {
+                    if let Some(thinking) = metadata["anthropic_thinking"].as_array() {
+                        calls.extend(thinking.iter().cloned());
+                    }
+                }
+                if adapter == Adapter::Responses {
+                    if let Some(reasoning) = metadata["openai_reasoning"].as_array() {
+                        calls.extend(reasoning.iter().cloned());
+                    }
+                }
+                let mut call = match adapter {
+                    Adapter::Anthropic => {
+                        json!({"type":"tool_use","id":call_id,"name":name,"input":arguments})
+                    }
+                    Adapter::Responses => {
+                        json!({"type":"function_call","call_id":call_id,"name":name,
+                    "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?})
+                    }
+                    Adapter::Chat => json!({"id":call_id,"type":"function","function":{"name":name,
                     "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}}),
-                Adapter::Gemini => json!({"functionCall":{"id":call_id,"name":name,"args":arguments}}),
-            }),
-            ModelContentPart::ToolResult { call_id, name, content } => {
+                    Adapter::Gemini => {
+                        json!({"functionCall":{"id":call_id,"name":name,"args":arguments}})
+                    }
+                };
+                if adapter == Adapter::Gemini {
+                    if let Some(signature) = metadata.get("gemini_thought_signature") {
+                        call["thoughtSignature"] = signature.clone();
+                    }
+                }
+                calls.push(call);
+            }
+            ModelContentPart::ToolResult {
+                call_id,
+                name,
+                content,
+            } => {
                 let text = result_text(content)?;
                 results.push(match adapter {
                     Adapter::Anthropic => json!({"type":"tool_result","tool_use_id":call_id,"content":text}),
@@ -203,7 +294,16 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
         }
         Adapter::Responses => {
             if !texts.is_empty() {
-                output.push(json!({"role":role,"content":texts.join("\n")}));
+                let kind = if message.role == ModelRole::Assistant {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                let content: Vec<_> = texts
+                    .into_iter()
+                    .map(|text| json!({"type":kind,"text":text}))
+                    .collect();
+                output.push(json!({"type":"message","role":role,"content":content}));
             }
             output.extend(calls);
             output.extend(results);

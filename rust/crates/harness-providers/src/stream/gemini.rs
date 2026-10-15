@@ -1,6 +1,11 @@
 use super::{Call, ModelEvent, Result, State, Value, invalid, json, string, text};
 
-pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<Vec<ModelEvent>> {
+pub(super) fn parse(
+    state: &mut State,
+    value: &Value,
+    maximum: usize,
+    dispatch: acyclic_harness::model::ModelDispatch,
+) -> Result<Vec<ModelEvent>> {
     state.usage(&value["usageMetadata"]);
     if let Some(id) = value.get("responseId") {
         state.metadata.insert("id".into(), id.clone());
@@ -30,9 +35,15 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
                         id: function["id"]
                             .as_str()
                             .map(str::to_owned)
-                            .unwrap_or_else(|| format!("gemini-{index}")),
+                            .unwrap_or_else(|| {
+                                format!("{}-{}-{index}", dispatch.operation_id, dispatch.step)
+                            }),
                         name: string(&function["name"])?.into(),
                         arguments,
+                        metadata: part
+                            .get("thoughtSignature")
+                            .map(|signature| json!({"gemini_thought_signature":signature}))
+                            .unwrap_or(Value::Null),
                     },
                 );
             }
@@ -42,7 +53,14 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
         if !matches!(reason, "STOP" | "MAX_TOKENS") {
             return Err(invalid("Gemini generation was blocked"));
         }
-        state.metadata.insert("finish_reason".into(), json!(reason));
+        state.metadata.insert(
+            "finish_reason".into(),
+            json!(if reason == "MAX_TOKENS" {
+                "length"
+            } else {
+                reason
+            }),
+        );
         state.terminal = true;
     }
     Ok(events)

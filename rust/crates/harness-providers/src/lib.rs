@@ -1,5 +1,6 @@
 //! Shared streaming adapters and immutable model selection.
 
+mod accounting;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
 mod credentials;
@@ -29,6 +30,15 @@ use serde_json::Value;
 
 fn invalid(reason: impl Into<String>) -> Error {
     Error::Invalid(reason.into())
+}
+
+fn http_error(status: u16) -> Error {
+    let message = format!("model HTTP status {status}");
+    match status {
+        401 | 403 => Error::Unauthorized(message),
+        408 | 429 | 500..=599 => Error::Storage(message),
+        _ => Error::Invalid(message),
+    }
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {

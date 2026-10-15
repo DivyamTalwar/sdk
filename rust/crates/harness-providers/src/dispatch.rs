@@ -18,22 +18,26 @@ pub(crate) fn generate(
             Err(invalid("model dispatch digest differs from prepared request"))?;
         }
         let auth = authenticate(provider).await?;
-        let response = send(provider, &request, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
+        let (response, input_bytes) = send(provider, &request, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        let response = if response.status == 401 {
+        let (response, input_bytes) = if response.status == 401 {
             if let Some(login) = &provider.codex_login {
                 // No stream bytes have been read; a rejected credential did not start inference.
                 drop(response);
                 let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref()).await?;
                 send(provider, &request, dispatch, Some(&key), account.as_deref()).await?
-            } else { response }
-        } else { response };
+            } else { (response, input_bytes) }
+        } else { (response, input_bytes) };
         drop(auth);
         if !(200..300).contains(&response.status) {
-            Err(invalid(format!("model HTTP status {}", response.status)))?;
+            Err(crate::http_error(response.status))?;
         }
-        let mut events = crate::stream::events(provider.config.adapter, response.body, provider.config.max_event_bytes);
-        while let Some(event) = events.next().await { yield event?; }
+        let mut events = crate::stream::events(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch);
+        while let Some(event) = events.next().await {
+            let event = event?;
+            if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }
+            yield event;
+        }
     })
 }
 
@@ -52,7 +56,7 @@ async fn send(
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
-) -> Result<HttpResponse> {
+) -> Result<(HttpResponse, usize)> {
     let body = projection::body(provider, request.request())?;
     let mut headers = BTreeMap::from([("accept".into(), "text/event-stream".into())]);
     if let Some(key) = key {
@@ -77,6 +81,10 @@ async fn send(
     #[cfg(not(target_arch = "wasm32"))]
     if provider.codex_login.is_some() {
         headers.insert("originator".into(), "acyclic_harness".into());
+        headers.insert(
+            "user-agent".into(),
+            concat!("acyclic-harness/", env!("CARGO_PKG_VERSION")).into(),
+        );
         headers.insert("session-id".into(), dispatch.operation_id.to_string());
         headers.insert("thread-id".into(), dispatch.operation_id.to_string());
         headers.insert(
@@ -85,12 +93,15 @@ async fn send(
         );
     }
     let _ = dispatch;
-    provider
+    let body = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
+    let input_bytes = body.len();
+    let response = provider
         .transport
         .send(HttpRequest {
             url: projection::endpoint(provider)?,
             headers,
-            body: serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?,
+            body,
         })
-        .await
+        .await?;
+    Ok((response, input_bytes))
 }

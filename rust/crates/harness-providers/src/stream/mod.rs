@@ -4,7 +4,10 @@ mod gemini;
 mod responses;
 
 use crate::{Adapter, invalid, json, sse};
-use acyclic_harness::{Result, model::ModelEvent};
+use acyclic_harness::{
+    Result,
+    model::{ModelDispatch, ModelEvent},
+};
 use acyclic_stream::BoxProviderStream;
 use bytes::Bytes;
 use futures::StreamExt as _;
@@ -16,6 +19,7 @@ struct Call {
     id: String,
     name: String,
     arguments: String,
+    metadata: Value,
 }
 
 #[derive(Default)]
@@ -23,12 +27,14 @@ struct State {
     calls: BTreeMap<u64, Call>,
     metadata: serde_json::Map<String, Value>,
     terminal: bool,
+    thinking: BTreeMap<u64, Value>,
 }
 
 pub(crate) fn events<'a>(
     adapter: Adapter,
     body: BoxProviderStream<'a, Result<Bytes>>,
     maximum: usize,
+    dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
@@ -43,30 +49,45 @@ pub(crate) fn events<'a>(
             let value = crate::json(data.as_bytes())?;
             if !value.is_object() { Err(invalid("model event must be an object"))?; }
             if value.get("error").is_some_and(|error| !error.is_null())
-                || matches!(value["type"].as_str(), Some("error" | "response.failed" | "response.incomplete")) {
+                || matches!(value["type"].as_str(), Some("error" | "response.failed")) {
                 Err(invalid("model provider reported a stream error"))?;
             }
             let deltas = match adapter {
                 Adapter::Chat => chat::parse(&mut state, &value, maximum)?,
                 Adapter::Anthropic => anthropic::parse(&mut state, &value, maximum)?,
                 Adapter::Responses => responses::parse(&mut state, &value, maximum)?,
-                Adapter::Gemini => gemini::parse(&mut state, &value, maximum)?,
+                Adapter::Gemini => gemini::parse(&mut state, &value, maximum, dispatch)?,
             };
             for event in deltas { yield event; }
             if state.terminal && matches!(adapter, Adapter::Anthropic | Adapter::Responses) { break; }
         }
-        if !state.terminal { Err(invalid("model stream ended without a terminal marker"))?; }
+        if !state.terminal { Err(acyclic_harness::Error::Storage("model stream ended without a terminal marker".into()))?; }
+        if state.metadata.get("finish_reason").is_some_and(|reason| reason == "length") {
+            yield ModelEvent::Completed { metadata: Value::Object(state.metadata) };
+            return;
+        }
         // Validate the whole tool batch before exposing any call to the executor.
         let mut seen = BTreeSet::new();
         let mut calls = Vec::with_capacity(state.calls.len());
-        for call in state.calls.into_values() {
+        for (position, mut call) in state.calls.into_values().enumerate() {
             if call.id.trim().is_empty() || call.name.trim().is_empty() || !seen.insert(call.id.clone()) {
                 Err(invalid("incomplete or duplicate model tool call"))?;
             }
             let arguments = json(call.arguments.as_bytes())?;
             if !arguments.is_object() { Err(invalid("tool arguments must be a JSON object"))?; }
             validate_numbers(&arguments)?;
-            calls.push(ModelEvent::ToolCall { call_id: call.id, name: call.name, arguments });
+            if matches!(adapter, Adapter::Anthropic | Adapter::Responses) && position == 0 && !state.thinking.is_empty() {
+                let key = if adapter == Adapter::Anthropic {
+                    "anthropic_thinking"
+                } else {
+                    "openai_reasoning"
+                };
+                call.metadata = Value::Object(serde_json::Map::from_iter([(
+                    key.into(),
+                    Value::Array(std::mem::take(&mut state.thinking).into_values().collect()),
+                )]));
+            }
+            calls.push(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(call.id, call.name, arguments).with_metadata(call.metadata)));
         }
         for call in calls { yield call; }
         yield ModelEvent::Completed { metadata: Value::Object(state.metadata) };
