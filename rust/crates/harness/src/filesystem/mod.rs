@@ -449,7 +449,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                 io,
                 None,
-            )
+            )?
             .await?;
         let generation_reference = (self).generation_ref_id(generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
