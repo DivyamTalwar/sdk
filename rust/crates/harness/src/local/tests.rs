@@ -140,6 +140,7 @@ impl ToolExecutor for Echo {
 }
 fn tool(name: &str) -> Tool {
     Tool {
+        hook_names: &[],
         definition: ToolDefinition {
             name: name.into(),
             revision: "1".into(),
@@ -726,3 +727,6 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     assert_eq!(provider.requests().len(), 0);
     Ok(())
 }
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout;

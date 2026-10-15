@@ -2,6 +2,8 @@ use super::*;
 
 pub(super) struct Configuration<'a> {
     pub files: Arc<LocalFilesystem>,
+    #[cfg(feature = "native-execution")]
+    pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
@@ -99,7 +101,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         config.session_limits,
         config.concurrency,
         config.limits.file_bytes,
-        config.clock,
+        config.clock.clone(),
         None,
         &[creation],
         &crate::durable_tool::ResumableToolRegistry::default(),
@@ -107,5 +109,12 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     )
     .await?
     .with_output_volume(config.scratch, None)?;
+    #[cfg(feature = "native-execution")]
+    let runtime = match config.workspace {
+        Some(workspace) => runtime.with_workspace_tools(Arc::new(
+            checkout_tools::CheckoutTools::new(workspace, config.project, config.clock)?,
+        ))?,
+        None => runtime,
+    };
     Ok((Arc::new(runtime), signed))
 }

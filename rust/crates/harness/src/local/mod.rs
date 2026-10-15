@@ -24,6 +24,8 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "native-execution")]
+mod checkout_tools;
 mod config;
 mod owner;
 mod runtime;
@@ -58,7 +60,7 @@ pub struct LocalHarness {
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(feature = "native-execution")]
-    workspace: Option<workspace::LocalWorkspace>,
+    workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
 impl LocalHarness {
@@ -112,7 +114,7 @@ impl LocalHarness {
             let provider_ref = owner.project.provider();
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(
+                LocalProject::Workspace(path) => Some(Arc::new(
                     workspace::open(
                         &filesystem,
                         &owner.project,
@@ -122,7 +124,7 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                     )
                     .await?,
-                ),
+                )),
                 LocalProject::Volume { .. } => None,
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
@@ -176,6 +178,8 @@ impl LocalHarness {
             let verifier = issuer.verifier(&mut None)?;
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),
+                #[cfg(feature = "native-execution")]
+                workspace: workspace.as_ref().map(Arc::clone),
                 stream,
                 issuer: &issuer,
                 verifier: &verifier,
@@ -247,8 +251,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub const fn workspace(&self) -> Option<&LocalWorkspace> {
-        self.workspace.as_ref()
+    pub fn workspace(&self) -> Option<&LocalWorkspace> {
+        self.workspace.as_deref()
     }
 }
 
