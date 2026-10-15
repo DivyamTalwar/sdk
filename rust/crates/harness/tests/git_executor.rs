@@ -1,3 +1,6 @@
+//! Managed git facade behavior through the harness public API.
+
+use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{
     CancellationToken, GitCommandOutput, IdempotencyKey, LazyWorkspace, LocalCoreStateStore,
     LocalFs, LocalOptions, OperationId, PublicationPermit, WorkBudget,
