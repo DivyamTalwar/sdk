@@ -8,6 +8,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+mod compute;
 
 /// Caller-owned bounds for query transfer and retained rendering data.
 #[derive(Clone, Copy, Debug)]
@@ -20,6 +21,8 @@ pub struct DiffLimits {
     pub file_bytes: u64,
     /// Maximum retained unified patch bytes across the volume.
     pub render_bytes: usize,
+    /// Input bytes and diff steps, including compared line bytes and traceback.
+    pub work: usize,
 }
 
 /// One exact path in an authoritative volume query delta, relative to its volume.
@@ -94,11 +97,31 @@ impl FileDiff {
     /// Computes a file against its immutable base. `None` means the path returned
     /// to its baseline; adding/removing an empty file remains a visible change.
     /// Formatting stops before the patch exceeds `maximum_render_bytes`.
+    /// `maximum_work` bounds input scanning and computation, including traceback.
     pub fn between(
         base: Option<&[u8]>,
         current: Option<&[u8]>,
         maximum_render_bytes: usize,
+        mut maximum_work: usize,
     ) -> Result<Option<Self>> {
+        Self::between_work(base, current, maximum_render_bytes, &mut maximum_work)
+    }
+
+    fn between_work(
+        base: Option<&[u8]>,
+        current: Option<&[u8]>,
+        maximum_render_bytes: usize,
+        work: &mut usize,
+    ) -> Result<Option<Self>> {
+        let before = base.unwrap_or_default();
+        let after = current.unwrap_or_default();
+        compute::charge(
+            work,
+            before
+                .len()
+                .checked_add(after.len())
+                .ok_or_else(compute::work_bound)?,
+        )?;
         if base == current {
             return Ok(None);
         }
@@ -107,8 +130,6 @@ impl FileDiff {
             (_, None) => DiffKind::Removed,
             _ => DiffKind::Modified,
         };
-        let before = base.unwrap_or_default();
-        let after = current.unwrap_or_default();
         let mut result = Self {
             kind,
             binary: true,
@@ -128,28 +149,7 @@ impl FileDiff {
             return Err(render_bound());
         }
         result.binary = false;
-        let patch = diffy::create_patch(before, after);
-        let mut output = PatchText {
-            text: String::new(),
-            maximum: maximum_render_bytes,
-        };
-        std::fmt::write(&mut output, format_args!("{patch}")).map_err(|_| render_bound())?;
-        for hunk in patch.hunks() {
-            result.hunks.push(DiffHunk {
-                old_start: hunk.old_range().start(),
-                old_lines: hunk.old_range().len(),
-                new_start: hunk.new_range().start(),
-                new_lines: hunk.new_range().len(),
-            });
-            for line in hunk.lines() {
-                match line {
-                    diffy::Line::Insert(_) => result.added += 1,
-                    diffy::Line::Delete(_) => result.removed += 1,
-                    diffy::Line::Context(_) => {}
-                }
-            }
-        }
-        result.patch = output.text;
+        compute::text_diff(before, after, maximum_render_bytes, work, &mut result)?;
         Ok(Some(result))
     }
 }
@@ -263,28 +263,12 @@ impl DiffView {
             || limits.changes == 0
             || limits.file_bytes == 0
             || limits.render_bytes == 0
+            || limits.work == 0
             || publication.paths.len() > limits.changes
         {
             return Err(Error::Invalid("diff publication exceeds its bounds".into()));
         }
-        let encoded = serde_json::to_vec(publication).map_err(|e| Error::Invalid(e.to_string()))?;
-        let digest = *blake3::hash(&encoded).as_bytes();
-        if publication.generation == self.generation && self.last_digest == Some(digest) {
-            return Ok(Vec::new());
-        }
-        if self.last_digest.is_none()
-            && publication.previous == self.base
-            && publication.generation == self.base
-            && publication.paths.is_empty()
-        {
-            self.last_digest = Some(digest);
-            return Ok(Vec::new());
-        }
-        if publication.previous != self.generation || publication.generation == self.generation {
-            return Err(Error::Conflict(
-                "diff query cursor mismatch; reopen snapshot".into(),
-            ));
-        }
+        publication.previous.validate(&mut None)?;
         publication.generation.validate(&mut None)?;
         if publication.generation.as_resource().provider() != self.volume.provider() {
             return Err(Error::Invalid(
@@ -302,6 +286,7 @@ impl DiffView {
                 (&change.current, &publication.generation),
             ] {
                 if let Some(source) = source {
+                    source.validate(&mut None)?;
                     if source.root.volume != self.volume
                         || source.path != change.path
                         || &source.generation != generation
@@ -313,7 +298,28 @@ impl DiffView {
                 }
             }
         }
+        let mut hasher = blake3::Hasher::new();
+        serde_json::to_writer(&mut hasher, publication)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *hasher.finalize().as_bytes();
+        if publication.generation == self.generation && self.last_digest == Some(digest) {
+            return Ok(Vec::new());
+        }
+        if self.last_digest.is_none()
+            && publication.previous == self.base
+            && publication.generation == self.base
+            && publication.paths.is_empty()
+        {
+            self.last_digest = Some(digest);
+            return Ok(Vec::new());
+        }
+        if publication.previous != self.generation || publication.generation == self.generation {
+            return Err(Error::Conflict(
+                "diff query cursor mismatch; reopen snapshot".into(),
+            ));
+        }
         let mut updates = Vec::new();
+        let mut work = limits.work;
         let (mut count, mut rendered, mut added, mut removed) = (
             self.files.len(),
             self.render_bytes,
@@ -334,10 +340,11 @@ impl DiffView {
         for change in &publication.paths {
             let before = read(&change.base, reader, limits.file_bytes).await?;
             let after = read(&change.current, reader, limits.file_bytes).await?;
-            let diff = FileDiff::between(
+            let diff = FileDiff::between_work(
                 before.as_deref(),
                 after.as_deref(),
                 limits.render_bytes - rendered,
+                &mut work,
             )?;
             if let Some(diff) = &diff {
                 count = count

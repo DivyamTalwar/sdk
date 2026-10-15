@@ -38,13 +38,15 @@ fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
             case.before.as_deref().map(str::as_bytes),
             case.after.as_deref().map(str::as_bytes),
             case.patch.len(),
+            32_768,
         )?
         .ok_or("expected changed file")?;
         assert!(
             FileDiff::between(
                 case.before.as_deref().map(str::as_bytes),
                 case.after.as_deref().map(str::as_bytes),
-                case.patch.len() - 1
+                case.patch.len() - 1,
+                32_768,
             )
             .is_err()
         );
@@ -63,7 +65,7 @@ fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
         (None, Some(&b"\0"[..]), true, true),
         (Some(&b"\xff"[..]), Some(&b"\xfe"[..]), true, true),
     ] {
-        let diff = FileDiff::between(before, after, 8192)?;
+        let diff = FileDiff::between(before, after, 8192, 32_768)?;
         assert_eq!(diff.is_some(), exists);
         if let Some(diff) = diff {
             assert_eq!(diff.binary, binary);
@@ -77,6 +79,148 @@ struct Fixture {
     root: ContextRoot,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
+}
+
+#[test]
+fn bounded_diffs_apply_and_match_minimal_edit_counts_for_short_sequences()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut texts = vec![String::new()];
+    for length in 1..=4 {
+        for bits in 0..(1 << length) {
+            texts.push(
+                (0..length)
+                    .map(|bit| if bits & (1 << bit) == 0 { "a\n" } else { "b\n" })
+                    .collect(),
+            );
+        }
+    }
+    for before in &texts {
+        for after in &texts {
+            let oracle = diffy::create_patch(before, after);
+            let (mut added, mut removed) = (0, 0);
+            for line in oracle.hunks().iter().flat_map(|hunk| hunk.lines()) {
+                match line {
+                    diffy::Line::Insert(_) => added += 1,
+                    diffy::Line::Delete(_) => removed += 1,
+                    _ => {}
+                }
+            }
+            let actual = FileDiff::between(
+                Some(before.as_bytes()),
+                Some(after.as_bytes()),
+                8192,
+                32_768,
+            )?;
+            if let Some(actual) = actual {
+                assert_eq!((actual.added, actual.removed), (added, removed));
+                let patch = diffy::Patch::from_str(&actual.patch)?;
+                assert_eq!(diffy::apply(before, &patch)?, *after);
+            } else {
+                assert_eq!(before, after);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn equal_size_replacements_stop_at_the_computation_budget() {
+    let before = "a\n".repeat(2000);
+    let after = "b\n".repeat(2000);
+    let result = FileDiff::between(Some(before.as_bytes()), Some(after.as_bytes()), 64, 16_384);
+    assert!(
+        matches!(result, Err(acyclic_harness::Error::Invalid(reason))
+        if reason == "diff computation work bound exceeded")
+    );
+}
+
+#[tokio::test]
+async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let base = fixture.source("absent").await?;
+    futures::executor::block_on(async {});
+    let mut previous_bytes = None;
+    for bytes in [8192, 1_048_576] {
+        let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+        let publication = DiffPublication {
+            previous: base.generation.clone(),
+            generation: base.generation.clone(),
+            paths: vec![DiffPath {
+                path: format!("\0{}", "x".repeat(bytes)),
+                base: None,
+                current: None,
+            }],
+        };
+        let reader = Reader {
+            inner: fixture.reader.as_ref(),
+            reads: AtomicUsize::new(0),
+            pause_first: false,
+        };
+        let mut result = Ok(Vec::new());
+        let allocation = allocation_counter::measure(|| {
+            result = futures::executor::block_on(view.apply(&publication, &reader, limits()));
+        });
+        assert!(matches!(result, Err(acyclic_harness::Error::Invalid(_))));
+        if let Some(previous) = previous_bytes {
+            assert_eq!(allocation.bytes_total, previous);
+        }
+        previous_bytes = Some(allocation.bytes_total);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(view.generation(), &base.generation);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("anchor", "before", "base").await?;
+    let base = fixture.source("anchor").await?;
+    fixture.put("anchor", "after", "edit").await?;
+    fixture.put("anchor", "before", "restore").await?;
+    let current = fixture.source("anchor").await?;
+    futures::executor::block_on(async {});
+    let mut previous_bytes = None;
+    for directories in [4, 1024] {
+        let prefix = "z/".repeat(directories);
+        let mut paths = vec![DiffPath {
+            path: "anchor".into(),
+            base: Some(base.clone()),
+            current: Some(current.clone()),
+        }];
+        paths.extend((0..256).map(|index| DiffPath {
+            path: format!("{prefix}{index}.txt"),
+            base: None,
+            current: None,
+        }));
+        let publication = DiffPublication {
+            previous: base.generation.clone(),
+            generation: current.generation.clone(),
+            paths,
+        };
+        let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+        let reader = Reader {
+            inner: fixture.reader.as_ref(),
+            reads: AtomicUsize::new(0),
+            pause_first: false,
+        };
+        let limits = DiffLimits {
+            changes: 512,
+            ..limits()
+        };
+        view.apply(&publication, &reader, limits).await?;
+        let mut result = Ok(Vec::new());
+        let allocation = allocation_counter::measure(|| {
+            result = futures::executor::block_on(view.apply(&publication, &reader, limits));
+        });
+        assert!(result?.is_empty());
+        if let Some(previous) = previous_bytes {
+            assert_eq!(allocation.bytes_total, previous);
+        }
+        previous_bytes = Some(allocation.bytes_total);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    }
+    Ok(())
 }
 
 impl Fixture {
@@ -210,6 +354,7 @@ fn limits() -> DiffLimits {
         changes: 16,
         file_bytes: 1024,
         render_bytes: 8192,
+        work: 1_048_576,
     }
 }
 
@@ -550,7 +695,7 @@ async fn a_full_view_can_replace_a_file_in_one_atomic_publication() -> Result<()
         ..new.clone()
     };
     let generation = new.generation.clone();
-    let new_patch_bytes = FileDiff::between(None, Some(b"new\n"), 8192)?
+    let new_patch_bytes = FileDiff::between(None, Some(b"new\n"), 8192, 32_768)?
         .ok_or_else(|| acyclic_harness::Error::Invalid("new file missing".into()))?
         .patch
         .len();
