@@ -98,13 +98,14 @@ impl Registry {
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let codex_login = if provider == "openai" && key.is_none() {
-            self.codex_login
-                .as_ref()
-                .map(|login| Arc::new(login.fresh()))
-        } else {
-            None
-        };
+        let codex_login =
+            if config.authentication == Authentication::ApiKeyOrCodexLogin && key.is_none() {
+                self.codex_login
+                    .as_ref()
+                    .map(|login| Arc::new(login.fresh()))
+            } else {
+                None
+            };
         #[cfg(not(target_arch = "wasm32"))]
         let config = if codex_login.is_some() {
             if config.adapter != crate::Adapter::Responses
@@ -124,7 +125,7 @@ impl Registry {
         let authenticated = key.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();
-        if !authenticated && config.authentication == Authentication::ApiKey {
+        if !authenticated && config.authentication != Authentication::Optional {
             return Err(invalid("model provider API key is unavailable"));
         }
         Ok(ResolvedModel {

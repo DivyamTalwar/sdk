@@ -12,6 +12,28 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<()>> {
         self.verify_task_context_binding(operation_id)?;
         stock_validate_invocation(&invocation, self.io)?;
+        let metadata = prior_messages
+            .iter()
+            .rev()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolCall(call) if call.call_id == invocation.call_id => {
+                    Some(&call.metadata)
+                }
+                _ => None,
+            })
+            .unwrap_or(&Value::Null);
+        stock_json_bound(
+            &crate::tool::RecordedInvocation {
+                invocation: &invocation,
+                metadata,
+            },
+            self.stock
+                .limits
+                .file_bytes
+                .min(self.stock.tool_scope.limits().file_bytes),
+            self.io,
+        )?;
         let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
         let _capability;
         let mut context;
@@ -27,17 +49,6 @@ impl StockExecution<'_> {
             } if *recorded == step && call_id == &invocation.call_id => Some(reference),
             _ => None,
         });
-        let metadata = prior_messages
-            .iter()
-            .rev()
-            .flat_map(|message| message.content.parts())
-            .find_map(|part| match part {
-                ModelContentPart::ToolCall(call) if call.call_id == invocation.call_id => {
-                    Some(&call.metadata)
-                }
-                _ => None,
-            })
-            .unwrap_or(&Value::Null);
         if let Some(reference) = started {
             let recorded =
                 load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io).await?;
@@ -135,14 +146,6 @@ impl StockExecution<'_> {
                 Error::Unauthorized(format!("scope lacks {capability}"))
             });
         }
-        stock_json_bound(
-            invocation,
-            self.stock
-                .limits
-                .file_bytes
-                .min(self.stock.tool_scope.limits().file_bytes),
-            self.io,
-        )?;
         let context = self.invocation_context(invocation)?;
         stock_authorize_tool(
             tool,
