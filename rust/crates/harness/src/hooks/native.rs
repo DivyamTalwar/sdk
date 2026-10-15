@@ -74,6 +74,9 @@ impl Hooks {
                 );
                 let mut seen = std::collections::BTreeSet::new();
                 for path in paths {
+                    let toml = path
+                        .extension()
+                        .is_some_and(|extension| extension == "toml");
                     let path = match std::fs::canonicalize(path) {
                         Ok(path) => path,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -89,10 +92,7 @@ impl Hooks {
                             return Err(process_error(error));
                         }
                     };
-                    if path
-                        .extension()
-                        .is_some_and(|extension| extension == "toml")
-                    {
+                    if toml {
                         hooks.add_toml(
                             std::str::from_utf8(&bytes)
                                 .map_err(|error| Error::Invalid(error.to_string()))?,

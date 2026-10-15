@@ -140,6 +140,52 @@ async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> 
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_settings_keep_the_format_of_the_configured_path() -> Result<()> {
+    use super::native::process_error;
+    let root = tempfile::tempdir().map_err(process_error)?;
+    let home = root.path().join("home");
+    let codex = home.join(".codex");
+    let claude = home.join(".claude");
+    let workspace = root.path().join("workspace");
+    for directory in [&codex, &claude, &workspace] {
+        std::fs::create_dir_all(directory).map_err(process_error)?;
+    }
+    let toml = root.path().join("codex-dotfile");
+    std::fs::write(
+        &toml,
+        "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = 'toml-guard'\n",
+    )
+    .map_err(process_error)?;
+    let json = root.path().join("claude-dotfile.toml");
+    std::fs::write(
+        &json,
+        br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"json-guard"}]}]}}"#,
+    )
+    .map_err(process_error)?;
+    std::os::unix::fs::symlink(&toml, codex.join("config.toml")).map_err(process_error)?;
+    std::os::unix::fs::symlink(&json, claude.join("settings.json")).map_err(process_error)?;
+    // The trusted project alias resolves to the same JSON file and still runs once.
+    std::fs::create_dir(workspace.join(".claude")).map_err(process_error)?;
+    std::os::unix::fs::symlink(&json, workspace.join(".claude/settings.json"))
+        .map_err(process_error)?;
+    let hooks = Hooks::load(
+        HooksConfig::new(&workspace, &home)
+            .codex_home(&codex)
+            .trust_project_hooks(true),
+    )
+    .await?;
+    assert_eq!(
+        hooks
+            .commands(HookEvent::Stop, &json!({}), &registry()?)?
+            .map(|hook| hook.command.as_str())
+            .collect::<Vec<_>>(),
+        ["json-guard", "toml-guard"]
+    );
+    Ok(())
+}
+
 #[test]
 fn invalid_hook_replacement_is_atomic() -> Result<()> {
     let mut hooks = Hooks::default();
