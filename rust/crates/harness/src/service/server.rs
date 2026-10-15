@@ -43,7 +43,18 @@ impl HarnessService {
 
     /// Accepts clients until shutdown. Client disconnects only cancel their RPC.
     pub async fn serve(self: Arc<Self>) -> Result<()> {
-        let mut phase = self.lifetime.begin()?;
+        let phase = self.lifetime.begin()?;
+        let _stop = self.lifetime.stop_on_drop();
+        // The drain must outlive cancellation of the public serving future.
+        tokio::spawn(self.clone().serve_connections(phase))
+            .await
+            .map_err(super::storage)?
+    }
+
+    async fn serve_connections(
+        self: Arc<Self>,
+        mut phase: tokio::sync::watch::Receiver<super::lifetime::Phase>,
+    ) -> Result<()> {
         let mut clients = tokio::task::JoinSet::new();
         let result = loop {
             tokio::select! {
@@ -110,11 +121,12 @@ impl HarnessService {
             .ok_or_else(|| Error::NotFound("workspace".into()))?;
         match method {
             Method::Handshake => {
-                frames::send(
-                    socket,
-                    &frames::response(api.handshake(decode(request.payload)?).await?),
-                )
-                .await
+                let Some(response) =
+                    connected(socket, api.handshake(decode(request.payload)?)).await?
+                else {
+                    return Ok(());
+                };
+                frames::send(socket, &frames::response(response)).await
             }
             Method::Submit => {
                 let command: wire::CommandEnvelope = decode(request.payload)?;
@@ -123,24 +135,38 @@ impl HarnessService {
                     operation: command.operation.clone(),
                     ..Default::default()
                 };
-                let response = HarnessWireApi::submit(api.as_ref(), command).await?;
+                let Some(response) =
+                    connected(socket, HarnessWireApi::submit(api.as_ref(), command)).await?
+                else {
+                    return Ok(());
+                };
                 wire_api::validate_admission(&expected, &response)?;
                 frames::send(socket, &frames::response(response)).await
             }
             Method::Observe => {
                 let request: wire::ObserveRequest = decode(request.payload)?;
-                let response = wire_api::observe(api.as_ref(), request).await?;
+                let Some(response) =
+                    connected(socket, wire_api::observe(api.as_ref(), request)).await?
+                else {
+                    return Ok(());
+                };
                 frames::send(socket, &frames::response(response)).await
             }
             Method::Cancel => {
                 let request: wire::CancelRequest = decode(request.payload)?;
-                let response = wire_api::cancel(api.as_ref(), request).await?;
+                let Some(response) =
+                    connected(socket, wire_api::cancel(api.as_ref(), request)).await?
+                else {
+                    return Ok(());
+                };
                 frames::send(socket, &frames::response(response)).await
             }
             Method::Replay => {
                 let request: wire::ResumeRequest = decode(request.payload)?;
                 wire_api::validate_resume_protocol(&request)?;
-                let mut deliveries = api.replay(request).await?;
+                let Some(mut deliveries) = connected(socket, api.replay(request)).await? else {
+                    return Ok(());
+                };
                 // Reading detects disconnect even when the producer has no new events.
                 loop {
                     tokio::select! {
@@ -162,6 +188,18 @@ impl HarnessService {
                 .await
             }
         }
+    }
+}
+
+async fn connected<T>(
+    socket: &mut frames::Connection,
+    call: impl Future<Output = Result<T>>,
+) -> Result<Option<T>> {
+    // One call owns the connection. EOF, errors or another request end its wait.
+    tokio::select! {
+        biased;
+        _ = socket.next() => Ok(None),
+        response = call => response.map(Some),
     }
 }
 
