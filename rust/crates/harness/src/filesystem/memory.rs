@@ -307,6 +307,12 @@ impl MemoryHarnessStorage {
             .grant(self.write_capability.clone())
     }
 
+    /// Borrows the authenticated reader for context and client adapters.
+    #[must_use]
+    pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
+        self.content_verifier.as_ref()
+    }
+
     /// Runs the shared canonical loop with this memory-backed journal.
     pub async fn run_conversation(
         &self,
