@@ -1,4 +1,4 @@
-use crate::{Credentials, HttpTransport, ReqwestTransport, invalid, projection};
+use crate::{Credentials, HttpTransport, invalid, projection};
 use acyclic_harness::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -50,10 +50,7 @@ pub struct Registry {
 impl Registry {
     /// Standard endpoints; unknown capacities must be registered explicitly.
     pub fn new(credentials: Credentials) -> Result<Self> {
-        Ok(Self::with_transport(
-            credentials,
-            Arc::new(ReqwestTransport::new()?),
-        ))
+        Ok(Self::with_transport(credentials, crate::http::platform()?))
     }
 
     /// Uses the same adapters with a caller-owned transport.

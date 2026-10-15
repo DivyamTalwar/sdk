@@ -13,11 +13,15 @@ mod projection;
 mod registry;
 mod sse;
 mod stream;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 pub use credentials::Credentials;
-pub use http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
+#[cfg(target_arch = "wasm32")]
+pub use http::BrowserTransport;
+#[cfg(not(target_arch = "wasm32"))]
+pub use http::ReqwestTransport;
+pub use http::{HttpRequest, HttpResponse, HttpTransport};
 pub use registry::{Adapter, ProviderConfig, Registry, ResolvedModel};
 
 use acyclic_harness::{Error, Result};

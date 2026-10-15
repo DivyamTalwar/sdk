@@ -333,6 +333,7 @@ dependencies = [
  "bytes",
  "fs2",
  "futures",
+ "js-sys",
  "keyring",
  "reqwest 0.12.28",
  "serde",
@@ -341,6 +342,10 @@ dependencies = [
  "time",
  "tokio",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

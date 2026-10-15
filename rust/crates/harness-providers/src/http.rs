@@ -1,7 +1,6 @@
 use acyclic_harness::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
-use futures::StreamExt as _;
 use std::collections::BTreeMap;
 
 /// One streaming JSON request. Headers may contain credentials; deliberately not Debug.
@@ -28,46 +27,19 @@ pub trait HttpTransport: ProviderPlatform {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
 }
 
-/// Pooled native HTTP; reqwest uses browser fetch on wasm32.
-pub struct ReqwestTransport(reqwest::Client);
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::ReqwestTransport;
+#[cfg(target_arch = "wasm32")]
+mod browser;
+#[cfg(target_arch = "wasm32")]
+pub use browser::BrowserTransport;
 
-impl ReqwestTransport {
-    /// Creates the platform transport. Credentials are never forwarded across redirects.
-    pub fn new() -> Result<Self> {
-        let builder = reqwest::Client::builder();
-        #[cfg(not(target_arch = "wasm32"))]
-        let builder = builder
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never());
-        Ok(Self(builder.build().map_err(|_| {
-            super::invalid("HTTP client initialization failed")
-        })?))
-    }
-}
-
-impl HttpTransport for ReqwestTransport {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let mut builder = self
-                .0
-                .post(request.url)
-                .header("content-type", "application/json");
-            for (name, value) in request.headers {
-                builder = builder.header(name, value);
-            }
-            let response = builder
-                .body(request.body)
-                .send()
-                .await
-                .map_err(|_| super::invalid("model HTTP exchange failed"))?;
-            Ok(HttpResponse {
-                status: response.status().as_u16(),
-                body: Box::pin(
-                    response.bytes_stream().map(|chunk| {
-                        chunk.map_err(|_| super::invalid("model HTTP body interrupted"))
-                    }),
-                ),
-            })
-        })
-    }
+pub(crate) fn platform() -> Result<std::sync::Arc<dyn HttpTransport>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let transport = ReqwestTransport::new()?;
+    #[cfg(target_arch = "wasm32")]
+    let transport = BrowserTransport::global()?;
+    Ok(std::sync::Arc::new(transport))
 }
