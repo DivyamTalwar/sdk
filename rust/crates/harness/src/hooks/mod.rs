@@ -154,21 +154,14 @@ impl Hooks {
         }
         .and_then(Value::as_str)
         .unwrap_or("");
-        let alias = match subject {
-            "bash" => Some("Bash"),
-            "read" => Some("Read"),
-            "write" => Some("Write"),
-            "edit" => Some("Edit"),
-            _ => None,
-        };
         self.bindings
             .iter()
             .filter(move |binding| {
                 binding.event == event
-                    && binding.matcher.as_ref().is_none_or(|matcher| {
-                        matcher.is_match(subject)
-                            || alias.is_some_and(|alias| matcher.is_match(alias))
-                    })
+                    && binding
+                        .matcher
+                        .as_ref()
+                        .is_none_or(|matcher| matcher.is_match(subject))
             })
             .flat_map(|binding| &binding.commands)
     }
@@ -183,6 +176,8 @@ pub struct HookOutput {
     pub additional_context: Vec<String>,
     /// Replacement arguments returned by a pre-tool hook.
     pub updated_input: Option<Value>,
+    /// Non-blocking command failures, for the caller's session diagnostics.
+    pub diagnostics: Vec<String>,
 }
 
 impl HookOutput {
@@ -199,10 +194,13 @@ impl HookOutput {
             } else if event == HookEvent::PostToolUse {
                 self.additional_context
                     .push(String::from_utf8_lossy(stderr).into_owned());
+            } else {
+                self.failure(event, code, stderr);
             }
             return Ok(());
         }
         if code != Some(0) {
+            self.failure(event, code, stderr);
             return Ok(());
         }
         let text = std::str::from_utf8(stdout)
@@ -258,6 +256,14 @@ impl HookOutput {
         }
         Ok(())
     }
+
+    fn failure(&mut self, event: HookEvent, code: Option<i32>, stderr: &[u8]) {
+        self.diagnostics.push(format!(
+            "{} hook failed (exit {code:?}): {}",
+            event.name(),
+            String::from_utf8_lossy(stderr)
+        ));
+    }
 }
 
 fn take_string(value: &mut Value, name: &str) -> Option<String> {
@@ -267,7 +273,7 @@ fn take_string(value: &mut Value, name: &str) -> Option<String> {
     Some(text)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 mod native;
+pub use native::HooksConfig;
 #[cfg(test)]
 mod tests;

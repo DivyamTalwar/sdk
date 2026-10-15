@@ -1,37 +1,75 @@
 use super::*;
-use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTree, run_blocking_io};
+use acyclic_native_runtime::{
+    CaptureInput, ProcessInput, ProcessTree, run_blocking_io, shell_command,
+};
 use std::{
-    path::Path,
-    process::{Command, Stdio},
+    path::{Path, PathBuf},
+    process::Stdio,
     sync::Arc,
     time::Duration,
 };
 
+/// Native hook locations and explicit authority to execute project commands.
+pub struct HooksConfig {
+    workspace: PathBuf,
+    home: PathBuf,
+    trust_project_hooks: bool,
+}
+
+impl HooksConfig {
+    /// Loads user configuration by default. Project configuration is untrusted.
+    pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
+        Self {
+            workspace: workspace.into(),
+            home: home.into(),
+            trust_project_hooks: false,
+        }
+    }
+
+    /// Explicitly permits commands supplied by the workspace's configuration.
+    #[must_use]
+    pub fn trust_project_hooks(mut self, trust: bool) -> Self {
+        self.trust_project_hooks = trust;
+        self
+    }
+}
+
 impl Hooks {
-    /// Loads additive user and project hooks from Claude and Codex config locations.
-    pub async fn load(workspace: &Path, home: &Path) -> Result<Self> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
-        let paths = [
-            (home.join(".claude/settings.json"), false),
-            (home.join(".codex/hooks.json"), false),
-            (home.join(".codex/config.toml"), true),
-            (workspace.join(".claude/settings.json"), false),
-            (workspace.join(".claude/settings.local.json"), false),
-            (workspace.join(".codex/hooks.json"), false),
-            (workspace.join(".codex/config.toml"), true),
-        ];
+    /// Loads user hooks, and project hooks only with explicit trust in `config`.
+    pub async fn load(config: HooksConfig) -> Result<Self> {
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::Process)?;
         run_blocking_io(
             move || {
                 let mut hooks = Self::default();
-                for (path, toml) in paths {
+                let user = [
+                    ".claude/settings.json",
+                    ".codex/hooks.json",
+                    ".codex/config.toml",
+                ];
+                let project = [
+                    ".claude/settings.json",
+                    ".claude/settings.local.json",
+                    ".codex/hooks.json",
+                    ".codex/config.toml",
+                ];
+                let paths = user.into_iter().map(|path| config.home.join(path)).chain(
+                    project
+                        .into_iter()
+                        .filter(|_| config.trust_project_hooks)
+                        .map(|path| config.workspace.join(path)),
+                );
+                for path in paths {
                     let bytes = match std::fs::read(&path) {
                         Ok(bytes) => bytes,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                         Err(error) => {
-                            return Err(Error::Storage(format!("{}: {error}", path.display())));
+                            return Err(Error::Process(error));
                         }
                     };
-                    if toml {
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension == "toml")
+                    {
                         hooks.add_toml(
                             std::str::from_utf8(&bytes)
                                 .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -44,9 +82,9 @@ impl Hooks {
             },
             None,
         )
-        .map_err(storage)?
+        .map_err(Error::Process)?
         .await
-        .map_err(storage)?
+        .map_err(Error::Process)?
     }
 
     /// Runs matching hooks with JSON stdin, bounded output, deadlines, and tree cleanup.
@@ -67,7 +105,7 @@ impl Hooks {
         if commands.peek().is_none() {
             return Ok(output);
         }
-        acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::Process)?;
         let mut bytes =
             serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.push(b'\n');
@@ -77,14 +115,14 @@ impl Hooks {
             let request = Arc::clone(&request);
             let result = run_blocking_io(
                 move || {
-                    let mut command = shell(&hook.command, hook.shell.as_deref());
+                    let mut command = shell_command(&hook.command, hook.shell.as_deref());
                     command
                         .current_dir(&request.0)
                         .env("CLAUDE_PROJECT_DIR", &request.0)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped());
-                    let mut tree = ProcessTree::spawn(&mut command).map_err(storage)?;
+                    let mut tree = ProcessTree::spawn(&mut command).map_err(Error::Process)?;
                     tree.wait_with_output(
                         Duration::from_secs(hook.timeout),
                         65_536,
@@ -94,13 +132,13 @@ impl Hooks {
                         None,
                         None,
                     )
-                    .map_err(|failure| storage(failure.error))
+                    .map_err(|failure| Error::Process(failure.error))
                 },
                 None,
             )
-            .map_err(storage)?
+            .map_err(Error::Process)?
             .await
-            .map_err(storage)??;
+            .map_err(Error::Process)??;
             output.observe(event, result.status.code(), &result.stdout, &result.stderr)?;
             if output.blocked.is_some() {
                 break;
@@ -108,19 +146,4 @@ impl Hooks {
         }
         Ok(output)
     }
-}
-
-fn storage(error: std::io::Error) -> Error {
-    Error::Storage(error.to_string())
-}
-
-fn shell(command: &str, selected: Option<&str>) -> Command {
-    let selected = selected.unwrap_or(if cfg!(windows) { "powershell" } else { "sh" });
-    let mut shell = Command::new(selected);
-    if matches!(selected, "powershell" | "pwsh") {
-        shell.args(["-NoProfile", "-NonInteractive", "-Command", command]);
-    } else {
-        shell.args(["-c", command]);
-    }
-    shell
 }

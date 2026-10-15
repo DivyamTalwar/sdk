@@ -56,6 +56,55 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
 }
 
 #[test]
+fn tool_matchers_use_registry_names_without_builtin_aliases() -> Result<()> {
+    let mut hooks = Hooks::default();
+    hooks.add_json(
+        br#"{"hooks":{"PreToolUse":[
+        {"matcher":"^(fs|custom.tool)$","hooks":[{"type":"command","command":"exact"}]},
+        {"matcher":"^Bash$","hooks":[{"type":"command","command":"case-sensitive"}]}
+    ]}}"#,
+    )?;
+    for name in ["fs", "custom.tool", "Bash"] {
+        assert_eq!(
+            hooks
+                .commands(HookEvent::PreToolUse, &json!({"tool_name":name}))
+                .count(),
+            1
+        );
+    }
+    assert_eq!(
+        hooks
+            .commands(HookEvent::PreToolUse, &json!({"tool_name":"bash"}))
+            .count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn non_blocking_failures_return_diagnostics() -> Result<()> {
+    for event in [
+        HookEvent::SessionStart,
+        HookEvent::PreToolUse,
+        HookEvent::PostToolUse,
+        HookEvent::Stop,
+    ] {
+        for code in [Some(1), Some(3), None] {
+            let mut output = HookOutput::default();
+            output.observe(event, code, b"ignored", b"command failed")?;
+            assert!(output.blocked.is_none());
+            assert_eq!(output.diagnostics.len(), 1);
+            assert!(output.diagnostics[0].contains(event.name()));
+            assert!(output.diagnostics[0].contains("command failed"));
+        }
+    }
+    let mut output = HookOutput::default();
+    output.observe(HookEvent::SessionStart, Some(2), b"", b"start failed")?;
+    assert!(output.diagnostics[0].contains("start failed"));
+    Ok(())
+}
+
+#[test]
 fn output_applies_context_tool_decisions_and_stop_blocking() -> Result<()> {
     let mut output = HookOutput::default();
     output.observe(HookEvent::SessionStart, Some(0), b"workspace ready\n", b"")?;
@@ -138,12 +187,24 @@ async fn native_hooks_load_layers_and_receive_json_stdin_in_workspace() -> Resul
         ".claude/settings.json",
         json!({"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":command}]}]}}),
     )?;
-    write(
-        workspace.path(),
+    #[cfg(windows)]
+    let project_command =
+        "[IO.File]::WriteAllText((Join-Path (Get-Location) 'project-hook-ran'), 'ran'); exit 2";
+    #[cfg(not(windows))]
+    let project_command = "printf ran > project-hook-ran; exit 2";
+    let project_hook =
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":project_command}]}]}});
+    for path in [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
         ".codex/hooks.json",
-        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exit 2"}]}]}}),
-    )?;
-    let hooks = Hooks::load(workspace.path(), home.path()).await?;
+    ] {
+        write(workspace.path(), path, project_hook.clone())?;
+    }
+    std::fs::write(workspace.path().join(".codex/config.toml"), format!(
+        "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {project_command:?}\n"
+    )).map_err(Error::Process)?;
+    let hooks = Hooks::load(HooksConfig::new(workspace.path(), home.path())).await?;
     let output = hooks
         .run(
             HookEvent::SessionStart,
@@ -152,6 +213,27 @@ async fn native_hooks_load_layers_and_receive_json_stdin_in_workspace() -> Resul
         )
         .await?;
     assert_eq!(output.additional_context, ["hook ready"]);
+    let input = json!({"session_id":"test"});
+    assert_eq!(
+        hooks
+            .run(HookEvent::Stop, workspace.path(), input.clone())
+            .await?,
+        HookOutput::default()
+    );
+    assert!(!workspace.path().join("project-hook-ran").exists());
+    assert!(matches!(
+        hooks
+            .run(
+                HookEvent::SessionStart,
+                &workspace.path().join("missing"),
+                input
+            )
+            .await,
+        Err(Error::Process(_))
+    ));
+    let hooks =
+        Hooks::load(HooksConfig::new(workspace.path(), home.path()).trust_project_hooks(true))
+            .await?;
     assert!(
         hooks
             .run(
@@ -163,5 +245,13 @@ async fn native_hooks_load_layers_and_receive_json_stdin_in_workspace() -> Resul
             .blocked
             .is_some()
     );
+    assert!(workspace.path().join("project-hook-ran").exists());
+    // A directory in a user config location is a real IO failure, not storage failure.
+    std::fs::remove_file(home.path().join(".claude/settings.json")).map_err(Error::Process)?;
+    std::fs::create_dir(home.path().join(".claude/settings.json")).map_err(Error::Process)?;
+    assert!(matches!(
+        Hooks::load(HooksConfig::new(workspace.path(), home.path())).await,
+        Err(Error::Process(_))
+    ));
     Ok(())
 }

@@ -34,9 +34,10 @@ pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;
-pub mod hooks;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub mod hooks;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
