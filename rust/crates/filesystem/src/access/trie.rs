@@ -203,7 +203,8 @@ impl PathTrie {
             if super::decision::rule_matches(rule, principal, resource, context) {
                 spend(&mut text_left, rule.resource.path.len())?;
                 let key = super::names::fold(&rule.resource.path, resource.config);
-                let (start, end) = nfa.pattern(&key)?;
+                let (start, end) =
+                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
                 starts.push(start);
                 rules.insert(rule.id.as_str(), end);
             }
@@ -212,7 +213,8 @@ impl PathTrie {
             if grant.resource.matches_view(resource) {
                 spend(&mut text_left, grant.resource.path.len())?;
                 let key = super::names::fold(&grant.resource.path, resource.config);
-                let (start, end) = nfa.pattern(&key)?;
+                let (start, end) =
+                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
                 starts.push(start);
                 grants.insert(std::ptr::from_ref(grant), end);
             }

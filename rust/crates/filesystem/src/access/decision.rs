@@ -190,6 +190,7 @@ pub fn decide<'a>(
                 && super::glob::matches(
                     &super::names::fold(&rule.resource.path, resource.config),
                     &path,
+                    super::names::folds_unicode(resource.config),
                 )
         },
         |grant| {
@@ -197,6 +198,7 @@ pub fn decide<'a>(
                 && super::glob::matches(
                     &super::names::fold(&grant.resource.path, resource.config),
                     &path,
+                    super::names::folds_unicode(resource.config),
                 )
         },
     )

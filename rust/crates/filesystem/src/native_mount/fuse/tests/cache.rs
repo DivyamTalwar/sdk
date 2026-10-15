@@ -13,9 +13,17 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
         }
     }
     let (source, _) = shared_sources(posix_config())?;
-    let mut policy = FINITE_HANDLER_POLICY;
-    policy.bytes_copied = 0;
-    let core = projection_core(Arc::new(source), policy, &crate::CancellationToken::new())?;
+    let cancellation = crate::CancellationToken::new();
+    let core = projection_core(Arc::new(source), FINITE_HANDLER_POLICY, &cancellation)?;
+    let work = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            bytes_copied: 0,
+            ..FINITE_HANDLER_POLICY
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, _)| cause)?;
+    let _scope = super::super::NativeMountWorkScope::new(&core, &work)?;
     let replied = std::cell::Cell::new(false);
     let reply = Reply(&replied);
     crate::obs::assert_filtered_callback_isolation(|span| {

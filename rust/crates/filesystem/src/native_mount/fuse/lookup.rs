@@ -108,7 +108,7 @@ impl FuseProjection {
                     .zip(entry.facts)
                     .map(|(name, facts)| name.min(facts))
                 && source.unchanged_since_with_meter(
-                    child.key(),
+                    &child.spelled,
                     Some(entry.lookup.node.file_id),
                     stamp,
                     work,
@@ -125,7 +125,7 @@ impl FuseProjection {
                 .get(&parent)
                 .and_then(|entry| entry.empty_since)
                 && child.folded.is_none()
-                && source.unchanged_since_with_meter(child.key(), None, empty, work)?
+                && source.unchanged_since_with_meter(&child.spelled, None, empty, work)?
             {
                 return state.negative_entry(source, parent, &child, Some(empty), work);
             }
@@ -157,6 +157,7 @@ impl FuseProjection {
             state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        state.retain_spelling(inode, child)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -211,7 +212,11 @@ impl FuseProjection {
             let after = source.view_stamp_with_meter(work)?;
             match stamp {
                 Some(before)
-                    if source.listing_unchanged_since_with_meter(child.key(), before, work)? =>
+                    if source.listing_unchanged_since_with_meter(
+                        &child.spelled,
+                        before,
+                        work,
+                    )? =>
                 {
                     after
                 }
@@ -239,6 +244,7 @@ impl FuseProjection {
             state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        state.retain_spelling(inode, child)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -347,8 +353,8 @@ impl FuseProjection {
         renamed?;
         if from.key() != to.key() {
             state.invalidate_prefix(to.key(), work)?;
-            state.rename_prefix(from.key(), to.key(), work)?;
         }
+        state.rename_prefix(from.key(), to.key(), (&from.spelled, &to.spelled), work)?;
         Ok(())
     }
 
@@ -389,6 +395,7 @@ impl FuseProjection {
             if entry.binding(to.key()).is_none() {
                 fuse_reserve(&mut entry.bindings, 1, work)?;
                 Some(Binding {
+                    spelled: None,
                     path: fuse_clone_path(to.key(), work)?,
                     verified: None,
                     kernel: None,
@@ -406,6 +413,7 @@ impl FuseProjection {
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
         let ttl = state.admit_entry(source, inode, &to, current.stamp, work)?;
+        state.retain_spelling(inode, to)?;
         Ok(Entry { attr, ttl })
     }
 }

@@ -91,6 +91,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
 
 [build-dependencies]
+icu_casemap.workspace = true
 cc = "1.2.56"
 prost.workspace = true
 prost-types.workspace = true
