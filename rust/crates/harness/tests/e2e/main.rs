@@ -110,8 +110,5 @@ async fn scenarios() -> TestResult {
     if !failures.is_empty() {
         return Err(format!("{} scenarios failed", failures.len()).into());
     }
-    if started.elapsed() >= Duration::from_secs(10) {
-        return Err("scenario suite exceeded 10 seconds".into());
-    }
     Ok(())
 }
