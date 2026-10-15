@@ -2,6 +2,40 @@ use super::*;
 use acyclic_fs::kernel::{LogicalName, NameEncoding};
 use acyclic_fs::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
 
+#[test]
+fn read_does_not_authorize_name_or_metadata_disclosure() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    for policy_denies in [false, true] {
+        let mut rules = vec![rule("allow", Effect::Allow, &Action::ALL, "**")];
+        let cap = if policy_denies {
+            rules.push(rule("hidden", Effect::Deny, &[Action::List], "secrets/**"));
+            capability()
+        } else {
+            capability().attenuate(
+                vec![Grant {
+                    actions: [Action::Read].into_iter().collect(),
+                    resource: pattern("**"),
+                }],
+                None,
+            )
+        };
+        let policy = super::policy(rules);
+        let res = resource(&caller.lineage, "secrets/key", 10);
+        let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+        let path = trie.prepare(res.path)?;
+        assert!(path.decide(Action::Read, 100).allowed);
+        assert!(!path.decide(Action::List, 100).allowed);
+        assert!(!path.mount_mode(100).visible());
+        assert!(!trie.mount_mode(res.path, 100).visible());
+        assert!(path.mount_mode(100).allows(Action::Read));
+    }
+    Ok(())
+}
+
 fn native_exact_grant(
     profile: FilesystemProfile,
     capability_grant: bool,
