@@ -97,6 +97,128 @@ fn command(hook: &HookSpec) -> &str {
     }
 }
 
+#[tokio::test]
+async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_arguments() -> Result<()>
+{
+    if let Some(argument) = std::env::args()
+        .find_map(|argument| argument.strip_prefix("hook-exec-child:").map(str::to_owned))
+    {
+        let root = std::env::var("CLAUDE_PROJECT_DIR").expect("project root environment");
+        if argument != format!("{root}/payload with ' $ ` spaces") {
+            eprintln!("guard argument was changed");
+            std::process::exit(3);
+        }
+        eprintln!("expanded guard denied");
+        std::process::exit(2);
+    }
+    let executable = std::env::current_exe().map_err(|error| Error::Invalid(error.to_string()))?;
+    let fixture = tempfile::Builder::new()
+        .prefix("hook ${CLAUDE_PLUGIN_ROOT} ' $ ` space ")
+        .tempdir_in(executable.parent().expect("binary parent"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let root = fixture.path();
+    let guard = root.join("guard.exe");
+    std::fs::hard_link(&executable, &guard).map_err(|error| Error::Invalid(error.to_string()))?;
+    let cwd = root.join("tool-cwd");
+    std::fs::create_dir(&cwd).map_err(|error| Error::Invalid(error.to_string()))?;
+    for (command, argument) in [
+        (
+            "${CLAUDE_PROJECT_DIR}/guard.exe".to_owned(),
+            format!(
+                "hook-exec-child:{}/payload with ' $ ` spaces",
+                root.display()
+            ),
+        ),
+        (
+            guard.to_string_lossy().into_owned(),
+            "hook-exec-child:${CLAUDE_PROJECT_DIR}/payload with ' $ ` spaces".into(),
+        ),
+    ] {
+        let mut hooks = Hooks::default();
+        hooks.add_json(json!({"hooks":{"PreToolUse":[{"hooks":[{
+            "type":"command", "command":command, "shell":"bash", "args":[
+                "--exact", "hooks::tests::exec_form_placeholders_launch_guards_without_retokenizing_paths_or_arguments",
+                "--nocapture", "--skip", argument
+            ]
+        }]}]}}).to_string().as_bytes())?;
+        let output = hooks
+            .run(
+                HookEvent::PreToolUse,
+                root,
+                &cwd,
+                json!({"tool_name":"bash"}),
+                &registry()?,
+            )
+            .await?;
+        assert_eq!(
+            output.blocked.as_deref(),
+            Some("expanded guard denied\n"),
+            "{output:?}"
+        );
+        assert!(output.diagnostics.is_empty(), "{output:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn exec_form_ignores_the_shell_setting_including_empty_arguments() -> Result<()> {
+    for shell in ["bash", "powershell", "not-a-shell"] {
+        for args in [vec![], vec!["one argument with spaces"]] {
+            let mut hooks = Hooks::default();
+            hooks.add_json(
+                json!({"hooks":{"Stop":[{"hooks":[{
+                    "type":"command", "command":"guard", "args":args, "shell":shell
+                }]}]}})
+                .to_string()
+                .as_bytes(),
+            )?;
+            let registry = registry()?;
+            let input = json!({});
+            let rule = hooks
+                .commands(HookEvent::Stop, &input, &registry)?
+                .next()
+                .expect("hook");
+            assert_eq!(
+                rule.run,
+                HookRun::Executable {
+                    executable: "guard".into(),
+                    argv: args.into_iter().map(str::to_owned).collect()
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn bracket_prefixed_session_notes_remain_context_under_both_failure_policies() {
+    for policy in [HookFailure::Report, HookFailure::Block] {
+        for text in [
+            "[Project notes]\nRun tests before editing",
+            "[unfinished note",
+            "[",
+        ] {
+            let mut output = HookOutput::default();
+            output.apply(
+                HookEvent::SessionStart,
+                policy,
+                Ok((Some(0), text.as_bytes().to_vec(), vec![])),
+            );
+            assert_eq!(output.additional_context, [text]);
+            assert!(output.diagnostics.is_empty(), "{output:?}");
+            assert!(output.blocked.is_none(), "{output:?}");
+        }
+        let mut guard = HookOutput::default();
+        guard.apply(
+            HookEvent::PreToolUse,
+            policy,
+            Ok((Some(0), br#"{"decision":"block""#.to_vec(), vec![])),
+        );
+        assert_eq!(guard.diagnostics.len(), 1);
+        assert_eq!(guard.blocked.is_some(), policy == HookFailure::Block);
+    }
+}
+
 #[test]
 fn claude_json_and_codex_toml_are_additive_and_match_standard_events() -> Result<()> {
     let mut hooks = Hooks::default();
@@ -674,6 +796,8 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             )?;
             for bytes in invalid {
+                // SessionStart accepts bracket-prefixed plain text; guarded events still reject it.
+                let session_note = event == HookEvent::SessionStart && *bytes == b"[";
                 let finished = std::cell::Cell::new(0);
                 let output = hooks
                     .run_commands(event, &json!({"tool_name":"bash"}), &registry, |hook| {
@@ -689,15 +813,22 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
                 assert_eq!(finished.get(), 2);
                 assert_eq!(
                     output.diagnostics.len(),
-                    1,
+                    usize::from(!session_note),
                     "{event:?} {policy:?} {bytes:?}: {output:?}"
                 );
                 assert_eq!(
                     output.blocked.is_some(),
-                    policy == HookFailure::Block,
+                    policy == HookFailure::Block && !session_note,
                     "{event:?} {policy:?} {bytes:?}: {output:?}"
                 );
-                assert_eq!(output.additional_context, ["remaining"]);
+                assert_eq!(
+                    output.additional_context,
+                    if session_note {
+                        vec!["[", "remaining"]
+                    } else {
+                        vec!["remaining"]
+                    }
+                );
                 assert!(output.updated_input.is_none());
                 assert!(output.approval.is_none());
             }
