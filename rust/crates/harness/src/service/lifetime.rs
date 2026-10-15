@@ -17,7 +17,20 @@ pub(super) struct Lifetime {
     instance: Mutex<Option<File>>,
 }
 
+/// Cancelling the caller stops the independently owned connection drain.
+pub(super) struct StopOnDrop<'a>(&'a Lifetime);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.request_stop();
+    }
+}
+
 impl Lifetime {
+    pub fn stop_on_drop(&self) -> StopOnDrop<'_> {
+        StopOnDrop(self)
+    }
+
     pub fn new(instance: File) -> Self {
         Self {
             phase: watch::channel(Phase::Idle).0,
