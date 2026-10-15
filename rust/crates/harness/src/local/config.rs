@@ -6,7 +6,9 @@ pub enum LocalProject {
     Workspace(PathBuf),
     /// An existing project volume in a local filesystem directory.
     Volume {
+        /// Existing local filesystem provider directory.
         directory: PathBuf,
+        /// Existing project volume within that provider.
         volume: VolumeRef,
     },
 }
