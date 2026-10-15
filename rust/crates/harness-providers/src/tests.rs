@@ -207,11 +207,13 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         },
         key: Some("scripted-key".into()),
         transport: script.clone(),
+        #[cfg(not(target_arch = "wasm32"))]
+        codex_login: None,
     };
     (provider, script)
 }
 
-fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
+pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: provider.model.clone(),

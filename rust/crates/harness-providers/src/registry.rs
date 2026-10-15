@@ -43,6 +43,8 @@ pub struct Registry {
     providers: BTreeMap<String, ProviderConfig>,
     credentials: Credentials,
     transport: Arc<dyn HttpTransport>,
+    #[cfg(not(target_arch = "wasm32"))]
+    codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
 impl Registry {
@@ -84,11 +86,26 @@ impl Registry {
                 },
             );
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let codex_login = credentials
+            .allows_native_sources()
+            .then(crate::CodexLogin::discover)
+            .flatten()
+            .map(Arc::new);
         Self {
             providers,
             credentials,
             transport,
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login,
         }
+    }
+
+    /// Supplies a specific native Codex CLI login, including for scripted refresh tests.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_codex_login(mut self, login: crate::CodexLogin) -> Self {
+        self.codex_login = Some(Arc::new(login));
+        self
     }
 
     /// Adds or replaces one endpoint. Local models require their configured capacities.
@@ -129,7 +146,34 @@ impl Registry {
             json!({}),
         )?;
         let key = self.credentials.api_key(provider)?;
-        if key.is_none() && !matches!(provider, "ollama" | "lmstudio" | "vllm") {
+        #[cfg(not(target_arch = "wasm32"))]
+        let codex_login = if provider == "openai" && key.is_none() {
+            self.codex_login
+                .as_ref()
+                .map(|login| Arc::new(login.fresh()))
+        } else {
+            None
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let config = if codex_login.is_some() {
+            if config.adapter != Adapter::Responses
+                || config.base_url != "https://api.openai.com/v1"
+            {
+                return Err(invalid(
+                    "Codex CLI credentials require the built-in Responses route",
+                ));
+            }
+            ProviderConfig {
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                ..config
+            }
+        } else {
+            config
+        };
+        let authenticated = key.is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        let authenticated = authenticated || codex_login.is_some();
+        if !authenticated && !matches!(provider, "ollama" | "lmstudio" | "vllm") {
             return Err(invalid("model provider API key is unavailable"));
         }
         Ok(ResolvedModel {
@@ -138,6 +182,8 @@ impl Registry {
             capacity,
             key,
             transport: self.transport.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login,
         })
     }
 }
@@ -150,6 +196,8 @@ pub struct ResolvedModel {
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
 impl ResolvedModel {
@@ -184,38 +232,7 @@ impl ModelProvider for ResolvedModel {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        Box::pin(async_stream::try_stream! {
-            self.validate(&request.request().model)?;
-            if request.request_digest() != dispatch.request_digest {
-                Err(invalid("model dispatch digest differs from prepared request"))?;
-            }
-            let body = projection::body(self, request.request())?;
-            let mut headers = BTreeMap::new();
-            headers.insert("accept".into(), "text/event-stream".into());
-            if let Some(key) = &self.key {
-                let (name, value) = match self.config.adapter {
-                    Adapter::Anthropic => ("x-api-key", key.clone()),
-                    Adapter::Gemini => ("x-goog-api-key", key.clone()),
-                    _ => ("authorization", format!("Bearer {key}")),
-                };
-                headers.insert(name.into(), value);
-            }
-            if self.config.adapter == Adapter::Anthropic {
-                headers.insert("anthropic-version".into(), "2023-06-01".into());
-                #[cfg(target_arch = "wasm32")]
-                headers.insert("anthropic-dangerous-direct-browser-access".into(), "true".into());
-            }
-            let response = self.transport.send(crate::HttpRequest {
-                url: projection::endpoint(self)?, headers,
-                body: serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?,
-            }).await?;
-            if !(200..300).contains(&response.status) {
-                Err(invalid(format!("model HTTP status {}", response.status)))?;
-            }
-            use futures::StreamExt as _;
-            let mut events = crate::stream::events(self.config.adapter, response.body, self.config.max_event_bytes);
-            while let Some(event) = events.next().await { yield event?; }
-        })
+        crate::dispatch::generate(self, request, dispatch)
     }
 }
 

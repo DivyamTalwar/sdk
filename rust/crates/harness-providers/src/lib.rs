@@ -1,6 +1,13 @@
 //! Shared streaming adapters and immutable model selection.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod codex;
 mod credentials;
+mod dispatch;
+#[cfg(not(target_arch = "wasm32"))]
+pub use codex::CodexLogin;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod codex_dispatch_tests;
 mod http;
 mod projection;
 mod registry;

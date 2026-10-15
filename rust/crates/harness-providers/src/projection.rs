@@ -115,6 +115,14 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             map.insert("store".into(), json!(false));
             map.insert("max_output_tokens".into(), json!(max));
             map.insert("tools".into(), json!(tools));
+            #[cfg(not(target_arch = "wasm32"))]
+            if provider.codex_login.is_some() {
+                map.remove("max_output_tokens");
+                map.insert("tool_choice".into(), json!("auto"));
+                map.insert("parallel_tool_calls".into(), json!(true));
+                map.entry("reasoning").or_insert(Value::Null);
+                map.entry("include").or_insert_with(|| json!([]));
+            }
         }
         Adapter::Anthropic => {
             map.insert("messages".into(), json!(messages));
