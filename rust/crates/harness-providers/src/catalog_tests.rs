@@ -108,7 +108,13 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
             }
         }
         if field == "generationConfig" {
-            assert_eq!(body[field]["maxOutputTokens"], provider.context_output());
+            assert_eq!(
+                body[field]["maxOutputTokens"],
+                prepared
+                    .request()
+                    .max_output_tokens
+                    .expect("fixture output limit")
+            );
         }
         let mut changed = provider.model().clone();
         changed.options = json!({});
