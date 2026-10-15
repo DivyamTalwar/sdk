@@ -32,11 +32,35 @@ pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<External
                 .ok_or_else(|| Error::Invalid("external tool arguments are missing".into()))?,
         },
         HookAction::ToolFinished => {
-            let failed = failed(&mut input)?;
+            let failed = failed(&mut input, host == ExternalHost::Pi)?;
+            let result = match (host, event) {
+                (_, "PostToolUseFailure") => {
+                    let Some(Value::String(error)) = input.remove("error") else {
+                        return Err(Error::Invalid(
+                            "external tool failure must include its error text".into(),
+                        ));
+                    };
+                    Some(Value::String(error))
+                }
+                (ExternalHost::Pi, _) => {
+                    let Some(content @ Value::Array(_)) = input.remove("content") else {
+                        return Err(Error::Invalid("Pi tool result must include content".into()));
+                    };
+                    let mut result = Map::new();
+                    result.insert("content".into(), content);
+                    for field in ["details", "structuredContent", "usage"] {
+                        if let Some(value) = input.remove(field) {
+                            result.insert(field.into(), value);
+                        }
+                    }
+                    Some(Value::Object(result))
+                }
+                _ => value(&mut input, &["tool_response", "result"])?,
+            };
             ExternalAction::ToolFinished {
                 call_id: text(&mut input, &["tool_use_id", "toolCallId"])?,
                 failed: event == "PostToolUseFailure" || failed,
-                result: value(&mut input, &["tool_response", "result"])?,
+                result,
             }
         }
         HookAction::Fork => ExternalAction::Fork {
@@ -87,9 +111,10 @@ fn text(input: &mut Map<String, Value>, fields: &[&str]) -> Result<String> {
         .ok_or_else(|| Error::Invalid("required external hook field is missing".into()))
 }
 
-fn failed(input: &mut Map<String, Value>) -> Result<bool> {
+fn failed(input: &mut Map<String, Value>, required: bool) -> Result<bool> {
     match input.remove("isError") {
-        None | Some(Value::Bool(false)) => Ok(false),
+        None if !required => Ok(false),
+        Some(Value::Bool(false)) => Ok(false),
         Some(Value::Bool(true)) => Ok(true),
         _ => Err(Error::Invalid(
             "external tool failure flag must be a boolean".into(),

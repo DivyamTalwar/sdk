@@ -92,6 +92,14 @@ fn malformed_hooks_never_acquire_a_request_identity() {
             "PostToolUseFailure",
             json!({"session_id":"session","tool_use_id":"call","isError":"false"}),
         ),
+        (
+            "PostToolUseFailure",
+            json!({"session_id":"session","tool_use_id":"call"}),
+        ),
+        (
+            "PostToolUseFailure",
+            json!({"session_id":"session","tool_use_id":"call","error":{"message":"failed"}}),
+        ),
         ("SubagentStart", json!({"session_id":"session"})),
         (
             "SubagentStop",
@@ -103,6 +111,14 @@ fn malformed_hooks_never_acquire_a_request_identity() {
             request(ExternalHost::ClaudeCode, event, input).is_err(),
             "{event}"
         );
+    }
+    for input in [
+        json!({"sessionId":"session","toolCallId":"call","isError":false}),
+        json!({"sessionId":"session","toolCallId":"call","content":[]}),
+        json!({"sessionId":"session","toolCallId":"call","isError":"false","content":[]}),
+        json!({"sessionId":"session","toolCallId":"call","isError":false,"content":"output"}),
+    ] {
+        assert!(request(ExternalHost::Pi, "tool_result", input).is_err());
     }
 }
 
