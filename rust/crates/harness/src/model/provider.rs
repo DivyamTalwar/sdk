@@ -88,7 +88,8 @@ impl futures::Stream for NativeModelStream<'_> {
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ModelEvent {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+    /// Logical retained capacity transferred with a native provider event.
+    pub fn logical_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::ToolCall(call) => call.payload_bytes()?,

@@ -1,14 +1,13 @@
-use super::{Call, ModelEvent, Result, State, Value, invalid, json, string, text};
+use super::{ModelEvent, Result, State, Value, invalid, string, text};
 
 pub(super) fn parse(
     state: &mut State,
     value: &Value,
-    maximum: usize,
     dispatch: acyclic_harness::model::ModelDispatch,
 ) -> Result<Vec<ModelEvent>> {
-    state.usage(&value["usageMetadata"]);
+    state.usage(&value["usageMetadata"])?;
     if let Some(id) = value.get("responseId") {
-        state.metadata.insert("id".into(), id.clone());
+        state.budget.member(&mut state.metadata, "id", id)?;
     }
     if value["promptFeedback"].get("blockReason").is_some() {
         return Err(invalid("Gemini prompt blocked"));
@@ -25,27 +24,29 @@ pub(super) fn parse(
             text(&mut events, &part["text"], part["thought"] == true);
             if let Some(function) = part.get("functionCall") {
                 let index = state.calls.len() as u64;
-                let arguments = function["args"].to_string();
-                if arguments.len() > maximum {
-                    return Err(invalid("tool arguments exceed configured limit"));
+                let (call, budget) = state.call(index)?;
+                if let Some(id) = function["id"].as_str() {
+                    budget.string(&mut call.id, id)?;
+                } else {
+                    budget.formatted(
+                        &mut call.id,
+                        format_args!("{}-{}-{index}", dispatch.operation_id, dispatch.step),
+                    )?;
                 }
-                state.calls.insert(
-                    index,
-                    Call {
-                        id: function["id"]
-                            .as_str()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| {
-                                format!("{}-{}-{index}", dispatch.operation_id, dispatch.step)
-                            }),
-                        name: string(&function["name"])?.into(),
-                        arguments,
-                        metadata: part
-                            .get("thoughtSignature")
-                            .map(|signature| json!({"gemini_thought_signature":signature}))
-                            .unwrap_or(Value::Null),
-                    },
-                );
+                budget.string(&mut call.name, string(&function["name"])?)?;
+                match function.get("args") {
+                    None => budget.string(&mut call.arguments, "{}")?,
+                    Some(args) if args.is_object() => budget.encoded(&mut call.arguments, args)?,
+                    Some(_) => return Err(invalid("tool arguments must be a JSON object")),
+                }
+                if let Some(signature) = part.get("thoughtSignature") {
+                    call.metadata = Value::Object(serde_json::Map::new());
+                    let map = call
+                        .metadata
+                        .as_object_mut()
+                        .ok_or_else(|| invalid("invalid tool metadata"))?;
+                    budget.member(map, "gemini_thought_signature", signature)?;
+                }
             }
         }
     }
@@ -53,14 +54,11 @@ pub(super) fn parse(
         if !matches!(reason, "STOP" | "MAX_TOKENS") {
             return Err(invalid("Gemini generation was blocked"));
         }
-        state.metadata.insert(
-            "finish_reason".into(),
-            json!(if reason == "MAX_TOKENS" {
-                "length"
-            } else {
-                reason
-            }),
-        );
+        state.finish_reason(if reason == "MAX_TOKENS" {
+            "length"
+        } else {
+            reason
+        })?;
         state.terminal = true;
     }
     Ok(events)

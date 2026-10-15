@@ -242,7 +242,10 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 &journal,
                 input.operation_id,
                 "tool-start",
-                &invocation,
+                &crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &Value::Null,
+                },
                 None,
             )
             .await?;
@@ -319,9 +322,23 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         .await?;
     assert_eq!(first.request().messages.len(), 3);
     assert_eq!(batch.request().messages.len(), 5);
+    assert_eq!(first.request().messages[0], batch.request().messages[0]);
+    assert_eq!(first.request().messages[1], batch.request().messages[1]);
+    assert_eq!(first.request().messages[2], batch.request().messages[3]);
     assert_eq!(
-        batch.request().messages.get(..3),
-        Some(first.request().messages.as_slice())
+        batch
+            .request()
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        [
+            ModelRole::User,
+            ModelRole::Assistant,
+            ModelRole::Assistant,
+            ModelRole::Tool,
+            ModelRole::Tool
+        ]
     );
     let dispatched = model
         .requests()
@@ -846,8 +863,17 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             json!({}),
             None,
         )?;
-        let invocation_ref =
-            stage_json(&journal, operation, "invocation", &invocation, None).await?;
+        let invocation_ref = stage_json(
+            &journal,
+            operation,
+            "invocation",
+            &crate::tool::RecordedInvocation {
+                invocation: &invocation,
+                metadata: &Value::Null,
+            },
+            None,
+        )
+        .await?;
         let result = stage_json(
             &journal,
             operation,
@@ -887,7 +913,10 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             &journal,
             &records,
             0,
-            &invocation,
+            crate::tool::RecordedInvocation {
+                invocation: &invocation,
+                metadata: &Value::Null,
+            },
             std::slice::from_ref(&definition),
             Limits::default(),
             None,

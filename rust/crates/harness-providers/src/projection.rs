@@ -88,7 +88,7 @@ pub(crate) fn count(
     })
 }
 
-fn encoded_len(value: &Value) -> Result<usize> {
+pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -122,7 +122,25 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         {
             system.push(text_content(&message.content)?);
         } else {
-            messages.extend(project_message(adapter, message)?);
+            for mut projected in project_message(adapter, message)? {
+                // A tool batch is one model turn, followed by one result turn.
+                if adapter == Adapter::Gemini
+                    && messages
+                        .last()
+                        .is_some_and(|last: &Value| last["role"] == projected["role"])
+                {
+                    if let (Some(previous), Some(parts)) =
+                        (messages.last_mut(), projected["parts"].as_array_mut())
+                    {
+                        previous["parts"]
+                            .as_array_mut()
+                            .ok_or_else(|| invalid("invalid projected Gemini parts"))?
+                            .append(parts);
+                    }
+                } else {
+                    messages.push(projected);
+                }
+            }
         }
     }
     let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {
@@ -196,7 +214,11 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         Adapter::Gemini => {
             map.remove("model");
             map.insert("contents".into(), json!(messages));
-            map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
+            map.entry("generationConfig")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or_else(|| invalid("Gemini generationConfig must be an object"))?
+                .insert("maxOutputTokens".into(), json!(max));
             if !system.is_empty() {
                 map.insert(
                     "systemInstruction".into(),

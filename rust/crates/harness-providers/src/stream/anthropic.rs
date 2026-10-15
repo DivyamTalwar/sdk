@@ -1,40 +1,37 @@
-use super::{Call, ModelEvent, Result, State, Value, append, index, invalid, string, text};
+use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
 
-pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<Vec<ModelEvent>> {
+pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
     let mut events = Vec::new();
     match value["type"].as_str() {
         Some("message_start") => {
-            state.identity(&value["message"]);
-            state.usage(&value["message"]["usage"]);
+            state.identity(&value["message"])?;
+            state.usage(&value["message"]["usage"])?;
         }
         Some("content_block_start") => {
             let block = &value["content_block"];
             match block["type"].as_str() {
                 Some("tool_use") => {
-                    let call = Call {
-                        id: string(&block["id"])?.into(),
-                        name: string(&block["name"])?.into(),
-                        arguments: if block["input"]
-                            .as_object()
-                            .is_some_and(|map| !map.is_empty())
-                        {
-                            block["input"].to_string()
-                        } else {
-                            String::new()
-                        },
-                        metadata: Value::Null,
-                    };
-                    if state.calls.insert(index(value, "index")?, call).is_some() {
+                    let index = index(value, "index")?;
+                    if state.calls.contains_key(&index) {
                         return Err(invalid("repeated tool block"));
+                    }
+                    let (call, budget) = state.call(index)?;
+                    budget.string(&mut call.id, string(&block["id"])?)?;
+                    budget.string(&mut call.name, string(&block["name"])?)?;
+                    if block["input"]
+                        .as_object()
+                        .is_some_and(|map| !map.is_empty())
+                    {
+                        budget.encoded(&mut call.arguments, &block["input"])?;
                     }
                 }
                 Some("text") => text(&mut events, &block["text"], false),
                 Some("thinking") => {
-                    state.thinking.insert(index(value, "index")?, block.clone());
+                    state.retain_thinking(index(value, "index")?, block)?;
                     text(&mut events, &block["thinking"], true);
                 }
                 Some("redacted_thinking") => {
-                    state.thinking.insert(index(value, "index")?, block.clone());
+                    state.retain_thinking(index(value, "index")?, block)?;
                 }
                 _ => {}
             }
@@ -49,48 +46,39 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
                     } else {
                         "signature"
                     };
-                    let block = state.thinking.entry(index(value, "index")?).or_insert_with(
-                        || serde_json::json!({"type":"thinking", "thinking":"", "signature":""}),
-                    );
-                    if block[key].is_null() {
-                        block[key] = Value::String(String::new());
-                    }
-                    let Value::String(retained) = &mut block[key] else {
-                        return Err(invalid("invalid thinking block string"));
-                    };
-                    append(retained, delta.get(key), maximum)?;
+                    state.thinking_delta(index(value, "index")?, key, &delta[key])?;
                     if key == "thinking" {
                         text(&mut events, &delta["thinking"], true);
                     }
                 }
                 Some("input_json_delta") => {
-                    let call = state
-                        .calls
-                        .get_mut(&index(value, "index")?)
-                        .ok_or_else(|| invalid("tool delta without block"))?;
-                    append(&mut call.arguments, delta.get("partial_json"), maximum)?;
+                    let index = index(value, "index")?;
+                    if !state.calls.contains_key(&index) {
+                        return Err(invalid("tool delta without block"));
+                    }
+                    let (call, budget) = state.call(index)?;
+                    budget.append(&mut call.arguments, delta.get("partial_json"))?;
                 }
                 _ => {}
             }
         }
         Some("content_block_stop") => {
-            if let Some(call) = state.calls.get_mut(&index(value, "index")?) {
+            let index = index(value, "index")?;
+            if state.calls.contains_key(&index) {
+                let (call, budget) = state.call(index)?;
                 if call.arguments.is_empty() {
-                    call.arguments = "{}".into();
+                    budget.string(&mut call.arguments, "{}")?;
                 }
             }
         }
         Some("message_delta") => {
-            state.usage(&value["usage"]);
-            if let Some(reason) = value["delta"].get("stop_reason") {
-                state.metadata.insert(
-                    "finish_reason".into(),
-                    if reason == "max_tokens" {
-                        Value::String("length".into())
-                    } else {
-                        reason.clone()
-                    },
-                );
+            state.usage(&value["usage"])?;
+            if let Some(reason) = value["delta"]["stop_reason"].as_str() {
+                state.finish_reason(if reason == "max_tokens" {
+                    "length"
+                } else {
+                    reason
+                })?;
             }
         }
         Some("message_stop") => state.terminal = true,

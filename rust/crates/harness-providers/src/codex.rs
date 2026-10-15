@@ -70,7 +70,7 @@ impl CodexLogin {
                 headers: BTreeMap::new(),
                 body: serde_json::to_vec(&json!({"grant_type":"refresh_token", "client_id":CLIENT_ID,
                     "refresh_token":refresh,"refresh_reason":if force {"unauthorized"} else {"proactive_expiry"}}))
-                    .map_err(|_| invalid("Codex refresh encoding failed"))?,
+                    .map_err(|_| invalid("Codex refresh encoding failed"))?.into(),
             }).await?;
             if response.status != 200 {
                 if attempt == 0 && matches!(response.status, 400 | 401) {
@@ -198,6 +198,15 @@ fn load(path: &Path) -> Result<(Vec<u8>, Value)> {
 }
 
 fn persist_if_unchanged(path: &Path, original: &[u8], auth: Value) -> Result<Value> {
+    persist_with(path, original, auth, || Ok(()))
+}
+
+fn persist_with(
+    path: &Path,
+    original: &[u8],
+    auth: Value,
+    before_replace: impl FnOnce() -> Result<()>,
+) -> Result<Value> {
     let absolute = if path.is_absolute() {
         None
     } else {
@@ -218,6 +227,15 @@ fn persist_if_unchanged(path: &Path, original: &[u8], auth: Value) -> Result<Val
     file.write_all(b"\n")
         .and_then(|()| file.as_file().sync_all())
         .map_err(|_| invalid("cannot flush Codex credential update"))?;
+    let (bytes, current) = load(path)?;
+    if bytes != original {
+        return Ok(current);
+    }
+    before_replace()?;
+    // The CLI does not cooperate with a lock. Compare the whole document (also
+    // preserving non-token CLI edits), after staging/fsync and immediately before
+    // rename. This is best-effort: a CLI write during this final read + rename
+    // window cannot be excluded by a portable filesystem conditional replacement.
     let (bytes, current) = load(path)?;
     if bytes != original {
         return Ok(current);

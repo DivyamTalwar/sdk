@@ -1,29 +1,39 @@
 //! Shared streaming adapters and immutable model selection.
 
 mod accounting;
+mod adapter;
+mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
-mod credentials;
-mod dispatch;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;
+mod credentials;
+mod dispatch;
 mod http;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
 mod projection;
 mod registry;
+mod resolved;
+mod spec;
 mod sse;
 mod stream;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
+pub use adapter::Adapter;
+pub use catalog::default_catalog;
 pub use credentials::Credentials;
-#[cfg(target_arch = "wasm32")]
-pub use http::BrowserTransport;
+pub use http::{HttpRequest, HttpResponse, HttpTransport};
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::ReqwestTransport;
-pub use http::{HttpRequest, HttpResponse, HttpTransport};
-pub use registry::{Adapter, ProviderConfig, Registry, ResolvedModel};
+#[cfg(target_arch = "wasm32")]
+pub use http::BrowserTransport;
+pub use registry::Registry;
+pub use resolved::ResolvedModel;
+pub use spec::{Authentication, ProviderSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;
