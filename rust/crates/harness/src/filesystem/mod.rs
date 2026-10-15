@@ -144,6 +144,8 @@ use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
+#[cfg(not(target_arch = "wasm32"))]
+use content_verifier::require_file_read;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;
 mod project_verifier;
