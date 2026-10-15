@@ -81,7 +81,7 @@ pub(super) async fn read_range<
             .ok_or(WorkspaceError::NotFound)?;
         if let Some(original) = unchanged_since {
             let mut original = workspace
-                .checkout_accounted(
+                .open_checkout(
                     GenerationSelector::Exact(original),
                     CheckoutMode::read_only_pinned(),
                     &mut accounting,
@@ -89,12 +89,15 @@ pub(super) async fn read_range<
                 )
                 .await?;
             let expected = original
+                .value
                 .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
                 .await?
                 .0
                 .record
                 .ok_or(WorkspaceError::NotFound)?;
-            if expected.kind != record.kind || expected.payload != record.payload {
+            let matches = expected.kind == record.kind && expected.payload == record.payload;
+            original.retire(&mut accounting)?;
+            if !matches {
                 return Err(WorkspaceError::StaleIdentity);
             }
         }
@@ -275,3 +278,6 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     };
     Ok(WorkspaceExtentPlan { spans })
 }
+
+#[cfg(test)]
+mod tests;
