@@ -76,6 +76,11 @@ impl ScriptedModelProvider {
         Ok(self.lock()?.turns.len())
     }
 
+    /// Number of recorded requests without copying their context.
+    pub fn request_count(&self) -> Result<usize> {
+        Ok(self.lock()?.requests.len())
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {
         self.state
             .lock()
