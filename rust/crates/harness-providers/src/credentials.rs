@@ -3,44 +3,68 @@ use std::collections::BTreeMap;
 
 /// API keys loaded from explicitly supplied configuration or native credential sources.
 /// Anthropic accepts API keys only; no subscription login is read.
-#[derive(Default, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Credentials {
     /// Provider ID to API key. Deliberately not Debug or Serialize.
     pub api_keys: BTreeMap<String, String>,
+    #[serde(skip, default = "native_sources")]
+    native_sources: bool,
+}
+
+fn native_sources() -> bool {
+    true
+}
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            api_keys: BTreeMap::new(),
+            native_sources: true,
+        }
+    }
 }
 
 impl Credentials {
+    /// Uses only supplied keys, with no keychain, environment or filesystem reads.
+    pub fn explicit(api_keys: BTreeMap<String, String>) -> Self {
+        Self {
+            api_keys,
+            native_sources: false,
+        }
+    }
     /// Resolves OS keychain, then environment, then this configuration.
     pub fn api_key(&self, provider: &str) -> Result<Option<String>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if let Ok(entry) = keyring::Entry::new("acyclic-harness", provider) {
-                match entry.get_password() {
-                    Ok(key) if !key.trim().is_empty() => return Ok(Some(key)),
-                    Ok(_)
-                    | Err(keyring::Error::NoEntry)
-                    | Err(keyring::Error::NoStorageAccess(_))
-                    | Err(keyring::Error::PlatformFailure(_)) => {}
-                    Err(_) => return Err(super::invalid("cannot decode keychain credential")),
+        if self.native_sources {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Ok(entry) = keyring::Entry::new("acyclic-harness", provider) {
+                    match entry.get_password() {
+                        Ok(key) if !key.trim().is_empty() => return Ok(Some(key)),
+                        Ok(_)
+                        | Err(keyring::Error::NoEntry)
+                        | Err(keyring::Error::NoStorageAccess(_))
+                        | Err(keyring::Error::PlatformFailure(_)) => {}
+                        Err(_) => return Err(super::invalid("cannot decode keychain credential")),
+                    }
                 }
-            }
-            let variable = match provider {
-                "anthropic" => "ANTHROPIC_API_KEY",
-                "openai" => "OPENAI_API_KEY",
-                "openrouter" => "OPENROUTER_API_KEY",
-                "gemini" => "GEMINI_API_KEY",
-                _ => "",
-            };
-            if let Ok(key) = std::env::var(variable) {
-                if !key.trim().is_empty() {
-                    return Ok(Some(key));
-                }
-            }
-            if provider == "gemini" {
-                if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
+                let variable = match provider {
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    "openai" => "OPENAI_API_KEY",
+                    "openrouter" => "OPENROUTER_API_KEY",
+                    "gemini" => "GEMINI_API_KEY",
+                    _ => "",
+                };
+                if let Ok(key) = std::env::var(variable) {
                     if !key.trim().is_empty() {
                         return Ok(Some(key));
+                    }
+                }
+                if provider == "gemini" {
+                    if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
+                        if !key.trim().is_empty() {
+                            return Ok(Some(key));
+                        }
                     }
                 }
             }

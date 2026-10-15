@@ -145,7 +145,7 @@ impl Registry {
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
     /// Immutable harness model identity.
-    pub model: Model,
+    pub(crate) model: Model,
     pub(crate) config: ProviderConfig,
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
@@ -153,6 +153,10 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// Borrows the immutable identity used to bind this provider into the harness.
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
     pub(crate) fn context_output(&self) -> u32 {
         self.capacity.output_tokens
     }

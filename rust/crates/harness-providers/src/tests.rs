@@ -326,7 +326,7 @@ async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
 #[test]
 fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
-    let mut registry = Registry::with_transport(Credentials::default(), script);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
     let mut config = ProviderConfig {
         adapter: Adapter::Chat,
         base_url: "https://example.test/v1".into(),
@@ -491,6 +491,32 @@ async fn model_content_is_available_before_the_network_stream_completes() -> Res
                 delta: "first".into()
             })
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct BodyGuard(Arc<AtomicBool>);
+    impl Drop for BodyGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    for (adapter, fixture) in fixtures() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard = BodyGuard(cancelled.clone());
+        let body = async_stream::try_stream! {
+            let _guard = guard;
+            yield Bytes::copy_from_slice(fixture.as_bytes());
+            futures::future::pending::<()>().await;
+        };
+        let mut stream = stream::events(adapter, Box::pin(body), 4096);
+        assert!(stream.next().await.transpose()?.is_some());
+        assert!(!cancelled.load(Ordering::SeqCst));
+        drop(stream);
+        assert!(cancelled.load(Ordering::SeqCst));
     }
     Ok(())
 }
