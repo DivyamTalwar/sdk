@@ -228,5 +228,32 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             GitCommandOutput::Filesystem(_)
         ));
     }
+    child
+        .write(
+            "/.gitattributes",
+            bytes::Bytes::from_static(b"*.lock merge=ours\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    child
+        .write(
+            "/.gitignore",
+            bytes::Bytes::from_static(b"ignored/\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    let ignore = acyclic_harness::filesystem::WorkspacePolicy::load_ignore(&child).await?;
+    assert!(!ignore.eligible("ignored/child.txt", false, false));
+    assert!(!ignore.eligible(".acyclic-sdk/state", false, false));
+    assert!(ignore.eligible("result.txt", false, false));
+    assert!(
+        acyclic_harness::filesystem::WorkspacePolicy::load(&child)
+            .await
+            .is_err()
+    );
     Ok(())
 }
