@@ -115,11 +115,7 @@ fn check_provider(
     let requests = provider.requests();
     let reconciliations = provider.reconciliations();
     for (label, expected, actual) in [
-        (
-            "requests",
-            expected.request_count,
-            provider.requests().len(),
-        ),
+        ("requests", expected.request_count, requests.len()),
         (
             "reconciliations",
             expected.reconciliation_count,
@@ -130,12 +126,12 @@ fn check_provider(
             return Err(format!("{label}: expected {expected:?}, got {actual}").into());
         }
     }
-    if !expected.requests.is_empty() {
+    if let Some(expected) = &expected.requests {
         let requests = requests
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
-        matchers::ordered(&expected.requests, &requests, "requests")?;
+        matchers::ordered(expected, &requests, "requests")?;
     }
     Ok(())
 }
@@ -145,7 +141,7 @@ async fn check_events(
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
     operation: OperationId,
 ) -> TestResult {
-    if !expected.events.is_empty() || !expected.not_events.is_empty() {
+    if expected.events.is_some() || !expected.not_events.is_empty() {
         let mut events = Vec::new();
         let mut after = 0;
         loop {
@@ -163,7 +159,9 @@ async fn check_events(
                 events.push(value);
             }
         }
-        matchers::ordered(&expected.events, &events, "events")?;
+        if let Some(expected) = &expected.events {
+            matchers::ordered(expected, &events, "events")?;
+        }
         for forbidden in &expected.not_events {
             if events
                 .iter()

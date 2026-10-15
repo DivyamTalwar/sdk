@@ -35,12 +35,10 @@ pub struct Expectations {
     pub result: Option<Value>,
     pub request_count: Option<usize>,
     pub reconciliation_count: Option<usize>,
-    #[serde(default)]
-    pub events: Vec<Value>,
+    pub events: Option<Vec<Value>>,
     #[serde(default)]
     pub not_events: Vec<Value>,
-    #[serde(default)]
-    pub requests: Vec<Value>,
+    pub requests: Option<Vec<Value>>,
     #[serde(default)]
     pub files: BTreeMap<String, Option<String>>,
 }

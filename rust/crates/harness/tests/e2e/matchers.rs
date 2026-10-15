@@ -21,6 +21,12 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
 }
 
 pub fn ordered(expected: &[Value], actual: &[Value], label: &str) -> Result<(), String> {
+    if expected.is_empty() && !actual.is_empty() {
+        return Err(format!(
+            "{label}: expected no observations, got {}",
+            actual.len()
+        ));
+    }
     let mut remaining = actual.iter().enumerate();
     let mut after = 0;
     for (index, expected) in expected.iter().enumerate() {
@@ -64,6 +70,8 @@ fn recursive_subsets_keep_types_null_and_array_order() {
 #[test]
 fn ordered_matchers_do_not_reuse_observations() {
     use serde_json::json;
+    assert!(ordered(&[], &[], "frames").is_ok());
+    assert!(ordered(&[], &[json!(1)], "frames").is_err());
     assert!(
         ordered(
             &[json!({"kind":"a"}), json!({"kind":"a"})],
