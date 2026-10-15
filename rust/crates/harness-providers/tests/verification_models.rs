@@ -6,7 +6,7 @@ use acyclic_harness_providers::Adapter;
 mod sync;
 #[cfg(not(loom))]
 #[path = "../src/sync/loom.rs"]
-pub mod sync;
+mod sync;
 use sync::Arc;
 mod accounting {
     include!("../src/accounting.rs");
