@@ -47,7 +47,7 @@ impl LocalHarness {
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
             max_output_tokens: None,
             mailbox_operation: None,
-            selected_output_volume: Some(self.scratch.clone()),
+            selected_output_volume: None,
         };
         let bytes = serde_json::to_vec(&model).map_err(storage)?;
         let payload = publisher

@@ -401,6 +401,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
 }
 
 mod context;
+mod content;
 mod dispatch;
 mod execution;
 mod interactions;

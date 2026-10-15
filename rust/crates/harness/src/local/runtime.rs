@@ -52,6 +52,11 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     for definition in config.tools.definitions(None)? {
         grants.push(format!("tool:call:{}", definition.name));
     }
+    grants.push(
+        config
+            .journal
+            .directory_read_capability("inputs", &mut None)?,
+    );
     let scope = RuntimeScope::new(
         Capabilities::new(grants.iter().map(String::as_str)),
         config.limits,
@@ -97,6 +102,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         &crate::durable_tool::ResumableToolRegistry::default(),
         None,
     )
-    .await?;
+    .await?
+    .with_output_volume(config.scratch, None)?;
     Ok((Arc::new(runtime), signed))
 }
