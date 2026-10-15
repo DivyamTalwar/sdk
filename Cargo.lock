@@ -247,6 +247,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-protocol",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -264,8 +265,6 @@ dependencies = [
  "jsonschema",
  "proptest",
  "prost",
- "prost-build",
- "protoc-bin-vendored",
  "reqwest 0.12.28",
  "rmcp",
  "schemars",
@@ -280,8 +279,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
  "tsify",
@@ -301,6 +298,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "acyclic-harness-protocol"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

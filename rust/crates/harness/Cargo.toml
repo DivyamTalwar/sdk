@@ -10,7 +10,10 @@ publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
-build = "build.rs"
+
+[[test]]
+name = "protocol"
+path = "tests/protocol_facade.rs"
 
 [[test]]
 name = "main"
@@ -79,9 +82,10 @@ mcp-http = ["dep:reqwest"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
-grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+grpc = ["dep:tonic", "acyclic-harness-protocol/grpc"]
 
 [dependencies]
+acyclic-harness-protocol = { version = "=0.2.0", path = "../harness-protocol" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
@@ -108,17 +112,11 @@ sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tonic = { workspace = true, optional = true }
-tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
-
-[build-dependencies]
-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
-tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }

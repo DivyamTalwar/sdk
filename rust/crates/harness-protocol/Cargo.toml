@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-harness-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Canonical harness protocol messages and transport bindings"
+
+[features]
+grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+
+[dependencies]
+prost.workspace = true
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored.workspace = true
+tonic-prost-build = { workspace = true, optional = true }
+
+[dev-dependencies]
+blake3.workspace = true
+
+[lints]
+workspace = true
