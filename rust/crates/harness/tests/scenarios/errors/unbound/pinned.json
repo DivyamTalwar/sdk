@@ -1,0 +1,4 @@
+{
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"set_name@1","arguments":{"name":"No route"}},{"type":"event",
+    "kind":"completed","metadata":null}]]
+}

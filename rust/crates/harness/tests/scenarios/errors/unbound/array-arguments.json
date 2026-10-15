@@ -1,0 +1,4 @@
+{
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"set_name","arguments":[1,{"path":"unbound-output.txt"}]},
+    {"type":"event","kind":"completed","metadata":null}]]
+}
