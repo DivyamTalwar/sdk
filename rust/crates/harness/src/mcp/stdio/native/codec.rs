@@ -23,15 +23,11 @@ impl<T: DeserializeOwned> Decoder for BoundedCodec<T> {
     type Error = io::Error;
 
     fn decode(&mut self, buffer: &mut BytesMut) -> io::Result<Option<T>> {
-        self.decoder
-            .decode(buffer)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        self.decoder.decode(buffer).map_err(Into::into)
     }
 
     fn decode_eof(&mut self, buffer: &mut BytesMut) -> io::Result<Option<T>> {
-        self.decoder
-            .decode_eof(buffer)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        self.decoder.decode_eof(buffer).map_err(Into::into)
     }
 }
 

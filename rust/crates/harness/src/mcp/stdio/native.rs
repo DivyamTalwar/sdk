@@ -127,7 +127,12 @@ impl StdioMcpTransport {
         let result = tokio::time::timeout(self.timeout, self.service.send_request(request))
             .await
             .map_err(|_| Error::Indeterminate(operation))?
-            .map_err(|_| Error::Indeterminate(operation))?;
+            .map_err(|error| match error {
+                rmcp::ServiceError::McpError(error) => {
+                    Error::Invalid(format!("MCP {method}: {error}"))
+                }
+                _ => Error::Indeterminate(operation),
+            })?;
         let result =
             serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;
         super::services::validate_result(method, result, None)

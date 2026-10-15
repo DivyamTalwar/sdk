@@ -63,6 +63,9 @@ async fn fixture(
                         "inputSchema":{"type":"object"}}]}}))
                     .map_err(invalid)?,
                     "malformed" => b"not json".to_vec(),
+                    "rpc-error" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+                        "error":{"code":-32602,"message":"invalid fixture cursor"}}))
+                    .map_err(invalid)?,
                     "wrong-id" => {
                         serde_json::to_vec(&json!({"jsonrpc":"2.0","id":999,"result":result}))
                             .map_err(invalid)?
@@ -98,6 +101,24 @@ async fn fixture(
     let client =
         StdioMcpTransport::bind(read, write, 4096, Duration::from_millis(50), None).await?;
     Ok((client, server))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_correlated_server_error_preserves_its_diagnostic_without_replay() -> Result<()> {
+    let (transport, server) = fixture("rpc-error").await?;
+    let operation = OperationId::from_bytes([7; 16]);
+    assert!(
+        matches!(transport.rpc(operation, "tools/list", json!({}), None).await,
+        Err(Error::Invalid(message)) if message.contains("invalid fixture cursor"))
+    );
+    assert!(transport.reconcile(operation, None).await?.is_none());
+    drop(transport);
+    let methods = server.await.map_err(invalid)??;
+    assert_eq!(
+        methods,
+        ["initialize", "notifications/initialized", "tools/list"]
+    );
+    Ok(())
 }
 
 #[tokio::test(start_paused = true)]
