@@ -30,8 +30,8 @@ impl WorkspaceGitExecutor<'_> {
                 identity.copy_from_slice(&snapshot_bytes[..16]);
                 let (child, initial) = lazy
                     .fork_snapshot(
-                        snapshot,
                         &destination,
+                        snapshot,
                         IdempotencyKey::from_bytes(identity),
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
