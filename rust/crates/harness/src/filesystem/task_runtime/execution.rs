@@ -164,18 +164,24 @@ where
         input: TurnInput,
         maximum_wait_millis: u32,
     ) -> impl std::future::Future<Output = Result<Option<TurnOutput>>> {
-        let future = crate::conversation::BoundedContentFuture::new(None, || async move {
-            if maximum_wait_millis == 0 {
-                return Err(Error::Invalid("invalid reconciliation allowance".into()));
+        let progress = if maximum_wait_millis == 0 {
+            Err(Error::Invalid("invalid reconciliation allowance".into()))
+        } else {
+            Ok(self.reconcile_progress(input))
+        };
+        async move {
+            use futures::future::{Either, select};
+            use std::pin::pin;
+            let progress = pin!(progress?);
+            let timer = pin!(crate::live::sleep_millis(u64::from(maximum_wait_millis)));
+            match select(timer, progress).await {
+                Either::Left((elapsed, _)) => {
+                    elapsed?;
+                    Ok(None)
+                }
+                Either::Right((result, _)) => result?.into_output().map(Some),
             }
-            deadline::observe(
-                maximum_wait_millis,
-                || async { self.reconcile_progress(input).await?.into_output() },
-                None,
-            )
-            .await
-        });
-        async move { future?.await }
+        }
     }
 
     pub(crate) fn reconcile_progress(
