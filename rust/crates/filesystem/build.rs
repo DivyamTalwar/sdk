@@ -6,14 +6,7 @@ mod case_fold;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(kani)");
-    println!("cargo:rustc-check-cfg=cfg(loom)");
-    if std::env::var_os("CARGO_FEATURE_MODEL_CHECKING").is_some()
-        && std::env::var("CARGO_CFG_TARGET_FAMILY")?
-            .split(',')
-            .any(|family| family == "unix")
-    {
-        println!("cargo:rustc-cfg=loom");
-    }
+    println!("cargo:rustc-check-cfg=cfg(acyclic_fs_loom)");
     case_fold::generate()?;
     let descriptors = prost_types::FileDescriptorSet::decode(
         include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),

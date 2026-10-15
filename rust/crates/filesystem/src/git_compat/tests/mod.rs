@@ -286,9 +286,9 @@ mod argv;
 mod capture;
 mod history;
 mod incremental;
-#[cfg(loom)]
+#[cfg(acyclic_fs_loom)]
 mod model;
-#[cfg(loom)]
+#[cfg(acyclic_fs_loom)]
 mod model_store;
 mod properties;
 mod state;
