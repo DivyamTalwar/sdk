@@ -80,26 +80,17 @@ impl FileTool {
             })
         };
         let (file, custody) = match *self {
-            Self::Read => {
-                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
-                let length = match input.0.range {
-                    Some(range) if range.end <= input.0.file.descriptor().byte_length() => {
-                        range.end.checked_sub(range.start)
-                    }
-                    Some(_) => None,
-                    None => Some(input.0.file.descriptor().byte_length()),
-                };
-                if maximum == 0
-                    || maximum == u64::MAX
-                    || length.is_none_or(|length| length > maximum)
-                {
+            Self::Plan => {
+                let custody = super::edit::allocation(work, 0)?;
+                super::super::plan::PlanView::borrow(&invocation.arguments, &custody)?;
+                if super::super::plan::PLAN_PATH.len() > scope.limits().path_bytes {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
-                        "file selection exceeds text rendering bound",
+                        "plan path exceeds task path bound",
                     ));
                 }
-                (input.0.file, input.1)
+                return Ok((None, custody));
+
             }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;

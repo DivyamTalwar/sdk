@@ -177,6 +177,7 @@ where
             )
             .await?
         };
+
         Ok(match pulled {
             crate::distributed::WorkPull::Idle => None,
             crate::distributed::WorkPull::Claimed(lease) => Some(
