@@ -62,6 +62,8 @@ pub mod runtime;
 pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod tool;
 pub mod tools;
 pub mod turn;
