@@ -32,7 +32,8 @@ mod tests;
 mod turn;
 #[cfg(feature = "native-execution")]
 mod workspace;
-pub use config::{LocalHarnessConfig, LocalProject};
+pub use config::LocalHarnessConfig;
+use config::LocalProject;
 #[cfg(feature = "native-execution")]
 pub use workspace::LocalWorkspace;
 
@@ -117,7 +118,7 @@ impl LocalHarness {
                     path,
                     &directory,
                     owner.workspace_identity,
-                    acyclic_fs::OperationId::from_bytes(owner.task.into_bytes()),
+                    workspace::attach_operation(owner.task),
                 )
                 .await?,
             ),

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Storage selected for the agent's project view.
-pub enum LocalProject {
+pub(super) enum LocalProject {
     /// A normal checkout, opened lazily without importing its files.
     Workspace(PathBuf),
     /// An existing project volume in a local filesystem directory.
@@ -11,33 +11,6 @@ pub enum LocalProject {
         /// Existing project volume within that provider.
         volume: VolumeRef,
     },
-}
-
-impl From<PathBuf> for LocalProject {
-    fn from(path: PathBuf) -> Self {
-        Self::Workspace(path)
-    }
-}
-impl From<&Path> for LocalProject {
-    fn from(path: &Path) -> Self {
-        Self::Workspace(path.into())
-    }
-}
-impl From<&PathBuf> for LocalProject {
-    fn from(path: &PathBuf) -> Self {
-        Self::Workspace(path.clone())
-    }
-}
-
-impl From<&str> for LocalProject {
-    fn from(path: &str) -> Self {
-        Self::Workspace(path.into())
-    }
-}
-impl From<String> for LocalProject {
-    fn from(path: String) -> Self {
-        Self::Workspace(path.into())
-    }
 }
 
 /// Durable local composition with a required model binding.
@@ -56,11 +29,11 @@ pub struct LocalHarnessConfig {
 }
 
 impl LocalHarnessConfig {
-    /// Selects a checkout or configured volume and its stock model binding.
+    /// Selects a checkout path and its stock model binding.
     #[must_use]
-    pub fn new(project: impl Into<LocalProject>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
+    pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
         Self {
-            project: project.into(),
+            project: LocalProject::Workspace(workspace.into()),
             model,
             context: ContextPipeline::default(),
             tools: Vec::new(),
@@ -77,6 +50,16 @@ impl LocalHarnessConfig {
             compaction: None,
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
+    }
+    /// Opens an existing volume in the local filesystem directory passed to `new`.
+    #[must_use]
+    pub fn volume(mut self, volume: VolumeRef) -> Self {
+        let directory = match self.project {
+            LocalProject::Workspace(path) => path,
+            LocalProject::Volume { directory, .. } => directory,
+        };
+        self.project = LocalProject::Volume { directory, volume };
+        self
     }
     /// Selects the stock model's context pipeline.
     #[must_use]

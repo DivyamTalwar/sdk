@@ -169,7 +169,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(model.request_count(), 0);
+    assert_eq!(model.requests().len(), 0);
     let _ = base.execute(input.clone(), &journal).await?;
     assert!(
         model
@@ -378,19 +378,19 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         crate::Capabilities::new([
             "task:spawn:context-probe@1",
             "model:generate",
-            "tool:call:write",
+            "tool:call:acyclic.write_file",
         ]),
         Limits::default(),
     )?;
     let context = capture_admitted_context(scope.clone()).await?;
-    let tool = crate::tool::files::write()?;
+    let tool = crate::tool::files::write_file()?;
     let mut tools = ToolRegistry::default();
     tools.register((tool, None), &mut None, None)?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "publication".into(),
-        name: "write".into(),
+        name: "acyclic.write_file".into(),
         arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
     };
     let base = StockExecutor::new(

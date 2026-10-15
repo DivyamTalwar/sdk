@@ -5,7 +5,7 @@ const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
-    pub fn commands(
+    pub(crate) fn commands(
         &self,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
@@ -116,19 +116,27 @@ impl LocalHarness {
     }
 
     async fn advance(&self, task: TaskId) -> Result<()> {
+        let commands = self.commands()?;
+        Box::pin(self.advance_with_commands(task, &commands)).await
+    }
+
+    pub(super) async fn advance_with_commands(
+        &self,
+        task: TaskId,
+        commands: &dyn crate::filesystem::TaskCommandHost,
+    ) -> Result<()> {
         let worker = crate::distributed::Worker {
             id: format!("local-{}", uuid::Uuid::new_v4()),
             available: Default::default(),
             labels: Default::default(),
         };
-        let commands = self.commands()?;
         let mut attempt = match Box::pin(self.runtime.task_host().recover_work(task, &mut None))
             .await?
         {
             crate::distributed::WorkPull::Claimed(lease) => Some(
                 Box::pin(
                     self.runtime
-                        .resume_task(lease, &commands, TRANSITIONS_PER_SLICE, None),
+                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None),
                 )
                 .await,
             ),
@@ -142,13 +150,14 @@ impl LocalHarness {
                 Box::pin(self.runtime.run_operation(
                     &worker,
                     task,
-                    &commands,
+                    commands,
                     TRANSITIONS_PER_SLICE,
                     None,
                 ))
                 .await?
             }
         };
+        let mut suspended_revision = None;
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -160,7 +169,7 @@ impl LocalHarness {
                     attempt = Some(
                         Box::pin(self.runtime.resume_task(
                             lease,
-                            &commands,
+                            commands,
                             TRANSITIONS_PER_SLICE,
                             None,
                         ))
@@ -168,12 +177,18 @@ impl LocalHarness {
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                    crate::filesystem::TaskWorkerOutcome::Suspended { .. },
+                    crate::filesystem::TaskWorkerOutcome::Suspended { revision, .. },
                 )) => {
+                    // A wake may reclaim a command that is still pending. Retry a
+                    // checkpoint only once; further work needs an external wake.
+                    if suspended_revision == Some(revision) {
+                        break;
+                    }
+                    suspended_revision = Some(revision);
                     attempt = Box::pin(self.runtime.run_operation(
                         &worker,
                         task,
-                        &commands,
+                        commands,
                         TRANSITIONS_PER_SLICE,
                         None,
                     ))

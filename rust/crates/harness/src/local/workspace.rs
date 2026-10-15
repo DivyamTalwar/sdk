@@ -15,10 +15,19 @@ pub struct LocalWorkspace {
     >,
 }
 
+pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.local.checkout-attach/v1\0");
+    hash.update(&task.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    acyclic_fs::OperationId::from_bytes(bytes)
+}
+
 impl LocalWorkspace {
     /// Source-backed filesystem view. No checkout scan occurs during open.
     #[must_use]
-    pub const fn view(
+    pub(crate) const fn view(
         &self,
     ) -> &LazyWorkspace<
         LocalAuthorityBackend,
