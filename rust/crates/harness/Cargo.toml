@@ -17,6 +17,11 @@ build = "build.rs"
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "git_executor"
+path = "tests/git_executor.rs"
+required-features = ["filesystem-local", "native-execution"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 
