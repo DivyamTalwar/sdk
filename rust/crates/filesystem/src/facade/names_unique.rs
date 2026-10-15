@@ -1,14 +1,14 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    // Validate one immutable directory tree in a single paged pass. The caller
-    // caches the result by tree identity, never by a mutable path or generation.
-    pub(crate) async fn unique_folded_tree(
+    // One paged pass. Unique directories retain no name keys; legacy collisions
+    // retain the sorted index so only ambiguous names are refused.
+    pub(crate) async fn folded_collision_keys(
         &self,
         tree: ObjectId,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<bool, FsError> {
+    ) -> Result<Owned<Vec<Vec<u8>>>, FsError> {
         let mut keys = Owned::<Vec<Vec<u8>>>::allocate(0, accounting)?;
         // Entry count can exceed file count through hard links. Actual growth
         // is charged to the caller; this bound is only Vec's addressable size.
@@ -64,8 +64,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
         keys.value.sort_unstable();
-        let unique = !keys.value.windows(2).any(|pair| pair[0] == pair[1]);
-        keys.retire(accounting)?;
-        Ok(unique)
+        if !keys.value.windows(2).any(|pair| pair[0] == pair[1]) {
+            keys.retire(accounting)?;
+            return Owned::allocate(0, accounting);
+        }
+        Ok(keys)
     }
+}
+
+// The sorted index retains duplicates. Binary search can return any equal key;
+// its neighbors tell whether this native identity is ambiguous.
+pub(crate) fn ambiguous_folded_name(
+    keys: &[Vec<u8>],
+    name: &LogicalName,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<bool, FsError> {
+    if keys.is_empty() {
+        return Ok(false);
+    }
+    let key = super::names::name_fold_key(name, accounting)?;
+    let ambiguous = keys.binary_search(&key.0).is_ok_and(|index| {
+        index
+            .checked_sub(1)
+            .is_some_and(|before| keys[before] == key.0)
+            || keys.get(index + 1).is_some_and(|after| *after == key.0)
+    });
+    let bytes = key.0.capacity() as u64;
+    super::names::retire_name_owned(key, bytes, accounting)?;
+    Ok(ambiguous)
 }

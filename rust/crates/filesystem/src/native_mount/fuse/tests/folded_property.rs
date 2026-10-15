@@ -22,7 +22,7 @@ proptest! {
         }).collect::<Result<std::collections::BTreeSet<_>, _>>()?.len() == names.len();
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let actual = runtime.block_on(async {
-            let mut checkout = crate::facade::test_fixtures::folded_checkout(names).await?;
+            let mut checkout = crate::facade::test_fixtures::folded_checkout(names.iter().cloned()).await?;
             let cancellation = crate::CancellationToken::new();
             let root = crate::kernel::NamespacePath::new(Vec::new(), config.limits)?;
             let record = checkout.lookup_no_follow(&root, crate::WorkBudget::UNBOUNDED, &cancellation)
@@ -32,7 +32,20 @@ proptest! {
             };
             let mut accounting = crate::kernel::KernelAccounting::standalone(
                 crate::WorkBudget::UNBOUNDED, &cancellation);
-            let unique = checkout.unique_folded_tree(entries, &mut accounting, &cancellation).await?;
+            let keys = checkout.folded_collision_keys(entries, &mut accounting, &cancellation).await?;
+            for name in &names {
+                let logical = crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
+                    name.as_bytes().to_vec(), config.limits.maximum_component_bytes)?;
+                let key = logical.case_fold_key();
+                let expected = names.iter().filter(|other| {
+                    crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
+                        other.as_bytes().to_vec(), config.limits.maximum_component_bytes)
+                        .is_ok_and(|name| name.case_fold_key() == key)
+                }).count() > 1;
+                assert_eq!(crate::facade::ambiguous_folded_name(&keys.value, &logical, &mut accounting)?, expected);
+            }
+            let unique = keys.value.is_empty();
+            keys.retire(&mut accounting)?;
             Ok::<_, Box<dyn std::error::Error>>(unique)
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(actual, expected);

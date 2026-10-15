@@ -1,53 +1,69 @@
 #[cfg(loom)]
-use loom::sync::Mutex;
+use loom::sync::{Arc, Mutex};
 #[cfg(not(loom))]
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-// Bounded, disposable cache of immutable directory-tree identities. Namespace
-// edits produce a different tree id, so no mutable-view invalidation is needed.
-const SLOTS: usize = 64;
 use crate::ObjectId;
 
-pub(super) struct FoldedDirectoryCache {
-    // Lock order: view gate -> shared checkout -> this terminal lock. No guard
-    // escapes; no allocation, accounting, callbacks or other locks occur inside.
-    state: Mutex<(usize, [Option<(ObjectId, bool)>; SLOTS])>,
+// Disposable immutable directory indexes. Edits produce a different tree id.
+const SLOTS: usize = 64;
+
+pub(super) enum DirectoryNames<T> {
+    Unique,
+    Collisions(Arc<T>),
 }
 
-impl FoldedDirectoryCache {
+impl<T> Clone for DirectoryNames<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Unique => Self::Unique,
+            Self::Collisions(keys) => Self::Collisions(Arc::clone(keys)),
+        }
+    }
+}
+
+pub(super) struct FoldedDirectoryCache<T> {
+    // Lock order: view gate -> shared checkout -> this terminal lock. No guard
+    // escapes; only Arc clones/moves occur inside. Evicted payloads drop outside.
+    state: Mutex<(usize, [Option<(ObjectId, DirectoryNames<T>)>; SLOTS])>,
+}
+
+impl<T> FoldedDirectoryCache<T> {
     pub(super) fn new() -> Self {
         Self {
-            state: Mutex::new((0, [None; SLOTS])),
+            state: Mutex::new((0, std::array::from_fn(|_| None))),
         }
     }
 
-    pub(super) fn get(&self, key: ObjectId) -> Option<bool> {
+    pub(super) fn get(&self, key: ObjectId) -> Option<DirectoryNames<T>> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .1
             .iter()
             .flatten()
-            .find_map(|(tree, unique)| (*tree == key).then_some(*unique))
+            .find_map(|(tree, value)| (*tree == key).then(|| value.clone()))
     }
 
-    pub(super) fn insert(&self, key: ObjectId, unique: bool) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
-            return;
-        }
-        let position = state.0;
-        state.1[position] = Some((key, unique));
-        state.0 = (position + 1) % SLOTS;
+    pub(super) fn insert(&self, key: ObjectId, value: DirectoryNames<T>) {
+        let previous = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
+                return;
+            }
+            let position = state.0;
+            state.0 = (position + 1) % SLOTS;
+            state.1[position].replace((key, value))
+        };
+        drop(previous);
     }
 
-    // Negative control: two writers can reserve the same slot when selection
-    // and publication do not share the production critical section.
+    // Negative control: writers can select the same slot without one section.
     #[cfg(all(test, loom))]
-    pub(super) fn insert_split(&self, key: ObjectId, unique: bool) {
+    pub(super) fn insert_split(&self, key: ObjectId, value: DirectoryNames<T>) {
         let position = {
             let state = self
                 .state
@@ -58,11 +74,35 @@ impl FoldedDirectoryCache {
             }
             state.0
         };
+        let previous = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.0 = (position + 1) % SLOTS;
+            state.1[position].replace((key, value))
+        };
+        drop(previous);
+    }
+
+    #[cfg(all(test, loom))]
+    pub(super) fn unlocked(&self) -> bool {
+        self.state.try_lock().is_ok()
+    }
+
+    // Negative control: payload retirement may acquire an accounting lock.
+    #[cfg(all(test, loom))]
+    pub(super) fn insert_dropping_locked(&self, key: ObjectId, value: DirectoryNames<T>) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.1[position] = Some((key, unique));
+        if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
+            return;
+        }
+        let position = state.0;
         state.0 = (position + 1) % SLOTS;
+        let previous = state.1[position].replace((key, value));
+        drop(previous);
     }
 }
