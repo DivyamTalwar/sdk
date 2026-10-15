@@ -29,7 +29,7 @@ pub use spec::{Authentication, ProviderSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;
-use std::sync;
+mod sync;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod accounting_properties;
