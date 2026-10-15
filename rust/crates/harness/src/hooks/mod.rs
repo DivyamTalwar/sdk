@@ -1,10 +1,10 @@
 //! Configured command hooks shared by native harness sessions.
 
-use crate::{Error, Result};
+use crate::{Error, Result, tool::ToolRegistry};
 use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, future::Future, sync::Arc};
 
 /// Lifecycle points with command-hook support.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -56,8 +56,22 @@ struct Group {
 
 struct Binding {
     event: HookEvent,
-    matcher: Option<Regex>,
+    matcher: Option<Matcher>,
     commands: Vec<Arc<CommandHook>>,
+}
+
+enum Matcher {
+    Exact(String),
+    Pattern(Regex),
+}
+
+impl Matcher {
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Exact(expected) => expected == name,
+            Self::Pattern(pattern) => pattern.is_match(name),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -100,17 +114,34 @@ impl Hooks {
             let groups: Vec<Group> = serde_json::from_value(groups)
                 .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
             for group in groups {
-                let matcher = if group.matcher.is_empty()
-                    || group.matcher == "*"
-                    || event == HookEvent::Stop
-                {
-                    None
-                } else {
-                    Some(
-                        Regex::new(&group.matcher)
-                            .map_err(|error| Error::Invalid(format!("hook matcher: {error}")))?,
-                    )
-                };
+                let matcher =
+                    if group.matcher.is_empty() || group.matcher == "*" || event == HookEvent::Stop
+                    {
+                        None
+                    } else if group.matcher.chars().any(|character| {
+                        matches!(
+                            character,
+                            '.' | '^'
+                                | '$'
+                                | '*'
+                                | '+'
+                                | '?'
+                                | '('
+                                | ')'
+                                | '['
+                                | ']'
+                                | '{'
+                                | '}'
+                                | '|'
+                                | '\\'
+                        )
+                    }) {
+                        Some(Matcher::Pattern(Regex::new(&group.matcher).map_err(
+                            |error| Error::Invalid(format!("hook matcher: {error}")),
+                        )?))
+                    } else {
+                        Some(Matcher::Exact(group.matcher))
+                    };
                 for hook in &group.hooks {
                     if hook.kind != "command" || hook.asynchronous {
                         return Err(Error::Unsupported(
@@ -118,7 +149,7 @@ impl Hooks {
                         ));
                     }
                     if hook.shell.as_deref().is_some_and(|shell| {
-                        !matches!(shell, "bash" | "sh" | "powershell" | "pwsh")
+                        !matches!(shell, "bash" | "sh" | "powershell" | "pwsh" | "cmd")
                     }) {
                         return Err(Error::Invalid("unknown hook shell".into()));
                     }
@@ -146,7 +177,8 @@ impl Hooks {
         &'a self,
         event: HookEvent,
         input: &'a Value,
-    ) -> impl Iterator<Item = &'a Arc<CommandHook>> {
+        registry: &'a ToolRegistry,
+    ) -> Result<impl Iterator<Item = &'a Arc<CommandHook>>> {
         let subject = match event {
             HookEvent::SessionStart => input.get("source"),
             HookEvent::PreToolUse | HookEvent::PostToolUse => input.get("tool_name"),
@@ -154,16 +186,53 @@ impl Hooks {
         }
         .and_then(Value::as_str)
         .unwrap_or("");
-        self.bindings
+        let tool = if matches!(event, HookEvent::PreToolUse | HookEvent::PostToolUse) {
+            registry.get(subject, None, None)?
+        } else {
+            None
+        };
+        Ok(self
+            .bindings
             .iter()
             .filter(move |binding| {
                 binding.event == event
-                    && binding
-                        .matcher
-                        .as_ref()
-                        .is_none_or(|matcher| matcher.is_match(subject))
+                    && binding.matcher.as_ref().is_none_or(|matcher| {
+                        matcher.matches(subject)
+                            || tool.is_some_and(|tool| {
+                                matcher.matches(&tool.definition.name)
+                                    || tool.hook_names.iter().any(|name| matcher.matches(name))
+                            })
+                    })
             })
-            .flat_map(|binding| &binding.commands)
+            .flat_map(|binding| &binding.commands))
+    }
+
+    async fn run_commands<F, Fut>(
+        &self,
+        event: HookEvent,
+        input: &Value,
+        registry: &ToolRegistry,
+        execute: F,
+    ) -> Result<HookOutput>
+    where
+        F: FnMut(&Arc<CommandHook>) -> Fut,
+        Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
+    {
+        let results =
+            futures::future::join_all(self.commands(event, input, registry)?.map(execute)).await;
+        let mut output = HookOutput::default();
+        for result in results {
+            let observed = match result {
+                Ok((code, stdout, stderr)) => output.observe(event, code, &stdout, &stderr),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = observed {
+                output
+                    .diagnostics
+                    .push(format!("{} hook failed: {error}", event.name()));
+            }
+        }
+        Ok(output)
     }
 }
 
@@ -190,7 +259,8 @@ impl HookOutput {
     ) -> Result<()> {
         if code == Some(2) {
             if matches!(event, HookEvent::PreToolUse | HookEvent::Stop) {
-                self.blocked = Some(String::from_utf8_lossy(stderr).into_owned());
+                self.blocked
+                    .get_or_insert_with(|| String::from_utf8_lossy(stderr).into_owned());
             } else if event == HookEvent::PostToolUse {
                 self.additional_context
                     .push(String::from_utf8_lossy(stderr).into_owned());
@@ -227,19 +297,19 @@ impl HookOutput {
             return Err(Error::Invalid("hook output names another event".into()));
         }
         if value.get("continue").and_then(Value::as_bool) == Some(false) {
-            self.blocked = Some(
-                take_string(&mut value, "stopReason").unwrap_or_else(|| "Stopped by hook".into()),
-            );
+            self.blocked.get_or_insert_with(|| {
+                take_string(&mut value, "stopReason").unwrap_or_else(|| "Stopped by hook".into())
+            });
         }
         if matches!(event, HookEvent::PreToolUse | HookEvent::Stop)
             && (value.get("decision").and_then(Value::as_str) == Some("block")
                 || specific.get("permissionDecision").and_then(Value::as_str) == Some("deny"))
         {
-            self.blocked = Some(
+            self.blocked.get_or_insert_with(|| {
                 take_string(&mut specific, "permissionDecisionReason")
                     .or_else(|| take_string(&mut value, "reason"))
-                    .unwrap_or_else(|| "Blocked by hook".into()),
-            );
+                    .unwrap_or_else(|| "Blocked by hook".into())
+            });
         }
         if let Some(context) = take_string(&mut specific, "additionalContext") {
             self.additional_context.push(context);

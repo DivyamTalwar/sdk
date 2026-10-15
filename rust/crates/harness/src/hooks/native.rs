@@ -37,7 +37,7 @@ impl HooksConfig {
 impl Hooks {
     /// Loads user hooks, and project hooks only with explicit trust in `config`.
     pub async fn load(config: HooksConfig) -> Result<Self> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(Error::Process)?;
+        acyclic_native_runtime::initialize_native_io_services().map_err(process_error)?;
         run_blocking_io(
             move || {
                 let mut hooks = Self::default();
@@ -63,7 +63,7 @@ impl Hooks {
                         Ok(bytes) => bytes,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                         Err(error) => {
-                            return Err(Error::Process(error));
+                            return Err(process_error(error));
                         }
                     };
                     if path
@@ -82,13 +82,21 @@ impl Hooks {
             },
             None,
         )
-        .map_err(Error::Process)?
+        .map_err(process_error)?
         .await
-        .map_err(Error::Process)?
+        .map_err(process_error)?
     }
 
-    /// Runs matching hooks with JSON stdin, bounded output, deadlines, and tree cleanup.
-    pub async fn run(&self, event: HookEvent, cwd: &Path, mut input: Value) -> Result<HookOutput> {
+    /// Runs matching hooks concurrently, merging decisions in configuration order.
+    /// `workspace` is the project root; `cwd` is the individual tool's directory.
+    pub async fn run(
+        &self,
+        event: HookEvent,
+        workspace: &Path,
+        cwd: &Path,
+        mut input: Value,
+        registry: &ToolRegistry,
+    ) -> Result<HookOutput> {
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
@@ -100,50 +108,61 @@ impl Hooks {
             "cwd".into(),
             Value::String(cwd.to_string_lossy().into_owned()),
         );
-        let mut output = HookOutput::default();
-        let mut commands = self.commands(event, &input).peekable();
-        if commands.peek().is_none() {
-            return Ok(output);
-        }
-        acyclic_native_runtime::initialize_native_io_services().map_err(Error::Process)?;
         let mut bytes =
             serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.push(b'\n');
-        let request = Arc::new((cwd.to_path_buf(), bytes));
-        for hook in commands {
-            let hook = Arc::clone(hook);
-            let request = Arc::clone(&request);
-            let result = run_blocking_io(
-                move || {
-                    let mut command = shell_command(&hook.command, hook.shell.as_deref());
-                    command
-                        .current_dir(&request.0)
-                        .env("CLAUDE_PROJECT_DIR", &request.0)
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped());
-                    let mut tree = ProcessTree::spawn(&mut command).map_err(Error::Process)?;
-                    tree.wait_with_output(
-                        Duration::from_secs(hook.timeout),
-                        65_536,
-                        Some(CaptureInput::Literal(&request.1)),
-                        || Ok(()),
-                        |_| Ok(ProcessInput::default()),
-                        None,
-                        None,
-                    )
-                    .map_err(|failure| Error::Process(failure.error))
-                },
-                None,
-            )
-            .map_err(Error::Process)?
-            .await
-            .map_err(Error::Process)??;
-            output.observe(event, result.status.code(), &result.stdout, &result.stderr)?;
-            if output.blocked.is_some() {
-                break;
-            }
-        }
-        Ok(output)
+        let request = Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes));
+        self.run_commands(event, &input, registry, |hook| {
+            run_hook(Arc::clone(hook), Arc::clone(&request))
+        })
+        .await
     }
+}
+
+pub(super) fn process_error(error: std::io::Error) -> Error {
+    let kind = match error.kind() {
+        std::io::ErrorKind::TimedOut => "timeout",
+        std::io::ErrorKind::NotFound => "not_found",
+        std::io::ErrorKind::PermissionDenied => "permission_denied",
+        _ => "io",
+    };
+    Error::Process {
+        kind,
+        message: error.to_string(),
+    }
+}
+
+async fn run_hook(
+    hook: Arc<CommandHook>,
+    request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
+) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(process_error)?;
+    run_blocking_io(
+        move || {
+            let mut command = shell_command(&hook.command, hook.shell.as_deref());
+            command
+                .current_dir(&request.1)
+                .env("CLAUDE_PROJECT_DIR", &request.0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut tree = ProcessTree::spawn(&mut command).map_err(process_error)?;
+            let output = tree
+                .wait_with_output(
+                    Duration::from_secs(hook.timeout),
+                    65_536,
+                    Some(CaptureInput::Literal(&request.2)),
+                    || Ok(()),
+                    |_| Ok(ProcessInput::default()),
+                    None,
+                    None,
+                )
+                .map_err(|failure| process_error(failure.error))?;
+            Ok((output.status.code(), output.stdout, output.stderr))
+        },
+        None,
+    )
+    .map_err(process_error)?
+    .await
+    .map_err(process_error)?
 }

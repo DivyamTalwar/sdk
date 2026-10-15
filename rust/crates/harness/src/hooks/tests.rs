@@ -18,23 +18,41 @@ fn claude_json_and_codex_toml_are_additive_and_match_standard_events() -> Result
         command = "format"
     "#,
     )?;
+    let registry = registry()?;
     let input = json!({"tool_name":"write","source":"resume"});
-    assert_eq!(hooks.commands(HookEvent::SessionStart, &input).count(), 1);
     assert_eq!(
         hooks
-            .commands(HookEvent::PreToolUse, &input)
+            .commands(HookEvent::SessionStart, &input, &registry)?
+            .count(),
+        1
+    );
+    assert_eq!(
+        hooks
+            .commands(HookEvent::PreToolUse, &input, &registry)?
             .map(|hook| hook.command.as_str())
             .collect::<Vec<_>>(),
         ["check", "format"]
     );
-    assert_eq!(hooks.commands(HookEvent::Stop, &input).count(), 1);
+    assert_eq!(
+        hooks.commands(HookEvent::Stop, &input, &registry)?.count(),
+        1
+    );
     assert_eq!(
         hooks
-            .commands(HookEvent::PreToolUse, &json!({"tool_name":"read"}))
+            .commands(
+                HookEvent::PreToolUse,
+                &json!({"tool_name":"read"}),
+                &registry
+            )?
             .count(),
         0
     );
-    assert_eq!(hooks.commands(HookEvent::PostToolUse, &input).count(), 0);
+    assert_eq!(
+        hooks
+            .commands(HookEvent::PostToolUse, &input, &registry)?
+            .count(),
+        0
+    );
     Ok(())
 }
 
@@ -55,29 +73,54 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
     Ok(())
 }
 
+fn registry() -> Result<ToolRegistry> {
+    let mut registry = ToolRegistry::default();
+    let tools: &[(&str, &'static [&'static str])] = &[
+        ("bash", &["Bash"]),
+        ("edit", &["Edit"]),
+        ("write", &["Write"]),
+        ("read", &["Read"]),
+        ("fs", &[]),
+        ("NotebookEdit", &[]),
+    ];
+    for &(name, names) in tools {
+        let mut tool = crate::tool::files::read_file()?;
+        tool.definition.name = name.into();
+        tool.hook_names = names;
+        registry.register((tool, None), &mut None, None)?;
+    }
+    Ok(registry)
+}
+
 #[test]
-fn tool_matchers_use_registry_names_without_builtin_aliases() -> Result<()> {
+fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
+    let registry = registry()?;
     let mut hooks = Hooks::default();
     hooks.add_json(
         br#"{"hooks":{"PreToolUse":[
-        {"matcher":"^(fs|custom.tool)$","hooks":[{"type":"command","command":"exact"}]},
-        {"matcher":"^Bash$","hooks":[{"type":"command","command":"case-sensitive"}]}
+        {"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]},
+        {"matcher":"Edit","hooks":[{"type":"command","command":"edit"}]},
+        {"matcher":"Edit|Write","hooks":[{"type":"command","command":"changes"}]},
+        {"matcher":"fs","hooks":[{"type":"command","command":"fs"}]}
     ]}}"#,
     )?;
-    for name in ["fs", "custom.tool", "Bash"] {
+    for (name, commands) in [
+        ("bash", vec!["guard"]),
+        ("edit", vec!["edit", "changes"]),
+        ("write", vec!["changes"]),
+        ("fs", vec!["fs"]),
+        // Regex alternation keeps regex semantics; plain Edit is anchored.
+        ("NotebookEdit", vec!["changes"]),
+        ("read", vec![]),
+    ] {
         assert_eq!(
             hooks
-                .commands(HookEvent::PreToolUse, &json!({"tool_name":name}))
-                .count(),
-            1
+                .commands(HookEvent::PreToolUse, &json!({"tool_name":name}), &registry)?
+                .map(|hook| hook.command.as_str())
+                .collect::<Vec<_>>(),
+            commands
         );
     }
-    assert_eq!(
-        hooks
-            .commands(HookEvent::PreToolUse, &json!({"tool_name":"bash"}))
-            .count(),
-        0
-    );
     Ok(())
 }
 
@@ -162,96 +205,226 @@ fn output_applies_context_tool_decisions_and_stop_blocking() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_hooks_load_layers_and_receive_json_stdin_in_workspace() -> Result<()> {
-    let home = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let workspace = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let write = |root: &std::path::Path, path: &str, value: Value| -> Result<()> {
-        let path = root.join(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| Error::Storage(error.to_string()))?;
-        }
-        std::fs::write(
-            path,
-            serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?,
-        )
-        .map_err(|error| Error::Storage(error.to_string()))
-    };
-    #[cfg(windows)]
-    let command = "$data = [Console]::In.ReadToEnd() | ConvertFrom-Json; if ($data.session_id -ne 'test' -or $data.hook_event_name -ne 'SessionStart' -or $data.cwd -ne (Get-Location).Path -or $env:CLAUDE_PROJECT_DIR -ne $data.cwd) { exit 2 }; 'hook ready'";
-    #[cfg(not(windows))]
-    let command = "read input; test \"$(pwd -P)\" = \"$(cd \"$CLAUDE_PROJECT_DIR\" && pwd -P)\" || exit 2; case \"$input\" in *test*SessionStart*|*SessionStart*test*) printf 'hook ready';; *) exit 2;; esac";
-    write(
-        home.path(),
-        ".claude/settings.json",
-        json!({"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":command}]}]}}),
+async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<()> {
+    use futures::{FutureExt as _, channel::oneshot};
+    use std::cell::Cell;
+    let mut hooks = Hooks::default();
+    hooks.add_json(
+        br#"{"hooks":{"PreToolUse":[{"hooks":[
+        {"type":"command","command":"first"},
+        {"type":"command","command":"second"}
+    ]}]}}"#,
     )?;
+    let registry = registry()?;
+    let input = json!({"tool_name":"bash"});
+    let started = Cell::new(0);
+    let (first_tx, first_rx) = oneshot::channel();
+    let (second_tx, second_rx) = oneshot::channel();
+    let mut receivers = [first_rx, second_rx].into_iter();
+    let future = hooks.run_commands(HookEvent::PreToolUse, &input, &registry, |_| {
+        let receiver = receivers.next().expect("one receiver per command");
+        let started = &started;
+        async move {
+            started.set(started.get() + 1);
+            Ok((
+                Some(0),
+                receiver.await.expect("controlled completion"),
+                vec![],
+            ))
+        }
+    });
+    futures::pin_mut!(future);
+    assert!(future.as_mut().now_or_never().is_none());
+    assert_eq!(
+        started.get(),
+        2,
+        "both commands start before either completes"
+    );
+    let response = |name| {
+        serde_json::to_vec(&json!({"decision":"block","reason":name,
+        "hookSpecificOutput":{"additionalContext":name,"updatedInput":{"winner":name}}}))
+        .unwrap()
+    };
+    second_tx.send(response("second")).unwrap();
+    first_tx.send(response("first")).unwrap();
+    let output = future.await?;
+    assert_eq!(output.blocked.as_deref(), Some("first"));
+    assert_eq!(output.additional_context, ["first", "second"]);
+    assert_eq!(output.updated_input, Some(json!({"winner":"second"})));
+    Ok(())
+}
+
+#[tokio::test]
+async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_other_hooks()
+-> Result<()> {
+    let mut hooks = Hooks::default();
+    hooks.add_json(
+        br#"{"hooks":{"SessionStart":[{"hooks":[
+        {"type":"command","command":"timeout"},
+        {"type":"command","command":"spawn"},
+        {"type":"command","command":"invalid"},
+        {"type":"command","command":"success"}
+    ]}]}}"#,
+    )?;
+    let output = hooks
+        .run_commands(HookEvent::SessionStart, &json!({}), &registry()?, |hook| {
+            let result = match hook.command.as_str() {
+                "timeout" => Err(Error::Process {
+                    kind: "timeout",
+                    message: "deadline elapsed".into(),
+                }),
+                "spawn" => Err(Error::Process {
+                    kind: "not_found",
+                    message: "shell missing".into(),
+                }),
+                "invalid" => Ok((
+                    Some(0),
+                    br#"{"hookSpecificOutput":{"hookEventName":"Stop"}}"#.to_vec(),
+                    vec![],
+                )),
+                _ => Ok((Some(0), b"ready".to_vec(), vec![])),
+            };
+            std::future::ready(result)
+        })
+        .await?;
+    assert!(output.blocked.is_none());
+    assert_eq!(output.additional_context, ["ready"]);
+    assert_eq!(output.diagnostics.len(), 3);
+    assert!(output.diagnostics[0].contains("timeout"));
+    assert!(output.diagnostics[1].contains("shell missing"));
+    assert!(output.diagnostics[2].contains("another event"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_hooks_default_user_guards_and_project_trust_use_one_shared_script() -> Result<()> {
+    use super::native::process_error;
+    let fixture = tempfile::tempdir().map_err(process_error)?;
+    let home = fixture.path().join("home");
+    let workspace = fixture.path().join("project");
+    let cwd = workspace.join("nested");
+    std::fs::create_dir_all(&cwd).map_err(process_error)?;
     #[cfg(windows)]
-    let project_command =
-        "[IO.File]::WriteAllText((Join-Path (Get-Location) 'project-hook-ran'), 'ran'); exit 2";
+    let (script_name, script, shell) = (
+        "fixture.cmd",
+        r#"@echo off
+setlocal
+set /p payload=
+if not defined payload exit /b 3
+if not "%CD%"=="%CLAUDE_PROJECT_DIR%\nested" exit /b 4
+> "%CLAUDE_PROJECT_DIR%\hook-ran" echo %payload%
+exit /b 2
+"#,
+        "cmd",
+    );
     #[cfg(not(windows))]
-    let project_command = "printf ran > project-hook-ran; exit 2";
-    let project_hook =
-        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":project_command}]}]}});
+    let (script_name, script, shell) = (
+        "fixture.sh",
+        r#"IFS= read -r input
+test -n "$input" || exit 3
+test "$(pwd -P)" = "$(cd "$CLAUDE_PROJECT_DIR/nested" && pwd -P)" || exit 4
+printf '%s' "$input" > "$CLAUDE_PROJECT_DIR/hook-ran"
+exit 2
+"#,
+        "sh",
+    );
+    let script_path = fixture.path().join(script_name);
+    std::fs::write(&script_path, script).map_err(process_error)?;
+    #[cfg(windows)]
+    let command = format!("call \"{}\"", script_path.display());
+    #[cfg(not(windows))]
+    let command = format!("sh \"{}\"", script_path.display());
+    let hook = json!({"type":"command","command":command,"shell":shell});
+    let write = |root: &std::path::Path, path: &str, value: &Value| -> Result<()> {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(process_error)?;
+        std::fs::write(path, serde_json::to_vec(value).unwrap()).map_err(process_error)
+    };
+    write(
+        &home,
+        ".claude/settings.json",
+        &json!({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[hook]}]}}),
+    )?;
+    let project = json!({"hooks":{"Stop":[{"hooks":[hook]}]}});
     for path in [
         ".claude/settings.json",
         ".claude/settings.local.json",
         ".codex/hooks.json",
     ] {
-        write(workspace.path(), path, project_hook.clone())?;
+        write(&workspace, path, &project)?;
     }
-    std::fs::write(workspace.path().join(".codex/config.toml"), format!(
-        "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {project_command:?}\n"
-    )).map_err(Error::Process)?;
-    let hooks = Hooks::load(HooksConfig::new(workspace.path(), home.path())).await?;
-    let output = hooks
-        .run(
-            HookEvent::SessionStart,
-            workspace.path(),
-            json!({"session_id":"test","source":"startup"}),
-        )
-        .await?;
-    assert_eq!(output.additional_context, ["hook ready"]);
-    let input = json!({"session_id":"test"});
+    std::fs::write(workspace.join(".codex/config.toml"), format!(
+        "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {command:?}\nshell = '{shell}'\n"
+    )).map_err(process_error)?;
+    let registry = registry()?;
+    let hooks = Hooks::load(HooksConfig::new(&workspace, &home)).await?;
+    let input = json!({"tool_name":"bash","session_id":"test"});
     assert_eq!(
         hooks
-            .run(HookEvent::Stop, workspace.path(), input.clone())
+            .run(HookEvent::Stop, &workspace, &cwd, input.clone(), &registry)
             .await?,
         HookOutput::default()
     );
-    assert!(!workspace.path().join("project-hook-ran").exists());
-    assert!(matches!(
-        hooks
-            .run(
-                HookEvent::SessionStart,
-                &workspace.path().join("missing"),
-                input
-            )
-            .await,
-        Err(Error::Process(_))
-    ));
-    let hooks =
-        Hooks::load(HooksConfig::new(workspace.path(), home.path()).trust_project_hooks(true))
-            .await?;
     assert!(
-        hooks
-            .run(
-                HookEvent::Stop,
-                workspace.path(),
-                json!({"session_id":"test"})
-            )
-            .await?
-            .blocked
-            .is_some()
+        !workspace.join("hook-ran").exists(),
+        "untrusted project commands never execute"
     );
-    assert!(workspace.path().join("project-hook-ran").exists());
-    // A directory in a user config location is a real IO failure, not storage failure.
-    std::fs::remove_file(home.path().join(".claude/settings.json")).map_err(Error::Process)?;
-    std::fs::create_dir(home.path().join(".claude/settings.json")).map_err(Error::Process)?;
+    let output = hooks
+        .run(
+            HookEvent::PreToolUse,
+            &workspace,
+            &cwd,
+            input.clone(),
+            &registry,
+        )
+        .await?;
+    assert!(
+        output.blocked.is_some(),
+        "user Bash guard fires on registry tool bash: {output:?}"
+    );
+    assert!(output.diagnostics.is_empty(), "{output:?}");
+    assert!(
+        workspace.join("hook-ran").exists(),
+        "script receives the project root and per-call cwd"
+    );
+    let captured: Value =
+        serde_json::from_slice(&std::fs::read(workspace.join("hook-ran")).map_err(process_error)?)
+            .unwrap();
+    assert_eq!(
+        captured,
+        json!({"tool_name":"bash", "session_id":"test", "hook_event_name":"PreToolUse", "cwd":cwd.to_string_lossy()})
+    );
+    let failure = hooks
+        .run(
+            HookEvent::PreToolUse,
+            &workspace,
+            &workspace.join("missing"),
+            input,
+            &registry,
+        )
+        .await?;
+    assert!(failure.blocked.is_none());
+    assert_eq!(failure.diagnostics.len(), 1);
+    let trusted =
+        Hooks::load(HooksConfig::new(&workspace, &home).trust_project_hooks(true)).await?;
+    assert_eq!(
+        trusted
+            .commands(HookEvent::Stop, &json!({}), &registry)?
+            .count(),
+        4
+    );
+    let trusted_output = trusted
+        .run_commands(HookEvent::Stop, &json!({}), &registry, |_| {
+            std::future::ready(Ok((Some(2), vec![], b"project guard".to_vec())))
+        })
+        .await?;
+    assert_eq!(trusted_output.blocked.as_deref(), Some("project guard"));
+    std::fs::remove_file(home.join(".claude/settings.json")).map_err(process_error)?;
+    std::fs::create_dir(home.join(".claude/settings.json")).map_err(process_error)?;
     assert!(matches!(
-        Hooks::load(HooksConfig::new(workspace.path(), home.path())).await,
-        Err(Error::Process(_))
+        Hooks::load(HooksConfig::new(&workspace, &home)).await,
+        Err(Error::Process { .. })
     ));
     Ok(())
 }

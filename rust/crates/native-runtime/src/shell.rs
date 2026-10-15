@@ -8,6 +8,15 @@ pub fn shell_command(command: &str, selected: Option<&str>) -> Command {
     let mut shell = Command::new(selected);
     if matches!(selected, "powershell" | "pwsh") {
         shell.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+    } else if selected == "cmd" {
+        shell.args(["/d", "/s", "/c"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            shell.raw_arg(format!("\"{command}\""));
+        }
+        #[cfg(not(windows))]
+        shell.arg(command);
     } else {
         shell.args(["-c", command]);
     }
