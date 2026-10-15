@@ -251,6 +251,18 @@ async fn defaults_are_additive_and_opt_out_retains_custom_grants() -> Result<()>
     Ok(())
 }
 
+const MAX_LOCAL_FUTURE_BYTES: usize = 4096;
+
+fn bounded_future<F: std::future::Future>(name: &str, future: F) -> F {
+    let bytes = std::mem::size_of_val(&future);
+    eprintln!("{name} future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_LOCAL_FUTURE_BYTES,
+        "{name} future is {bytes} bytes; API futures must fit {MAX_LOCAL_FUTURE_BYTES} bytes"
+    );
+    future
+}
+
 #[tokio::test]
 async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::storage)?;
@@ -276,25 +288,34 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
             volume_config(directory.path(), project.clone(), provider.clone())
         }
     };
-    let harness = LocalHarness::open(config()?).await?;
+    let harness = bounded_future("open", LocalHarness::open(config()?)).await?;
     #[cfg(feature = "native-execution")]
     assert_checkout(&harness, directory.path()).await?;
     let operation = OperationId::new();
     let Admission::Accepted(acyclic_harness::runtime::RuntimeTask::Durable {
         task_id: task, ..
-    }) = harness.submit(operation, "finish this task").await?
+    }) = bounded_future("submit", harness.submit(operation, "finish this task")).await?
     else {
         return Err(Error::Conflict("stock admission rejected".into()));
     };
     let scope = harness.signed.clone();
     let project = harness.project().clone();
     drop(harness);
-    let reopened = LocalHarness::open(config()?).await?;
+    let reopened = bounded_future("reopen", LocalHarness::open(config()?)).await?;
     assert_eq!(&reopened.signed, &scope);
     assert_eq!(reopened.project(), &project);
-    assert_eq!(reopened.resume(task).await?.text, "done");
+    assert_eq!(
+        bounded_future("recovery", reopened.resume(task))
+            .await?
+            .text,
+        "done"
+    );
     assert_eq!(reopened.resume(task).await?.text, "done");
     assert_eq!(provider.requests().len(), 1);
+    drop(bounded_future(
+        "turn",
+        reopened.run("measure without dispatch"),
+    ));
     assert_pending_command_returns_control(&reopened).await?;
     assert_eq!(provider.requests().len(), 1);
     Ok(())
@@ -340,7 +361,12 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     else {
         return Err(Error::Conflict("stock admission rejected".into()));
     };
-    match futures::future::select(Box::pin(harness.resume(task)), boundary).await {
+    match futures::future::select(
+        bounded_future("inflight recovery", harness.resume(task)),
+        boundary,
+    )
+    .await
+    {
         futures::future::Either::Right((Ok(()), execution)) => drop(execution),
         _ => {
             return Err(Error::Conflict(
@@ -639,11 +665,14 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
         labels: Default::default(),
     };
     assert!(
-        harness
-            .runtime
-            .run_operation(&worker, task, &commands, 1, None)
-            .await?
-            .is_none()
+        bounded_future(
+            "worker operation",
+            harness
+                .runtime
+                .run_operation(&worker, task, &commands, 1, None),
+        )
+        .await?
+        .is_none()
     );
     assert_eq!(commands.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     Ok(())
