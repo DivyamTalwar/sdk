@@ -273,7 +273,7 @@ fn recovery_defaults_preserve_nested_overrides_arrays_and_nulls() -> super::Test
         r#"{"turns":[],"expect":{"text":"case","request_count":null}}"#,
     )?;
     let case = Scenario::load(temp.path(), &path)?;
-    assert_eq!(case.prompt, "family");
+    assert_eq!(case.prompt.as_deref(), Some("family"));
     assert!(case.turns.is_empty());
     assert_eq!(case.expect.request_count, None);
     assert_eq!(case.expect.text.as_deref(), Some("case"));
