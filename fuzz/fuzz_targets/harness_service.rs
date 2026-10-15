@@ -25,9 +25,9 @@ fuzz_target!(|input: &[u8]| {
                 Some(&call)
             );
         }
-        if let Ok(reply) = frames::Reply::<wire::ObserveResponse>::decode(frame.clone()) {
+        if let Ok(reply) = frames::Reply::<wire::OperationStatus>::decode(frame.clone()) {
             assert_eq!(
-                frames::Reply::<wire::ObserveResponse>::decode(reply.encode_to_vec().as_slice())
+                frames::Reply::<wire::OperationStatus>::decode(reply.encode_to_vec().as_slice())
                     .as_ref()
                     .ok(),
                 Some(&reply)
