@@ -50,10 +50,16 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         (model()?, provider.clone()),
     ))
     .await?;
-    assert_eq!(
-        harness.run("edit and inspect the checkout").await?.text,
-        "commands completed"
-    );
+    let output = harness.run("edit and inspect the checkout").await;
+    if let Err(error) = &output {
+        let requests = provider.requests();
+        panic!(
+            "{error:?}; {} model requests; last message: {:?}",
+            requests.len(),
+            requests.last().and_then(|request| request.messages.last())
+        );
+    }
+    assert_eq!(output?.text, "commands completed");
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
     let results: Vec<_> = requests

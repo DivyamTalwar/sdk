@@ -316,10 +316,14 @@ name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-harness",
+ "bytes",
  "libfuzzer-sys",
+ "rmcp",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
+ "which",
 ]
 
 [[package]]
