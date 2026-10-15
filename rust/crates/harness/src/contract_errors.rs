@@ -285,6 +285,23 @@ pub(crate) fn native_work_error_code(
 }
 
 impl Error {
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+    ))]
+    pub(crate) fn process_io(error: std::io::Error) -> Self {
+        let kind = match error.kind() {
+            std::io::ErrorKind::TimedOut => "timeout",
+            std::io::ErrorKind::NotFound => "not_found",
+            std::io::ErrorKind::PermissionDenied => "permission_denied",
+            _ => "io",
+        };
+        Self::Process {
+            kind,
+            message: error.to_string(),
+        }
+    }
+
     /// Stable wire classification from which every adapter derives its status.
     #[must_use]
     pub fn code(&self) -> crate::wire::ErrorCode {

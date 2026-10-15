@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_settings::{NativeSettings, SettingsConfig};
 use serde_json::json;
 
 #[tokio::test]
@@ -324,7 +325,8 @@ fn claude_json_and_codex_toml_are_additive_and_match_standard_events() -> Result
 
 #[tokio::test]
 async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()> {
-    use super::native::{process_error, run_hook};
+    use super::native::run_hook;
+    let process_error = Error::process_io;
     use tokio::io::AsyncReadExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -368,7 +370,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
 
 #[tokio::test]
 async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> Result<()> {
-    use super::native::process_error;
+    let process_error = Error::process_io;
     let root = tempfile::tempdir().map_err(process_error)?;
     let home = root.path();
     let relocated = home.join("custom-codex");
@@ -377,12 +379,13 @@ async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> 
     let document = br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"guard"}]}]}}"#;
     std::fs::write(home.join(".claude/settings.json"), document).map_err(process_error)?;
     std::fs::write(relocated.join("hooks.json"), document).map_err(process_error)?;
-    let hooks = Hooks::load(
-        HooksConfig::new(home, home)
+    let hooks = NativeSettings::load(
+        SettingsConfig::new(home, home)
             .codex_home(&relocated)
             .trust_project_hooks(true),
     )
-    .await?;
+    .await?
+    .hooks;
     let registry = registry()?;
     assert_eq!(
         hooks
@@ -394,12 +397,13 @@ async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> 
     {
         let alias = home.join("alias");
         std::os::unix::fs::symlink(home, &alias).map_err(process_error)?;
-        let hooks = Hooks::load(
-            HooksConfig::new(&alias, home)
+        let hooks = NativeSettings::load(
+            SettingsConfig::new(&alias, home)
                 .codex_home(&relocated)
                 .trust_project_hooks(true),
         )
-        .await?;
+        .await?
+        .hooks;
         assert_eq!(
             hooks
                 .commands(HookEvent::Stop, &json!({}), &registry)?
@@ -413,7 +417,7 @@ async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> 
 #[cfg(unix)]
 #[tokio::test]
 async fn symlinked_settings_keep_the_format_of_the_configured_path() -> Result<()> {
-    use super::native::process_error;
+    let process_error = Error::process_io;
     let root = tempfile::tempdir().map_err(process_error)?;
     let home = root.path().join("home");
     let codex = home.join(".codex");
@@ -440,12 +444,13 @@ async fn symlinked_settings_keep_the_format_of_the_configured_path() -> Result<(
     std::fs::create_dir(workspace.join(".claude")).map_err(process_error)?;
     std::os::unix::fs::symlink(&json, workspace.join(".claude/settings.json"))
         .map_err(process_error)?;
-    let hooks = Hooks::load(
-        HooksConfig::new(&workspace, &home)
+    let hooks = NativeSettings::load(
+        SettingsConfig::new(&workspace, &home)
             .codex_home(&codex)
             .trust_project_hooks(true),
     )
-    .await?;
+    .await?
+    .hooks;
     assert_eq!(
         hooks
             .commands(HookEvent::Stop, &json!({}), &registry()?)?
@@ -696,7 +701,7 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
 
 #[test]
 fn non_blocking_failures_return_diagnostics() -> Result<()> {
-    let timeout = super::native::process_error(std::io::ErrorKind::TimedOut.into());
+    let timeout = Error::process_io(std::io::ErrorKind::TimedOut.into());
     assert_eq!(timeout.code(), crate::wire::ErrorCode::Invalid);
     assert!(matches!(
         timeout,
@@ -987,7 +992,7 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
 
 #[tokio::test]
 async fn native_hooks_default_user_guards_and_project_trust_use_one_shared_script() -> Result<()> {
-    use super::native::process_error;
+    let process_error = Error::process_io;
     if let Some(address) =
         std::env::args().find_map(|arg| arg.strip_prefix("hook-child:").map(str::to_owned))
     {
@@ -1066,8 +1071,11 @@ exit 2
         "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {command:?}\nshell = '{shell}'\n"
     )).map_err(process_error)?;
     let registry = registry()?;
-    let hooks =
-        Hooks::load(HooksConfig::new(&workspace, &home).codex_home(home.join(".codex"))).await?;
+    let hooks = NativeSettings::load(
+        SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex")),
+    )
+    .await?
+    .hooks;
     let input = json!({"tool_name":"bash","session_id":"test"});
     assert_eq!(
         hooks
@@ -1115,12 +1123,13 @@ exit 2
         .await?;
     assert!(failure.blocked.is_none());
     assert_eq!(failure.diagnostics.len(), 1);
-    let trusted = Hooks::load(
-        HooksConfig::new(&workspace, &home)
+    let trusted = NativeSettings::load(
+        SettingsConfig::new(&workspace, &home)
             .codex_home(home.join(".codex"))
             .trust_project_hooks(true),
     )
-    .await?;
+    .await?
+    .hooks;
     assert_eq!(
         trusted
             .commands(HookEvent::Stop, &json!({}), &registry)?
@@ -1136,7 +1145,10 @@ exit 2
     std::fs::remove_file(home.join(".claude/settings.json")).map_err(process_error)?;
     std::fs::create_dir(home.join(".claude/settings.json")).map_err(process_error)?;
     assert!(matches!(
-        Hooks::load(HooksConfig::new(&workspace, &home).codex_home(home.join(".codex"))).await,
+        NativeSettings::load(
+            SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))
+        )
+        .await,
         Err(Error::Process { .. })
     ));
     Ok(())
