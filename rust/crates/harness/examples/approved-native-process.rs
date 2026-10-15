@@ -419,6 +419,7 @@ where
         results: results.clone(),
         approvals: approvals.clone(),
     };
+    let output = Arc::new(capture::Output::default());
     let process = Arc::new(
         NativeProcessProvider::new(
             owner.clone(),
@@ -428,7 +429,8 @@ where
             approval,
             authority,
         )
-        .await?,
+        .await?
+        .with_output_observer(output.observer()),
     );
     let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone(), None)?;
@@ -506,7 +508,10 @@ where
         .await?
     };
     let applied = receipt_fault.is_none_or(|(kind, _)| kind == "observed");
-    verify_publication(&files, &destination, applied && !lost_response).await?;
+    verify_publication(&files, &destination, applied).await?;
+    output
+        .verify(content.as_ref(), status.as_ref(), applied)
+        .await?;
     drop(effects);
     drop(process);
     drop(view);
@@ -602,7 +607,7 @@ fn native_request(
         cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
-        standard_input: None,
+        standard_input: mcp.is_none().then(|| b"exact native input".to_vec()),
         mcp_stdio: if let Some(method) = mcp {
             Some(McpStdioRequest {
                 initialization: OperationId::from_bytes([31; 16]),
@@ -722,6 +727,8 @@ fn verify_mcp_calls(
 #[path = "approved-native-process/faults.rs"]
 mod faults;
 
+#[path = "approved-native-process/capture.rs"]
+mod capture;
 #[path = "approved-native-process/mcp_peer.rs"]
 mod mcp_peer;
 #[path = "approved-native-process/model_tool.rs"]
@@ -750,9 +757,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return mcp_peer::child(std::env::args().any(|arg| arg == "--mcp-native-lost-response"));
     }
     if std::env::args().any(|arg| arg == "--native-child") {
-        std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
-        println!("{}", std::env::var("APPROVED_TOKEN")?);
-        return Ok(());
+        return capture::child();
     }
     if cfg!(test) {
         run(None).await?;
