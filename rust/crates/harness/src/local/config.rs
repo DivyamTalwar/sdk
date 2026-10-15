@@ -27,6 +27,8 @@ pub struct LocalHarnessConfig {
     pub concurrency: usize,
     /// Stock context compaction policy.
     pub compaction: crate::context::CompactionPolicy,
+    /// Clock used by durable admission and leases; replaceable in scripted scenarios.
+    pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
 impl LocalHarnessConfig {
@@ -62,6 +64,7 @@ impl LocalHarnessConfig {
             },
             concurrency: 1,
             compaction: crate::context::CompactionPolicy::default(),
+            clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
     }
 

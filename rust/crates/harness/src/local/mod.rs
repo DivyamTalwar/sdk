@@ -172,6 +172,7 @@ impl LocalHarness {
             run_limits: config.run_limits,
             session_limits: config.session_limits,
             concurrency: config.concurrency,
+            clock: config.clock,
         })
         .await?;
         Ok(Self {

@@ -14,6 +14,7 @@ pub(super) struct Configuration<'a> {
     pub run_limits: TaskRunLimits,
     pub session_limits: SessionLimits,
     pub concurrency: usize,
+    pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
 pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
@@ -90,7 +91,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         config.session_limits,
         config.concurrency,
         config.limits.file_bytes,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        config.clock,
         None,
         &[creation],
         &crate::durable_tool::ResumableToolRegistry::default(),
