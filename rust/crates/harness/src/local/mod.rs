@@ -39,7 +39,7 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
-pub type LocalTaskRuntime =
+pub(crate) type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
@@ -158,7 +158,7 @@ impl LocalHarness {
                 .map_err(storage)?,
         );
         let mut tools = if config.default_tools {
-            defaults()?
+            crate::tools::defaults()?
         } else {
             ToolRegistry::default()
         };
@@ -211,20 +211,10 @@ impl LocalHarness {
         })
     }
 
-    /// Durable task runtime shared by stock and custom executors.
-    #[must_use]
-    pub(crate) const fn runtime(&self) -> &Arc<LocalTaskRuntime> {
-        &self.runtime
-    }
     /// Durable content and project host.
     #[must_use]
     pub const fn filesystem(&self) -> &Arc<LocalFilesystem> {
         &self.files
-    }
-    /// Durable event store.
-    #[must_use]
-    pub(crate) const fn stream(&self) -> &Arc<LocalStream> {
-        &self.stream
     }
     /// Selected project view.
     #[must_use]
@@ -240,21 +230,6 @@ impl LocalHarness {
     #[must_use]
     pub const fn journal_volume(&self) -> &VolumeRef {
         &self.journal
-    }
-    /// Owner issuer for authenticated host operations.
-    #[must_use]
-    pub(crate) const fn issuer(&self) -> &AuthorityIssuer {
-        &self.issuer
-    }
-    /// Owner authority verifier.
-    #[must_use]
-    pub(crate) const fn verifier(&self) -> &AuthorityVerifier {
-        &self.verifier
-    }
-    /// Host owner scope, including journal storage grants.
-    #[must_use]
-    pub(crate) const fn owner_scope(&self) -> &Scope {
-        &self.signed
     }
     /// Complete enabled tool registry.
     #[must_use]
@@ -280,9 +255,4 @@ impl LocalHarness {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
-}
-
-// Replaced by crate::tools::defaults when the coding-tool composition (#503) lands.
-fn defaults() -> Result<ToolRegistry> {
-    Ok(ToolRegistry::default())
 }
