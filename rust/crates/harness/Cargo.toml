@@ -160,6 +160,7 @@ acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] 
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+serde-saphyr = { version = "=1.3.0", default-features = false, features = ["serialize"] }
 allocation-counter = "=0.8.1"
 shuttle = "=0.8.1"
 tracing-subscriber.workspace = true
