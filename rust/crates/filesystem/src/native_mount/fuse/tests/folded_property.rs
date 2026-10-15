@@ -49,16 +49,14 @@ proptest! {
         ]),
         repetitions in 1..80usize,
     ) {
-        let (projection, source) = folded::folded_projection()
-            .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let work = fuse_fixture_work();
         let repetitions = repetitions.min(240 / pair.0.len().max(pair.1.len()));
         let spelling = format!("{prefix}{}", pair.0.repeat(repetitions));
         let alias = format!("{prefix}{}", pair.1.repeat(repetitions));
         let original = name(&spelling);
-        source.create_directory(&original, FileMetadata::default(), &work)?;
-        source.create_directory(&original.child(b"Child".to_vec()), FileMetadata::default(), &work)?;
-        source.create_directory(&name("new-parent"), FileMetadata::default(), &work)?;
+        let (projection, source) = folded::folded_projection(&[
+            original, name(&spelling).child(b"Child".to_vec()), name("new-parent"),
+        ]).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let work = fuse_fixture_work();
         let parent = folded::lookup(&projection, ROOT_INODE, &spelling, &work)?;
         prop_assert_eq!(folded::lookup(&projection, ROOT_INODE, &alias, &work)?, parent);
         let child = folded::lookup(&projection, parent, "Child", &work)?;
