@@ -22,6 +22,11 @@ name = "e2e"
 path = "tests/e2e/main.rs"
 required-features = ["filesystem", "test-support"]
 
+[[test]]
+name = "context-discovery"
+path = "tests/context_discovery.rs"
+required-features = ["filesystem"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

@@ -18,7 +18,49 @@ use acyclic_harness::{
     model::ModelContent,
     resources::ProviderRef,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+
+struct CountingReader<'a> {
+    inner: &'a dyn ContentResidencyVerifier,
+    reads: AtomicUsize,
+}
+
+impl ContentResidencyVerifier for CountingReader<'_> {
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io acyclic_harness::conversation::ContentIo>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_harness::conversation::FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.read_private_path(
+            volume,
+            granted_prefix,
+            path,
+            expected_generation,
+            maximum_bytes,
+            io,
+        )
+    }
+}
 
 type TestJournal = acyclic_harness::filesystem::FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
@@ -252,6 +294,111 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn defaults_load_both_instruction_names_in_ancestor_order() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    for path in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "project/AGENTS.md",
+        "project/CLAUDE.md",
+    ] {
+        fixture.put(path, path.as_bytes(), path).await?;
+    }
+    let mut declaration = fixture.declaration();
+    declaration.skills.clear();
+    declaration.limits = ContextDiscoveryLimits::default();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(
+        captured
+            .instructions
+            .iter()
+            .map(|file| file.path())
+            .collect::<Vec<_>>(),
+        [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "project/AGENTS.md",
+            "project/CLAUDE.md"
+        ]
+    );
+    declaration.policy.instruction_names = vec!["CLAUDE.md".into()];
+    assert_eq!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await?
+            .instructions
+            .len(),
+        2
+    );
+    for limits in [
+        ContextDiscoveryLimits {
+            entries: 0,
+            ..Default::default()
+        },
+        ContextDiscoveryLimits {
+            directories: 0,
+            ..Default::default()
+        },
+        ContextDiscoveryLimits {
+            header_bytes: 0,
+            ..Default::default()
+        },
+        ContextDiscoveryLimits {
+            instruction_bytes: 0,
+            ..Default::default()
+        },
+    ] {
+        declaration.limits = limits;
+        assert!(matches!(
+            declaration.capture(fixture.reader.as_ref()).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let original = b"---\nname: inspect\ndescription: Inspect files\n---\noriginal body";
+    fixture
+        .put("skills/inspect/SKILL.md", original, "skill")
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    fixture
+        .put("skills/inspect/SKILL.md", b"replacement", "replacement")
+        .await?;
+    let skill = first_skill(&captured)?;
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+    };
+    let message = skill.invoke(&reader, 512).await?;
+    let ModelContent::Text(text) = message.content else {
+        return Err(Error::Invalid("expected skill text".into()));
+    };
+    assert_eq!(text.as_bytes(), original);
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
+    assert!(skill.invoke(fixture.reader.as_ref(), 8).await.is_err());
+    assert!(skill.invoke(fixture.reader.as_ref(), 0).await.is_err());
+    for (key, byte) in [("nul-body", 0), ("invalid-body", 255)] {
+        let mut body = original.to_vec();
+        body.push(byte);
+        fixture.put("skills/inspect/SKILL.md", &body, key).await?;
+        let captured = declaration.capture(fixture.reader.as_ref()).await?;
+        assert!(
+            first_skill(&captured)?
+                .invoke(fixture.reader.as_ref(), 512)
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture.put("AGENTS.md", b"root rules", "root").await?;
@@ -278,7 +425,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
     assert!(
         first_skill(&captured)?
             .source
-            .read(fixture.reader.as_ref())
+            .read(fixture.reader.as_ref(), 32_768)
             .await
             .is_err()
     );
@@ -654,7 +801,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
             .first()
             .ok_or_else(|| Error::NotFound("skill".into()))?
             .source
-            .read(fixture.reader.as_ref())
+            .read(fixture.reader.as_ref(), 32_768)
             .await?
             .1
             .as_ref(),
@@ -684,7 +831,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         None,
     )?
     .0;
-    assert!(source.read(fixture.reader.as_ref()).await.is_err());
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture
             .reader
@@ -702,10 +849,10 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     source = first_skill(&captured)?.source.clone();
     source.path = "AGENTS.md".into();
     assert!(matches!(
-        source.read(fixture.reader.as_ref()).await,
+        source.read(fixture.reader.as_ref(), 32_768).await,
         Err(Error::Invalid(_))
     ));
     source.path = "skills/missing/SKILL.md".into();
-    assert!(source.read(fixture.reader.as_ref()).await.is_err());
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     Ok(())
 }
