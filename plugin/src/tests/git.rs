@@ -56,6 +56,25 @@ async fn write_child(control: &ControlPlane, name: &str, text: &'static str) {
         .unwrap();
 }
 
+async fn write_child_text(control: &ControlPlane, text: &'static str) {
+    use acyclic_fs::facade::FsWork as _;
+    let route = &control.state.routes["child"];
+    let root = WorkspaceRootId::from_bytes(route.root_id);
+    let workspace = control.lazy_workspace_root(route, root).await.unwrap();
+    let cancellation = CancellationToken::new();
+    workspace
+        .write(
+            "/conflict.txt",
+            bytes::Bytes::from_static(text.as_bytes()).into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await
+        .unwrap();
+    control.mounts["child"].advance_to_head().await.unwrap();
+}
+
 #[test]
 fn git_merge_error_exposes_conflict_markers_in_the_agent_mount() {
     run_large_stack("git-conflict-visibility", || async {
@@ -71,14 +90,14 @@ fn git_merge_error_exposes_conflict_markers_in_the_agent_mount() {
         child_git(&mut control, &["checkout", "-b", "review-other"])
             .await
             .unwrap();
-        write_child(&control, "conflict.txt", "theirs\n").await;
+        write_child_text(&control, "theirs\n").await;
         child_git(&mut control, &["commit", "-m", "theirs"])
             .await
             .unwrap();
         child_git(&mut control, &["checkout", "review-main"])
             .await
             .unwrap();
-        write_child(&control, "conflict.txt", "ours\n").await;
+        write_child_text(&control, "ours\n").await;
         child_git(&mut control, &["commit", "-m", "ours"])
             .await
             .unwrap();
