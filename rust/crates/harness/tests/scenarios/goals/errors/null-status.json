@@ -1,0 +1,4 @@
+{
+  "expect":{"view":null,"files":{"GOAL.md":"---\nstatus: null\n---\n"},"error":"invalid goal frontmatter"},
+  "seed":{"GOAL.md":"---\nstatus: null\n---\n"}
+}

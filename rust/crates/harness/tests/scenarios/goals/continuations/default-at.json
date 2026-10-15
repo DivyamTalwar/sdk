@@ -1,0 +1,11 @@
+{
+  "turns":["Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled",
+    "Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled",
+    "Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled"],
+  "expect":{"result":{"continuations":32,"settles":33,"requests":33,"actions":["continue","continue","continue","continue","continue",
+    "continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue",
+    "continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue",
+    "continue","continue","continue","block"]},"view":{"status":"blocked","reason":"Maximum goal continuations reached (limit 32)."},"files":
+    {"GOAL.md":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 32).\"\n---\nShip the change\n"}},
+  "settles":33
+}

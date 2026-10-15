@@ -1,0 +1,7 @@
+{
+  "turns":["Settled","Settled","Settled","Settled","Settled","Settled","Settled"],
+  "expect":{"result":{"continuations":6,"settles":6,"requests":7,"actions":["continue","continue","continue","continue","continue",
+    "continue"]}},
+  "settles":6,
+  "policy":{"max_continuations":7}
+}

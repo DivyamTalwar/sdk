@@ -1,0 +1,5 @@
+{
+  "expect":{"view":{"status":"blocked","markdown":"Ship \u03bb and \ud83d\ude80\n","reason":"\u03bb"},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: \"\\u03bb\"\n---\nShip \u03bb and \ud83d\ude80\n"}},
+  "seed":{"GOAL.md":"---\nstatus: blocked\nreason: \"\\u03bb\"\n---\nShip \u03bb and \ud83d\ude80\n"}
+}

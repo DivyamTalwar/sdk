@@ -1,0 +1,10 @@
+{
+  "turns":["Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled",
+    "Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled",
+    "Settled","Settled","Settled","Settled","Settled","Settled","Settled"],
+  "expect":{"result":{"continuations":31,"settles":31,"requests":32,"actions":["continue","continue","continue","continue","continue",
+    "continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue",
+    "continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue","continue",
+    "continue","continue"]}},
+  "settles":31
+}

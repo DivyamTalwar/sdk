@@ -1,0 +1,8 @@
+{
+  "turns":["Settled","Settled","Settled","Settled","Settled","Settled","Settled","Settled"],
+  "expect":{"result":{"continuations":7,"settles":8,"requests":8,"actions":["continue","continue","continue","continue","continue",
+    "continue","continue","block"]},"view":{"status":"blocked","reason":"Maximum goal continuations reached (limit 7)."},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 7).\"\n---\nShip the change\n"}},
+  "settles":8,
+  "policy":{"max_continuations":7}
+}

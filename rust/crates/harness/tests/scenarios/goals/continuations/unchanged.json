@@ -1,0 +1,8 @@
+{
+  "turns":["Settled","Settled","Settled","Settled","Settled"],
+  "expect":{"result":{"continuations":4,"settles":4,"requests":5,"actions":["continue","continue","continue","continue"]},"view":
+    {"markdown":"Ship the change and its tests\n"},"files":{"GOAL.md":"Ship the change and its tests\n"}},
+  "seed":{"GOAL.md":"Ship the change and its tests\n"},
+  "settles":4,
+  "policy":{}
+}

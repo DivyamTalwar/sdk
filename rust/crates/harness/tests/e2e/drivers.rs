@@ -10,6 +10,9 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         None if driver.is_none() => execution::run(scenario::Scenario::from_value(value)?).await,
         Some("executor") => execution::run(scenario::Scenario::from_value(value)?).await,
         Some("composer") => Composer::parse(value)?.run().await,
+        Some("goal-executor") => {
+            super::goal_execution::run(super::goals::GoalCase::parse(value)?).await
+        }
         _ => Err("unknown scenario driver".into()),
     }
 }

@@ -1,0 +1,5 @@
+{
+  "expect":{"result":{"actions":["block"]},"view":{"status":"blocked","reason":"Maximum goal continuations reached (limit 0)."},"files":
+    {"GOAL.md":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 0).\"\n---\nShip the change\n"}},
+  "policy":{"max_continuations":0}
+}

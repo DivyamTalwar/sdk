@@ -3,6 +3,8 @@ mod composer;
 mod discovery;
 mod drivers;
 mod execution;
+mod goal_execution;
+mod goals;
 mod matchers;
 mod scenario;
 use acyclic_harness::context::CompactionPolicy;

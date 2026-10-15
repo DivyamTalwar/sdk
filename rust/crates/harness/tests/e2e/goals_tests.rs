@@ -1,0 +1,152 @@
+use super::*;
+use crate::TestResult;
+use acyclic_harness::{
+    OperationId, TaskId,
+    goal::{GoalContinuation, GoalStatus, GoalView},
+};
+use proptest::prelude::*;
+use serde_json::json;
+use std::path::Path;
+
+#[path = "../../fuzz/fuzz_targets/goal_parser_input.rs"]
+mod goal_parser_input;
+
+fn text() -> impl Strategy<Value = String> {
+    proptest::collection::vec(any::<char>(), 0..64)
+        .prop_map(|characters| characters.into_iter().collect())
+}
+
+proptest! {
+    // The actual case codec preserves scripts, bounds, assertions and Unicode.
+    #[test]
+    fn goal_case_codec_round_trips(body in text(), answer in text(), limit in any::<u32>(), streamed in any::<bool>()) {
+        let turns = if streamed {
+            json!([[{"type":"event", "kind":"tool_call", "call_id":"write", "name":"acyclic.write_file",
+                "arguments":{"path":"GOAL.md", "text":body, "media_type":"text/markdown", "display_name":"GOAL.md"}},
+                {"type":"event", "kind":"completed", "metadata":{"answer":answer}}], answer])
+        } else {
+            json!([answer])
+        };
+        let case = GoalCase::parse(json!({"seed":{"GOAL.md":body},
+            "prompt":body, "turns":turns, "policy":{"max_continuations":limit},
+            "expect":{"text":answer, "request_prompt":body, "result":{"requests":1},
+                "view":{"markdown":body}, "files":{"GOAL.md":body}}})).unwrap();
+        let canonical = serde_json::to_value(case).unwrap();
+        let bytes = serde_json::to_vec(&canonical).unwrap();
+        let parsed = GoalCase::parse(serde_json::from_slice(&bytes).unwrap()).unwrap();
+        prop_assert_eq!(serde_json::to_value(parsed).unwrap(), canonical);
+    }
+
+    // Every u32 cap/count obeys the exact boundary. Blocking preserves the body,
+    // stops the policy, and remains within the accepted file's metadata reserve.
+    #[test]
+    fn continuation_boundaries_preserve_goal_state(
+        (limit, count) in prop_oneof![Just(0_u32), Just(1), Just(u32::MAX), any::<u32>()]
+            .prop_flat_map(|limit| (Just(limit), prop_oneof![Just(limit),
+                Just(limit.saturating_sub(1)), Just(limit.saturating_add(1)), any::<u32>()])),
+        body in text(), status in 0..3_u8,
+        task in any::<[u8;16]>(), turn in any::<[u8;16]>(),
+    ) {
+        let body = format!("# Goal\n{body}");
+        let status = [GoalStatus::Active, GoalStatus::Blocked, GoalStatus::Done][status as usize];
+        let view = GoalView::from_file(goal_parser_input::file(body.as_bytes()).unwrap(), body.as_bytes(), 8192).unwrap();
+        let contents = view.status_contents(status, None).unwrap();
+        let view = GoalView::from_file(goal_parser_input::file(contents.as_bytes()).unwrap(), contents.as_bytes(), 8192).unwrap();
+        let policy = GoalContinuationPolicy { max_continuations: limit };
+        let task = TaskId::from_bytes(task);
+        let turn = OperationId::from_bytes(turn);
+        let action = policy.on_settle(&view, task, turn, count);
+        prop_assert_eq!(&action, &policy.on_settle(&view, task, turn, count));
+        match action {
+            None => prop_assert_ne!(status, GoalStatus::Active),
+            Some(GoalContinuation::Continue(operation)) => {
+                prop_assert_eq!(status, GoalStatus::Active);
+                prop_assert!(count < limit);
+                prop_assert_eq!(Some(operation), view.continuation_operation(task, turn));
+            }
+            Some(GoalContinuation::Block(contents)) => {
+                prop_assert_eq!(status, GoalStatus::Active);
+                prop_assert!(count >= limit);
+                prop_assert!(contents.len() <= 8192);
+                let blocked = GoalView::from_file(goal_parser_input::file(contents.as_bytes()).unwrap(), contents.as_bytes(), 8192).unwrap();
+                prop_assert_eq!(&blocked.markdown, &body);
+                prop_assert_eq!(blocked.status, GoalStatus::Blocked);
+                let reason = format!("Maximum goal continuations reached (limit {limit}).");
+                prop_assert_eq!(blocked.reason.as_deref(), Some(reason.as_str()));
+                prop_assert_eq!(policy.on_settle(&blocked, task, turn, count), None);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline =
+        crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
+    crate::drivers::run(baseline.clone()).await?;
+    for mutation in [
+        "file", "view", "count", "requests", "actions", "prompt", "script", "policy", "settles",
+        "text",
+    ] {
+        let mut value = baseline.clone();
+        match mutation {
+            "file" => value["expect"]["files"]["GOAL.md"] = json!("wrong"),
+            "view" => value["expect"]["view"]["status"] = json!("done"),
+            "count" => value["expect"]["result"]["continuations"] = json!(99),
+            "requests" => value["expect"]["result"]["requests"] = json!(99),
+            "actions" => value["expect"]["result"]["actions"] = json!(["stop"]),
+            "prompt" => value["prompt"] = json!("wrong prompt"),
+            "script" => value["turns"].as_array_mut().unwrap().push(json!("unused")),
+            "policy" => value["policy"]["max_continuations"] = json!(0),
+            "settles" => value["settles"] = json!(1),
+            "text" => value["expect"]["text"] = json!("wrong"),
+            _ => unreachable!(),
+        }
+        assert!(
+            crate::drivers::run(value).await.is_err(),
+            "accepted changed {mutation}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn goal_schema_rejects_unknown_fields_and_vacuous_assertions() {
+    let baseline = json!({"prompt":"Continue", "turns":["Settled"],
+        "expect":{"text":"Settled", "request_prompt":"Continue", "result":{"requests":1}, "view":{"status":"active"}, "files":{"GOAL.md":"Goal"}}});
+    GoalCase::parse(baseline.clone()).unwrap();
+    for (field, mut replacement) in [
+        ("typo", json!(true)),
+        ("settles", json!(-1)),
+        ("policy", json!({"unlimited":true})),
+        ("turns", json!([{"unknown":1}])),
+        (
+            "expect",
+            json!({"text":"Settled","result":{},"view":{"status":"active"},"files":{"GOAL.md":"Goal"}}),
+        ),
+        (
+            "expect",
+            json!({"text":"Settled","result":{"requests":1},"view":{},"files":{"GOAL.md":"Goal"}}),
+        ),
+        (
+            "expect",
+            json!({"text":"Settled","result":{"requests":1},"error":"","files":{"GOAL.md":"Goal"}}),
+        ),
+        (
+            "expect",
+            json!({"text":"Settled","result":{"requests":1},"error":"goal","view":{"status":"active"},"files":{"GOAL.md":"Goal"}}),
+        ),
+        (
+            "expect",
+            json!({"text":"Settled","result":{"requests":1},"view":{"status":"active"},"files":{}}),
+        ),
+    ] {
+        if field == "expect" {
+            replacement["request_prompt"] = json!("Continue");
+        }
+        let mut value = baseline.clone();
+        value[field] = replacement;
+        assert!(GoalCase::parse(value).is_err(), "accepted invalid {field}");
+    }
+}

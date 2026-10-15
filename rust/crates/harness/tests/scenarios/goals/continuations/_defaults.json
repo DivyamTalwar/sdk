@@ -1,0 +1,5 @@
+{
+  "seed":{"GOAL.md":"Ship the change\n"},
+  "settles":1,
+  "expect":{"result":{"settles":1,"actions":["stop"]}}
+}
