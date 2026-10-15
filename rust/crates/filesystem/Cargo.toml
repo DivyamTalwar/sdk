@@ -22,6 +22,11 @@ path = "tests/cloud_contract.rs"
 required-features = ["memory"]
 
 [[test]]
+name = "native_owner_registry"
+path = "tests/native_owner_registry.rs"
+required-features = ["native-watch"]
+
+[[test]]
 name = "accounting_reconciliation"
 path = "tests/accounting_reconciliation.rs"
 required-features = ["memory"]
@@ -35,6 +40,11 @@ required-features = ["memory"]
 name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
+
+[[test]]
+name = "native_source_watch_custody"
+path = "tests/native_source_watch_custody.rs"
+required-features = ["local", "native-mount"]
 
 [dependencies]
 async-trait.workspace = true

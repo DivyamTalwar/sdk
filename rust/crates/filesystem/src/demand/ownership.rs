@@ -31,6 +31,14 @@ impl SourcePayloadOwnership {
         }
         Ok(Self::Borrowed)
     }
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) fn original_work(&self) -> Option<&NativeMaterializationWork> {
+        match self {
+            Self::Borrowed => None,
+            Self::Allocation { _allocation } => Some(_allocation.work()),
+            Self::Registered(custody, _) => custody.original.as_ref(),
+        }
+    }
     pub(crate) fn retain<W: SourceDemandReadWork>(
         &self,
         bytes: u64,
@@ -127,6 +135,10 @@ impl NativeMountAllocationCustody {
                 &mut work.work,
                 work.budget,
             )?;
+            // A failed admission leaves this placeholder to be reclaimed.
+            if let Some(dirty) = &work.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
             work.scope(
                 |work| &mut work.roots.native_mount_admission_pending,
                 true,

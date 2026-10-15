@@ -11,6 +11,18 @@ async fn open_child(fixture: &Fixture) -> ControlPlane {
     control
         .user_prompt(json!({"session_id":"git-review","turn_id":"root-turn"}))
         .unwrap();
+    // Give branch forks an authored common base rather than unresolved source entries.
+    for workspace in control.roots.values() {
+        use acyclic_fs::facade::FsWork as _;
+        workspace
+            .exactify(
+                "/",
+                PublicationPermit::Unrestricted,
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+    }
     control.pre_tool(json!({"session_id":"git-review","turn_id":"root-turn", "tool_use_id":"spawn-child", "tool_name":"spawn_agent","tool_input":{}})).await.unwrap();
     control
         .subagent_start(
