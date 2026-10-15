@@ -399,6 +399,7 @@ fn publish(
     histories: Vec<Arc<History>>,
     envelope: &CommittedEnvelope,
 ) -> Result<(), StreamError> {
+    let hierarchy_changed = !paths.is_empty();
     for (path, stream) in paths {
         state.path_bytes += path.as_str().len();
         state.paths.insert(path, stream);
@@ -406,6 +407,9 @@ fn publish(
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
         publish_fact(state, fact, history)?;
+    }
+    if hierarchy_changed && let Some(changed) = &state.hierarchy_changed {
+        changed.send_replace(());
     }
     Ok(())
 }

@@ -123,11 +123,19 @@ impl WasmStream {
         check_command_size(input)?;
         let request = decode::<wire::ChildrenRequest>(input)?;
         let request = wire_codec::children_from_wire(request).map_err(js_error)?;
-        let children = self.provider.children(request).await.map_err(js_error)?;
+        let children = self
+            .provider
+            .children_page(crate::ChildrenPageRequest {
+                parent: request.parent,
+                limit: request.limit,
+                after: None,
+                hierarchy_version: None,
+            })
+            .await
+            .map_err(js_error)?
+            .children;
         let mut output = Vec::new();
-        futures::pin_mut!(children);
-        while let Some(child) = children.next().await {
-            let child = child.map_err(js_error)?;
+        for child in children {
             output.push(
                 wire::ChildrenResponse {
                     child: Some(wire::Child {

@@ -8,6 +8,7 @@ struct State {
     decision: u64,
     last_committed_at_micros: u64,
     hierarchy_version: CommitId,
+    hierarchy_changed: Option<watch::Sender<()>>,
     retained_allocation: Allocation,
     #[cfg(not(target_arch = "wasm32"))]
     reserved: Arc<std::sync::Mutex<(usize, usize)>>,

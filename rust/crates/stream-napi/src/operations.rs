@@ -186,10 +186,15 @@ pub(super) async fn children(
         wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
             .map_err(|error| stream_error(&error))?;
     let token = cancellation_state(cancellation);
-    let mut values = run_with_cancellation(
+    let values = run_with_cancellation(
         async {
             client
-                .children(request)
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    parent: request.parent,
+                    limit: request.limit,
+                    after: None,
+                    hierarchy_version: None,
+                })
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -197,18 +202,7 @@ pub(super) async fn children(
     )
     .await?;
     let mut output = Vec::new();
-    while let Some(value) = run_with_cancellation(
-        async {
-            values
-                .next()
-                .await
-                .transpose()
-                .map_err(|error| stream_error(&error))
-        },
-        token.clone(),
-    )
-    .await?
-    {
+    for value in values.children {
         output.push(encode(
             &wire::ChildrenResponse {
                 child: Some(wire::Child {

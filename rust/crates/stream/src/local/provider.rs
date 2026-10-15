@@ -141,7 +141,20 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.visible(self.inner.provider.children(request)).await?
+        let children = self
+            .visible(self.inner.provider.children(request))
+            .await??;
+        Ok(stream::try_unfold(
+            (self.clone(), children),
+            |(provider, mut children)| async move {
+                let Some(child) = children.next().await.transpose()? else {
+                    return Ok(None);
+                };
+                provider.visible(async {}).await?;
+                Ok(Some((child, (provider, children))))
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(

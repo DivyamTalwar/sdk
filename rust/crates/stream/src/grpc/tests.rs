@@ -3,7 +3,7 @@ use crate::{MemoryStream, OwnedBytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+pub(super) type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// An in-process HTTP/2 channel to one service.
 fn channel<S: StreamService + Clone>(service: S) -> Channel {
@@ -25,7 +25,7 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
     ))
 }
 
-fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
+pub(super) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
     Ok(Client::from_channel(
         channel(Service::new(Arc::new(provider))),
         authorization("fixture")?,

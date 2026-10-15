@@ -30,6 +30,10 @@ use crate::{
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
+#[cfg(test)]
+mod children_tests;
+#[cfg(test)]
+mod latency_tests;
 mod client;
 mod server;
 #[cfg(test)]

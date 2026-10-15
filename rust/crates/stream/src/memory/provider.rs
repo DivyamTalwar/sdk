@@ -142,15 +142,57 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let page = self
-            .children_page(ChildrenPageRequest {
-                parent: request.parent,
-                limit: request.limit,
-                after: None,
-                hierarchy_version: None,
-            })
-            .await?;
-        Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
+        validate_limit(request.limit)?;
+        let changed = {
+            let mut state = self.state.write().await;
+            state
+                .hierarchy_changed
+                .get_or_insert_with(|| watch::channel(()).0)
+                .subscribe()
+        };
+        let children = stream::try_unfold(
+            (
+                self.clone(),
+                request,
+                changed,
+                std::collections::BTreeSet::new(),
+                VecDeque::<StreamPath>::new(),
+            ),
+            |(provider, request, mut changed, mut seen, mut queued)| async move {
+                loop {
+                    if let Some(path) = queued.pop_front() {
+                        seen.insert(path.clone());
+                        return Ok(Some((
+                            Child { path },
+                            (provider, request, changed, seen, queued),
+                        )));
+                    }
+                    {
+                        let state = provider.state.read().await;
+                        changed.borrow_and_update();
+                        queued.extend(
+                            state
+                                .paths
+                                .keys()
+                                .filter(|path| {
+                                    path.as_str().rsplit_once('/').map(|(parent, _)| parent)
+                                        == request.parent.as_ref().map(StreamPath::as_str)
+                                        && !seen.contains(*path)
+                                })
+                                .take(request.limit as usize)
+                                .cloned(),
+                        );
+                    }
+                    if queued.is_empty() {
+                        changed
+                            .changed()
+                            .await
+                            .map_err(|_| StreamError::Unavailable)?;
+                    }
+                }
+            },
+        );
+        Ok(children.boxed())
     }
 
     async fn children_page(

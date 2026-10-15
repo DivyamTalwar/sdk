@@ -162,31 +162,36 @@ impl StreamProvider for Client {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         };
-        let (response, mut completion) = self
+        let (response, completion) = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
                 Box::pin(async move { service.children(request).await })
             })
             .await?;
-        let mut response = completion.span.scope(response);
-        let mut children = Vec::new();
-        while let Some(item) = response.next().await {
-            let item = item.map_err(|error| {
-                completion.status(&error);
-                status(&error)
-            })?;
-            let child = item
-                .child
-                .ok_or(StreamError::Unavailable)
-                .and_then(|child| {
-                    Ok(Child {
-                        path: path(child.path)?,
+        let response = completion.span.scope(response);
+        Ok(stream::try_unfold(
+            (response, completion),
+            |(mut response, mut completion)| async move {
+                let Some(item) = response.next().await else {
+                    completion.ok();
+                    return Ok(None);
+                };
+                let item = item.map_err(|error| {
+                    completion.status(&error);
+                    status(&error)
+                })?;
+                let child = item
+                    .child
+                    .ok_or(StreamError::Unavailable)
+                    .and_then(|child| {
+                        Ok(Child {
+                            path: path(child.path)?,
+                        })
                     })
-                })
-                .inspect_err(|_| completion.invalid_response())?;
-            children.push(child);
-        }
-        completion.ok();
-        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
+                    .inspect_err(|_| completion.invalid_response())?;
+                Ok(Some((child, (response, completion))))
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(

@@ -141,12 +141,12 @@ pub struct Child {
     pub path: StreamPath,
 }
 
-/// Fixed-snapshot direct-child page request.
+/// Live direct-child discovery request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenRequest {
     /// Parent, or `None` for top-level paths.
     pub parent: Option<StreamPath>,
-    /// Nonzero result bound.
+    /// Nonzero bound on each replay fetch; the subscription remains live.
     pub limit: u32,
 }
 

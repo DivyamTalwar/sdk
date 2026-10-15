@@ -54,7 +54,7 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;
-    /// Lists one fixed-snapshot direct-child page.
+    /// Replays direct children and pushes each newly created child once, without a handoff gap.
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
     /// Traverses arbitrarily large direct-child sets without silently
     async fn children_page(
