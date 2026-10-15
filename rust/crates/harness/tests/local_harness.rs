@@ -393,6 +393,14 @@ async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
     std::fs::create_dir(&checkout).map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::write(checkout.join("hello.txt"), "original checkout")
         .map_err(|error| Error::Storage(error.to_string()))?;
+    let invalid = LocalHarnessConfig::workspace(&checkout)
+        .state_directory(&checkout)
+        .model(model()?, Scripted::text());
+    assert!(matches!(
+        LocalHarness::open(invalid).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(!checkout.join("owner.json").exists());
     let config = || {
         Ok::<_, Error>(
             LocalHarnessConfig::workspace(&checkout)

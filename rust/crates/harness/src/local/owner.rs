@@ -40,6 +40,14 @@ impl Owner {
             LocalProject::Workspace(path) => Some(fs::canonicalize(path).map_err(storage)?),
             LocalProject::Volume(_) => None,
         };
+        if workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.starts_with(directory))
+        {
+            return Err(Error::Invalid(
+                "local state directory must not contain the checkout".into(),
+            ));
+        }
         let path = directory.join("owner.json");
         let workspace_identity = workspace
             .as_ref()
