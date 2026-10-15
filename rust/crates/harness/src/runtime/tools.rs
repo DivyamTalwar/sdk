@@ -587,4 +587,15 @@ impl ToolContext {
         )
         .await
     }
+    /// Reads one authenticated interval under this tool call's effective scope.
+    pub async fn read_file_range(
+        &self,
+        file: &FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        self.task()
+            .read_bound_range(file, range, self.effective_scope(), io)
+            .await
+    }
 }

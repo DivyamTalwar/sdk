@@ -29,18 +29,6 @@ pub struct TextRange {
     pub end: u64,
 }
 
-impl TextRange {
-    pub(crate) fn select<'a>(self, source: &'a str, work: &mut NativeCustody) -> Result<&'a str> {
-        let start = usize::try_from(self.start)
-            .map_err(|_| invalid(work, "read start cannot be represented"))?;
-        let end = usize::try_from(self.end)
-            .map_err(|_| invalid(work, "read end cannot be represented"))?;
-        source
-            .get(start..end)
-            .ok_or_else(|| invalid(work, "read range is outside the file or splits UTF-8"))
-    }
-}
-
 /// Consumer-selected finite literal-search allowances.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -187,26 +175,6 @@ mod tests {
         maximum_work: 4096,
         maximum_matches: 1,
     };
-    #[test]
-    fn read_preserves_exact_utf8_and_crlf_and_rejects_invalid_intervals() -> Result<()> {
-        let mut work = None;
-        let source = "a\r\n🦀\r\nb";
-        assert_eq!(
-            TextRange { start: 3, end: 9 }.select(source, &mut work)?,
-            "🦀\r\n"
-        );
-        for range in [
-            TextRange { start: 4, end: 9 },
-            TextRange { start: 3, end: 6 },
-            TextRange { start: 9, end: 8 },
-            TextRange { start: 0, end: 11 },
-        ] {
-            assert!(range.select(source, &mut work).is_err());
-        }
-        assert_eq!(TextRange { start: 3, end: 3 }.select("abc", &mut work)?, "");
-        Ok(())
-    }
-
     #[test]
     fn overlaps_omissions_and_work_are_explicit() -> Result<()> {
         let mut work = None;

@@ -208,14 +208,42 @@ impl FileTool {
         };
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        let bytes = context.read_file(&input.0.file, io).await?;
-        let source = std::str::from_utf8(bytes.as_ref())
-            .map_err(|_| invalid("file read requires UTF-8 content"))?;
-        let mut selection = super::edit::allocation(work, 0)?;
-        let source = if let Some(range) = input.0.range {
-            range.select(source, &mut selection)?
+        let length = input.0.file.descriptor().byte_length();
+        let empty = input.0.range.is_some_and(|range| range.start == range.end);
+        let bytes = if let Some(range) = input.0.range {
+            let count = range
+                .end
+                .checked_sub(range.start)
+                .ok_or_else(|| invalid("read range is reversed"))?;
+            if range.end > length {
+                return Err(invalid("read range exceeds the file"));
+            }
+            context
+                .read_file_range(
+                    &input.0.file,
+                    acyclic_fs::ByteRange {
+                        offset: range.start,
+                        // An empty interval still has to lie on a UTF-8 boundary.
+                        length: if empty && range.start < length {
+                            1
+                        } else {
+                            count
+                        },
+                    },
+                    io,
+                )
+                .await?
         } else {
-            source
+            context.read_file(&input.0.file, io).await?
+        };
+        let source = if empty {
+            if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+                return Err(invalid("read range splits UTF-8"));
+            }
+            ""
+        } else {
+            std::str::from_utf8(bytes.as_ref())
+                .map_err(|_| invalid("file read requires UTF-8 content"))?
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
