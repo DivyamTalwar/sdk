@@ -68,9 +68,9 @@ async fn text_replay_records_exact_request_and_exhausts() -> Result<()> {
             },
         ]
     );
-    assert_eq!(provider.requests()?, vec![expected]);
-    assert_eq!(provider.dispatches()?, vec![dispatch]);
-    assert_eq!(provider.remaining()?, 0);
+    assert_eq!(provider.requests(), vec![expected]);
+    assert_eq!(provider.dispatches(), vec![dispatch]);
+    assert_eq!(provider.remaining(), 0);
     let events = provider
         .generate(request, dispatch)
         .collect::<Vec<_>>()
@@ -79,17 +79,17 @@ async fn text_replay_records_exact_request_and_exhausts() -> Result<()> {
         matches!(events.as_slice(), [Err(crate::Error::Invalid(message))]
         if message == "scripted model exhausted")
     );
-    assert_eq!(provider.requests()?.len(), 2);
+    assert_eq!(provider.requests().len(), 2);
     Ok(())
 }
 
 #[tokio::test]
 async fn exact_events_preserve_tools_errors_and_missing_completion() -> Result<()> {
     let turns: Vec<ScriptedTurn> = serde_json::from_value(json!([
-        [{"kind":"reasoning","delta":"thinking"},
-         {"kind":"tool_call","call_id":"call","name":"read","arguments":{"path":"a"}},
-         {"kind":"completed","metadata":{"tokens":3}}],
-        [{"kind":"content","delta":"partial"},{"error":"offline"}],
+        [{"type":"event","kind":"reasoning","delta":"thinking"},
+         {"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"path":"a"}},
+         {"type":"event","kind":"completed","metadata":{"tokens":3}}],
+        [{"type":"event","kind":"content","delta":"partial"},{"type":"error","error":"offline"}],
         []
     ]))
     .map_err(|e| crate::Error::Invalid(e.to_string()))?;
@@ -116,7 +116,7 @@ async fn exact_events_preserve_tools_errors_and_missing_completion() -> Result<(
             .await
             .is_empty()
     );
-    assert_eq!(provider.remaining()?, 0);
+    assert_eq!(provider.remaining(), 0);
     Ok(())
 }
 
@@ -130,18 +130,179 @@ async fn mismatched_dispatch_does_not_consume_script() -> Result<()> {
         .collect::<Vec<_>>()
         .await;
     assert!(matches!(events.as_slice(), [Err(crate::Error::Invalid(_))]));
-    assert_eq!(provider.remaining()?, 1);
-    assert!(provider.requests()?.is_empty());
+    assert_eq!(provider.remaining(), 1);
+    assert!(provider.requests().is_empty());
     Ok(())
 }
 
 #[test]
 fn malformed_script_events_are_rejected() {
     for event in [
-        json!({"kind":"content","delta":"x","typo":true}),
-        json!({"error":"x","typo":true}),
-        json!({"kind":"typo"}),
+        json!({"type":"event","kind":"content","delta":"x","typo":true}),
+        json!({"type":"error","error":"x","typo":true}),
+        json!({"type":"event","kind":"typo"}),
     ] {
         assert!(serde_json::from_value::<ScriptedEvent>(event).is_err());
     }
+}
+
+#[tokio::test]
+async fn reconciliation_checks_prefix_and_records_dispatch_without_generation() -> Result<()> {
+    let prefix = vec![ModelEvent::Content {
+        delta: "partial-".into(),
+    }];
+    let continuation = vec![
+        ModelEvent::Content {
+            delta: "rest".into(),
+        },
+        ModelEvent::Completed {
+            metadata: json!({"finish":"stop"}),
+        },
+    ];
+    let provider = ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {
+        observed: prefix.clone(),
+        continuation: Some(continuation.clone()),
+    }]);
+    let (_, dispatch) = request()?;
+    assert!(matches!(provider.reconcile(dispatch, &[]).await,
+        Err(crate::Error::Conflict(message)) if message == "scripted reconciliation prefix mismatch"));
+    assert_eq!(provider.remaining_reconciliations(), 1);
+    assert_eq!(
+        provider.reconcile(dispatch, &prefix).await?,
+        Some(continuation)
+    );
+    assert_eq!(provider.request_count(), 0);
+    assert_eq!(provider.reconciliations(), vec![dispatch, dispatch]);
+    assert_eq!(provider.reconciliation_count(), 2);
+    assert_eq!(provider.remaining_reconciliations(), 0);
+    assert!(matches!(provider.reconcile(dispatch, &prefix).await,
+        Err(crate::Error::Invalid(message)) if message == "scripted reconciliation exhausted"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconciliation_preserves_unrecoverable_and_incomplete_replies() -> Result<()> {
+    let provider = ScriptedModelProvider::new([]).with_reconciliations([
+        ScriptedReconciliation {
+            observed: vec![],
+            continuation: None,
+        },
+        ScriptedReconciliation {
+            observed: vec![],
+            continuation: Some(vec![]),
+        },
+    ]);
+    let (_, dispatch) = request()?;
+    assert_eq!(provider.reconcile(dispatch, &[]).await?, None);
+    assert_eq!(provider.reconcile(dispatch, &[]).await?, Some(vec![]));
+    assert_eq!(provider.reconciliation_count(), 2);
+    assert_eq!(provider.remaining_reconciliations(), 0);
+    Ok(())
+}
+
+#[test]
+fn reconciliation_scripts_reject_unknown_fields_and_malformed_events() {
+    for reply in [
+        json!({"observed":[],"continuation":null,"typo":true}),
+        json!({"observed":[{"type":"event","kind":"typo"}],"continuation":[]}),
+        json!({"observed":[],"continuation":[{"type":"error","error":"not a model event"}]}),
+    ] {
+        assert!(serde_json::from_value::<ScriptedReconciliation>(reply).is_err());
+    }
+}
+
+#[test]
+fn capacity_and_token_accounting_are_configurable() -> Result<()> {
+    fn tokens(request: &PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.request_digest(),
+            fixed_tokens: 7,
+            message_tokens: vec![3; request.request().messages.len()],
+        })
+    }
+    let capacity = crate::context::ModelContextCapacity {
+        context_tokens: 512,
+        output_tokens: 64,
+    };
+    let provider = ScriptedModelProvider::new([])
+        .with_context_capacity(capacity)
+        .with_token_counter(tokens);
+    let (request, _) = request()?;
+    assert_eq!(
+        provider.context_capacity(&request.request().model)?,
+        capacity
+    );
+    let count = provider.count_tokens(&request)?;
+    assert_eq!(count.request_digest, request.request_digest());
+    assert_eq!(count.fixed_tokens, 7);
+    assert_eq!(count.message_tokens, vec![3, 3]);
+    assert_eq!(provider.request_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn tagged_response_errors_name_the_invalid_event() {
+    for (script, expected) in [
+        (
+            r#"[{"type":"unsupported"}]"#,
+            "unknown variant `unsupported`",
+        ),
+        (
+            r#"[{"kind":"content","delta":"x"}]"#,
+            "missing field `type`",
+        ),
+        (
+            r#"[{"type":"event","kind":"content","delat":"x"}]"#,
+            "delat",
+        ),
+    ] {
+        let error = serde_json::from_str::<ScriptedTurn>(script)
+            .err()
+            .map(|e| e.to_string());
+        assert!(
+            error.as_ref().is_some_and(|error| error.contains(expected)),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn tagged_response_round_trips_without_a_wrapper_object() -> Result<()> {
+    let event = ScriptedEvent::Event(ModelEvent::Content {
+        delta: "answer".into(),
+    });
+    let value = serde_json::to_value(&event).map_err(|e| crate::Error::Invalid(e.to_string()))?;
+    assert_eq!(
+        value,
+        json!({"type":"event","kind":"content","delta":"answer"})
+    );
+    let turn: ScriptedTurn =
+        serde_json::from_value(json!([value])).map_err(|e| crate::Error::Invalid(e.to_string()))?;
+    assert!(matches!(turn, ScriptedTurn::Events(events) if events.len() == 1));
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconciliation_keeps_the_original_request_binding() -> Result<()> {
+    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+        .with_reconciliations([ScriptedReconciliation {
+            observed: vec![],
+            continuation: None,
+        }]);
+    let (request, dispatch) = request()?;
+    provider
+        .generate(request, dispatch)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    let changed = ModelDispatch {
+        request_digest: [0; 32],
+        ..dispatch
+    };
+    assert!(matches!(provider.reconcile(changed, &[]).await,
+        Err(crate::Error::Conflict(message)) if message == "scripted reconciliation dispatch mismatch"));
+    assert_eq!(provider.remaining_reconciliations(), 1);
+    assert_eq!(provider.reconcile(dispatch, &[]).await?, None);
+    Ok(())
 }

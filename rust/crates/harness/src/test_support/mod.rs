@@ -2,7 +2,7 @@
 
 mod scripted;
 
-pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
+pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn};
 
 #[cfg(test)]
 mod tests;
