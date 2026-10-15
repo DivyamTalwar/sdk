@@ -8,7 +8,10 @@ use serde::{
     Deserialize, Deserializer, Serialize,
     de::{SeqAccess, Visitor, value::SeqAccessDeserializer},
 };
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 /// One provider response. A string emits text followed by completion; an event
 /// list is replayed exactly, including errors, incomplete streams and metadata.
@@ -92,7 +95,7 @@ struct State {
 pub struct ScriptedModelProvider {
     state: Mutex<State>,
     capacity: ModelContextCapacity,
-    token_counter: fn(&PreparedModelRequest) -> Result<ModelTokenCount>,
+    token_counter: Arc<dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync>,
 }
 
 impl ScriptedModelProvider {
@@ -108,7 +111,7 @@ impl ScriptedModelProvider {
                 context_tokens: 131_072,
                 output_tokens: 4_096,
             },
-            token_counter: serialized_tokens,
+            token_counter: Arc::new(serialized_tokens),
         }
     }
 
@@ -123,9 +126,9 @@ impl ScriptedModelProvider {
     #[must_use]
     pub fn with_token_counter(
         mut self,
-        counter: fn(&PreparedModelRequest) -> Result<ModelTokenCount>,
+        counter: impl Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync + 'static,
     ) -> Self {
-        self.token_counter = counter;
+        self.token_counter = Arc::new(counter);
         self
     }
 
