@@ -64,9 +64,9 @@ use acyclic_fs::model::{
 };
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    _at, CancellationToken, CaptureOptions, CapturePolicy, Generation, GitCompatRepository,
-    GitDirtyState, GitFilesystemResult, GitIgnorePolicy, GitPublicationRecord, GitTreeRef,
-    IdempotencyKey, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
+    CancellationToken, CaptureOptions, CapturePolicy, Generation, GitCommandOutput,
+    GitCompatRepository, GitDirtyState, GitFilesystemResult, GitIgnorePolicy, GitPublicationRecord,
+    GitTreeRef, IdempotencyKey, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
     LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
     MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
     MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,
@@ -74,10 +74,11 @@ use acyclic_fs::{
     MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
     OperationId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowLease,
-    Output, Publication, PublicationPermit, WatchBatch, WatchChange, WorkBudget, Workspace,
+    Publication, PublicationPermit, WatchBatch, WatchChange, WorkBudget, Workspace,
     WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceContextState,
     WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceMultiRootPublisherError,
-    WorkspaceOperationFinish, WorkspaceRootId, capture_baseline, capture_watch_batch,
+    WorkspaceOperationFinish, WorkspaceRootId, capture_baseline,
+    capture_git_compatible_generation_at, capture_watch_batch,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
