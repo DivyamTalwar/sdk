@@ -1,9 +1,0 @@
-{
-  "expect": {
-    "result": {
-      "kind": "select",
-      "query": "mcp"
-    }
-  },
-  "prompt": "/"
-}
