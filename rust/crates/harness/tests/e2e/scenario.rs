@@ -248,3 +248,40 @@ fn defaults_merge_from_root_to_family_and_keep_case_overrides() -> super::TestRe
     assert!(Scenario::load(temp.path(), &path).is_err());
     Ok(())
 }
+
+#[test]
+fn recovery_defaults_preserve_nested_overrides_arrays_and_nulls() -> super::TestResult {
+    let temp = tempfile::tempdir()?;
+    let family = temp.path().join("family");
+    std::fs::create_dir(&family)?;
+    std::fs::write(
+        temp.path().join("_defaults.json"),
+        r#"{
+        "prompt":"root", "turns":["root"], "seed":{"a":"root","b":"kept"},
+        "expect":{"text":"root","request_count":1}
+    }"#,
+    )?;
+    std::fs::write(
+        family.join("_defaults.json"),
+        r#"{
+        "prompt":"family", "seed":{"a":"family"}, "expect":{"text":"family"}
+    }"#,
+    )?;
+    let path = family.join("case.json");
+    std::fs::write(
+        &path,
+        r#"{"turns":[],"expect":{"text":"case","request_count":null}}"#,
+    )?;
+    let case = Scenario::load(temp.path(), &path)?;
+    assert_eq!(case.prompt.as_deref(), Some("family"));
+    assert!(case.turns.is_empty());
+    assert_eq!(case.expect.request_count, None);
+    assert_eq!(case.expect.text.as_deref(), Some("case"));
+    assert_eq!(case.seed.get("a").map(String::as_str), Some("family"));
+    assert_eq!(case.seed.get("b").map(String::as_str), Some("kept"));
+    std::fs::write(&path, r#"{"typo":1}"#)?;
+    assert!(Scenario::load(temp.path(), &path).is_err());
+    std::fs::write(family.join("_defaults.json"), "{")?;
+    assert!(Scenario::load(temp.path(), &path).is_err());
+    Ok(())
+}

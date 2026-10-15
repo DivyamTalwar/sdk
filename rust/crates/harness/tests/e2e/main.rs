@@ -144,10 +144,11 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
 
 #[tokio::test]
 async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() -> TestResult {
-    let baseline = include_bytes!("../scenarios/recovery/midstream.json");
-    run(Scenario::parse(baseline)?).await?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = root.join("recovery/midstream.json");
+    run(Scenario::load(&root, &baseline)?).await?;
     for field in ["prefix", "continuation", "count", "resume", "unused"] {
-        let mut case = Scenario::parse(baseline)?;
+        let mut case = Scenario::load(&root, &baseline)?;
         match field {
             "prefix" => case
                 .recoveries
