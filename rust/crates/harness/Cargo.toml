@@ -48,6 +48,7 @@ name = "client_demand"
 harness = false
 
 [features]
+test-support = []
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex"]
