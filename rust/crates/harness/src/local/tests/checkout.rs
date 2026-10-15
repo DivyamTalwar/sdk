@@ -173,52 +173,51 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .tools()
             .get("bash", None, None)?
             .ok_or_else(|| Error::NotFound("bash".into()))?;
-        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(64))
-            .run(
-                &(0u8..32, any::<[u8; 16]>(), "[a-z]{1,32}"),
-                |(mask, bytes, call)| {
-                    let grants = [read.as_str(), write.as_str(), "tool:call:bash"]
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(index, _)| mask & (1 << index) != 0)
-                        .map(|(_, grant)| grant.to_owned());
-                    let task = task_context
-                        .scoped(
-                            crate::Capabilities::new(grants),
-                            task_context.scope().limits(),
-                        )
-                        .unwrap();
-                    let context = ToolContext::new(
-                        Arc::new(task),
-                        OperationId::from_bytes(bytes),
-                        &call,
-                        None,
+        proptest::test_runner::TestRunner::new(ProptestConfig {
+            source_file: Some(file!()),
+            ..ProptestConfig::with_cases(64)
+        })
+        .run(
+            &(0u8..32, any::<[u8; 16]>(), "[a-z]{1,32}"),
+            |(mask, bytes, call)| {
+                let grants = [read.as_str(), write.as_str(), "tool:call:bash"]
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << index) != 0)
+                    .map(|(_, grant)| grant.to_owned());
+                let task = task_context
+                    .scoped(
+                        crate::Capabilities::new(grants),
+                        task_context.scope().limits(),
                     )
                     .unwrap();
-                    let mut invocation_bytes = bytes;
-                    if mask & 8 == 0 {
-                        invocation_bytes[0] ^= 1;
-                    }
-                    let invocation = ToolInvocation {
-                        operation_id: OperationId::from_bytes(invocation_bytes),
-                        call_id: if mask & 16 != 0 {
-                            call
-                        } else {
-                            format!("{call}-other")
-                        },
-                        name: "bash".into(),
-                        arguments: json!({"command":"true"}),
-                    };
-                    prop_assert_eq!(
-                        tool.executor
-                            .authorize(None, Some(&context), &invocation, None)
-                            .is_ok(),
-                        mask == 31
-                    );
-                    Ok(())
-                },
-            )
-            .map_err(super::super::storage)?;
+                let context =
+                    ToolContext::new(Arc::new(task), OperationId::from_bytes(bytes), &call, None)
+                        .unwrap();
+                let mut invocation_bytes = bytes;
+                if mask & 8 == 0 {
+                    invocation_bytes[0] ^= 1;
+                }
+                let invocation = ToolInvocation {
+                    operation_id: OperationId::from_bytes(invocation_bytes),
+                    call_id: if mask & 16 != 0 {
+                        call
+                    } else {
+                        format!("{call}-other")
+                    },
+                    name: "bash".into(),
+                    arguments: json!({"command":"true"}),
+                };
+                prop_assert_eq!(
+                    tool.executor
+                        .authorize(None, Some(&context), &invocation, None)
+                        .is_ok(),
+                    mask == 31
+                );
+                Ok(())
+            },
+        )
+        .map_err(super::super::storage)?;
     }
     for (name, command) in COMMANDS {
         let invocation = ToolInvocation {
