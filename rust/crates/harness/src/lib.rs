@@ -66,7 +66,7 @@ pub mod scheduler;
 pub mod service;
 pub mod source_authorization;
 pub mod store;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tool;
 pub mod tools;

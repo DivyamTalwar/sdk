@@ -84,6 +84,7 @@ async fn cancelled_serve_drains_connections_and_releases_the_instance_lock() -> 
 
     serving.abort();
     assert!(serving.await.is_err_and(|error| error.is_cancelled()));
+    signalled(&host.dropped).await?;
     // Keep the service alive: dropping its last Arc must not be needed for cleanup.
     tokio::time::timeout(Duration::from_secs(1), async {
         let (first, second) = tokio::join!(service.shutdown(), service.shutdown());
@@ -92,7 +93,6 @@ async fn cancelled_serve_drains_connections_and_releases_the_instance_lock() -> 
     })
     .await
     .map_err(storage)??;
-    signalled(&host.dropped).await?;
     assert!(call.await.map_err(storage)?.is_err());
     let replacement = HarnessService::bind(endpoint)?;
     replacement.shutdown().await?;
