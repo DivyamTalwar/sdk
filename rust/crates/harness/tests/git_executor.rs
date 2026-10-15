@@ -116,40 +116,9 @@ async fn run(
 
 #[tokio::test]
 async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<()> {
-    acyclic_native_runtime::initialize_native_io_services().unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("root");
-    std::fs::create_dir(&root).unwrap();
-    let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
-        .await
-        .unwrap();
-    let store = LocalCoreStateStore::open_owned(temp.path().join("core")).unwrap();
-    let config = VolumeConfig::native(Lifecycle::Durable);
+    let (_temp, _root, fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
-    let source = NativeDemandSource::open(
-        Cow::Borrowed(&root),
-        config.profile,
-        config.limits,
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        &stop,
-    )
-    .await
-    .unwrap()
-    .value;
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
-    let (main, _) = LazyWorkspace::attach(
-        &fs,
-        "main",
-        Arc::new(source),
-        store.clone(),
-        config,
-        OperationId::new(),
-        &mut work,
-    )
-    .await
-    .unwrap();
     main.write(
         "/file.txt",
         bytes::Bytes::from_static(b"base\n").into(),
@@ -304,5 +273,147 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .contains(&"/.acyclic-sdk/state".to_owned())
     );
     assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
+    Ok(())
+}
+
+async fn fixture() -> Result<(
+    tempfile::TempDir,
+    std::path::PathBuf,
+    LocalFs,
+    LocalCoreStateStore,
+    Lazy,
+)> {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
+        .await
+        .unwrap();
+    let store = LocalCoreStateStore::open_owned(temp.path().join("core")).unwrap();
+    let config = VolumeConfig::native(Lifecycle::Durable);
+    let stop = CancellationToken::new();
+    let source = NativeDemandSource::open(
+        Cow::Borrowed(&root),
+        config.profile,
+        config.limits,
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .await
+    .unwrap()
+    .value;
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    let (main, _) = LazyWorkspace::attach(
+        &fs,
+        "main",
+        Arc::new(source),
+        store.clone(),
+        config,
+        OperationId::new(),
+        &mut work,
+    )
+    .await
+    .unwrap();
+    Ok((temp, root, fs, store, main))
+}
+
+#[tokio::test]
+async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    main.write(
+        "/file.txt",
+        bytes::Bytes::from_static(b"base\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await?;
+    run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+    let head = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value
+        .id();
+    // Historical times make expiry deterministic, without sleeps or a clock override.
+    let lease = acyclic_fs::OperationWindowCoordinator::new(fs.operation_window_store())
+        .begin(repo, head, "expired-tool", 1, 2)
+        .await?;
+    for (checkout, tag) in [
+        (None, "mounted-expired"),
+        (
+            Some(acyclic_fs::NativeRootIdentity::from_bytes([1; 16])),
+            "checkout-expired",
+        ),
+    ] {
+        let error = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: &main,
+                root: &root,
+                repository: repo,
+                lease: Some(lease.clone()),
+                checkout,
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["tag".into(), tag.into()],
+        )
+        .await
+        .err()
+        .ok_or("expired lease created a tag")?;
+        assert!(
+            matches!(error, acyclic_harness::Error::Conflict(ref reason) if reason.contains("lease expired")),
+            "{error:?}"
+        );
+    }
+    let GitCommandOutput::Tags(tags) = run(&fs, &store, &main, repo, &["tag"]).await?.0 else {
+        return Err("tag listing returned another result".into());
+    };
+    assert!(tags.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    main.write(
+        "/.gitignore",
+        bytes::Bytes::from(vec![b'x'; 1024 * 1024 + 1]).into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    main.write(
+        "/.gitattributes",
+        bytes::Bytes::from_static(b"*.txt merge=text\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    assert!(
+        run(&fs, &store, &main, main.workspace().id(), &["status"])
+            .await
+            .is_err()
+    );
+    acyclic_harness::filesystem::workspace_publication_coordinator(
+        fs,
+        store,
+        Default::default(),
+        [(acyclic_fs::WorkspaceRootId::from_bytes([3; 16]), &main)],
+    )
+    .await?;
     Ok(())
 }
