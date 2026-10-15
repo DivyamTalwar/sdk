@@ -55,7 +55,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 accepted
             );
             assert!(
-                ExternalRequest::from_file(&Component::new("other-task")?, &original,).is_err()
+                ExternalRequest::from_file(&Component::new("other-task")?, &original).is_err()
             );
         }
     }

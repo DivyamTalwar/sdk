@@ -37,7 +37,8 @@ proptest! {
         let actual = request(selected.host, &selected.event, selected.input)?;
         prop_assert_eq!(&actual, &expected);
         let task = Component::new("task")?;
-        let file = volume::file(&task, &actual)?;
+        let file = volume::file(&task, &actual)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(ExternalRequest::from_file(&task, &file)?, actual);
         prop_assert!(ExternalRequest::from_file(&Component::new("other-task")?, &file).is_err());
     }
