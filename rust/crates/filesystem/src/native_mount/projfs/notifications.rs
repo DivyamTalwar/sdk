@@ -4,6 +4,13 @@ pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRES
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
+    let work = match runtime.native_work(false) {
+        Ok(work) => work,
+        Err(error) => return native_hresult(&error),
+    };
+    let Some(path) = path_from(data.FilePathName) else {
+        return HR_INVALID_DATA;
+    };
     let basis = {
         let creating = runtime
             .creating_name
@@ -23,34 +30,19 @@ pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRES
     };
     // Release the slot before calling the source: a concurrent creator may
     // need its write lock to return, and source calls can cause more callbacks.
-    let admitted = if let Some((file_id, basis)) = basis {
-        let work = match runtime.native_work(false) {
-            Ok(work) => work,
-            Err(error) => return native_hresult(&error),
-        };
-        match creating_name_is_current(runtime.source.as_ref(), file_id, basis, &work) {
+    if let Some((file_id, basis)) = basis {
+        match creating_name_is_current(runtime.source.as_ref(), &path, file_id, basis, &work) {
             Ok(true) => return HR_OK,
-            Ok(false) => Some(work),
+            Ok(false) => {}
             Err(error) => return source_hresult(&error),
         }
-    } else {
-        None
-    };
-    let Some(path) = path_from(data.FilePathName) else {
-        return HR_INVALID_DATA;
-    };
-    let work = match admitted {
-        Some(work) => work,
-        None => match runtime.native_work(false) {
-            Ok(work) => work,
-            Err(error) => return native_hresult(&error),
-        },
-    };
+    }
     lookup_name(runtime.source.as_ref(), &path, &work)
 }
 
 fn creating_name_is_current(
     source: &dyn MountFilesystem,
+    path: &MountPath,
     file_id: FileId,
     basis: ReadBasis,
     work: &crate::NativeMaterializationWork,
@@ -68,10 +60,14 @@ fn creating_name_is_current(
         Err(MountSourceError::Stale) => return Ok(false),
         Err(error) => return Err(error),
     };
-    Ok(source.view_is_stable_with_meter(work)?
+    let current = source.view_is_stable_with_meter(work)?
         && source.binding_epoch_with_meter(work)? == Some(basis.binding)
         && source.reports_changes_to(file_id)
-        && source.view_stamp_with_meter(work)? == Some(basis.stamp))
+        && source.view_stamp_with_meter(work)? == Some(basis.stamp);
+    if current {
+        source.authorize_with_meter(&[(crate::access::Action::List, path)], work)?;
+    }
+    Ok(current)
 }
 
 fn lookup_name(

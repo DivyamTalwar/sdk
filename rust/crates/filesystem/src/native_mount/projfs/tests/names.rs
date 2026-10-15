@@ -46,6 +46,35 @@ fn leaf_name_query(runtime: &Runtime) -> HRESULT {
 }
 
 #[tokio::test]
+async fn a_scoped_name_query_checks_policy_without_a_namespace_change()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let source = windows_checkout_source().await?;
+    let lookup = source.create_file(&windows_path("leaf"), FileMetadata::default(), None, &work)?;
+    let basis = ReadBasis::sample(source.as_ref()).ok_or("source view is unstable")?;
+    let root = tempfile::tempdir()?;
+    let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
+    assert_eq!(
+        cached_name_query(&runtime, lookup.node.file_id, basis),
+        HR_OK
+    );
+    crate::native_mount::adapter::tests::access::publish_test_access(
+        source.as_ref(),
+        vec![crate::native_mount::adapter::tests::access::deny(
+            "hidden",
+            &[crate::access::Action::List],
+            "leaf",
+        )],
+    )?;
+    assert_eq!(ReadBasis::sample(source.as_ref()), Some(basis));
+    assert_eq!(
+        cached_name_query(&runtime, lookup.node.file_id, basis),
+        HR_ACCESS_DENIED
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_scoped_name_query_rejects_an_intervening_source_removal()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
