@@ -154,7 +154,17 @@ impl StreamProvider for Client {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        Ok(self.records(path, from, None))
+        self.sessions
+            .get_or_try_init(|| {
+                crate::session::Client::open(
+                    self.channel.clone(),
+                    self.authorization.clone(),
+                    self.session_ca.clone(),
+                )
+            })
+            .await?
+            .follow_with_ack(path, from, self.acknowledge_deliveries)
+            .await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -276,7 +286,7 @@ fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
     )
 }
 
-/// One logical read or follow; follow reopens after transport loss or a clean EOF.
+/// A finite read cursor resumes after retryable transport loss.
 struct RecordCursor {
     client: Client,
     path: StreamPath,
@@ -378,28 +388,18 @@ impl RecordCursor {
         StreamError,
     > {
         let path = self.path.to_string();
-        let (body, completion) = if let Some(limit) = self.remaining {
-            let body = wire::ReadRequest {
-                path,
-                from: self.next,
-                limit,
-            };
-            self.client
-                .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                    Box::pin(async move { service.read(request).await })
-                })
-                .await?
-        } else {
-            let body = wire::FollowRequest {
-                path,
-                from: self.next,
-            };
-            self.client
-                .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
-                    Box::pin(async move { service.follow(request).await })
-                })
-                .await?
+        let limit = self.remaining.ok_or(StreamError::InvalidArgument)?;
+        let body = wire::ReadRequest {
+            path,
+            from: self.next,
+            limit,
         };
+        let (body, completion) = self
+            .client
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.read(request).await })
+            })
+            .await?;
         Ok((completion.span.scope(body), completion))
     }
 }
