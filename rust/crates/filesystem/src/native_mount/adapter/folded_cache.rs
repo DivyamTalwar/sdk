@@ -1,10 +1,10 @@
-#[cfg(loom)]
+#[cfg(acyclic_fs_loom)]
 pub(super) use loom::sync::Arc as Shared;
-#[cfg(loom)]
+#[cfg(acyclic_fs_loom)]
 use loom::sync::Mutex;
-#[cfg(not(loom))]
+#[cfg(not(acyclic_fs_loom))]
 pub(super) use std::sync::Arc as Shared;
-#[cfg(not(loom))]
+#[cfg(not(acyclic_fs_loom))]
 use std::sync::Mutex;
 
 use crate::ObjectId;
@@ -66,7 +66,7 @@ impl<T> FoldedDirectoryCache<T> {
     }
 
     // Negative control: writers can select the same slot without one section.
-    #[cfg(all(test, loom))]
+    #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn insert_split(&self, key: ObjectId, value: DirectoryNames<T>) {
         let position = {
             let state = self
@@ -89,13 +89,13 @@ impl<T> FoldedDirectoryCache<T> {
         drop(previous);
     }
 
-    #[cfg(all(test, loom))]
+    #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn unlocked(&self) -> bool {
         self.state.try_lock().is_ok()
     }
 
     // Negative control: payload retirement may acquire an accounting lock.
-    #[cfg(all(test, loom))]
+    #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn insert_dropping_locked(&self, key: ObjectId, value: DirectoryNames<T>) {
         let mut state = self
             .state

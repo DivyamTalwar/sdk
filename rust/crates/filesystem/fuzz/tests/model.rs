@@ -1,4 +1,5 @@
 //! Exhaustive schedules through the production native directory cache.
+#![cfg(acyclic_fs_loom)]
 use acyclic_fs::{Digest, ObjectId, ObjectKind};
 
 fn key(byte: u8) -> ObjectId {

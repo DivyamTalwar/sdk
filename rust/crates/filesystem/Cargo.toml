@@ -197,3 +197,6 @@ required-features = ["local"]
 [[example]]
 name = "record_cloud_contract"
 required-features = ["memory"]
+
+[target.'cfg(acyclic_fs_loom)'.dependencies]
+loom = "0.7.2"
