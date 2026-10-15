@@ -74,7 +74,10 @@ async fn workspace_dispatch_futures_stay_bounded() -> Result<()> {
     let generation = Box::pin(executor.workspace.view().exactify(
         "/",
         PublicationPermit::Unrestricted,
-        &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
+        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        },
     ))
     .await
     .map_err(storage)?;

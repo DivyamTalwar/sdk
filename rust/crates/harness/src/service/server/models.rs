@@ -27,17 +27,28 @@ impl Drop for PendingCall {
 
 #[test]
 fn disconnect_exhaustively_cancels_pending_dispatch() {
-    model::check(|| async {
+    disconnect_model(false);
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_detects_a_call_that_ignores_disconnect() {
+    disconnect_model(true);
+}
+
+fn disconnect_model(broken: bool) {
+    model::check(move || async move {
         let (client, server) = tokio::io::duplex(64);
         let dropped = Arc::new(AtomicBool::new(false));
         let observed = dropped.clone();
         let handler = shuttle::future::spawn(async move {
             let mut socket = frames::connection(server);
-            assert!(
-                connected(&mut socket, PendingCall(observed))
-                    .await?
-                    .is_none()
-            );
+            let response = if broken {
+                PendingCall(observed).await.map(Some)
+            } else {
+                connected(&mut socket, PendingCall(observed)).await
+            }?;
+            assert!(response.is_none());
             Ok(())
         });
         let disconnect = shuttle::future::spawn(async move {

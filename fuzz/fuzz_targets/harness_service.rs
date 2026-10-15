@@ -1,6 +1,6 @@
 #![no_main]
 
-use acyclic_harness::{Error, Result, wire};
+use acyclic_harness::{Error, InteractionRejection, OperationId, Result, encode_error, wire};
 use libfuzzer_sys::fuzz_target;
 use prost::Message as _;
 use tokio_util::codec::Decoder as _;

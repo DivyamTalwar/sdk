@@ -1,5 +1,4 @@
 use super::*;
-use futures::FutureExt as _;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod properties;

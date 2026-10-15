@@ -1,5 +1,4 @@
 use super::*;
-use futures::FutureExt as _;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads one bounded file from the current head or an exact generation.
