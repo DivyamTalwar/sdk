@@ -202,10 +202,9 @@ impl HookOutput {
         policy: HookFailure,
         result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
     ) {
+        let block_failure = policy == HookFailure::Block && event != HookEvent::Stop;
         let observed = match result {
-            Ok((code, _, stderr))
-                if code != Some(0) && (code != Some(2) || policy == HookFailure::Block) =>
-            {
+            Ok((code, _, stderr)) if code != Some(0) && (code != Some(2) || block_failure) => {
                 Err(exit_error(code, &stderr))
             }
             Ok((code, stdout, stderr)) => self.observe(event, code, &stdout, &stderr),
@@ -213,7 +212,7 @@ impl HookOutput {
         };
         if let Err(error) = observed {
             let diagnostic = format!("{} hook failed: {error}", event.name());
-            if policy == HookFailure::Block {
+            if block_failure {
                 self.blocked.get_or_insert_with(|| diagnostic.clone());
             }
             self.diagnostics.push(diagnostic);
