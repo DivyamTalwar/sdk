@@ -13,6 +13,8 @@ pub struct Scenario {
     #[serde(default)]
     pub seed: BTreeMap<String, String>,
     pub prompt: String,
+    #[serde(default)]
+    pub summary: bool,
     pub turns: Vec<ScriptedTurn>,
     #[serde(default)]
     pub context: Vec<ModelMessage>,
@@ -82,6 +84,9 @@ impl Scenario {
         if scenario.resume.iter().any(String::is_empty) {
             return Err("resume error expectation must not be empty".into());
         }
+        if scenario.summary && scenario.max_steps != default_steps() {
+            return Err("max_steps applies to ordinary turns".into());
+        }
         if scenario.expect.error.is_some() && (scenario.expect.result.is_some() || scenario.replay)
         {
             return Err("result and replay require a successful turn".into());
@@ -104,6 +109,7 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"prompt":"x","turns":[],"capacity":{"context_tokens":60,"output_tokens":10,"typo":1},"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","turns":[],"compaction":{"kind":"typo"},"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","turns":[],"message_tokens":-1,"expect":{"text":"x"}}"#,
+        r#"{"summary":true,"prompt":"x","turns":[],"max_steps":0,"expect":{"text":"x"}}"#,
     ] {
         assert!(
             Scenario::parse(input.as_bytes()).is_err(),
