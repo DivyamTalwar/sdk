@@ -36,8 +36,17 @@ fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let diff = FileDiff::between(
             case.before.as_deref().map(str::as_bytes),
             case.after.as_deref().map(str::as_bytes),
-        )
-        .expect("changed");
+            case.patch.len(),
+        )?
+        .ok_or("expected changed file")?;
+        assert!(
+            FileDiff::between(
+                case.before.as_deref().map(str::as_bytes),
+                case.after.as_deref().map(str::as_bytes),
+                case.patch.len() - 1
+            )
+            .is_err()
+        );
         assert_eq!(diff.patch, case.patch);
         assert_eq!(diff.added, case.added);
         assert_eq!(diff.removed, case.removed);
@@ -53,7 +62,7 @@ fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
         (None, Some(&b"\0"[..]), true, true),
         (Some(&b"\xff"[..]), Some(&b"\xfe"[..]), true, true),
     ] {
-        let diff = FileDiff::between(before, after);
+        let diff = FileDiff::between(before, after, 8192)?;
         assert_eq!(diff.is_some(), exists);
         if let Some(diff) = diff {
             assert_eq!(diff.binary, binary);
@@ -156,6 +165,7 @@ impl Fixture {
 struct Reader<'a> {
     inner: &'a dyn ContentResidencyVerifier,
     reads: AtomicUsize,
+    pause_first: bool,
 }
 impl ContentResidencyVerifier for Reader<'_> {
     fn read_private_path<'a, 'io>(
@@ -179,9 +189,17 @@ impl ContentResidencyVerifier for Reader<'_> {
     where
         'io: 'a,
     {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .read_private_path(volume, prefix, path, generation, maximum_bytes, io)
+        let index = self.reads.fetch_add(1, Ordering::SeqCst);
+        let read =
+            self.inner
+                .read_private_path(volume, prefix, path, generation, maximum_bytes, io)?;
+        if self.pause_first && index == 0 {
+            return acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+                futures::future::pending::<()>().await;
+                read.await
+            });
+        }
+        Ok(read)
     }
 }
 
@@ -192,6 +210,154 @@ fn limits() -> DiffLimits {
         file_bytes: 1024,
         render_bytes: 8192,
     }
+}
+
+#[tokio::test]
+async fn unchanged_baseline_snapshot_initializes_once_without_reads() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let base = fixture.source("not-present.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    let snapshot = DiffPublication {
+        previous: base.generation.clone(),
+        generation: base.generation.clone(),
+        paths: vec![],
+    };
+    let mut conflict = snapshot.clone();
+    conflict.paths.push(DiffPath {
+        path: "a.txt".into(),
+        base: None,
+        current: None,
+    });
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        pause_first: false,
+    };
+    {
+        let source =
+            futures::stream::iter([Ok(snapshot.clone()), Ok(snapshot.clone()), Ok(conflict)]);
+        let mut follow = view.follow(Box::pin(source), &reader, limits());
+        assert!(
+            follow
+                .next()
+                .await
+                .transpose()?
+                .is_some_and(|paths| paths.is_empty())
+        );
+        assert!(follow.view().files().is_empty());
+        assert!(
+            follow
+                .next()
+                .await
+                .transpose()?
+                .is_some_and(|paths| paths.is_empty())
+        );
+        assert!(matches!(
+            follow.next().await,
+            Some(Err(acyclic_harness::Error::Conflict(_)))
+        ));
+        assert!(follow.next().await.is_none());
+        assert_eq!(follow.view().generation(), &base.generation);
+    }
+    assert!(view.apply(&snapshot, &reader, limits()).await?.is_empty());
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn render_bound_stops_before_reading_later_files_and_preserves_the_view() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let base = fixture.source("not-present.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    let text = "x".repeat(16_384);
+    for index in 0..8 {
+        fixture
+            .put(&format!("big-{index}.txt"), &text, &format!("put-{index}"))
+            .await?;
+    }
+    let current = fixture.source("big-0.txt").await?;
+    let publication = DiffPublication {
+        previous: base.generation,
+        generation: current.generation.clone(),
+        paths: (0..8)
+            .map(|index| {
+                let path = format!("big-{index}.txt");
+                DiffPath {
+                    path: path.clone(),
+                    base: None,
+                    current: Some(PinnedContextPath {
+                        path,
+                        ..current.clone()
+                    }),
+                }
+            })
+            .collect(),
+    };
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        pause_first: false,
+    };
+    let before = serde_json::to_string(&view)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    assert!(
+        view.apply(
+            &publication,
+            &reader,
+            DiffLimits {
+                file_bytes: 32_768,
+                render_bytes: 64,
+                ..limits()
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        serde_json::to_string(&view)
+            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
+        before
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_read_keeps_the_received_publication_for_the_next_read() -> Result<()> {
+    use futures::FutureExt as _;
+    let fixture = Fixture::new().await?;
+    fixture.put("a.txt", "before\n", "base").await?;
+    let base = fixture.source("a.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    fixture.put("a.txt", "after\n", "edit").await?;
+    let current = fixture.source("a.txt").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: current.generation.clone(),
+        paths: vec![DiffPath {
+            path: "a.txt".into(),
+            base: Some(base),
+            current: Some(current),
+        }],
+    };
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        pause_first: true,
+    };
+    let mut follow = view.follow(
+        Box::pin(futures::stream::iter([Ok(publication.clone())])),
+        &reader,
+        limits(),
+    );
+    assert!(follow.next().now_or_never().is_none());
+    assert!(follow.view().files().is_empty());
+    assert_eq!(follow.next().await.transpose()?, Some(vec!["a.txt".into()]));
+    assert_eq!(follow.view().generation(), &publication.generation);
+    assert_eq!(follow.view().line_counts(), (1, 1));
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 3);
+    assert!(follow.next().await.is_none());
+    Ok(())
 }
 
 #[tokio::test]
@@ -227,6 +393,7 @@ async fn deletion_only_publications_keep_the_published_generation() -> Result<()
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        pause_first: false,
     };
     assert_eq!(
         view.apply(&publication, &reader, limits()).await?,
@@ -244,7 +411,7 @@ async fn deletion_only_publications_keep_the_published_generation() -> Result<()
 
 #[tokio::test]
 async fn query_follow_waits_for_push_and_stops_on_a_cursor_gap() -> Result<()> {
-    use futures::{FutureExt as _, StreamExt as _};
+    use futures::FutureExt as _;
     let fixture = Fixture::new().await?;
     fixture.put("a.txt", "before\n", "base").await?;
     let base = fixture.source("a.txt").await?;
@@ -262,13 +429,20 @@ async fn query_follow_waits_for_push_and_stops_on_a_cursor_gap() -> Result<()> {
     };
     let (mut sender, receiver) = futures::channel::mpsc::channel(1);
     {
-        let follow = view.follow(Box::pin(receiver), fixture.reader.as_ref(), limits());
-        futures::pin_mut!(follow);
+        let mut follow = view.follow(Box::pin(receiver), fixture.reader.as_ref(), limits());
         assert!(follow.next().now_or_never().is_none());
+        assert!(follow.view().files().is_empty());
         sender
             .try_send(Ok(publication.clone()))
             .expect("bounded push");
         assert_eq!(follow.next().await.expect("publication")?, ["a.txt"]);
+        assert_eq!(follow.view().line_counts(), (1, 1));
+        assert_eq!(
+            follow.view().files()["a.txt"].patch,
+            "--- original\n+++ modified\n@@ -1 +1 @@\n-before\n+after\n"
+        );
+        assert!(follow.next().now_or_never().is_none());
+        assert_eq!(follow.view().generation(), &publication.generation);
         let mut gap = publication.clone();
         gap.paths.clear();
         sender.try_send(Ok(gap)).expect("bounded push");
@@ -290,6 +464,7 @@ async fn publications_update_only_named_files_and_keep_the_fork_base() -> Result
     let reader = Reader {
         inner: fixture.reader.as_ref(),
         reads: AtomicUsize::new(0),
+        pause_first: false,
     };
     for (index, current, expected) in [
         (1, "first\n", 1),
@@ -374,6 +549,11 @@ async fn a_full_view_can_replace_a_file_in_one_atomic_publication() -> Result<()
         ..new.clone()
     };
     let generation = new.generation.clone();
+    let new_patch_bytes = FileDiff::between(None, Some(b"new\n"), 8192)?
+        .ok_or_else(|| acyclic_harness::Error::Invalid("new file missing".into()))?
+        .patch
+        .len();
+    assert!(view.files()["old.txt"].patch.len() > new_patch_bytes);
     view.apply(
         &DiffPublication {
             previous: view.generation().clone(),
@@ -394,6 +574,7 @@ async fn a_full_view_can_replace_a_file_in_one_atomic_publication() -> Result<()
         fixture.reader.as_ref(),
         DiffLimits {
             files: 1,
+            render_bytes: new_patch_bytes,
             ..limits()
         },
     )

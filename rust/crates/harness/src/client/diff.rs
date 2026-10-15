@@ -93,9 +93,14 @@ pub struct FileDiff {
 impl FileDiff {
     /// Computes a file against its immutable base. `None` means the path returned
     /// to its baseline; adding/removing an empty file remains a visible change.
-    pub fn between(base: Option<&[u8]>, current: Option<&[u8]>) -> Option<Self> {
+    /// Formatting stops before the patch exceeds `maximum_render_bytes`.
+    pub fn between(
+        base: Option<&[u8]>,
+        current: Option<&[u8]>,
+        maximum_render_bytes: usize,
+    ) -> Result<Option<Self>> {
         if base == current {
-            return None;
+            return Ok(None);
         }
         let kind = match (base, current) {
             (None, _) => DiffKind::Added,
@@ -113,14 +118,22 @@ impl FileDiff {
             patch: String::new(),
         };
         if before.contains(&0) || after.contains(&0) {
-            return Some(result);
+            return Ok(Some(result));
         }
         let (Ok(before), Ok(after)) = (std::str::from_utf8(before), std::str::from_utf8(after))
         else {
-            return Some(result);
+            return Ok(Some(result));
         };
+        if before.len().abs_diff(after.len()) > maximum_render_bytes {
+            return Err(render_bound());
+        }
         result.binary = false;
         let patch = diffy::create_patch(before, after);
+        let mut output = PatchText {
+            text: String::new(),
+            maximum: maximum_render_bytes,
+        };
+        std::fmt::write(&mut output, format_args!("{patch}")).map_err(|_| render_bound())?;
         for hunk in patch.hunks() {
             result.hunks.push(DiffHunk {
                 old_start: hunk.old_range().start(),
@@ -136,9 +149,28 @@ impl FileDiff {
                 }
             }
         }
-        result.patch = patch.to_string();
-        Some(result)
+        result.patch = output.text;
+        Ok(Some(result))
     }
+}
+
+struct PatchText {
+    text: String,
+    maximum: usize,
+}
+
+impl std::fmt::Write for PatchText {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        if text.len() > self.maximum - self.text.len() {
+            return Err(std::fmt::Error);
+        }
+        self.text.push_str(text);
+        Ok(())
+    }
+}
+
+fn render_bound() -> Error {
+    Error::Invalid("diff view exceeds retained render bound".into())
 }
 
 /// Per-volume component of ClientViews. Query ownership and push subscriptions
@@ -200,7 +232,7 @@ impl DiffView {
     }
 
     /// Consumes an owner-authorized publication query follow. Backpressure is the
-    /// returned stream's demand; each publication is applied before asking for the
+    /// follow's demand; each publication is applied before asking for the
     /// next. A cursor gap or failed read terminates the follow without advancing
     /// this view, allowing the client to reopen its query at the retained cursor.
     pub fn follow<'a>(
@@ -208,18 +240,15 @@ impl DiffView {
         publications: acyclic_stream::BoxProviderStream<'a, Result<DiffPublication>>,
         reader: &'a dyn ContentResidencyVerifier,
         limits: DiffLimits,
-    ) -> impl futures::Stream<Item = Result<Vec<String>>> + 'a {
-        use futures::StreamExt as _;
-        futures::stream::unfold(Some((self, publications)), move |state| async move {
-            let (view, mut publications) = state?;
-            let publication = publications.next().await?;
-            let result = match publication {
-                Ok(publication) => view.apply(&publication, reader, limits).await,
-                Err(error) => Err(error),
-            };
-            let next = result.is_ok().then_some((view, publications));
-            Some((result, next))
-        })
+    ) -> DiffFollow<'a> {
+        DiffFollow {
+            view: self,
+            publications,
+            reader,
+            limits,
+            pending: None,
+            ended: false,
+        }
     }
 
     /// Applies one publication atomically. Only named files are read/recomputed;
@@ -241,6 +270,14 @@ impl DiffView {
         let encoded = serde_json::to_vec(publication).map_err(|e| Error::Invalid(e.to_string()))?;
         let digest = *blake3::hash(&encoded).as_bytes();
         if publication.generation == self.generation && self.last_digest == Some(digest) {
+            return Ok(Vec::new());
+        }
+        if self.last_digest.is_none()
+            && publication.previous == self.base
+            && publication.generation == self.base
+            && publication.paths.is_empty()
+        {
+            self.last_digest = Some(digest);
             return Ok(Vec::new());
         }
         if publication.previous != self.generation || publication.generation == self.generation {
@@ -284,15 +321,24 @@ impl DiffView {
             self.removed,
         );
         for change in &publication.paths {
-            let before = read(&change.base, reader, limits.file_bytes).await?;
-            let after = read(&change.current, reader, limits.file_bytes).await?;
-            let diff = FileDiff::between(before.as_deref(), after.as_deref());
             if let Some(old) = self.files.get(&change.path) {
                 count -= 1;
                 rendered -= old.patch.len();
                 added -= old.added;
                 removed -= old.removed;
             }
+        }
+        if count > limits.files || rendered > limits.render_bytes {
+            return Err(Error::Invalid("diff view exceeds retained bounds".into()));
+        }
+        for change in &publication.paths {
+            let before = read(&change.base, reader, limits.file_bytes).await?;
+            let after = read(&change.current, reader, limits.file_bytes).await?;
+            let diff = FileDiff::between(
+                before.as_deref(),
+                after.as_deref(),
+                limits.render_bytes - rendered,
+            )?;
             if let Some(diff) = &diff {
                 count = count
                     .checked_add(1)
@@ -306,11 +352,13 @@ impl DiffView {
                 removed = removed
                     .checked_add(diff.removed)
                     .ok_or_else(|| Error::Invalid("diff lines overflow".into()))?;
+                if count > limits.files {
+                    return Err(Error::Invalid(
+                        "diff view exceeds retained file bound".into(),
+                    ));
+                }
             }
             updates.push((change.path.clone(), diff));
-        }
-        if count > limits.files || rendered > limits.render_bytes {
-            return Err(Error::Invalid("diff view exceeds retained bounds".into()));
         }
         let mut changed = Vec::new();
         for (path, diff) in updates {
@@ -327,6 +375,52 @@ impl DiffView {
         self.generation = publication.generation.clone();
         self.last_digest = Some(digest);
         Ok(changed)
+    }
+}
+
+/// A live diff subscription with an inspectable current view between reads.
+pub struct DiffFollow<'a> {
+    view: &'a mut DiffView,
+    publications: acyclic_stream::BoxProviderStream<'a, Result<DiffPublication>>,
+    reader: &'a dyn ContentResidencyVerifier,
+    limits: DiffLimits,
+    pending: Option<DiffPublication>,
+    ended: bool,
+}
+
+impl DiffFollow<'_> {
+    /// Borrows the current projection for a renderer without ending the follow.
+    pub fn view(&self) -> &DiffView {
+        self.view
+    }
+
+    /// Applies the next pushed publication. Cancelling this future retains any
+    /// publication already received; an error ends the follow at the old cursor.
+    pub async fn next(&mut self) -> Option<Result<Vec<String>>> {
+        use futures::StreamExt as _;
+        if self.ended {
+            return None;
+        }
+        if self.pending.is_none() {
+            match self.publications.next().await {
+                Some(Ok(publication)) => self.pending = Some(publication),
+                Some(Err(error)) => {
+                    self.ended = true;
+                    return Some(Err(error));
+                }
+                None => {
+                    self.ended = true;
+                    return None;
+                }
+            }
+        }
+        let result = self
+            .view
+            .apply(self.pending.as_ref()?, self.reader, self.limits)
+            .await;
+        self.pending = None;
+        self.ended = result.is_err();
+        Some(result)
     }
 }
 
