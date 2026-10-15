@@ -25,7 +25,11 @@ pub(super) fn parse(
             text(&mut events, &part["text"], part["thought"] == true);
             if let Some(function) = part.get("functionCall") {
                 let index = state.calls.len() as u64;
-                let arguments = function["args"].to_string();
+                let arguments = match function.get("args") {
+                    None => "{}".into(),
+                    Some(args) if args.is_object() => args.to_string(),
+                    Some(_) => return Err(invalid("tool arguments must be a JSON object")),
+                };
                 if arguments.len() > maximum {
                     return Err(invalid("tool arguments exceed configured limit"));
                 }

@@ -1,6 +1,36 @@
 use super::*;
 use std::collections::VecDeque;
 
+#[test]
+fn cli_write_after_comparison_before_persist_is_adopted() -> Result<()> {
+    for account_switch in [false, true] {
+        let (root, login, _) = fixture(&jwt(0), 200)?;
+        let path = root.path().join("auth.json");
+        let (original, _) = load(&path)?;
+        let mut cli = auth("cli-access");
+        cli["tokens"]["refresh_token"] = json!("cli-rotated");
+        if account_switch {
+            cli["tokens"]["account_id"] = json!("other-account");
+        }
+        let cli_bytes = serde_json::to_vec(&cli).expect("fixture encoding");
+        login.check_account(&auth("original"))?;
+        let adopted = persist_with(&path, &original, auth("provider-access"), || {
+            // Exact former race: the first comparison has already succeeded.
+            std::fs::write(&path, &cli_bytes).map_err(|_| invalid("fixture write"))
+        })?;
+        assert_eq!(adopted, cli);
+        assert_eq!(std::fs::read(&path).expect("fixture read"), cli_bytes);
+        assert_eq!(login.check_account(&adopted).is_err(), account_switch);
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("fixture directory")
+                .count(),
+            1
+        );
+    }
+    Ok(())
+}
+
 struct RacingCli {
     path: PathBuf,
     cli_bytes: Vec<u8>,
