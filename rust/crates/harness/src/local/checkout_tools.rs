@@ -22,8 +22,8 @@ pub(super) struct CheckoutTools {
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     // Lock order: checkout state is outermost; command-local git merge cache
-    // and switched-view locks are innermost and never held together. The
-    // inner executor cannot acquire checkout state; no reverse edge.
+    // and switched-view locks are innermost and never held together. Native
+    // completion locks are also inner; neither callback reacquires state.
     state: Arc<AsyncMutex<State>>,
 }
 
