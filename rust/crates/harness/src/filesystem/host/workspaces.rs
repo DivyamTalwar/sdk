@@ -374,30 +374,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&'a PreparationIo>,
         preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<Generation<A, O>> {
-        crate::conversation::BoundedContentFuture::new(io, || {
-            self.apply_generation_inner(reference, expected, mutations, key, io, preparation)
-        })?
-        .await
-    }
-
-    async fn apply_generation_inner<'a>(
-        &'a self,
-        reference: &'a WorkspaceRef,
-        expected: Option<&'a GenerationRef>,
-        mutations: &'a [WorkspaceMutation],
-        key: IdempotencyKey,
-        io: Option<&'a PreparationIo>,
-        preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
-    ) -> Result<Generation<A, O>> {
         let Some(io) = io else {
-            return Box::pin(self.apply_generation_guarded(
-                reference,
-                expected,
-                mutations,
-                &key,
-                &mut || std::future::ready(Ok(())),
-            ))
-            .await;
+            return self
+                .apply_generation_guarded(reference, expected, mutations, &key, &mut || {
+                    std::future::ready(Ok(()))
+                })
+                .await;
         };
         #[cfg(not(target_arch = "wasm32"))]
         let mut native_before = {

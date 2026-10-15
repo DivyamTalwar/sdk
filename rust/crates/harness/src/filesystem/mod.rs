@@ -496,18 +496,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        crate::conversation::BoundedContentFuture::new(io, || {
-            self.read_pinned_inner(reference, maximum_bytes, io)
-        })?
-        .await
-    }
-
-    async fn read_pinned_inner(
-        &self,
-        reference: &FileRef,
-        maximum_bytes: u64,
-        io: Option<&fork_preparer_io::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = io.and_then(PreparationIo::original_native_work) {
             let scratch = PreparationIo::from_native_work(original)?;

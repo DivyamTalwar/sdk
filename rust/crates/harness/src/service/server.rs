@@ -213,7 +213,9 @@ mod tests {
     #[tokio::test]
     async fn connection_and_dispatch_futures_fit_in_small_stack_frames() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
-        let service = HarnessService::bind(ServiceEndpoint::in_directory(directory.path())?)?;
+        let service = HarnessService::bind(ServiceEndpoint::in_directory(
+            directory.path().join("service"),
+        )?)?;
         let (socket, _peer) = tokio::io::duplex(64);
         let handler = service.handle_connection(frames::connection(socket));
         let handler_bytes = std::mem::size_of_val(&handler);
@@ -241,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_before_serve_releases_the_fence_and_prevents_a_late_start() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
-        let endpoint = ServiceEndpoint::in_directory(directory.path())?;
+        let endpoint = ServiceEndpoint::in_directory(directory.path().join("service"))?;
         let service = Arc::new(HarnessService::bind(endpoint.clone())?);
         let (first, second) = tokio::join!(service.shutdown(), service.shutdown());
         first?;

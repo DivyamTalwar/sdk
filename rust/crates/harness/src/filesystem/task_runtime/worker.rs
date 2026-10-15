@@ -91,20 +91,6 @@ where
         maximum_transitions: u32,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<Option<TaskWorkerAttempt>> {
-        crate::conversation::BoundedContentFuture::new(io, || {
-            self.run_operation_inner(worker, task, commands, maximum_transitions, io)
-        })?
-        .await
-    }
-
-    async fn run_operation_inner(
-        &self,
-        worker: &crate::distributed::Worker,
-        task: TaskId,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-        io: Option<&super::super::PreparationIo>,
-    ) -> Result<Option<TaskWorkerAttempt>> {
         if let Some(io) = io {
             io.check_cancellation()?;
         }

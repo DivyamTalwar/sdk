@@ -102,8 +102,7 @@ where
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
-        // Keep the worker state out of the deadline and caller state machines.
-        let run = crate::conversation::BoundedContentFuture::new(io, || async {
+        let run = async {
             let fence = &fence;
             #[cfg(not(target_arch = "wasm32"))]
             let context = if let Some(io) = io {
@@ -343,16 +342,16 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native input has no original command custody",
                     })?;
-                    step_session(
-                        &mut session,
-                        OperationId::from_bytes(bytes),
-                        key,
-                        input,
-                        Some(&crate::filesystem::PreparationIo::from_native_custody(
-                            custody,
-                        )),
-                    )
-                    .await?
+                    session
+                        .step(
+                            OperationId::from_bytes(bytes),
+                            key,
+                            input,
+                            Some(&crate::filesystem::PreparationIo::from_native_custody(
+                                custody,
+                            )),
+                        )
+                        .await?
                 } else if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unsupported,
@@ -380,39 +379,39 @@ where
                             return Err(error);
                         }
                     };
-                    step_session(
-                        &mut session,
-                        OperationId::from_bytes(bytes),
-                        key,
-                        input,
-                        Some(&crate::filesystem::PreparationIo::from_native_custody(
-                            custody,
-                        )),
-                    )
-                    .await?
+                    session
+                        .step(
+                            OperationId::from_bytes(bytes),
+                            key,
+                            input,
+                            Some(&crate::filesystem::PreparationIo::from_native_custody(
+                                custody,
+                            )),
+                        )
+                        .await?
                 } else {
-                    step_session(
-                        &mut session,
+                    session
+                        .step(
+                            OperationId::from_bytes(bytes),
+                            IdempotencyKey::new(format!("task-step:{revision}"))?,
+                            input,
+                            None,
+                        )
+                        .await?
+                };
+                #[cfg(target_arch = "wasm32")]
+                let stepped = session
+                    .step(
                         OperationId::from_bytes(bytes),
                         IdempotencyKey::new(format!("task-step:{revision}"))?,
                         input,
                         None,
                     )
-                    .await?
-                };
-                #[cfg(target_arch = "wasm32")]
-                let stepped = step_session(
-                    &mut session,
-                    OperationId::from_bytes(bytes),
-                    IdempotencyKey::new(format!("task-step:{revision}"))?,
-                    input,
-                    None,
-                )
-                .await?;
+                    .await?;
                 next_transition = (Some(stepped.0), stepped.1);
                 advanced += 1;
             }
-        })?;
+        };
         deadline::run(
             &self.host,
             task,
@@ -425,15 +424,4 @@ where
         )
         .await
     }
-}
-
-async fn step_session(
-    session: &mut crate::runtime::ResumableTaskSession,
-    operation: OperationId,
-    key: IdempotencyKey,
-    input: serde_json::Value,
-    io: Option<&super::super::PreparationIo>,
-) -> Result<(crate::workflow::MachineTransition, crate::NativeCustody)> {
-    crate::conversation::BoundedContentFuture::new(io, || session.step(operation, key, input, io))?
-        .await
 }
