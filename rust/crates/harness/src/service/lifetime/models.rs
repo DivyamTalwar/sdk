@@ -1,11 +1,19 @@
 use super::*;
-use loom::{future::block_on, sync::Arc, thread};
+use loom::{
+    future::block_on,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+};
 
 #[derive(Clone, Copy)]
 enum Fault {
     None,
     LostWake,
     RetainedFence,
+    WakeUnderLock,
 }
 
 fn shutdown_model(fault: Fault) {
@@ -26,14 +34,6 @@ fn shutdown(fault: Fault) -> Result<()> {
             // Cancellation and shutdown can race before the drain runs.
             drop(serving.stop_on_drop());
             block_on(serving.stopping());
-            if matches!(fault, Fault::LostWake) {
-                serving
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .waiters
-                    .clear();
-            }
             let retained = if matches!(fault, Fault::RetainedFence) {
                 serving
                     .state
@@ -84,9 +84,9 @@ fn shutdown_cancellation_and_start_explore_all_mutex_orders() {
 }
 
 #[test]
-#[should_panic(expected = "deadlock")]
+#[should_panic(expected = "shutdown transition lost a registered wakeup")]
 fn negative_control_detects_a_discarded_shutdown_wakeup() {
-    shutdown_model(Fault::LostWake);
+    notification_model(Fault::LostWake);
 }
 
 #[test]
@@ -95,24 +95,44 @@ fn negative_control_detects_a_torn_terminal_state() {
     shutdown_model(Fault::RetainedFence);
 }
 
-struct Reenter(Arc<Lifetime<()>>);
+struct Reenter {
+    lifetime: Arc<Lifetime<()>>,
+    notified: Arc<AtomicBool>,
+}
 impl std::task::Wake for Reenter {
     fn wake(self: std::sync::Arc<Self>) {
-        drop(self.0.state.lock().unwrap_or_else(PoisonError::into_inner));
+        assert!(
+            self.lifetime.state.try_lock().is_ok(),
+            "woken under the state lock"
+        );
+        self.notified.store(true, Ordering::SeqCst);
     }
 }
 
-fn lock_order_model(broken: bool) {
+fn notification_model(fault: Fault) {
     loom::model(move || {
         let result = (|| {
             let lifetime = Arc::new(Lifetime::new(
                 tempfile::tempfile().map_err(|error| Error::Storage(error.to_string()))?,
                 (),
             ));
-            let waker = Waker::from(std::sync::Arc::new(Reenter(lifetime.clone())));
-            let cx = Context::from_waker(&waker);
-            assert!(lifetime.poll_phase(Phase::Stopped, &cx).is_pending());
-            if broken {
+            let notified = Arc::new(AtomicBool::new(false));
+            let waker = Waker::from(std::sync::Arc::new(Reenter {
+                lifetime: lifetime.clone(),
+                notified: notified.clone(),
+            }));
+            let mut cx = Context::from_waker(&waker);
+            let mut stopped = Box::pin(lifetime.stopped());
+            assert!(stopped.as_mut().poll(&mut cx).is_pending());
+            if matches!(fault, Fault::LostWake) {
+                lifetime
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .waiters
+                    .clear();
+            }
+            if matches!(fault, Fault::WakeUnderLock) {
                 let mut state = lifetime
                     .state
                     .lock()
@@ -123,6 +143,11 @@ fn lock_order_model(broken: bool) {
             } else {
                 lifetime.release();
             }
+            assert!(
+                notified.load(Ordering::SeqCst),
+                "shutdown transition lost a registered wakeup"
+            );
+            assert!(stopped.as_mut().poll(&mut cx).is_ready());
             Ok::<(), Error>(())
         })();
         assert!(result.is_ok(), "lock order model failed: {result:?}");
@@ -131,11 +156,11 @@ fn lock_order_model(broken: bool) {
 
 #[test]
 fn notification_releases_the_state_lock_before_waking() {
-    lock_order_model(false);
+    notification_model(Fault::None);
 }
 
 #[test]
-#[should_panic(expected = "lock")]
+#[should_panic(expected = "woken under the state lock")]
 fn negative_control_detects_waking_under_the_state_lock() {
-    lock_order_model(true);
+    notification_model(Fault::WakeUnderLock);
 }
