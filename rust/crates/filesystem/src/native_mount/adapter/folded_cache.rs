@@ -43,4 +43,26 @@ impl FoldedDirectoryCache {
         state.1[position] = Some((key, unique));
         state.0 = (position + 1) % SLOTS;
     }
+
+    // Negative control: two writers can reserve the same slot when selection
+    // and publication do not share the production critical section.
+    #[cfg(all(test, loom))]
+    pub(super) fn insert_split(&self, key: ObjectId, unique: bool) {
+        let position = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
+                return;
+            }
+            state.0
+        };
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1[position] = Some((key, unique));
+        state.0 = (position + 1) % SLOTS;
+    }
 }
