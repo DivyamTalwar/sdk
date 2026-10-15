@@ -72,6 +72,20 @@ impl LocalHarness {
             .model
             .ok_or_else(|| Error::Invalid("local model binding is missing".into()))?;
         model.validate()?;
+        let compaction = match config.compaction {
+            Some(crate::context::CompactionPolicy::Disabled) => {
+                crate::context::CompactionPolicy::Disabled
+            }
+            Some(crate::context::CompactionPolicy::Threshold(policy)) => {
+                policy.validate(provider.context_capacity(&model)?, None)?;
+                crate::context::CompactionPolicy::Threshold(policy)
+            }
+            None => crate::context::CompactionPolicy::Threshold(
+                crate::context::ThresholdCompaction::for_capacity(
+                    provider.context_capacity(&model)?,
+                )?,
+            ),
+        };
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
         #[cfg(feature = "native-execution")]
         acyclic_fs::initialize_native_mount_services().map_err(storage)?;
@@ -189,7 +203,7 @@ impl LocalHarness {
             provider,
             context: config.context,
             limits: config.limits,
-            compaction: config.compaction,
+            compaction,
             #[cfg(feature = "native-execution")]
             workspace,
         })

@@ -16,8 +16,9 @@ custom tools. `without_default_tools()` disables only the default set. Duplicate
 contracts fail registration. `run(prompt)` admits and drives a stock turn;
 `submit(operation, prompt)` and `resume(task)` expose durable admission and recovery
 separately. Reopening the same state retains the owner and admitted work.
-Stock execution uses provider token accounting and `CompactionPolicy::default()`;
-unsupported accounting fails before dispatch.
+The local preset derives threshold compaction budgets from model capacity and
+provider token accounting. An explicit `compaction` override keeps its chosen
+budgets; unsupported accounting or incompatible budgets fail before dispatch.
 
 `native-execution` enables approved native processes. Approval pins the request
 and volume manifest; the host supplies credentials and publication permits.

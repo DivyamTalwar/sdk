@@ -25,8 +25,8 @@ pub struct LocalHarnessConfig {
     pub session_limits: SessionLimits,
     /// Maximum number of concurrently running local tasks.
     pub concurrency: usize,
-    /// Stock context compaction policy.
-    pub compaction: crate::context::CompactionPolicy,
+    /// Explicit stock compaction policy; `None` derives budgets from model capacity.
+    pub compaction: Option<crate::context::CompactionPolicy>,
     /// Clock used by durable admission and leases; replaceable in scripted scenarios.
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
@@ -63,7 +63,7 @@ impl LocalHarnessConfig {
                 model_steps: 65_536,
             },
             concurrency: 1,
-            compaction: crate::context::CompactionPolicy::default(),
+            compaction: None,
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
     }

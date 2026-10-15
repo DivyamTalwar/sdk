@@ -72,6 +72,44 @@ fn model() -> Result<Model> {
     Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)
 }
 
+#[test]
+fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -> Result<()> {
+    let capacity = ModelContextCapacity {
+        context_tokens: 32_768,
+        output_tokens: 4096,
+    };
+    let explicit = acyclic_harness::context::ThresholdCompaction::default();
+    let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity)?;
+    assert_eq!(automatic.validate(capacity, None)?, capacity.output_tokens);
+    assert_eq!(automatic.recent_tokens, explicit.recent_tokens);
+    assert!(explicit.validate(capacity, None).is_err());
+    assert!(
+        acyclic_harness::context::ThresholdCompaction::for_capacity(ModelContextCapacity {
+            context_tokens: 2,
+            output_tokens: 1
+        })
+        .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let provider = Scripted::text();
+    let mut config =
+        LocalHarnessConfig::volume(directory.path(), project).model(model()?, provider.clone());
+    config.compaction = Some(acyclic_harness::context::CompactionPolicy::default());
+    assert!(matches!(
+        LocalHarness::open(config).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(!directory.path().join("owner.json").exists());
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 struct Echo;
 impl ToolExecutor for Echo {
     fn execute<'a>(
