@@ -7,6 +7,9 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 bytes.workspace = true
@@ -33,6 +36,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "goal_parser"
+path = "fuzz_targets/goal_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mcp_stdio_codec"
 path = "fuzz_targets/mcp_stdio_codec.rs"
 test = false
@@ -42,6 +52,14 @@ bench = false
 [[bin]]
 name = "mcp_executable"
 path = "fuzz_targets/mcp_executable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notification_scenario"
+path = "fuzz_targets/notification_scenario.rs"
+required-features = ["notifications"]
 test = false
 doc = false
 bench = false
