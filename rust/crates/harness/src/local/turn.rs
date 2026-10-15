@@ -113,19 +113,32 @@ impl LocalHarness {
         }
     }
 
-    /// Drives an admitted stock task, including a task admitted before reopen.
-    pub async fn resume(&self, task: TaskId) -> Result<TurnOutput> {
+    async fn advance(&self, task: TaskId) -> Result<()> {
         let worker = crate::distributed::Worker {
             id: format!("local-{}", uuid::Uuid::new_v4()),
             available: Default::default(),
             labels: Default::default(),
         };
         let commands = self.commands()?;
-        let mut attempt = Box::pin(
-            self.runtime
-                .run_operation(&worker, task, &commands, 32, None),
-        )
-        .await?;
+        let mut attempt =
+            match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
+                crate::distributed::WorkPull::Claimed(lease) => {
+                    Some(Box::pin(self.runtime.resume_task(lease, &commands, 32, None)).await)
+                }
+                crate::distributed::WorkPull::Unresolved { error, .. } => {
+                    if self.runtime.task_host().outcome(task).await?.is_none() {
+                        return Err(error);
+                    }
+                    None
+                }
+                crate::distributed::WorkPull::Idle => {
+                    Box::pin(
+                        self.runtime
+                            .run_operation(&worker, task, &commands, 32, None),
+                    )
+                    .await?
+                }
+            };
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -140,15 +153,31 @@ impl LocalHarness {
                 _ => break,
             }
         }
+        Ok(())
+    }
+
+    /// Resumes a pinned stock task, recovering its original reservation after reopen.
+    pub async fn resume(&self, task: TaskId) -> Result<TurnOutput> {
         let definition = self
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
-        if self.runtime.task_host().outcome(task).await?.is_none() {
-            return Err(Error::Indeterminate(OperationId::from_bytes(
-                task.into_bytes(),
-            )));
+        let terminal = matches!(
+            self.runtime.task_host().outcome(task).await?,
+            Some(
+                crate::Outcome::Succeeded(_)
+                    | crate::Outcome::Failed { .. }
+                    | crate::Outcome::Cancelled
+            )
+        );
+        if !terminal {
+            Box::pin(self.advance(task)).await?;
+            if self.runtime.task_host().outcome(task).await?.is_none() {
+                return Err(Error::Indeterminate(OperationId::from_bytes(
+                    task.into_bytes(),
+                )));
+            }
         }
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),

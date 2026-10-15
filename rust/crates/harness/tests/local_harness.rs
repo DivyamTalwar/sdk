@@ -42,17 +42,10 @@ impl Scripted {
 }
 impl ModelProvider for Scripted {
     fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(ModelContextCapacity {
-            context_tokens: 32_768,
-            output_tokens: 4096,
-        })
+        Ok(capacity())
     }
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        Ok(ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 8,
-            message_tokens: vec![8; request.request().messages.len()],
-        })
+        Ok(token_count(request))
     }
     fn generate<'a>(
         &'a self,
@@ -65,6 +58,67 @@ impl ModelProvider for Scripted {
             _ => vec![Err(Error::Conflict("script exhausted".into()))],
         };
         Box::pin(futures::stream::iter(events))
+    }
+}
+
+fn capacity() -> ModelContextCapacity {
+    ModelContextCapacity {
+        context_tokens: 32_768,
+        output_tokens: 4096,
+    }
+}
+fn token_count(request: &PreparedModelRequest) -> ModelTokenCount {
+    ModelTokenCount {
+        request_digest: request.request_digest(),
+        fixed_tokens: 8,
+        message_tokens: vec![8; request.request().messages.len()],
+    }
+}
+
+struct Interrupted {
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    generated: AtomicUsize,
+    reconciled: AtomicUsize,
+}
+impl ModelProvider for Interrupted {
+    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
+        Ok(capacity())
+    }
+    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+        Ok(token_count(request))
+    }
+    fn generate<'a>(
+        &'a self,
+        _: PreparedModelRequest,
+        _: ModelDispatch,
+    ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+        self.generated.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut started) = self.started.lock() {
+            if let Some(started) = started.take() {
+                let _ = started.send(());
+                return Box::pin(futures::stream::pending());
+            }
+        }
+        Box::pin(futures::stream::iter([Err(Error::Conflict(
+            "model dispatched twice".into(),
+        ))]))
+    }
+    fn reconcile<'a>(
+        &'a self,
+        _: ModelDispatch,
+        _: &'a [ModelEvent],
+    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        self.reconciled.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(Some(vec![
+                ModelEvent::Content {
+                    delta: "recovered".into(),
+                },
+                ModelEvent::Completed {
+                    metadata: json!({}),
+                },
+            ]))
+        })
     }
 }
 
@@ -267,6 +321,67 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
     assert_eq!(reopened.resume(task).await?.text, "done");
     assert_eq!(reopened.resume(task).await?.text, "done");
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let (started, boundary) = tokio::sync::oneshot::channel();
+    let provider = Arc::new(Interrupted {
+        started: Mutex::new(Some(started)),
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
+    let config = || {
+        Ok::<_, Error>(
+            LocalHarnessConfig::volume(directory.path(), project.clone())
+                .model(model()?, provider.clone()),
+        )
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let Admission::Accepted(acyclic_harness::runtime::RuntimeTask::Durable {
+        task_id: task, ..
+    }) = harness
+        .submit(OperationId::new(), "recover this request")
+        .await?
+    else {
+        return Err(Error::Conflict("stock admission rejected".into()));
+    };
+    match futures::future::select(Box::pin(harness.resume(task)), boundary).await {
+        futures::future::Either::Right((Ok(()), execution)) => drop(execution),
+        _ => {
+            return Err(Error::Conflict(
+                "execution did not reach the interruption boundary".into(),
+            ));
+        }
+    }
+    let acyclic_harness::distributed::WorkPull::Claimed(original) = harness
+        .runtime()
+        .task_host()
+        .recover_work(task, &mut None)
+        .await?
+    else {
+        return Err(Error::Conflict(
+            "interrupted task lost its reservation".into(),
+        ));
+    };
+    drop(harness);
+    let reopened = LocalHarness::open(config()?).await?;
+    let acyclic_harness::distributed::WorkPull::Claimed(retained) = reopened
+        .runtime()
+        .task_host()
+        .recover_work(task, &mut None)
+        .await?
+    else {
+        return Err(Error::Conflict("reopened task lost its reservation".into()));
+    };
+    assert_eq!(retained.reservation.id, original.reservation.id);
+    assert_eq!(reopened.resume(task).await?.text, "recovered");
+    assert_eq!(reopened.resume(task).await?.text, "recovered");
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
