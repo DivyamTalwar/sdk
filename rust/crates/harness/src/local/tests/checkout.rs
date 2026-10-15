@@ -14,7 +14,7 @@ fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
     ])
 }
 
-const COMMANDS: [(&str, &str); 7] = [
+const COMMANDS: [(&str, &str); 8] = [
     (
         "bash",
         "printf original > note.txt; printf remove > doomed.txt",
@@ -25,6 +25,7 @@ const COMMANDS: [(&str, &str); 7] = [
         "bash",
         "printf changed > note.txt; mkdir nested; mv doomed.txt nested/moved.txt",
     ),
+    ("fs", "diff"),
     ("fs", "diff"),
     (
         "bash",
@@ -78,9 +79,15 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         assert!(!encoded.contains("\"error\""), "{name}: {encoded}");
     }
     assert!(
-        serde_json::to_string(results[5].1)
-            .map_err(super::super::storage)?
-            .contains("visible")
+        serde_json::to_string(
+            results[COMMANDS
+                .iter()
+                .position(|(_, command)| command.ends_with("printf visible"))
+                .unwrap()]
+            .1
+        )
+        .map_err(super::super::storage)?
+        .contains("visible")
     );
     assert_eq!(
         std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
