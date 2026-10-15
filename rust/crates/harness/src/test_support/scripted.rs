@@ -8,7 +8,10 @@ use serde::{
     Deserialize, Deserializer, Serialize,
     de::{SeqAccess, Visitor, value::SeqAccessDeserializer},
 };
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 /// One provider response. A string emits text followed by completion; an event
 /// list is replayed exactly, including errors, incomplete streams and metadata.
@@ -69,6 +72,9 @@ pub enum ScriptedEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedReconciliation {
+    /// Explicitly permits recovery on a fresh provider that never generated this dispatch.
+    #[serde(default)]
+    pub orphan: bool,
     /// Exact durable prefix that the executor must supply.
     pub observed: Vec<ModelEvent>,
     /// Remaining events, or `None` when the provider cannot recover the request.
@@ -84,12 +90,14 @@ struct State {
     reconciliations: Vec<ModelDispatch>,
 }
 
+type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
+
 /// Replays responses once and retains the exact requests delivered by the executor.
 /// Exhaustion fails instead of silently repeating the final response.
 pub struct ScriptedModelProvider {
     state: Mutex<State>,
-    capacity: ModelContextCapacity,
-    token_counter: fn(&PreparedModelRequest) -> Result<ModelTokenCount>,
+    capacity: Option<ModelContextCapacity>,
+    token_counter: Option<Arc<TokenCounter>>,
 }
 
 impl ScriptedModelProvider {
@@ -101,18 +109,18 @@ impl ScriptedModelProvider {
                 turns: turns.into_iter().collect(),
                 ..State::default()
             }),
-            capacity: ModelContextCapacity {
+            capacity: Some(ModelContextCapacity {
                 context_tokens: 131_072,
                 output_tokens: 4_096,
-            },
-            token_counter: serialized_tokens,
+            }),
+            token_counter: Some(Arc::new(serialized_tokens)),
         }
     }
 
     /// Replaces the model's advertised context and output capacities.
     #[must_use]
     pub fn with_context_capacity(mut self, capacity: ModelContextCapacity) -> Self {
-        self.capacity = capacity;
+        self.capacity = Some(capacity);
         self
     }
 
@@ -120,9 +128,17 @@ impl ScriptedModelProvider {
     #[must_use]
     pub fn with_token_counter(
         mut self,
-        counter: fn(&PreparedModelRequest) -> Result<ModelTokenCount>,
+        counter: impl Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync + 'static,
     ) -> Self {
-        self.token_counter = counter;
+        self.token_counter = Some(Arc::new(counter));
+        self
+    }
+
+    /// Leaves capacity and token accounting unavailable, as in providers without compaction support.
+    #[must_use]
+    pub fn without_accounting(mut self) -> Self {
+        self.capacity = None;
+        self.token_counter = None;
         self
     }
 
@@ -154,24 +170,14 @@ impl ScriptedModelProvider {
         self.lock().turns.len()
     }
 
-    /// Number of recorded requests without copying their context.
-    pub fn request_count(&self) -> usize {
-        self.lock().requests.len()
-    }
-
     /// Snapshots interrupted dispatches submitted for reconciliation.
     pub fn reconciliations(&self) -> Vec<ModelDispatch> {
         self.lock().reconciliations.clone()
     }
 
-    /// Number of reconciliation calls without copying their dispatches.
-    pub fn reconciliation_count(&self) -> usize {
-        self.lock().reconciliations.len()
-    }
-
-    /// Number of recovery replies not yet consumed.
-    pub fn remaining_reconciliations(&self) -> usize {
-        self.lock().recoveries.len()
+    /// Snapshots the scripted recovery replies that have not been consumed.
+    pub fn recoveries(&self) -> Vec<ScriptedReconciliation> {
+        self.lock().recoveries.iter().cloned().collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -201,11 +207,16 @@ impl ScriptedModelProvider {
 
 impl ModelProvider for ScriptedModelProvider {
     fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(self.capacity)
+        self.capacity.ok_or_else(|| {
+            Error::Unsupported("selected model context capacity is unavailable".into())
+        })
     }
 
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        (self.token_counter)(request)
+        let counter = self.token_counter.as_ref().ok_or_else(|| {
+            Error::Unsupported("selected model token counting is unavailable".into())
+        })?;
+        counter(request)
     }
 
     fn generate<'a>(
@@ -247,6 +258,13 @@ impl ModelProvider for ScriptedModelProvider {
                     "scripted reconciliation dispatch mismatch".into(),
                 ));
             }
+            if !state.dispatches.contains(&dispatch)
+                && !state.recoveries.front().is_some_and(|reply| reply.orphan)
+            {
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch was not generated".into(),
+                ));
+            }
             let reply = state
                 .recoveries
                 .pop_front()
@@ -266,16 +284,6 @@ fn serialized_tokens(request: &PreparedModelRequest) -> Result<ModelTokenCount> 
     Ok(request.serialized_token_upper_bound(None)?.0)
 }
 
-#[test]
-fn poisoned_state_remains_observable() {
-    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]);
-    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = provider.lock();
-        std::panic::resume_unwind(Box::new(()));
-    }));
-    assert!(poisoned.is_err());
-    assert_eq!(provider.remaining(), 1);
-    assert!(provider.requests().is_empty());
-    assert!(provider.dispatches().is_empty());
-    assert_eq!(provider.request_count(), 0);
-}
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

@@ -134,6 +134,15 @@ pub struct StreamBounds {
     pub tail: u64,
 }
 
+/// Accepted visibility and confirmed persistence at one observation cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamWatermarks {
+    /// Next sequence accepted by the stream.
+    pub accepted: u64,
+    /// Next sequence in the confirmed durable prefix; zero makes no persistence claim.
+    pub durable: u64,
+}
+
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {

@@ -46,6 +46,14 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
     /// Atomically observes both ends of the retained replay window.
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
+    /// Observes accepted visibility and a confirmed durable prefix. Implementations
+    /// with independent persistence report its watermark without awaiting a flush.
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        Ok(StreamWatermarks {
+            accepted: self.tail(path).await?,
+            durable: 0,
+        })
+    }
     /// Atomic append or tail conflict.
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.

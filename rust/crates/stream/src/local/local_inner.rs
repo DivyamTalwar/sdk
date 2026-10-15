@@ -7,6 +7,8 @@ struct LocalInner {
     /// The journal's `synced` sequence, published under the journal lock so
     synced: watch::Sender<u64>,
     changed: watch::Sender<u64>,
+    /// Confirmed per-stream durable prefixes, monotonically sampled at visibility cuts.
+    durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
     poisoned: AtomicBool,
 }
 

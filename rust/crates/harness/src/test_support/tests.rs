@@ -147,7 +147,8 @@ fn malformed_script_events_are_rejected() {
 }
 
 #[tokio::test]
-async fn reconciliation_checks_prefix_and_records_dispatch_without_generation() -> Result<()> {
+async fn orphan_reconciliation_checks_prefix_and_records_dispatch_without_generation() -> Result<()>
+{
     let prefix = vec![ModelEvent::Content {
         delta: "partial-".into(),
     }];
@@ -160,43 +161,91 @@ async fn reconciliation_checks_prefix_and_records_dispatch_without_generation() 
         },
     ];
     let provider = ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {
+        orphan: true,
         observed: prefix.clone(),
         continuation: Some(continuation.clone()),
     }]);
     let (_, dispatch) = request()?;
     assert!(matches!(provider.reconcile(dispatch, &[]).await,
         Err(crate::Error::Conflict(message)) if message == "scripted reconciliation prefix mismatch"));
-    assert_eq!(provider.remaining_reconciliations(), 1);
+    assert_eq!(provider.recoveries().len(), 1);
     assert_eq!(
         provider.reconcile(dispatch, &prefix).await?,
         Some(continuation)
     );
-    assert_eq!(provider.request_count(), 0);
+    assert_eq!(provider.requests().len(), 0);
     assert_eq!(provider.reconciliations(), vec![dispatch, dispatch]);
-    assert_eq!(provider.reconciliation_count(), 2);
-    assert_eq!(provider.remaining_reconciliations(), 0);
+    assert_eq!(provider.reconciliations().len(), 2);
+    assert_eq!(provider.recoveries().len(), 0);
     assert!(matches!(provider.reconcile(dispatch, &prefix).await,
-        Err(crate::Error::Invalid(message)) if message == "scripted reconciliation exhausted"));
+        Err(crate::Error::Conflict(message)) if message == "scripted reconciliation dispatch was not generated"));
     Ok(())
 }
 
 #[tokio::test]
 async fn reconciliation_preserves_unrecoverable_and_incomplete_replies() -> Result<()> {
-    let provider = ScriptedModelProvider::new([]).with_reconciliations([
-        ScriptedReconciliation {
-            observed: vec![],
-            continuation: None,
-        },
-        ScriptedReconciliation {
-            observed: vec![],
-            continuation: Some(vec![]),
-        },
-    ]);
-    let (_, dispatch) = request()?;
+    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+        .with_reconciliations([
+            ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: None,
+            },
+            ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: Some(vec![]),
+            },
+        ]);
+    let (request, dispatch) = request()?;
+    provider
+        .generate(request, dispatch)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
     assert_eq!(provider.reconcile(dispatch, &[]).await?, None);
     assert_eq!(provider.reconcile(dispatch, &[]).await?, Some(vec![]));
-    assert_eq!(provider.reconciliation_count(), 2);
-    assert_eq!(provider.remaining_reconciliations(), 0);
+    assert_eq!(provider.reconciliations().len(), 2);
+    assert_eq!(provider.recoveries().len(), 0);
+    assert!(matches!(provider.reconcile(dispatch, &[]).await,
+        Err(crate::Error::Invalid(message)) if message == "scripted reconciliation exhausted"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconciliation_rejects_unknown_operations_and_steps_without_consuming_replies()
+-> Result<()> {
+    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+        .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
+            observed: vec![],
+            continuation: None,
+        }]);
+    let (request, dispatch) = request()?;
+    provider
+        .generate(request, dispatch)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    for unknown in [
+        ModelDispatch {
+            operation_id: OperationId::new(),
+            ..dispatch
+        },
+        ModelDispatch {
+            step: dispatch.step + 1,
+            ..dispatch
+        },
+    ] {
+        assert!(matches!(provider.reconcile(unknown, &[]).await,
+            Err(crate::Error::Conflict(message)) if message == "scripted reconciliation dispatch was not generated"));
+        assert_eq!(provider.recoveries().len(), 1);
+    }
+    assert_eq!(provider.reconcile(dispatch, &[]).await?, None);
+    assert!(provider.recoveries().is_empty());
+    assert_eq!(provider.dispatches(), vec![dispatch]);
     Ok(())
 }
 
@@ -236,7 +285,7 @@ fn capacity_and_token_accounting_are_configurable() -> Result<()> {
     assert_eq!(count.request_digest, request.request_digest());
     assert_eq!(count.fixed_tokens, 7);
     assert_eq!(count.message_tokens, vec![3, 3]);
-    assert_eq!(provider.request_count(), 0);
+    assert_eq!(provider.requests().len(), 0);
     Ok(())
 }
 
@@ -286,6 +335,7 @@ fn tagged_response_round_trips_without_a_wrapper_object() -> Result<()> {
 async fn reconciliation_keeps_the_original_request_binding() -> Result<()> {
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
         .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
             observed: vec![],
             continuation: None,
         }]);
@@ -302,7 +352,64 @@ async fn reconciliation_keeps_the_original_request_binding() -> Result<()> {
     };
     assert!(matches!(provider.reconcile(changed, &[]).await,
         Err(crate::Error::Conflict(message)) if message == "scripted reconciliation dispatch mismatch"));
-    assert_eq!(provider.remaining_reconciliations(), 1);
+    assert_eq!(provider.recoveries().len(), 1);
     assert_eq!(provider.reconcile(dispatch, &[]).await?, None);
+    Ok(())
+}
+
+#[test]
+fn poisoned_state_remains_observable() {
+    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]);
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = provider.lock();
+        std::panic::resume_unwind(Box::new(()));
+    }));
+    assert!(poisoned.is_err());
+    assert_eq!(provider.remaining(), 1);
+    assert!(provider.requests().is_empty());
+    assert!(provider.dispatches().is_empty());
+    assert_eq!(provider.requests().len(), 0);
+}
+
+#[test]
+fn token_counter_can_capture_configuration_without_changing_the_request() -> Result<()> {
+    let tokens = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(7));
+    let captured = tokens.clone();
+    let provider = ScriptedModelProvider::new([]).with_token_counter(move |request| {
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.request_digest(),
+            fixed_tokens: captured.load(std::sync::atomic::Ordering::SeqCst),
+            message_tokens: vec![0; request.request().messages.len()],
+        })
+    });
+    let (request, _) = request()?;
+    assert_eq!(provider.count_tokens(&request)?.fixed_tokens, 7);
+    tokens.store(11, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(provider.count_tokens(&request)?.fixed_tokens, 11);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_accounting_still_records_and_replays_generation() -> Result<()> {
+    let provider =
+        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]).without_accounting();
+    let (request, dispatch) = request()?;
+    assert!(
+        matches!(provider.context_capacity(&request.request().model),
+        Err(crate::Error::Unsupported(message)) if message == "selected model context capacity is unavailable")
+    );
+    assert!(matches!(provider.count_tokens(&request),
+        Err(crate::Error::Unsupported(message)) if message == "selected model token counting is unavailable"));
+    let events = provider
+        .generate(request, dispatch)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    assert!(
+        matches!(events.as_slice(), [ModelEvent::Content { delta }, ModelEvent::Completed { .. }] if delta == "answer")
+    );
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.remaining(), 0);
     Ok(())
 }
