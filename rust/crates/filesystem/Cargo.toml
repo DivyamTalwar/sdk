@@ -18,6 +18,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "access"
+path = "tests/access.rs"
+
+[[test]]
 name = "cloud_contract"
 path = "tests/cloud_contract.rs"
 required-features = ["memory"]
