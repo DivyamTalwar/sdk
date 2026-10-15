@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-acyclic-harness = { path = "..", default-features = false }
+acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "test-support"] }
 
 [[bin]]
 name = "command"

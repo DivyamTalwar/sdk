@@ -221,6 +221,7 @@ pub(super) fn remap_renamed_directory_path(
 pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     source_root: &HostRoot,
     maximum_paths: u32,
     policy: &CapturePolicy,
@@ -280,12 +281,8 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     }
     let paths_bytes = vector_bytes(&paths);
     for (path, ()) in paths {
-        capture_entry(
-            ordinary,
-            path,
-            (CurrentRecord::Lookup, CaptureIntent::Complete),
-            meter,
-        )?;
+        let current = current_record(rename_records, &path, meter)?;
+        capture_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
     }
     meter
         .clone()

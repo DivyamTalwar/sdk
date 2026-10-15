@@ -170,7 +170,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .run(
                 &(0u8..32, any::<[u8; 16]>(), "[a-z]{1,32}"),
                 |(mask, bytes, call)| {
-                    let grants = [&read, &write, "tool:call:bash"]
+                    let grants = [read.as_str(), write.as_str(), "tool:call:bash"]
                         .into_iter()
                         .enumerate()
                         .filter(|(index, _)| mask & (1 << index) != 0)

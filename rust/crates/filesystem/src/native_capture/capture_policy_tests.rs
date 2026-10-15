@@ -312,7 +312,7 @@ async fn rename_into_new_directory_hydrates_parents_even_with_create_hints()
 }
 
 // Property: any subset/order/duplication of parent creation hints leaves the
-// same renamed FileId and complete ancestry, within the exact path bound.
+// same renamed FileId and complete ancestry, within the event/path bound.
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
@@ -370,7 +370,7 @@ async fn rename_with_hints(
     }
     replay(
         &mut checkout,
-        &options(source.path(), depth as u32 + 2)?,
+        &options(source.path(), (depth + 2).max(changes.len()) as u32)?,
         changes,
     )
     .await?;
