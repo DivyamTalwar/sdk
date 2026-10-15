@@ -72,6 +72,7 @@ impl ControlPlane {
             let lazy_source = self.lazy_workspace_root(&route, root_id).await?;
             let repository = self.parent_repository_id(caller, root_id, target.id())?;
             let root = acyclic_harness::filesystem::plan_agent_merge(
+                &self.fs,
                 &self.store,
                 &lazy_source,
                 &target,
