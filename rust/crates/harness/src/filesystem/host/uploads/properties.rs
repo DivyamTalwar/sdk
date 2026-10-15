@@ -6,7 +6,7 @@ proptest! {
     // conflicting bytes under that identity cannot alter the project head.
     #[test]
     fn retry_identity_preserves_content(bytes in prop::collection::vec(any::<u8>(), 0..32)) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
             let provider = ProviderRef::new("properties".into(), "filesystem".into(), "2".into(), &mut None)?;
             let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
@@ -34,6 +34,6 @@ proptest! {
             assert_eq!(host.resolve(&workspace, None).await?, head);
             assert_eq!(host.read_pinned_io(&file, 4096, None).await?.as_ref(), bytes.as_slice());
             Ok::<(), Error>(())
-        }).expect("publication invariant");
+        })?;
     }
 }

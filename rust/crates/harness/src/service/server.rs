@@ -12,8 +12,13 @@ use prost::Message;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 
+#[cfg(test)]
+mod models;
+
 /// A single process hosting workspace wire APIs over UDS or Windows named pipes.
 pub struct HarnessService {
+    // Lock order: registry only. Clone the host and release before dispatch,
+    // listener access, or lifetime transitions.
     workspaces: RwLock<BTreeMap<String, Arc<dyn HarnessWireApi>>>,
     listener: super::listener::Listener,
     lifetime: super::lifetime::Lifetime,
@@ -53,13 +58,13 @@ impl HarnessService {
 
     async fn serve_connections(
         self: Arc<Self>,
-        mut phase: tokio::sync::watch::Receiver<super::lifetime::Phase>,
+        mut phase: tokio::sync::watch::Receiver<super::lifetime::State>,
     ) -> Result<()> {
         let mut clients = tokio::task::JoinSet::new();
         let result = loop {
             tokio::select! {
                 biased;
-                _ = phase.wait_for(|phase| *phase == super::lifetime::Phase::Stopping) => break Ok(()),
+                _ = phase.wait_for(|state| state.phase == super::lifetime::Phase::Stopping) => break Ok(()),
                 _ = clients.join_next(), if !clients.is_empty() => {}
                 socket = self.listener.accept() => {
                     let socket = match socket { Ok(socket) => socket, Err(error) => break Err(error) };
@@ -71,7 +76,7 @@ impl HarnessService {
         clients.abort_all();
         while clients.join_next().await.is_some() {}
         self.listener.close().await;
-        self.lifetime.release()?;
+        self.lifetime.release();
         result
     }
 
@@ -79,7 +84,7 @@ impl HarnessService {
     pub async fn shutdown(&self) -> Result<()> {
         if self.lifetime.request_stop() {
             self.listener.close().await;
-            self.lifetime.release()?;
+            self.lifetime.release();
         }
         self.lifetime.stopped().await
     }

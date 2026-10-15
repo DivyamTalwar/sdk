@@ -1,6 +1,6 @@
 use super::storage;
 use crate::{Error, Result};
-use std::{fs::File, sync::Mutex};
+use std::fs::File;
 use tokio::sync::watch;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -13,9 +13,18 @@ pub(super) enum Phase {
 
 /// Owns the instance fence until the listener and all connections are drained.
 pub(super) struct Lifetime {
-    phase: watch::Sender<Phase>,
-    instance: Mutex<Option<File>>,
+    // One watch lock owns both state and fence. No lifetime guard crosses an
+    // await or is nested with the listener or workspace registry locks.
+    state: watch::Sender<State>,
 }
+
+pub(super) struct State {
+    pub phase: Phase,
+    instance: Option<File>,
+}
+
+#[cfg(test)]
+mod models;
 
 /// Cancelling the caller stops the independently owned connection drain.
 pub(super) struct StopOnDrop<'a>(&'a Lifetime);
@@ -33,47 +42,51 @@ impl Lifetime {
 
     pub fn new(instance: File) -> Self {
         Self {
-            phase: watch::channel(Phase::Idle).0,
-            instance: Mutex::new(Some(instance)),
+            state: watch::channel(State {
+                phase: Phase::Idle,
+                instance: Some(instance),
+            })
+            .0,
         }
     }
 
-    pub fn begin(&self) -> Result<watch::Receiver<Phase>> {
-        if !self.phase.send_if_modified(|phase| {
-            if *phase != Phase::Idle {
+    pub fn begin(&self) -> Result<watch::Receiver<State>> {
+        if !self.state.send_if_modified(|state| {
+            if state.phase != Phase::Idle {
                 return false;
             }
-            *phase = Phase::Running;
+            state.phase = Phase::Running;
             true
         }) {
             return Err(Error::Conflict("service already started or stopped".into()));
         }
-        Ok(self.phase.subscribe())
+        Ok(self.state.subscribe())
     }
 
     pub fn request_stop(&self) -> bool {
         let mut unstarted = false;
-        self.phase.send_if_modified(|phase| {
-            unstarted = *phase == Phase::Idle;
-            if matches!(*phase, Phase::Stopping | Phase::Stopped) {
+        self.state.send_if_modified(|state| {
+            unstarted = state.phase == Phase::Idle;
+            if matches!(state.phase, Phase::Stopping | Phase::Stopped) {
                 return false;
             }
-            *phase = Phase::Stopping;
+            state.phase = Phase::Stopping;
             true
         });
         unstarted
     }
 
-    pub fn release(&self) -> Result<()> {
-        drop(self.instance.lock().map_err(storage)?.take());
-        self.phase.send_replace(Phase::Stopped);
-        Ok(())
+    pub fn release(&self) {
+        self.state.send_modify(|state| {
+            drop(state.instance.take());
+            state.phase = Phase::Stopped;
+        });
     }
 
     pub async fn stopped(&self) -> Result<()> {
-        self.phase
+        self.state
             .subscribe()
-            .wait_for(|phase| *phase == Phase::Stopped)
+            .wait_for(|state| state.phase == Phase::Stopped)
             .await
             .map_err(storage)?;
         Ok(())

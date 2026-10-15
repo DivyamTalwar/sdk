@@ -9,6 +9,8 @@ type SocketListener = tokio::net::windows::named_pipe::NamedPipeServer;
 pub(super) struct Listener {
     #[cfg(windows)]
     endpoint: ServiceEndpoint,
+    // Lock order: socket only; accept is cancelled before close takes it.
+    // No lifetime/registry guard is held across either await.
     socket: tokio::sync::Mutex<Option<SocketListener>>,
 }
 

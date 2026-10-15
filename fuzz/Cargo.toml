@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-harness-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-harness = { path = "../rust/crates/harness", features = ["service", "test-support"] }
+acyclic-stream = { path = "../rust/crates/stream" }
+libfuzzer-sys = "0.4"
+bytes.workspace = true
+futures.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+
+[[bin]]
+name = "harness-service"
+path = "fuzz_targets/harness_service.rs"
+test = false
+doc = false
+bench = false
+
+[lints]
+workspace = true

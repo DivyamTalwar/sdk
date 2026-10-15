@@ -13,7 +13,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 const FIELD_OVERHEAD: usize = 1 + 10;
 const MAX_DELIVERY_BYTES: usize =
     3 * (acyclic_stream::MAX_RECORD_BYTES + FIELD_OVERHEAD) + 2 * FIELD_OVERHEAD + 2;
-const MAX_FRAME_BYTES: usize = MAX_DELIVERY_BYTES + FIELD_OVERHEAD;
+pub(super) const MAX_FRAME_BYTES: usize = MAX_DELIVERY_BYTES + FIELD_OVERHEAD;
 
 // One RPC per connection: Replay owns its connection until the consumer drops it.
 // The payload is always an existing acyclic.harness.v2 message.
@@ -119,6 +119,9 @@ pub(super) fn response<M: Message + Default + std::fmt::Debug>(message: M) -> Re
         end: false,
     }
 }
+
+#[cfg(test)]
+mod properties;
 
 pub(super) fn error(error: &Error) -> Response {
     Response {
