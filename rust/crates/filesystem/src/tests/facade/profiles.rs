@@ -1,6 +1,57 @@
 use super::*;
 
 #[tokio::test]
+async fn full_case_fold_keys_resolve_aliases_and_reject_collisions() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (_, mut checkout) = fixture(folded_config(), &cancel).await?;
+    for (index, (original, alias)) in [
+        ("ΟΣ", "ος"),
+        ("ΟΣ", "οσ"),
+        ("Straße", "STRASSE"),
+        ("ﬃ", "FFI"),
+        ("İ", "i\u{307}"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let original = format!("{index}-{original}");
+        let alias = format!("{index}-{alias}");
+        let id = create(
+            &mut checkout,
+            &original,
+            OwnedBytes::from_static(b"body"),
+            &cancel,
+        )
+        .await?;
+        let resolved = checkout
+            .lookup_no_follow(&path(&alias)?, B, &cancel)
+            .await?
+            .value
+            .record
+            .ok_or("folded alias did not resolve")?;
+        assert_eq!(resolved.file_id, id, "{original}: {alias}");
+        assert!(matches!(
+            checkout
+                .create(
+                    AuthoredMutation::CreateFile {
+                        path: path(&alias)?,
+                        bytes: OwnedBytes::from_static(b"collision"),
+                        metadata: FileMetadata::default(),
+                    },
+                    B,
+                    &cancel
+                )
+                .await,
+            Err(OperationFailure {
+                error: FsError::NameCollision,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn profile_folded_admission_covers_directories_links_and_renames() -> TestResult {
     let cancel = CancellationToken::new();
     let (_, mut checkout) = fixture(folded_config(), &cancel).await?;

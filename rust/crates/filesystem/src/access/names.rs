@@ -15,7 +15,7 @@ pub(super) fn encoded_len(text: &str, config: VolumeConfig) -> usize {
 }
 
 // Paths are lossless Unicode projections of the profile's native names. Native
-// byte/UTF-16 keys remain exact; only UTF-8 logical names have lowercase keys.
+// byte/UTF-16 keys remain exact; only UTF-8 logical names use full case folding.
 pub(super) fn key(path: &str, config: VolumeConfig) -> Result<Cow<'_, str>, InvalidPolicy> {
     let encoding = encoding(config);
     if !super::glob::valid_path(path)

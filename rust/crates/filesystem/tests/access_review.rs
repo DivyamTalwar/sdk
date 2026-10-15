@@ -2,6 +2,105 @@ use super::*;
 use acyclic_fs::kernel::{LogicalName, NameEncoding};
 use acyclic_fs::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
 
+#[test]
+fn full_case_folding_preserves_glob_literal_matches() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let cap = capability();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    for (glob, path) in [
+        ("ΟΣ*", "ΟΣΑ"),
+        ("ΟΣ?", "ΟΣΑ"),
+        ("ΟΣ*/**", "ΟΣΑ/key"),
+        ("**/ΟΣ*", "folder/ΟΣΑ"),
+        ("Straße*", "STRASSE.txt"),
+        ("ﬃ*", "FFI.txt"),
+    ] {
+        let policy = super::policy(vec![
+            rule("allow", Effect::Allow, &Action::ALL, "**"),
+            rule("hidden", Effect::Deny, &[Action::List, Action::Read], glob),
+        ]);
+        let mut res = resource(&caller.lineage, path, 10);
+        res.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+        let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+        for action in [Action::List, Action::Read] {
+            let decision = decide(&policy, &caller, action, res, context, &cap);
+            assert!(!decision.allowed, "{glob}: {path}");
+            assert_eq!(decision.rule_id, Some("hidden"));
+            assert_eq!(trie.decide(action, path, 100), decision);
+            assert_eq!(trie.prepare(path)?.decide(action, 100), decision);
+        }
+    }
+    Ok(())
+}
+
+fn native_key(
+    profile: FilesystemProfile,
+    path: &str,
+) -> Result<Vec<Vec<u8>>, acyclic_fs::kernel::TreePageError> {
+    path.split('/')
+        .map(|part| {
+            let (encoding, bytes) = match profile {
+                FilesystemProfile::Portable | FilesystemProfile::Browser => {
+                    (NameEncoding::Utf8, part.as_bytes().to_vec())
+                }
+                FilesystemProfile::Posix => (NameEncoding::PosixBytes, part.as_bytes().to_vec()),
+                FilesystemProfile::Windows => (
+                    NameEncoding::WindowsUtf16Le,
+                    part.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                ),
+            };
+            LogicalName::new(encoding, bytes, 255).map(|name| name.case_fold_key())
+        })
+        .collect()
+}
+
+fn folded_atom() -> impl Strategy<Value = (String, String)> {
+    prop_oneof![
+        3 => prop::sample::select(vec![
+            ("ΟΣ", "ος"), ("ΟΣ", "οσ"), ("ß", "ss"), ("ẞ", "SS"),
+            ("ﬃ", "ffi"), ("İ", "i\u{307}"), ("K", "k"),
+            ("É", "é"), ("Σ", "ς"), ("𐐀", "𐐨"), ("A", "a"), ("é", "e\u{301}"),
+        ]).prop_map(|(left, right)| (left.to_owned(), right.to_owned())),
+        1 => any::<char>().prop_filter("literal name scalar", |ch| !matches!(ch, '\0' | '/' | '\\' | '.' | '*' | '?' | '[' | ']' | '{' | '}'))
+            .prop_map(|ch| (ch.to_string(), ch.to_uppercase().collect())),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn folded_literal_globs_agree_with_volume_name_identity(
+        parts in prop::collection::vec(folded_atom(), 1..8),
+        profile in prop::sample::select(vec![FilesystemProfile::Portable, FilesystemProfile::Browser, FilesystemProfile::Posix, FilesystemProfile::Windows]),
+        suffix in "[a-z]{1,4}",
+        capability_grant in any::<bool>(),
+    ) {
+        let literal = parts.iter().map(|(part, _)| part.as_str()).collect::<String>();
+        let alias = parts.iter().map(|(_, part)| part.as_str()).collect::<String>();
+        let caller = principal();
+        let context = Context { now: 100, approvals: 0 };
+        let selected = format!("{literal}/{literal}");
+        let cap = if capability_grant {
+            capability().attenuate(vec![Grant { actions: [Action::Read].into_iter().collect(), resource: pattern(&selected) }], None)
+        } else { capability() };
+        let policy = super::policy(vec![rule("literal", Effect::Allow, &[Action::Read], if capability_grant { "**" } else { &selected })]);
+        for candidate in [format!("{alias}/{alias}"), format!("{alias}/{alias}{suffix}")] {
+            let mut res = resource(&caller.lineage, &candidate, 10);
+            res.config.profile = profile;
+            res.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+            let expected = native_key(profile, &selected)? == native_key(profile, &candidate)?;
+            let reference = decide(&policy, &caller, Action::Read, res, context, &cap);
+            prop_assert_eq!(reference.allowed, expected);
+            let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+            prop_assert_eq!(trie.decide(Action::Read, &candidate, 100), reference);
+            prop_assert_eq!(trie.prepare(&candidate)?.decide(Action::Read, 100), reference);
+        }
+    }
+}
+
 fn native_exact_grant(
     profile: FilesystemProfile,
     capability_grant: bool,

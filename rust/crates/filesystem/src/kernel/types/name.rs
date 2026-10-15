@@ -22,7 +22,7 @@ impl NameEncoding {
 
     pub(crate) fn unicode_case_fold_key(self, text: &str) -> std::borrow::Cow<'_, str> {
         match self {
-            Self::Utf8 => std::borrow::Cow::Owned(text.to_lowercase()),
+            Self::Utf8 => super::case_fold::key(text),
             Self::PosixBytes | Self::WindowsUtf16Le => std::borrow::Cow::Borrowed(text),
         }
     }
