@@ -528,50 +528,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(lookup.0.record.ok_or(FsError::NotFound)?.file_id)
     }
 
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn require_unique_folded_name(
-        &mut self,
-        parent: &[LogicalName],
-        name: &LogicalName,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        if let Some(found) = self
-            .find_case_folded_sibling_with_accounting(
-                parent,
-                name,
-                accounting,
-                cancellation,
-                &[],
-                true,
-            )
-            .await?
-        {
-            let bytes = found.0.retained_bytes() as u64;
-            retire_name_owned(found, bytes, accounting)?;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn require_unique_folded_path(
-        &mut self,
-        path: &NamespacePath,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        for (index, name) in path.components().iter().enumerate() {
-            self.require_unique_folded_name(
-                &path.components()[..index],
-                name,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     pub(super) fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
         &'a mut self,
         parent_components: &'a [LogicalName],
@@ -587,22 +543,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
-                &mut *accounting,
-                |context, bytes| {
+                (
+                    &mut *self,
+                    parent_components,
+                    target,
+                    allowed_file_ids,
+                    &mut *accounting,
+                ),
+                |(_, _, _, _, context), bytes| {
                     frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
                     Ok::<(), FsError>(())
                 },
-                |accounting| async move {
+                |(this, parent_components, target, allowed_file_ids, accounting)| async move {
                     let allocation = accounting.claim_owned(0, 0)?;
                     let mut parent = (
-                        NamespacePath::new(Vec::new(), self.volume.config.limits)
+                        NamespacePath::new(Vec::new(), this.volume.config.limits)
                             .map_err(name_path_error)?,
                         allocation,
                     );
                     for name in parent_components {
                         let next = parent.0.child_with_accounting(
                             name,
-                            self.volume.config.limits,
+                            this.volume.config.limits,
                             accounting,
                             cancellation,
                         )?;
@@ -614,7 +576,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     let mut found = None;
                     loop {
                         accounting.check()?;
-                        let page = self
+                        let page = this
                             .list_directory_with_accounting(
                                 &parent.0,
                                 after

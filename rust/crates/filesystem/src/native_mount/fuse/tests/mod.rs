@@ -52,6 +52,7 @@ fn projection_core(
 
 mod cache;
 mod folded;
+mod folded_property;
 mod mount;
 mod native;
 

@@ -286,12 +286,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         if self.folds_names() {
-            checkout
-                .require_unique_folded_path(
-                    path,
-                    &mut crate::kernel::KernelAccounting::native(&work, cancellation),
-                    cancellation,
-                )
+            self.require_unique_folded_path(checkout, path, false, &work, cancellation)
                 .await?;
         }
         let value = checkout
@@ -436,6 +431,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     config.profile,
                     FilesystemProfile::Portable | FilesystemProfile::Browser
                 ),
+            folded_directories: folded_cache::FoldedDirectoryCache::new(),
             cancellation: CancellationToken::new(),
             capture_gate: Arc::new(StdMutex::new(CaptureSourceGate::default())),
             capture_quiesced: Arc::new(std::sync::Condvar::new()),

@@ -162,6 +162,8 @@ mod metadata;
 mod mutation_regions;
 mod mutations;
 mod names;
+#[cfg(feature = "native-mount")]
+mod names_unique;
 mod namespace;
 mod proof;
 mod publication;

@@ -3,8 +3,10 @@ use crate::native_mount::fuse::FuseProjection;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn folded_projection() -> Result<(FuseProjection, Arc<MemorySource>), Box<dyn std::error::Error>> {
+pub(super) fn folded_projection()
+-> Result<(FuseProjection, Arc<MemorySource>), Box<dyn std::error::Error>> {
     let mut config = crate::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    config.unicode = crate::model::UnicodePolicy::Preserve;
     config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
     let source = Arc::new(shared_sources(config)?.0);
     let core = projection_core(
@@ -21,7 +23,7 @@ fn folded_projection() -> Result<(FuseProjection, Arc<MemorySource>), Box<dyn st
     ))
 }
 
-fn lookup(
+pub(super) fn lookup(
     projection: &FuseProjection,
     parent: u64,
     value: &str,
@@ -195,5 +197,42 @@ fn folded_expanding_directory_facts_keep_native_spelling() -> TestResult {
         .directory_stream(source.as_ref(), inode, 0, &work)?;
     assert_eq!(*stream.path, name(&long));
     source.read_directory_with_meter(&stream.path, None, 16, &work)?;
+    Ok(())
+}
+
+#[test]
+fn folded_directory_validation_is_shared_between_pages() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let checkout = runtime.block_on(crate::facade::test_fixtures::folded_checkout(
+        (0..1024).map(|index| format!("Entry{index:04}")),
+    ))?;
+    let config = checkout.volume_config();
+    let source = MemorySource::new(
+        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+        config,
+    )?;
+    let work = fuse_fixture_work();
+    let first = source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
+    assert_eq!(first.entries.len(), 256);
+    assert!(work.receipt().bytes_encoded >= 1024 * 9);
+    let budget = crate::WorkBudget {
+        bytes_encoded: 0,
+        ..crate::WorkBudget::UNBOUNDED
+    };
+    let cached = cache_work(budget, &crate::CancellationToken::new());
+    let next = source.read_directory_with_meter(
+        &MountPath::root(),
+        first.next_cursor.as_deref(),
+        256,
+        &cached,
+    )?;
+    assert_eq!(next.entries.len(), 256);
+    assert!(first.entries.last().ok_or("first page missing")?.name < next.entries[0].name);
+    assert_eq!(cached.receipt().bytes_encoded, 0);
+    // An edit changes the tree identity: the old validation must not transfer.
+    source.create_directory(&name("New"), FileMetadata::default(), &work)?;
+    let before = work.receipt().bytes_encoded;
+    source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
+    assert!(work.receipt().bytes_encoded >= before + 1024 * 9);
     Ok(())
 }

@@ -64,6 +64,7 @@ pub struct CheckoutMountSource<A, O> {
     limits: VolumeLimits,
     profile: FilesystemProfile,
     folds_names: bool,
+    folded_directories: folded_cache::FoldedDirectoryCache,
     cancellation: CancellationToken,
     capture_gate: Arc<StdMutex<CaptureSourceGate>>,
     capture_quiesced: Arc<std::sync::Condvar>,
@@ -178,6 +179,8 @@ include!("inputs.rs");
 include!("native_names.rs");
 mod capture;
 mod directory;
+mod folded_cache;
+mod folded_names;
 mod file_handles;
 include!("operations.rs");
 mod records;
