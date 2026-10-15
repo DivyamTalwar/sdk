@@ -117,10 +117,25 @@ pub(super) unsafe fn notification(
     if notification == PRJ_NOTIFICATION_PRE_RENAME && invalid_rename {
         return HR_NOT_SAME_DEVICE;
     }
-    if notification == PRJ_NOTIFICATION_PRE_RENAME
-        || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
-    {
-        return HR_OK;
+    if matches!(
+        notification,
+        PRJ_NOTIFICATION_PRE_RENAME
+            | PRJ_NOTIFICATION_PRE_SET_HARDLINK
+            | PRJ_NOTIFICATION_PRE_DELETE
+    ) {
+        let destination = (!destination_is_external)
+            .then(|| path_from(destination_filename))
+            .flatten();
+        return match authorize_pre_operation(
+            runtime.source.as_ref(),
+            (!source_is_external).then_some(&path),
+            destination.as_ref(),
+            notification,
+            &work,
+        ) {
+            Ok(()) => HR_OK,
+            Err(error) => source_hresult(&error),
+        };
     }
     if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
         if is_directory {
@@ -477,5 +492,34 @@ pub(super) fn callbacks() -> PRJ_CALLBACKS {
             operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS
         ))),
         CancelCommandCallback: Some(cancel),
+    }
+}
+
+pub(super) fn authorize_pre_operation(
+    source: &dyn MountFilesystem,
+    path: Option<&MountPath>,
+    destination: Option<&MountPath>,
+    notification: PRJ_NOTIFICATION,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    use crate::access::Action;
+    match (notification, path, destination) {
+        (PRJ_NOTIFICATION_PRE_DELETE, Some(path), _) => {
+            source.authorize_with_meter(&[(Action::Delete, path)], work)
+        }
+        (PRJ_NOTIFICATION_PRE_RENAME, Some(path), Some(destination)) => source
+            .authorize_with_meter(
+                &[(Action::Rename, path), (Action::Rename, destination)],
+                work,
+            ),
+        (PRJ_NOTIFICATION_PRE_RENAME, Some(path), None) => {
+            source.authorize_with_meter(&[(Action::Rename, path)], work)
+        }
+        (PRJ_NOTIFICATION_PRE_RENAME, None, Some(destination)) => {
+            source.authorize_with_meter(&[(Action::Create, destination)], work)
+        }
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Some(path), Some(destination)) => source
+            .authorize_with_meter(&[(Action::Read, path), (Action::Create, destination)], work),
+        _ => Err(MountSourceError::AccessDenied),
     }
 }

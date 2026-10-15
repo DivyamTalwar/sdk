@@ -3,6 +3,14 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn authorize_with_meter(
+        &self,
+        requests: &[(crate::access::Action, &MountPath)],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.require_paths(requests, work)
+    }
+
     fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
         Some(super::NativeMountSourceLineage {
             lazy_owner: None,

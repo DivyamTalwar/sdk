@@ -2,6 +2,13 @@ use super::*;
 
 /// Synchronous callback surface implemented by an embedded checkout adapter.
 pub trait MountFilesystem: Send + Sync + 'static {
+    /// Authorize every requested operation against one current policy/capability view.
+    fn authorize_with_meter(
+        &self,
+        requests: &[(crate::access::Action, &MountPath)],
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
+
     /// Returns the sealed original native accounting and lifetime context.
     fn native_original_work(&self) -> Result<Option<NativeMaterializationWork>, MountSourceError> {
         Ok(None)

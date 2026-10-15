@@ -7,6 +7,14 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    fn authorize_with_meter(
+        &self,
+        requests: &[(crate::access::Action, &MountPath)],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.authored.authorize_with_meter(requests, work)
+    }
+
     fn native_namespace_lineage(
         &self,
     ) -> Option<crate::native_mount::NativeMountSourceLineage<'_>> {

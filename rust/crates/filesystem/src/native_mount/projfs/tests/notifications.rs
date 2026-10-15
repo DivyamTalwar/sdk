@@ -276,3 +276,85 @@ async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dy
     unmounted?;
     Ok(())
 }
+
+#[tokio::test]
+async fn native_access_projfs_preoperations_use_the_shared_decision()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    let source = windows_checkout_source().await?;
+    let work = setup_work()?;
+    let from = windows_path("from");
+    let to = windows_path("to");
+    for (notification, action, denied_path) in [
+        (PRJ_NOTIFICATION_PRE_DELETE, Action::Delete, "from"),
+        (PRJ_NOTIFICATION_PRE_RENAME, Action::Rename, "from"),
+        (PRJ_NOTIFICATION_PRE_RENAME, Action::Rename, "to"),
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Action::Read, "from"),
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Action::Create, "to"),
+    ] {
+        publish_test_access(&source, vec![])?;
+        authorize_pre_operation(source.as_ref(), Some(&from), Some(&to), notification, &work)?;
+        publish_test_access(&source, vec![deny("protected", &[action], denied_path)])?;
+        assert!(matches!(
+            authorize_pre_operation(source.as_ref(), Some(&from), Some(&to), notification, &work),
+            Err(MountSourceError::AccessDenied)
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+async fn native_access_projfs_vetoes_host_rename_delete_and_hardlink()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    let source = windows_checkout_source().await?;
+    let work = setup_work()?;
+    for name in ["protected", "allowed"] {
+        source.create_file(&windows_path(name), FileMetadata::default(), None, &work)?;
+        source.write_range(&windows_path(name), 0, Bytes::from_static(b"retained"))?;
+    }
+    let (_root, destination, mut session) = mount_source(&source)?;
+    assert_eq!(std::fs::read(destination.join("protected"))?, b"retained");
+    publish_test_access(
+        &source,
+        vec![
+            deny("protected", &[Action::Rename, Action::Delete], "protected"),
+            deny("destination", &[Action::Rename], "blocked"),
+            deny("link-destination", &[Action::Create], "blocked-link"),
+        ],
+    )?;
+    let script = r#"
+        [Environment]::CurrentDirectory = (Get-Location).Path
+        $operations = @(
+            { [IO.File]::Move('protected', 'moved') },
+            { [IO.File]::Delete('protected') },
+            { [IO.File]::Move('allowed', 'blocked') },
+            { New-Item -ItemType HardLink -Path 'blocked-link' -Target 'allowed' -ErrorAction Stop | Out-Null }
+        )
+        foreach ($operation in $operations) {
+            try { & $operation; throw 'operation unexpectedly succeeded' }
+            catch {
+                $cause = $_.Exception.GetBaseException()
+                $code = if ($cause -is [ComponentModel.Win32Exception]) {
+                    $cause.NativeErrorCode
+                } else { $cause.HResult -band 0xffff }
+                if ($code -ne 5) { throw }
+            }
+        }
+    "#;
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .current_dir(&destination),
+        std::time::Duration::from_secs(10),
+        64 * 1024,
+    )?;
+    assert!(output.status.success(), "external mount client: {output:?}");
+    assert_eq!(std::fs::read(destination.join("protected"))?, b"retained");
+    assert_eq!(std::fs::read(destination.join("allowed"))?, b"retained");
+    session.stop()?;
+    Ok(())
+}

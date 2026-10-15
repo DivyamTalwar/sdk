@@ -322,6 +322,7 @@ macro_rules! source_methods {
 
 impl MountFilesystem for GatedSource {
     source_methods! {
+        authorize_with_meter(requests: &[(crate::access::Action, &MountPath)], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         native_callback_guard() -> Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>;
         native_original_work() -> Result<Option<crate::NativeMaterializationWork>, MountSourceError>;
         supports_posix_named_attributes() -> bool;

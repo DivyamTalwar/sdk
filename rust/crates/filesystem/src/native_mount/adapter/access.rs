@@ -72,6 +72,26 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok(self)
     }
 
+    pub(super) fn require_paths(
+        &self,
+        requests: &[(Action, &MountPath)],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        let view = self.access_snapshot()?;
+        let now = access_time()?;
+        let mut carrier = NativeDemandCarrier::Native(work);
+        let mut inputs = InputBuffers::new(&mut carrier)?;
+        for (action, path) in requests {
+            inputs.items(1)?;
+            let path = self.namespace_inputs(path, &mut inputs)?;
+            let permissions = view
+                .pin(&path)
+                .map_err(|_| MountSourceError::AccessDenied)?;
+            require(&permissions, *action, now)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn permissions_for_path(
         &self,
         path: &MountPath,
