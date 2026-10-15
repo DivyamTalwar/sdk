@@ -68,6 +68,19 @@ fn incremental_frontier_matches_full_commonmark_parse() {
         "- > ```text\n  > code\n  > ```\n  > after\n",
         "[r]\n\n- parent\n  - child\n\n    [r]: /nested\n\n    more\n",
         "[r]\n\n> quote\n>\n> [r]: /quoted\n>\n> more\n",
+        "```rust\n**bold****bold**    indented\n\n  ",
+        "```\n| a | b |\n    ",
+        "    indented\n\n    more\n\nend",
+        "\tindented\n  \n\tmore\nend",
+        "    indented\n      \n    more\nend",
+        "- parent\n\n      indented\n\n      more\nend",
+        ">     indented\n>\n>     more\nend",
+        "paragraph &copy; &copyleft; &amp; word; (word) #hash",
+        "paragraph [word](url) (word); [r] (word); [r]: /url",
+        "# paragraph word # word #\n\ntext\n1. next\n+ next",
+        "[r][x](url)[r]: url\ntext 🦀> quote\n- item\n- item\ntext 🦀\n| a | b |\n| - | - |\n[r]: url\n\n[r]: u",
+        "[r][x][y](url) more\n\n[r]: /r\n\n[y]: /y\n\n[x]: /x\n\nend",
+        "- item\n<div>\nhello\n</div>\n",
     ] {
         let mut markdown = Markdown::default();
         let mut end = 0;
@@ -242,11 +255,120 @@ fn nested_paragraph_checkpoint_context() {
     assert_eq!(markdown.lines(), full_parse(source));
 }
 
+const LAZY_LIST: &str =
+    "> quote\n- item\n- item\ntext 🦀\n| a | b |\n| - | - |\n[r]: url\n\n[r]: u";
+
+fn check_chunks(source: &str, cuts: &[usize]) {
+    let mut streamed = Markdown::default();
+    let mut offset = 0;
+    for size in cuts.iter().cycle() {
+        if offset == source.len() {
+            break;
+        }
+        let mut end = (offset + size).min(source.len());
+        while !source.is_char_boundary(end) {
+            end += 1;
+        }
+        streamed.push(source.get(offset..end).unwrap_or_default());
+        assert_eq!(
+            streamed.lines(),
+            full_parse(source.get(..end).unwrap_or_default()),
+            "prefix {:?}, checkpoint {:?}",
+            source.get(..end),
+            source.get(..streamed.offset)
+        );
+        offset = end;
+    }
+}
+
+#[test]
+fn review_regressions_match_every_chunk_boundary() {
+    check_chunks(LAZY_LIST, &[2, 2, 1, 1]);
+    for source in [
+        "    indented\n\n    more",
+        "text word, word. yes! x: y - z + 2 = 4? (ok)",
+    ] {
+        check_chunks(source, &[1]);
+    }
+}
+
+#[test]
+fn punctuation_appends_have_linear_parser_work() {
+    for length in [1024, 100 * 1024] {
+        let mut markdown = Markdown::default();
+        markdown.push(&"x".repeat(length));
+        let before = markdown.parsed_bytes;
+        for _ in 0..100 {
+            markdown.push("word, (word); #yes! ");
+        }
+        assert_eq!(markdown.parsed_bytes, before);
+        assert_eq!(
+            markdown.lines(),
+            full_parse(&format!(
+                "{}{}",
+                "x".repeat(length),
+                "word, (word); #yes! ".repeat(100)
+            ))
+        );
+    }
+}
+
+#[test]
+fn lazy_list_reference_updates_never_reparse_finalized_paragraphs() {
+    for count in [100, 10_000] {
+        let mut source = "- earlier\n".repeat(count);
+        source.push_str(
+            LAZY_LIST
+                .split_once("\n\n")
+                .map_or(LAZY_LIST, |(first, _)| first),
+        );
+        source.push_str("\n\n");
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let before = markdown.parsed_bytes;
+        markdown.push("[r]: u\n\n");
+        assert!(markdown.parsed_bytes - before <= 16);
+        source.push_str("[r]: u\n\n");
+        assert_eq!(markdown.lines(), full_parse(&source));
+    }
+}
+
+#[test]
+fn indented_code_retains_lines_and_defers_blank_lines() {
+    for count in [100, 10_000] {
+        let mut source = "    indented\n".repeat(count);
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let pointer = |markdown: &Markdown| {
+            markdown
+                .lines()
+                .get(1)
+                .and_then(|line| line.spans.first())
+                .map(|span| span.text.as_ptr())
+        };
+        let first = pointer(&markdown);
+        assert!(first.is_some());
+        let before = markdown.parsed_bytes;
+        for delta in ["\n", " ", " ", " ", " ", "m", "o", "r", "e", "\n"] {
+            let highlighted = code::HIGHLIGHTED.get();
+            markdown.push(delta);
+            assert!(code::HIGHLIGHTED.get() - highlighted <= 2);
+            source.push_str(delta);
+            assert_eq!(markdown.lines(), full_parse(&source));
+        }
+        assert!(markdown.parsed_bytes - before < 512);
+        assert_eq!(pointer(&markdown), first);
+        let highlighted = code::HIGHLIGHTED.get();
+        markdown.push("\n    next\n");
+        assert_eq!(code::HIGHLIGHTED.get() - highlighted, 2);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn random_chunks_match_the_full_parser(parts in prop::collection::vec(0usize..16, 1..20), cuts in prop::collection::vec(1usize..20, 1..12)) {
-        let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n", "[r]", "<div>\nhello\n</div>\n", "> quote\n", "[a\u{a0}b]: /two\n"];
+    fn random_chunks_match_the_full_parser(parts in prop::collection::vec(0usize..20, 1..20), cuts in prop::collection::vec(1usize..20, 1..12)) {
+        let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n", "[r]", "<div>\nhello\n</div>\n", "> quote\n", "[a\u{a0}b]: /two\n", LAZY_LIST, "    indented\n\n    more", "word, ", "word. yes! x: y - z + 2 = 4? "];
         let source: String = parts.iter().filter_map(|index| vocabulary.get(*index)).copied().collect();
         let mut streamed = Markdown::default();
         let mut offset = 0;
@@ -258,5 +380,19 @@ proptest! {
             prop_assert_eq!(streamed.lines(), full_parse(source.get(..end).unwrap_or_default()), "prefix {:?}", source.get(..end));
             offset = end;
         }
+    }
+
+    #[test]
+    fn review_cases_match_random_chunkings(case in 0usize..3, cuts in prop::collection::vec(1usize..20, 1..12)) {
+        let cases = [LAZY_LIST, "    indented\n\n    more", "paragraph word, word. yes! x: y - z + 2 = 4? "];
+        check_chunks(cases.get(case).copied().unwrap_or_default(), &cuts);
+    }
+
+    #[test]
+    fn punctuation_matches_random_chunkings(parts in prop::collection::vec(0usize..12, 1..30), cuts in prop::collection::vec(1usize..12, 1..8)) {
+        let punctuation = ["word, ", "(word); ", "#word! ", "'word' : ", "&copy", "; ", "[word]", "(url)", "*word", "* ", "\\", "[r]: /url\n"];
+        let mut source = String::from("paragraph ");
+        for index in parts { source.push_str(punctuation.get(index).copied().unwrap_or_default()); }
+        check_chunks(&source, &cuts);
     }
 }

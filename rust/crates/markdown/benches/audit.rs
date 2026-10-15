@@ -94,6 +94,30 @@ fn main() {
         &"x".repeat(100 * 1024),
         |_| "x".into(),
     );
+    passed &= check(
+        "punctuation (1 / 100 KiB)",
+        &"x".repeat(1024),
+        &"x".repeat(100 * 1024),
+        |_| "word, (word); #yes! ".into(),
+    );
+    let lazy = |count| {
+        format!(
+            "{}> quote\n- item\n- item\ntext 🦀\n| a | b |\n| - | - |\n[r]: url\n\n[r]: /",
+            "- earlier\n".repeat(count)
+        )
+    };
+    passed &= check(
+        "lazy list references (100 / 10000 items)",
+        &lazy(100),
+        &lazy(10_000),
+        |_| "u".into(),
+    );
+    passed &= check(
+        "indented code (100 / 10000 lines)",
+        &"    indented\n".repeat(100),
+        &"    indented\n".repeat(10_000),
+        |_| "\n    next\n".into(),
+    );
     let definitions = |count| {
         let mut source = String::new();
         for index in 0..count {

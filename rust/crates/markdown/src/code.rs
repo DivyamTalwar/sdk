@@ -74,11 +74,6 @@ pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
     line
 }
 
-pub(crate) fn preview(highlighter: &Code, text: &str) -> Line {
-    // Previewing an incomplete line must not advance the lexer checkpoint.
-    highlight(&mut highlighter.clone(), text)
-}
-
 pub(crate) fn header(language: &str) -> Line {
     Line::plain(
         &format!(

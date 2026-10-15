@@ -5,6 +5,7 @@ mod code;
 mod events;
 mod references;
 mod render;
+mod stream_code;
 mod style;
 mod table;
 
@@ -32,6 +33,9 @@ pub struct Markdown {
     cached: Vec<Cached>,
     fence: Option<Fence>,
     plain: bool,
+    plain_links: bool,
+    plain_entity: bool,
+    plain_heading: bool,
     plain_spaces: usize,
     cr: bool,
     #[cfg(test)]
@@ -57,6 +61,7 @@ impl Cached {
         range: Range<usize>,
         lines: Range<usize>,
         state: render::Renderer,
+        paragraph: bool,
     ) -> Option<Self> {
         let quotes = source
             .get(line_start(source, range.start)..range.start)
@@ -69,7 +74,7 @@ impl Cached {
             return None;
         }
         Some(Self {
-            template: Template::new(raw, quotes),
+            template: Template::new(raw, quotes, paragraph),
             state,
             lines,
         })
@@ -77,6 +82,8 @@ impl Cached {
 }
 
 struct Fence {
+    indented: bool,
+    pending: String,
     marker: u8,
     count: usize,
     indent: usize,
@@ -100,7 +107,15 @@ impl Markdown {
             return old_len;
         }
         let appended = self.source.get(previous..).unwrap_or_default();
-        if self.plain && plain_text(appended) {
+        if self.plain
+            && plain_text(appended)
+            && !(self.plain_links && appended.contains(['(', ')']))
+            && !(self.plain_entity && appended.contains(';'))
+            && !(self.plain_heading && appended.contains('#'))
+        {
+            self.plain_entity &= appended
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '#');
             if let Some(line) = self.lines.get_mut(old_len.saturating_sub(1)) {
                 let visible = appended.trim_end_matches(' ');
                 if visible.is_empty() {
@@ -254,8 +269,13 @@ impl Markdown {
                         self.lines.len() + out.lines.len(),
                         out.checkpoint(),
                     ));
-                    if self.start_fence(&source, (base, prefix.len()), range, tag, &mut out, &stack)
-                    {
+                    if self.start_fence(
+                        &source,
+                        (base, prefix.len()),
+                        events.get(index..).unwrap_or_default(),
+                        &mut out,
+                        &stack,
+                    ) {
                         for (end, cache) in caches {
                             if base + end.saturating_sub(prefix.len()) <= self.offset {
                                 self.cache(cache);
@@ -279,6 +299,7 @@ impl Markdown {
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
                         state,
+                        *end == TagEnd::Paragraph,
                     )
                 {
                     caches.push((range.end, cache));
@@ -287,12 +308,7 @@ impl Markdown {
                     out.lines.push(Line::default());
                 }
                 let following = events.get(index + 1..).unwrap_or_default();
-                let next_block = following.iter().any(|(event, range)| {
-                    matches!(event, Event::Start(_))
-                        && source
-                            .get(range.start..)
-                            .is_some_and(|tail| tail.contains('\n'))
-                });
+                let next_block = next_block_complete(&source, following);
                 if range.end >= prefix.len()
                     && (leaf_end || (stack.is_empty() && next_block))
                     && sealed(&source, range.end, *end, following)
@@ -331,50 +347,6 @@ impl Markdown {
             self.offset = base + first.start;
             self.references.commit(self.offset);
         }
-    }
-
-    fn start_fence(
-        &mut self,
-        source: &str,
-        (base, prefix): (usize, usize),
-        range: &Range<usize>,
-        tag: &Tag<'_>,
-        out: &mut render::Renderer,
-        stack: &[Container],
-    ) -> bool {
-        let Tag::CodeBlock(CodeBlockKind::Fenced(info)) = tag else {
-            return false;
-        };
-        let row = source.get(range.start..).unwrap_or_default();
-        let Some((marker, count, indent, _)) = code::opening(row) else {
-            return false;
-        };
-        out.event(&Event::Start(tag.clone()));
-        self.state = out.checkpoint();
-        self.lines.append(&mut out.lines);
-        let containers = context_prefix(stack);
-        self.context = stack.to_vec();
-        let length = row.find('\n').map_or(0, |position| position + 1);
-        self.offset = base + range.start.saturating_sub(prefix) + length;
-        self.stable_lines = self.lines.len();
-        self.fence = Some(Fence {
-            marker,
-            count,
-            indent,
-            opening: source
-                .get(line_start(source, range.start)..range.start)
-                .unwrap_or_default()
-                .to_owned(),
-            parser_opening: format!(
-                "{containers}{}",
-                source
-                    .get(line_start(source, range.start)..range.start + length)
-                    .unwrap_or_default()
-            ),
-            code: code::highlighter(info.split_whitespace().next().unwrap_or_default()),
-        });
-        self.references.commit(self.offset);
-        true
     }
 
     fn finish_tail(
@@ -419,12 +391,35 @@ impl Markdown {
         let tail = self.source.get(self.offset..).unwrap_or_default();
         let frontier = self.offset.saturating_sub(base) + prefix;
         let mut leaves = events.iter().filter_map(|(event, range)| match event {
-            Event::Start(tag) if is_leaf(tag) && range.start >= frontier => Some(tag),
+            Event::Start(tag) if is_leaf(tag) && range.start >= frontier => Some((tag, range)),
             _ => None,
         });
-        let only_inline_leaf = matches!(leaves.next(), Some(Tag::Paragraph | Tag::Heading { .. }))
+        let last_leaf = leaves.next();
+        self.plain_heading = matches!(last_leaf, Some((Tag::Heading { .. }, _)));
+        let link_end = events
+            .iter()
+            .filter_map(|(event, range)| {
+                matches!(event, Event::End(TagEnd::Link | TagEnd::Image)).then_some(range.end)
+            })
+            .max()
+            .unwrap_or(frontier);
+        let inline_tail = source.get(link_end..).unwrap_or_default();
+        self.plain_links = inline_tail.contains('[')
+            && inline_tail
+                .rsplit_once(']')
+                .is_none_or(|(_, rest)| rest.starts_with('('));
+        self.plain_entity = tail.rsplit_once('&').is_some_and(|(_, suffix)| {
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '#')
+        });
+        let only_inline_leaf = matches!(last_leaf, Some((Tag::Paragraph | Tag::Heading { .. }, range))
+            if !definition_candidate(source.get(range.start..).unwrap_or_default()))
             && leaves.next().is_none();
         self.plain = tail.len() >= 8
+            // An unfinished block marker (for example `1.` on a new line)
+            // can still become a list when a space arrives.
+            && tail.rsplit('\n').next().is_some_and(|row| !row.trim_start_matches([' ', '\t']).starts_with('<') && row.chars().any(char::is_alphabetic))
             && tail.chars().next_back().is_some_and(plain_character)
             && only_inline_leaf
             && events
@@ -451,65 +446,29 @@ impl Markdown {
         }
         self.cached.push(cache);
     }
-
-    fn advance_fence(&mut self) -> bool {
-        let Some(mut fence) = self.fence.take() else {
-            return true;
-        };
-        let mut out = self.state.checkpoint();
-        let tail = self.source.get(self.offset..).unwrap_or_default();
-        for raw in tail.split_inclusive('\n') {
-            let decoded = fence_line(raw, &fence);
-            if matches!(decoded, FenceLine::Outside) {
-                out.event(&Event::End(TagEnd::CodeBlock));
-                self.state = out.checkpoint();
-                self.lines.extend(out.lines);
-                if self.context.is_empty() {
-                    self.lines.push(Line::default());
-                }
-                self.stable_lines = self.lines.len();
-                return true;
-            }
-            if !raw.ends_with('\n') {
-                break;
-            }
-            self.offset += raw.len();
-            if matches!(decoded, FenceLine::Close) {
-                out.event(&Event::End(TagEnd::CodeBlock));
-                self.state = out.checkpoint();
-                self.lines.extend(out.lines);
-                if self.context.is_empty() {
-                    self.lines.push(Line::default());
-                }
-                self.stable_lines = self.lines.len();
-                return true;
-            }
-            if let FenceLine::Text(line) = decoded {
-                out.block_line(code::highlight(&mut fence.code, &line));
-            }
-        }
-        self.lines.extend(out.lines);
-        self.stable_lines = self.lines.len();
-        let raw = self.source.get(self.offset..).unwrap_or_default();
-        let mut preview = self.state.checkpoint();
-        if let FenceLine::Text(content) = fence_line(raw, &fence)
-            && !content.is_empty()
-        {
-            preview.block_line(code::preview(&fence.code, &content));
-        }
-        preview.block_line(code::footer());
-        self.lines.extend(preview.lines);
-        self.fence = Some(fence);
-        false
-    }
 }
 
 fn plain_text(text: &str) -> bool {
     text.chars().all(plain_character)
 }
 
+fn definition_candidate(source: &str) -> bool {
+    source.starts_with('[')
+        && source
+            .rsplit_once(']')
+            .is_some_and(|(_, rest)| rest.starts_with(':'))
+}
+
 fn plain_character(character: char) -> bool {
-    !character.is_ascii() || character.is_ascii_alphanumeric() || character == ' '
+    // These characters can complete or reopen inline syntax. Other printable
+    // punctuation is literal inside an established paragraph or heading.
+    !character.is_ascii()
+        || (character.is_ascii_graphic()
+            && !matches!(
+                character,
+                '*' | '_' | '~' | '`' | '[' | ']' | '<' | '>' | '&' | '\\'
+            ))
+        || character == ' '
 }
 
 fn is_leaf(tag: &Tag<'_>) -> bool {
@@ -614,57 +573,9 @@ fn context_prefix(context: &[Container]) -> String {
     prefix
 }
 
-enum FenceLine<'a> {
-    Text(std::borrow::Cow<'a, str>),
-    Close,
-    Outside,
-}
-
-fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
-    if fence.opening.is_empty() {
-        return if code::closing(line, fence.marker, fence.count) {
-            FenceLine::Close
-        } else {
-            FenceLine::Text(code::dedent(line, fence.indent).into())
-        };
-    }
-    let source = format!("{}{line}", fence.parser_opening);
-    let mut inside = false;
-    let mut text = String::new();
-    for (event, range) in Parser::new_ext(&source, options()).into_offset_iter() {
-        match event {
-            Event::Start(Tag::CodeBlock(_)) => inside = true,
-            Event::Text(content) if inside => text.push_str(&content),
-            Event::End(TagEnd::CodeBlock) => {
-                if source.get(range.end..).is_some_and(|rest| {
-                    !rest
-                        .trim_matches(|character: char| character.is_ascii_whitespace())
-                        .is_empty()
-                }) {
-                    return FenceLine::Outside;
-                }
-                return if text.is_empty() && !line.is_empty() {
-                    FenceLine::Close
-                } else {
-                    FenceLine::Text(text.into())
-                };
-            }
-            _ => {}
-        }
-    }
-    FenceLine::Outside
-}
-
 fn sealed(source: &str, end: usize, tag: TagEnd, following: &[(Event<'_>, Range<usize>)]) -> bool {
     let rest = source.get(end..).unwrap_or_default();
-    let next_complete = following
-        .iter()
-        .find(|(event, _)| matches!(event, Event::Start(_)))
-        .is_some_and(|(_, range)| {
-            source
-                .get(range.start..)
-                .is_some_and(|tail| tail.contains('\n'))
-        });
+    let next_complete = next_block_complete(source, following);
     if tag == TagEnd::Table {
         let rest = if source.as_bytes().get(end.saturating_sub(1)) == Some(&b'\n') {
             rest
@@ -677,6 +588,17 @@ fn sealed(source: &str, end: usize, tag: TagEnd, following: &[(Event<'_>, Range<
         return true;
     }
     next_complete
+}
+
+fn next_block_complete(source: &str, following: &[(Event<'_>, Range<usize>)]) -> bool {
+    following
+        .iter()
+        .find(|(event, _)| matches!(event, Event::Start(_)))
+        .is_some_and(|(_, range)| {
+            source
+                .get(range.start..)
+                .is_some_and(|tail| tail.contains('\n'))
+        })
 }
 
 fn options() -> Options {

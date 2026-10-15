@@ -96,12 +96,13 @@ enum Node {
         start: Event<'static>,
         end: Event<'static>,
         content: Vec<Node>,
+        following: Vec<Node>,
         missing: Vec<Node>,
     },
 }
 
 impl Template {
-    pub(crate) fn new(source: &str, quotes: usize) -> Self {
+    pub(crate) fn new(source: &str, quotes: usize, paragraph: bool) -> Self {
         let mut normalized = String::new();
         for (index, mut line) in source.split_inclusive('\n').enumerate() {
             if index > 0 {
@@ -117,7 +118,7 @@ impl Template {
             normalized.push_str(line);
         }
         let mut keys = HashSet::new();
-        let nodes = parse(&normalized, &HashSet::new(), &mut keys, false);
+        let nodes = parse(&normalized, &HashSet::new(), &mut keys, false, paragraph);
         Self { nodes, keys }
     }
 
@@ -128,15 +129,42 @@ impl Template {
     }
 }
 
-fn parse(source: &str, blocked: &HashSet<Key>, keys: &mut HashSet<Key>, inline: bool) -> Vec<Node> {
+fn parse(
+    source: &str,
+    blocked: &HashSet<Key>,
+    keys: &mut HashSet<Key>,
+    inline: bool,
+    paragraph: bool,
+) -> Vec<Node> {
+    // A recovery group can end in the middle of an existing text event. Keep
+    // its trailing spaces, which an isolated paragraph parse would otherwise trim.
+    let padded = (inline && source.ends_with([' ', '\t'])).then(|| format!("{source}x"));
+    let source = padded.as_deref().unwrap_or(source);
     let mut callback = |link: BrokenLink<'_>| {
         (!blocked.contains(&normalize(&link.reference))).then(|| ("".into(), "".into()))
     };
-    let events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, crate::options(), Some(&mut callback))
+    // A lazy continuation has already been classified as paragraph content by
+    // the enclosing block parser. It cannot become a table when references change.
+    let mut options = crate::options();
+    if paragraph {
+        options.remove(pulldown_cmark::Options::ENABLE_TABLES);
+    }
+    let mut events: Vec<_> =
+        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
             .into_offset_iter()
             .map(|(event, range)| (event.into_static(), range))
             .collect();
+    if padded.is_some()
+        && let Some((Event::Text(text), range)) = events
+            .iter_mut()
+            .rev()
+            .find(|(event, _)| !matches!(event, Event::End(_)))
+    {
+        let mut content = text.to_string();
+        content.pop();
+        *text = content.into();
+        range.end = range.end.saturating_sub(1);
+    }
     let mut index = 0;
     let mut nodes = nodes(source, &events, &mut index, blocked, keys);
     if inline
@@ -202,10 +230,36 @@ fn nodes(
             );
             let mut denied = blocked.clone();
             denied.insert(key.clone());
+            // A failed full reference may expose an adjacent inline link or
+            // reference. Cache that recovery with its original lookahead.
+            let target = recovery_end(source, range.end);
+            let mut after = end + 1;
+            let mut depth = 0usize;
+            let mut recovery = range.end;
+            while let Some((event, following)) = events.get(after) {
+                if depth == 0 && (following.start >= target || matches!(event, Event::End(_))) {
+                    break;
+                }
+                match event {
+                    Event::Start(_) => depth += 1,
+                    Event::End(_) => depth -= 1,
+                    _ => {}
+                }
+                recovery = recovery.max(following.end);
+                after += 1;
+            }
+            let following = nodes(
+                source,
+                events.get(end + 1..after).unwrap_or_default(),
+                &mut 0,
+                blocked,
+                keys,
+            );
             let missing = parse(
-                source.get(range.clone()).unwrap_or_default(),
+                source.get(range.start..recovery).unwrap_or_default(),
                 &denied,
                 keys,
+                true,
                 true,
             );
             let closing = events
@@ -216,14 +270,49 @@ fn nodes(
                 start: event.clone(),
                 end: closing,
                 content,
+                following,
                 missing,
             });
-            *index = end + 1;
+            *index = after;
         } else {
             result.push(Node::Event(event.clone()));
         }
     }
     result
+}
+
+fn recovery_end(source: &str, mut end: usize) -> usize {
+    while let Some(opening @ (b'[' | b'(')) = source.as_bytes().get(end).copied() {
+        let closing = if opening == b'[' { b']' } else { b')' };
+        let mut depth = 0usize;
+        let mut escaped = false;
+        let mut next = None;
+        for (index, byte) in source.bytes().enumerate().skip(end) {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if byte == opening {
+                depth += 1;
+            }
+            if byte == closing {
+                depth -= 1;
+            }
+            if depth == 0 {
+                next = Some(index + 1);
+                break;
+            }
+        }
+        let Some(next) = next else {
+            break;
+        };
+        end = next;
+    }
+    end
 }
 
 fn emit(nodes: &[Node], references: &References, events: &mut Vec<Event<'static>>) {
@@ -235,6 +324,7 @@ fn emit(nodes: &[Node], references: &References, events: &mut Vec<Event<'static>
                 start,
                 end,
                 content,
+                following,
                 missing,
             } => {
                 if let Some((destination, title, _)) = references.get(key) {
@@ -258,6 +348,7 @@ fn emit(nodes: &[Node], references: &References, events: &mut Vec<Event<'static>
                     events.push(start);
                     emit(content, references, events);
                     events.push(end.clone());
+                    emit(following, references, events);
                 } else {
                     emit(missing, references, events);
                 }
