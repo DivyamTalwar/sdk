@@ -16,7 +16,7 @@ fn display(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 /// Reserved SDK metadata excluded from compatibility commits.
-pub const RESERVED_IGNORE_RULES: &str = ".acyclic-sdk/\n.git/\n.volumes/\n";
+pub const RESERVED_IGNORE_RULES: &str = ".acyclic-sdk/\n.git/\n";
 
 /// Loads text merge drivers and workspace attributes.
 async fn merge_drivers_for(workspace: &LocalLazyWorkspace) -> Result<Arc<MergeDriverRegistry>> {
@@ -51,7 +51,7 @@ async fn merge_drivers_for(workspace: &LocalLazyWorkspace) -> Result<Arc<MergeDr
 
 /// File-based ignore and merge policy for a managed workspace.
 pub struct WorkspacePolicy {
-    /// Excludes SDK metadata and composed volume mounts.
+    /// Excludes SDK metadata.
     pub ignore: GitIgnorePolicy,
     /// Text merge drivers configured by attributes.
     pub merge_drivers: Arc<MergeDriverRegistry>,
