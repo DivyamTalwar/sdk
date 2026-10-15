@@ -357,7 +357,7 @@ async fn real_socket_requests_cancellation_of_running_work_without_settling_its_
     )
     .await
     .map_err(storage)?;
-    assert_eq!(provider.script.request_count(), 1);
+    assert_eq!(provider.script.dispatches().len(), 1);
     let (owner, scope) = host.wire_owner();
     let request = wire::CancelRequest {
         operation_id: task_id.to_string(),

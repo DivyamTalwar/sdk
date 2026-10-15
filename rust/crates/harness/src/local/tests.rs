@@ -113,7 +113,7 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
         Err(Error::Invalid(_))
     ));
     assert!(!owner_path.exists());
-    assert_eq!(provider.request_count(), 0);
+    assert_eq!(provider.dispatches().len(), 0);
     Ok(())
 }
 
@@ -283,7 +283,7 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
     assert_eq!(&reopened.signed, &scope);
     assert_eq!(reopened.resume(task).await?.text, "done");
     assert_eq!(reopened.resume(task).await?.text, "done");
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.dispatches().len(), 1);
     Ok(())
 }
 
@@ -299,6 +299,7 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
         )])
         .with_context_capacity(capacity())
         .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
             observed: vec![],
             continuation: Some(vec![
                 ModelEvent::Content {
@@ -357,8 +358,8 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     assert_eq!(retained.reservation.id, original.reservation.id);
     assert_eq!(reopened.resume(task).await?.text, "recovered");
     assert_eq!(reopened.resume(task).await?.text, "recovered");
-    assert_eq!(provider.inner.request_count(), 1);
-    assert_eq!(provider.inner.reconciliation_count(), 1);
+    assert_eq!(provider.inner.dispatches().len(), 1);
+    assert_eq!(provider.inner.reconciliations().len(), 1);
     Ok(())
 }
 
@@ -399,7 +400,7 @@ async fn stock_executor_calls_default_and_custom_tools() -> Result<()> {
     )
     .await?;
     assert_eq!(harness.run("call both tools").await?.text, "both tools ran");
-    assert_eq!(provider.request_count(), 2);
+    assert_eq!(provider.dispatches().len(), 2);
     Ok(())
 }
 
