@@ -50,7 +50,7 @@ impl FuseProjection {
                 .open_file
                 .clone();
             let bytes = fuse_owned_source_chunk(
-                file.file(work)?.read_up_to_with_meter(offset, size, work)?,
+                file.file().read_up_to_with_meter(offset, size, work)?,
                 work,
             )?;
             if self.core.stopping.load(Ordering::Acquire) {

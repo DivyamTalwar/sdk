@@ -331,7 +331,7 @@ fn native_access_read_capability_does_not_disclose_metadata()
     let path = native_test_path("file");
     assert!(source.lookup(&path)?.is_none());
     assert!(matches!(
-        source.open_file_with_lookup_with_meter(&path, &work),
+        source.open_file_with_lookup_with_meter(&path, MountOpenAccess::Metadata, &work),
         Err(MountSourceError::AccessDenied)
     ));
     let file = source.open_file(&path)?;
@@ -485,5 +485,38 @@ fn native_access_list_only_never_reads_content_or_attribute_values()
         file.read_attribute(b"user.secret", &work),
         Err(MountSourceError::AccessDenied)
     ));
+    Ok(())
+}
+
+#[test]
+fn native_access_open_checks_requested_content_rights() -> Result<(), Box<dyn std::error::Error>> {
+    for (denied, access, allowed) in [
+        (vec![Action::Read], MountOpenAccess::Read, false),
+        (vec![Action::Read], MountOpenAccess::Write, true),
+        (
+            vec![Action::Write, Action::Append],
+            MountOpenAccess::Write,
+            false,
+        ),
+        (vec![Action::Write], MountOpenAccess::Write, true),
+        (vec![Action::Read], MountOpenAccess::ReadWrite, false),
+        (
+            vec![Action::Read, Action::Write, Action::Append],
+            MountOpenAccess::Metadata,
+            true,
+        ),
+    ] {
+        let source = source(FilesystemProfile::Portable)?;
+        seed(&source, "file", b"data")?;
+        let source = bind_test_access(source, vec![deny("restricted", &denied, "file")], None)?;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+        assert_eq!(
+            source
+                .open_file_with_lookup_with_meter(&native_test_path("file"), access, &work)
+                .is_ok(),
+            allowed,
+            "{access:?} {denied:?}"
+        );
+    }
     Ok(())
 }

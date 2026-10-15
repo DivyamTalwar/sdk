@@ -34,15 +34,10 @@ impl Filesystem for FuseProjection {
                 .contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
                 && ProjectionState::directory_open_flags(source, work)?
                     .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
-            let skips_open = config
-                .capabilities()
-                .contains(InitFlags::FUSE_NO_OPEN_SUPPORT)
-                && source.view_stamp_with_meter(work)?.is_some()
-                && !source.flush_on_handle_close();
             config
                 .add_capabilities(REQUESTED_CAPABILITIES & config.capabilities())
                 .map_err(NativeMountError::FuseUnsupportedCapabilities)?;
-            Ok((skips_opendir, skips_open))
+            Ok((skips_opendir, false))
         });
         (self.skips_opendir, self.skips_open) = self
             .core

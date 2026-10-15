@@ -83,7 +83,7 @@ where
     pub(super) fn open_handle(
         &self,
         path: &MountPath,
-        metadata: bool,
+        access: Option<MountOpenAccess>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
         invoke(&self.runtime, work, || async {
@@ -91,7 +91,7 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let namespace = self.namespace_inputs(path, &mut inputs)?;
             let permissions = self.pin_access(&namespace)?;
-            access::require_open(&permissions, metadata)?;
+            access::require_open(&permissions, access)?;
 
             let observation = self
                 .checkout
@@ -164,7 +164,7 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
             let permissions = self.pin_access(&path)?;
-            access::require_open(&permissions, false)?;
+            access::require_open(&permissions, None)?;
             let observation = self
                 .checkout
                 .observe(

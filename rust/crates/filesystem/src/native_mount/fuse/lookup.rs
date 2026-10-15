@@ -26,7 +26,7 @@ pub(super) fn resolve_node(
         NodeFacts::Current(current) => Ok(current),
         NodeFacts::Handle(open_file) => Ok(Resolved {
             stamp: source.view_stamp_with_meter(work)?,
-            lookup: open_file.file(work)?.lookup_with_meter(work)?,
+            lookup: open_file.file().lookup_with_meter(work)?,
             through: None,
         }),
         NodeFacts::Names { file_id, mut paths } => {
@@ -276,10 +276,7 @@ impl FuseProjection {
         };
         drop(state);
         let detached = self.core.source.detach_file_with_meter(path, work)?;
-        Ok(Some((
-            inode,
-            FuseOpenFile::Source(fuse_open_file(detached, work)?),
-        )))
+        Ok(Some((inode, FuseOpenFile(fuse_open_file(detached, work)?))))
     }
 
     pub(super) fn remove_name(

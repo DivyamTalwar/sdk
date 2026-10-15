@@ -31,11 +31,20 @@ pub(in crate::native_mount) fn require(
 
 pub(in crate::native_mount) fn require_open(
     path: &PinnedPath,
-    metadata: bool,
+    access: Option<MountOpenAccess>,
 ) -> Result<(), MountSourceError> {
     let now = access_time()?;
-    if metadata {
-        require(path, Action::List, now)
+    if let Some(access) = access {
+        require(path, Action::List, now)?;
+        if matches!(access, MountOpenAccess::Read | MountOpenAccess::ReadWrite) {
+            require(path, Action::Read, now)?;
+        }
+        if matches!(access, MountOpenAccess::Write | MountOpenAccess::ReadWrite)
+            && !path.decide(Action::Append, now).allowed
+        {
+            require(path, Action::Write, now)?;
+        }
+        Ok(())
     } else if [Action::List, Action::Read, Action::Write, Action::Append]
         .into_iter()
         .any(|action| path.decide(action, now).allowed)

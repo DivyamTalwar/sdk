@@ -403,7 +403,11 @@ impl DarwinMountContext {
             }
             entry.file_id
         };
-        let (file, lookup) = self.source.open_file_with_lookup_with_meter(path, work)?;
+        let (file, lookup) = self.source.open_file_with_lookup_with_meter(
+            path,
+            super::super::MountOpenAccess::Metadata,
+            work,
+        )?;
         let file = retained_file(work, (file.file, file.bytes))?;
         if lookup.node.file_id != file_id {
             return Err(driver_errno(libc::ESTALE));

@@ -106,16 +106,17 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_handle(path, false, work)
+        self.open_handle(path, None, work)
             .map(|(file, _)| (file.file, file.bytes))
     }
 
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
+        access: MountOpenAccess,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
-        self.open_handle(path, true, work)
+        self.open_handle(path, Some(access), work)
     }
 
     fn open_created_with_meter(
@@ -371,7 +372,7 @@ where
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         boundary(&self.cancellation, |work| {
-            self.open_handle(path, false, work)
+            self.open_handle(path, None, work)
         })
         .map(|(file, _)| file.file)
     }

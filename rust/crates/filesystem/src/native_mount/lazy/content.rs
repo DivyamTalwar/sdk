@@ -23,11 +23,11 @@ where
     pub(super) fn open_authorized(
         &self,
         path: &MountPath,
-        metadata: bool,
+        access: Option<MountOpenAccess>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, Option<MountLookup>), MountSourceError> {
         let permissions = self.authored.permissions_for_path(path, work)?;
-        adapter::access::require_open(&permissions, metadata)?;
+        adapter::access::require_open(&permissions, access)?;
         let (file, lookup) = self.open_proven(path, work)?;
         let (file, bytes) =
             adapter::authorize_file((file.file, file.bytes), permissions, false, work)?;

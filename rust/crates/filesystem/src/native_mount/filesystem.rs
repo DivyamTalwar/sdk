@@ -130,6 +130,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
+        access: super::MountOpenAccess,
         work: &NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
     /// Opens the actual identity just created, without resolving a replacement.

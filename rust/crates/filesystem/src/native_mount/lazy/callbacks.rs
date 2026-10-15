@@ -320,7 +320,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_authorized(path, false, work)
+        self.open_authorized(path, None, work)
             .map(|(file, _)| (file.file, file.bytes))
     }
 
@@ -329,16 +329,17 @@ where
         path: &MountPath,
     ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
         adapter::boundary(self.authored.cancellation(), |work| {
-            self.open_file_with_lookup_with_meter(path, work)
+            self.open_file_with_lookup_with_meter(path, MountOpenAccess::Metadata, work)
                 .map(|(file, lookup)| (file.file, lookup))
         })
     }
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
+        access: MountOpenAccess,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
-        let (file, proven) = self.open_authorized(path, true, work)?;
+        let (file, proven) = self.open_authorized(path, Some(access), work)?;
         let lookup = match proven {
             Some(lookup) => lookup,
             None => file.file.lookup_with_meter(work)?,

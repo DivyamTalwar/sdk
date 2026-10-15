@@ -72,11 +72,11 @@ impl FuseProjection {
                 (Some(open_file), _) => {
                     self.source_write(work, || {
                         Ok(open_file
-                            .file(work)?
+                            .file()
                             .set_attributes(metadata, changes.size, work)?)
                     })?;
                     Resolved {
-                        lookup: open_file.file(work)?.lookup_with_meter(work)?,
+                        lookup: open_file.file().lookup_with_meter(work)?,
                         stamp,
                         through: None,
                     }
@@ -139,11 +139,11 @@ impl FuseProjection {
         let bytes = fuse_source_chunk(data, work)?;
         self.source_write(work, || {
             Ok(open_file
-                .file(work)?
+                .file()
                 .write_range_with_meter(offset, bytes, work)?)
         })?;
         let stamp = self.core.source.view_stamp_with_meter(work)?;
-        let refreshed = open_file.file(work)?.lookup_with_meter(work)?;
+        let refreshed = open_file.file().lookup_with_meter(work)?;
         let mut state = self.core.state()?;
         if state.files.get(&handle).is_some_and(|file| {
             file.inode == inode
@@ -258,12 +258,12 @@ impl FuseProjection {
         };
         self.source_write(work, || {
             Ok(open_file
-                .file(work)?
+                .file()
                 .allocate_range_with_meter(offset, length, operation, work)?)
         })?;
         self.core.state()?.mark_handle_dirty(inode, handle)?;
         let stamp = self.core.source.view_stamp_with_meter(work)?;
-        let refreshed = open_file.file(work)?.lookup_with_meter(work)?;
+        let refreshed = open_file.file().lookup_with_meter(work)?;
         self.core
             .state()?
             .apply_handle_facts(inode, refreshed, stamp);
@@ -291,7 +291,7 @@ impl FuseProjection {
             .open_file
             .clone();
         let found = open_file
-            .file(work)?
+            .file()
             .seek_with_meter(offset, target, work)?
             .ok_or(libc::ENXIO)?;
         i64::try_from(found).map_err(|_| libc::EOVERFLOW.into())
@@ -338,8 +338,8 @@ impl FuseProjection {
         }
         let transferred = (|| -> Result<u32, NativeMountError> {
             self.check_source_write(work)?;
-            let source_lookup = source_open.file(work)?.lookup_with_meter(work)?;
-            let destination_lookup = destination_open.file(work)?.lookup_with_meter(work)?;
+            let source_lookup = source_open.file().lookup_with_meter(work)?;
+            let destination_lookup = destination_open.file().lookup_with_meter(work)?;
             let copy_length = length.min(
                 source_lookup
                     .node
@@ -351,8 +351,8 @@ impl FuseProjection {
             }
             if source_lookup.node.link_count != 0 && destination_lookup.node.link_count != 0 {
                 match self.source_write(work, || {
-                    Ok(destination_open.file(work)?.clone_from(
-                        source_open.file(work)?.as_ref().as_ref(),
+                    Ok(destination_open.file().clone_from(
+                        source_open.file(),
                         source_offset,
                         destination_offset,
                         copy_length,
@@ -368,7 +368,7 @@ impl FuseProjection {
                     Err(error) => return Err(error),
                 }
             }
-            let backwards = source_open.same_file(&destination_open)
+            let backwards = source_lookup.node.file_id == destination_lookup.node.file_id
                 && destination_offset > source_offset
                 && destination_offset < source_offset.saturating_add(copy_length);
             let mut transferred = 0_u64;
@@ -384,14 +384,14 @@ impl FuseProjection {
                 let copied = (|| -> Result<u64, NativeMountError> {
                     self.check_source_write(work)?;
                     work.charge(Items.delta(1))?;
-                    let sparse = source_open.file(work)?.read_sparse_range(
+                    let sparse = source_open.file().read_sparse_range(
                         source_offset + relative,
                         chunk,
                         work,
                     )?;
                     let copied = sparse.0.logical_bytes;
                     self.source_write(work, || {
-                        Ok(destination_open.file(work)?.write_sparse_range(
+                        Ok(destination_open.file().write_sparse_range(
                             destination_offset + relative,
                             sparse,
                             work,
@@ -419,7 +419,7 @@ impl FuseProjection {
             .state()?
             .mark_handle_dirty(destination_inode, destination_handle)?;
         let stamp = self.core.source.view_stamp_with_meter(work)?;
-        let refreshed = destination_open.file(work)?.lookup_with_meter(work)?;
+        let refreshed = destination_open.file().lookup_with_meter(work)?;
         self.core
             .state()?
             .apply_handle_facts(destination_inode, refreshed, stamp);

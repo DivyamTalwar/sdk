@@ -437,66 +437,33 @@ pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
 }
 
 #[test]
-pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
+pub(super) fn native_access_fuse_open_refuses_an_actual_rebound_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;
     let source = Arc::new(source);
-    let path = name("deferred-rebound");
-    let opened = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
+    let path = name("rebound");
+    let created = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&path, FileMetadata::default(), None, work)
     })?;
-    let cancellation = crate::CancellationToken::new();
-    let deferred = crate::native_mount::run_native_mount_handler(
+    let core = projection_core(
+        source.clone(),
         FINITE_HANDLER_POLICY,
-        &cancellation,
-        |work| {
-            let path = crate::native_mount::fuse::fuse_clone_path(&path, work)?;
-            let allocation = work.claim(
-                std::mem::size_of::<crate::native_mount::fuse::DeferredOpenFile>() as u64,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )?;
-            Ok(Arc::new(crate::native_mount::fuse::DeferredOpenFile {
-                source: source.clone(),
-                path,
-                file_id: opened.node.file_id,
-                file: std::sync::Mutex::new(None),
-                _allocation: allocation,
-            }))
-        },
-    )
-    .map_err(|failure| failure.0)?
-    .value;
+        &crate::CancellationToken::new(),
+    )?;
+    let projection = crate::native_mount::fuse::FuseProjection {
+        core,
+        skips_opendir: false,
+        skips_open: false,
+    };
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.remove(&path, Some(opened.node.file_id), work)
+        source.remove(&path, Some(created.node.file_id), work)?;
+        let rebound = source.create_file(&path, FileMetadata::default(), None, work)?;
+        assert_ne!(rebound.node.file_id, created.node.file_id);
+        assert!(
+            matches!(projection.open_source(&path, created.node.file_id, libc::O_RDONLY, None, work), Err(crate::NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::ESTALE))
+        );
+        Ok(())
     })?;
-    let rebound = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.create_file(&path, FileMetadata::default(), None, work)
-    })?;
-    assert_ne!(rebound.node.file_id, opened.node.file_id);
-    let failure = crate::native_mount::run_native_mount_handler(
-        FINITE_HANDLER_POLICY,
-        &cancellation,
-        |work| {
-            deferred
-                .file(work)?
-                .lookup_with_meter(work)
-                .map_err(crate::NativeMountError::Source)
-        },
-    )
-    .expect_err("a lazy open must not attach its inode to a replacement");
-    assert!(matches!(
-        failure.0,
-        crate::NativeMountError::Source(crate::native_mount::MountSourceError::Stale)
-    ));
-    assert!(
-        deferred
-            .file
-            .lock()
-            .map_err(|_| "poisoned deferred file")?
-            .is_none()
-    );
-    assert!(failure.1.items_examined > 0);
     Ok(())
 }
 
@@ -721,5 +688,53 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
         "last facade drop and the real keeper terminal phase allocate no new controls"
     );
     assert!(original.cancellation().is_cancelled());
+    Ok(())
+}
+
+#[test]
+fn native_access_fuse_cached_content_cannot_bypass_new_open_revocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    let (source, _) = shared_sources(posix_config())?;
+    let source = Arc::new(source);
+    let path = name("cached");
+    let work = fuse_fixture_work();
+    source.create_file(&path, FileMetadata::default(), None, &work)?;
+    source.write_range(&path, 0, Bytes::from_static(b"data"))?;
+    let core = projection_core(
+        source.clone(),
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let projection = crate::native_mount::fuse::FuseProjection {
+        core,
+        skips_open: false,
+        skips_opendir: false,
+    };
+    let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("cached"), &work)?;
+    let inode = entry.attr.ino.0;
+    let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+    assert_eq!(
+        projection
+            .read_through(inode, handle, 0, 4, &work)?
+            .bytes
+            .as_ref(),
+        b"data"
+    );
+    publish_test_access(&source, vec![deny("revoked", &[Action::Read], "cached")])?;
+    assert!(matches!(
+        projection.open_node(inode, libc::O_RDONLY, &work),
+        Err(crate::NativeMountError::Source(
+            MountSourceError::AccessDenied
+        ))
+    ));
+    assert_eq!(
+        projection
+            .read_through(inode, handle, 0, 4, &work)?
+            .bytes
+            .as_ref(),
+        b"data"
+    );
     Ok(())
 }

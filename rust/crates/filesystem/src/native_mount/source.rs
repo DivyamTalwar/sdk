@@ -150,6 +150,19 @@ pub struct MountSparseRange {
     pub spans: Vec<MountSparseSpan>,
 }
 
+/// Content rights requested by a native open that also returns metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MountOpenAccess {
+    /// Names and metadata only.
+    Metadata,
+    /// Content reads.
+    Read,
+    /// Content writes or appends; each mutation retains its distinct check.
+    Write,
+    /// Both content reads and writes.
+    ReadWrite,
+}
+
 /// Path-independent regular-file handle used for every native open operation.
 pub trait MountOpenFile: Send + Sync + 'static {
     /// Returns a readable same-volume clone source without disclosing metadata.
