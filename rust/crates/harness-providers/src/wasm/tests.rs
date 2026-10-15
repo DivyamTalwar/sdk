@@ -13,6 +13,7 @@ export function modelFixture(data, mode = 'complete') {
   state.fetch = (url, init) => {
     state.calls++;
     state.url = url;
+    state.headers = new Headers(init.headers);
     state.body = JSON.parse(new TextDecoder().decode(init.body));
     init.signal.addEventListener('abort', () => { state.aborted = true; }, {once: true});
     ready();
@@ -166,6 +167,13 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         assert_eq!(events[3]["kind"], "completed");
         assert!(events[3]["metadata"]["usage"].is_object());
         assert_eq!(field(&fixture, "calls")?.as_f64(), Some(1.0));
+        let headers = field(&fixture, "headers")?.dyn_into::<web_sys::Headers>()?;
+        assert_eq!(
+            headers
+                .get("anthropic-dangerous-direct-browser-access")?
+                .as_deref(),
+            (adapter == Adapter::Anthropic).then_some("true"),
+        );
         assert!(
             JsFuture::from(provider.reconcile(JsValue::UNDEFINED))
                 .await?
