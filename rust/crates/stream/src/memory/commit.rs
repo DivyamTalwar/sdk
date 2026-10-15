@@ -206,6 +206,8 @@ impl MemoryStream {
             paths.push((
                 StreamPath(destination.0.slice(..end)),
                 PathState {
+                    children: ChildIndex::default(),
+                    next_sibling: None,
                     history: None,
                     tail: 0,
                     changed,
@@ -402,7 +404,8 @@ fn publish(
     let hierarchy_changed = !paths.is_empty();
     for (path, stream) in paths {
         state.path_bytes += path.as_str().len();
-        state.paths.insert(path, stream);
+        state.paths.insert(path.clone(), stream);
+        state.index_child(path)?;
         state.hierarchy_version = envelope.commit_id;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {

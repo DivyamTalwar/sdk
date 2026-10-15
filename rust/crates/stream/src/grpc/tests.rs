@@ -40,10 +40,10 @@ fn unconnected() -> Result<Client, ConnectError> {
 }
 
 /// Ends its first follow cleanly, then denies or delegates later follows.
-struct EndingFollow {
-    inner: MemoryStream,
-    follows: AtomicUsize,
-    deny: bool,
+pub(super) struct EndingFollow {
+    pub(super) inner: MemoryStream,
+    pub(super) follows: AtomicUsize,
+    pub(super) deny: bool,
 }
 
 #[async_trait]
@@ -79,7 +79,23 @@ impl StreamProvider for EndingFollow {
         self.inner.follow(path, from).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.inner.children(request).await
+        match self.follows.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                let page = self
+                    .inner
+                    .children_page(ChildrenPageRequest {
+                        parent: request.parent,
+                        limit: 1,
+                        after: None,
+                        hierarchy_version: None,
+                    })
+                    .await?;
+                Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
+            }
+            _ if self.deny => Err(StreamError::AccessDenied),
+            1 => Ok(stream::once(async { Err(StreamError::Unavailable) }).boxed()),
+            _ => self.inner.children(request).await,
+        }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.inner.commit(request).await

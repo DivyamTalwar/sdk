@@ -27,7 +27,7 @@ http = ["dep:reqwest"]
 local = ["dep:fs2", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
-wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
+wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures", "dep:web-sys"]
 
 [dependencies]
 async-trait.workspace = true
@@ -50,6 +50,7 @@ uuid.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
+web-sys = { workspace = true, features = ["BroadcastChannel", "MessageEvent"], optional = true }
 indexed_db_futures = { workspace = true, optional = true }
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
@@ -70,18 +71,22 @@ tonic-prost-build.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"
-tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 tokio-stream.workspace = true
 tower.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tokio = { version = "1.48.0", features = ["net", "io-util", "rt-multi-thread"] }
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
 
 [lints]
 workspace = true

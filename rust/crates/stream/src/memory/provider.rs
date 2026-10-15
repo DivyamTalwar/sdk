@@ -143,56 +143,35 @@ impl StreamProvider for MemoryStream {
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         validate_limit(request.limit)?;
-        let changed = {
-            let mut state = self.state.write().await;
-            state
-                .hierarchy_changed
-                .get_or_insert_with(|| watch::channel(()).0)
-                .subscribe()
-        };
-        let children = stream::try_unfold(
-            (
-                self.clone(),
-                request,
-                changed,
-                std::collections::BTreeSet::new(),
-                VecDeque::<StreamPath>::new(),
-            ),
-            |(provider, request, mut changed, mut seen, mut queued)| async move {
+        let changed = self.child_changes(request.parent.as_ref()).await;
+        Ok(stream::try_unfold(
+            (self.clone(), request.parent, changed, None),
+            |(provider, parent, mut changed, mut previous)| async move {
                 loop {
-                    if let Some(path) = queued.pop_front() {
-                        seen.insert(path.clone());
+                    let next = {
+                        let state = provider.state.read().await;
+                        // Switch from the creation wakeup to this parent's own index.
+                        if let Some(index) = state.child_index(parent.as_ref()) {
+                            changed = index.changed.subscribe();
+                        }
+                        changed.borrow_and_update();
+                        state.next_child(parent.as_ref(), previous.as_ref())?
+                    };
+                    if let Some(path) = next {
+                        previous = Some(path.clone());
                         return Ok(Some((
                             Child { path },
-                            (provider, request, changed, seen, queued),
+                            (provider, parent, changed, previous),
                         )));
                     }
-                    {
-                        let state = provider.state.read().await;
-                        changed.borrow_and_update();
-                        queued.extend(
-                            state
-                                .paths
-                                .keys()
-                                .filter(|path| {
-                                    path.as_str().rsplit_once('/').map(|(parent, _)| parent)
-                                        == request.parent.as_ref().map(StreamPath::as_str)
-                                        && !seen.contains(*path)
-                                })
-                                .take(request.limit as usize)
-                                .cloned(),
-                        );
-                    }
-                    if queued.is_empty() {
-                        changed
-                            .changed()
-                            .await
-                            .map_err(|_| StreamError::Unavailable)?;
-                    }
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| StreamError::Unavailable)?;
                 }
             },
-        );
-        Ok(children.boxed())
+        )
+        .boxed())
     }
 
     async fn children_page(

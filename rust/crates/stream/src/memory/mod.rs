@@ -50,6 +50,7 @@ include!("memory_stream.rs");
 include!("provider.rs");
 
 include!("state.rs");
+include!("children.rs");
 
 include!("retained.rs");
 

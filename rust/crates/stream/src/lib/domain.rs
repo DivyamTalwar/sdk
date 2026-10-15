@@ -360,4 +360,4 @@ pub struct IdempotencyObservation {
 /// Backpressured finite read or long-lived follow.
 pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
-pub type ChildStream = futures::stream::BoxStream<'static, Result<Child, StreamError>>;
+pub type ChildStream = BoxProviderStream<'static, Result<Child, StreamError>>;

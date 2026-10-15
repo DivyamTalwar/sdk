@@ -26,6 +26,24 @@ impl Client {
         Ok(())
     }
 
+    async fn open_children(
+        &self,
+        body: wire::ChildrenRequest,
+    ) -> Result<
+        (
+            futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>,
+            Completion,
+        ),
+        StreamError,
+    > {
+        let (response, completion) = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.children(request).await })
+            })
+            .await?;
+        Ok((completion.span.scope(response).boxed(), completion))
+    }
+
     fn records(&self, path: StreamPath, from: u64, limit: Option<u32>) -> RecordStream {
         let span = if limit.is_some() {
             tracing::info_span!(
@@ -162,33 +180,56 @@ impl StreamProvider for Client {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         };
-        let (response, completion) = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.children(request).await })
-            })
-            .await?;
-        let response = completion.span.scope(response);
+        let active = Some(self.open_children(body.clone()).await?);
         Ok(stream::try_unfold(
-            (response, completion),
-            |(mut response, mut completion)| async move {
-                let Some(item) = response.next().await else {
-                    completion.ok();
-                    return Ok(None);
-                };
-                let item = item.map_err(|error| {
-                    completion.status(&error);
-                    status(&error)
-                })?;
-                let child = item
-                    .child
-                    .ok_or(StreamError::Unavailable)
-                    .and_then(|child| {
-                        Ok(Child {
-                            path: path(child.path)?,
-                        })
-                    })
-                    .inspect_err(|_| completion.invalid_response())?;
-                Ok(Some((child, (response, completion))))
+            (
+                self.clone(),
+                body,
+                active,
+                std::collections::BTreeSet::new(),
+            ),
+            |(client, body, mut active, mut seen)| async move {
+                loop {
+                    if active.is_none() {
+                        // Retry a closed transport; idle live subscriptions never poll.
+                        tokio::time::sleep(RETRY_DELAY).await;
+                        active = Some(client.open_children(body.clone()).await?);
+                    }
+                    let (response, completion) = active.as_mut().ok_or(StreamError::Unavailable)?;
+                    match response.next().await {
+                        Some(Ok(item)) => {
+                            let child = item
+                                .child
+                                .ok_or(StreamError::Unavailable)
+                                .and_then(|child| {
+                                    Ok(Child {
+                                        path: path(child.path)?,
+                                    })
+                                })
+                                .inspect_err(|_| completion.invalid_response())?;
+                            if child.path.parent().as_ref().map(StreamPath::as_str)
+                                != body.parent.as_deref()
+                            {
+                                completion.invalid_response();
+                                return Err(StreamError::Unavailable);
+                            }
+                            if seen.insert(child.path.clone()) {
+                                return Ok(Some((child, (client, body, active, seen))));
+                            }
+                        }
+                        Some(Err(error)) => {
+                            completion.status(&error);
+                            if !retryable(&error) {
+                                return Err(status(&error));
+                            }
+                            active = None;
+                        }
+                        None => {
+                            completion.ok();
+                            active = None;
+                        }
+                    }
+                }
             },
         )
         .boxed())

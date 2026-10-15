@@ -18,6 +18,10 @@ use std::{
 };
 use wasm_bindgen::{JsCast, JsValue};
 
+mod discovery;
+#[cfg(test)]
+mod tests;
+
 const JOURNAL: &str = "journal";
 const METADATA: &str = "metadata";
 const METADATA_WORDS: usize = 10;
@@ -79,6 +83,7 @@ struct Inner {
     cache: tokio::sync::Mutex<Cache>,
     clock: Arc<ReplayClock>,
     limits: BrowserStreamLimits,
+    publications: discovery::Publications,
 }
 
 /// One account-local durable provider, shared safely across tabs and workers.
@@ -118,6 +123,7 @@ impl BrowserStream {
         let provider = memory(limits.memory, Arc::clone(&clock));
         Ok(Self {
             inner: Rc::new(Inner {
+                publications: discovery::Publications::new(name)?,
                 database,
                 cache: tokio::sync::Mutex::new(Cache {
                     provider,
@@ -298,6 +304,10 @@ impl BrowserStream {
             .map_err(backend)?
             .await
             .map_err(backend)?;
+        // Wake before the commit await so cancelling that await cannot strand
+        // subscribers. Their refresh transaction waits for this one to commit
+        // or abort, and same-handle readers also share the cache lock.
+        self.inner.publications.publish()?;
         transaction.commit().await.map_err(backend)?;
         cache.cursor = count + 1;
         cache.valid = true;
@@ -381,8 +391,7 @@ impl StreamProvider for BrowserStream {
             .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.with_provider(async move |provider| provider.children(request).await)
-            .await
+        self.discover(request).await
     }
     async fn children_page(
         &self,
