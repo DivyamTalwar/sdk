@@ -1,6 +1,95 @@
 use super::*;
 use serde_json::json;
 
+#[tokio::test]
+async fn imported_on_failure_controls_a_missing_guard() -> Result<()> {
+    for (setting, expected) in [
+        (Some("block"), true),
+        (Some("continue"), false),
+        (None, false),
+    ] {
+        let mut guard = json!({"type":"command", "command":"missing-guard"});
+        if let Some(setting) = setting {
+            guard["onFailure"] = setting.into();
+        }
+        let mut hooks = Hooks::default();
+        hooks.add_json(
+            json!({"hooks":{"PreToolUse":[{"hooks":[guard]}]}})
+                .to_string()
+                .as_bytes(),
+        )?;
+        let output = hooks
+            .run_commands(
+                HookEvent::PreToolUse,
+                &json!({"tool_name":"bash"}),
+                &registry()?,
+                |_| {
+                    std::future::ready(Err(Error::Process {
+                        kind: "not_found",
+                        message: "missing guard".into(),
+                    }))
+                },
+            )
+            .await?;
+        assert_eq!(output.blocked.is_some(), expected, "{setting:?}");
+        assert_eq!(output.diagnostics.len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn post_tool_block_preserves_feedback_alongside_additional_context() {
+    let mut output = HookOutput::default();
+    output.apply(HookEvent::PostToolUse, HookFailure::Report, Ok((Some(0),
+        br#"{"decision":"block","reason":"Fix lint errors","hookSpecificOutput":{"additionalContext":"Run lint again"}}"#.to_vec(), vec![])));
+    assert_eq!(
+        output.additional_context,
+        ["Fix lint errors", "Run lint again"]
+    );
+    assert!(output.blocked.is_none());
+    assert!(output.diagnostics.is_empty());
+}
+
+#[tokio::test]
+async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Result<()> {
+    let mut hooks = Hooks::default();
+    #[cfg(windows)]
+    let (command, shell) = (
+        r#"echo {"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"guard denied"}}"#,
+        "cmd",
+    );
+    #[cfg(not(windows))]
+    let (command, shell) = (
+        r#"exec 0<&-; printf '%s' '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"guard denied"}}'"#,
+        "sh",
+    );
+    hooks.add_rules([HookRule {
+        on: HookEvent::PreToolUse,
+        matcher: String::new(),
+        hooks: vec![HookSpec {
+            run: HookRun::Shell {
+                command: command.into(),
+                shell: Some(shell.into()),
+            },
+            timeout_ms: 5_000,
+            failure: HookFailure::Report,
+        }],
+    }])?;
+    let root = std::env::current_dir().map_err(|error| Error::Invalid(error.to_string()))?;
+    let output = hooks
+        .run(
+            HookEvent::PreToolUse,
+            &root,
+            &root,
+            json!({"tool_name":"bash", "tool_input":{"payload":"x".repeat(1_048_576)}}),
+            &registry()?,
+        )
+        .await?;
+    assert_eq!(output.blocked.as_deref(), Some("guard denied"));
+    assert!(output.diagnostics.is_empty(), "{output:?}");
+    Ok(())
+}
+
 fn command(hook: &HookSpec) -> &str {
     match &hook.run {
         HookRun::Executable { executable, .. } => executable,
@@ -209,7 +298,7 @@ fn invalid_hook_replacement_is_atomic() -> Result<()> {
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","shell":"invalid"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":[],"shell":"sh"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","args":["\u{0}"]}]}]}}),
-        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","failure":"ignore"}]}]}}),
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","onFailure":"ignore"}]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"test","timeout":u64::MAX}]}]}}),
     ] {
         assert!(hooks.add_json(document.to_string().as_bytes()).is_err());
@@ -223,7 +312,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
     let mut imported = Hooks::default();
     imported.add_json(
         br#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
-        {"type":"command","command":"guard","args":["--check"],"timeout":2,"failure":"block"},
+        {"type":"command","command":"guard","args":["--check"],"timeout":2,"onFailure":"block"},
         {"type":"command","command":"format","shell":"sh"}
     ]}]}}"#,
     )?;
@@ -237,7 +326,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
         command = "guard"
         args = ["--check"]
         timeout = 2
-        failure = "block"
+        onFailure = "block"
         [[hooks.PreToolUse.hooks]]
         type = "command"
         command = "format"
@@ -313,8 +402,8 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                 let mut hooks = Hooks::default();
                 hooks.add_json(
                     &serde_json::to_vec(&json!({"hooks":{event.name():[{"hooks":[
-                        {"type":"command","command":"guard","failure":policy},
-                        {"type":"command","command":"remaining","failure":policy}
+                        {"type":"command","command":"guard","onFailure":match policy { HookFailure::Report => "continue", HookFailure::Block => "block" }},
+                        {"type":"command","command":"remaining","onFailure":match policy { HookFailure::Report => "continue", HookFailure::Block => "block" }}
                     ]}]}}))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 )?;
@@ -578,7 +667,7 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
             let mut hooks = Hooks::default();
             hooks.add_json(
                 &serde_json::to_vec(&json!({"hooks":{event.name():[{"hooks":[
-                    {"type":"command","command":"guard","failure":policy},
+                    {"type":"command","command":"guard","onFailure":match policy { HookFailure::Report => "continue", HookFailure::Block => "block" }},
                     {"type":"command","command":"remaining"}
                 ]}]}}))
                 .map_err(|error| Error::Invalid(error.to_string()))?,

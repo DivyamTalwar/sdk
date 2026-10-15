@@ -269,6 +269,12 @@ impl HookOutput {
                 take_string(&mut value, "stopReason").unwrap_or_else(|| "Stopped by hook".into())
             });
         }
+        if event == HookEvent::PostToolUse
+            && value.get("decision").and_then(Value::as_str) == Some("block")
+            && let Some(reason) = take_string(&mut value, "reason")
+        {
+            self.additional_context.push(reason);
+        }
         if matches!(event, HookEvent::PreToolUse | HookEvent::Stop)
             && (value.get("decision").and_then(Value::as_str) == Some("block")
                 || specific.get("permissionDecision").and_then(Value::as_str) == Some("deny"))

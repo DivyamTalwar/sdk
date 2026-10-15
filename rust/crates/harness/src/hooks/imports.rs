@@ -14,8 +14,16 @@ struct CommandHook {
     shell: Option<String>,
     #[serde(default, rename = "async")]
     asynchronous: bool,
-    #[serde(default)]
-    failure: HookFailure,
+    #[serde(default, rename = "onFailure")]
+    on_failure: OnFailure,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OnFailure {
+    #[default]
+    Continue,
+    Block,
 }
 
 fn default_timeout() -> u64 {
@@ -49,7 +57,10 @@ impl CommandHook {
                 .timeout
                 .checked_mul(1_000)
                 .ok_or_else(|| Error::Invalid("hook timeout overflows milliseconds".into()))?,
-            failure: self.failure,
+            failure: match self.on_failure {
+                OnFailure::Continue => HookFailure::Report,
+                OnFailure::Block => HookFailure::Block,
+            },
         })
     }
 }
