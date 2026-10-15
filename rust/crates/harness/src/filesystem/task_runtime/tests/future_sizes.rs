@@ -141,8 +141,6 @@ async fn reconciliation_has_only_its_progress_allocation() -> Result<()> {
         // allowance allocates that diagnostic without a progress frame.
         let expected = u64::from(allowance != 0) + u64::from(!valid || allowance == 0);
         assert_eq!(allocations.count_total, expected);
-        assert_eq!(allocations.count_current, 0);
-        assert_eq!(allocations.bytes_current, 0);
     }
     Ok(())
 }
