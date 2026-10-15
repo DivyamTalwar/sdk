@@ -11,6 +11,8 @@ fn key(byte: u8) -> ObjectId {
 #[path = "../../src/native_mount/adapter/folded_cache.rs"]
 mod cache;
 
+mod view;
+
 #[test]
 fn immutable_directory_results_are_never_torn_or_lost() {
     loom::model(|| {

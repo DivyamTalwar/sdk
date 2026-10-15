@@ -33,7 +33,7 @@ pub struct PathTrie {
     config: crate::VolumeConfig,
     volume: String,
     subject: (super::PrincipalKind, String),
-    pub(super) capability_binding: [u8; 32],
+    capability_binding: [u8; 32],
 }
 
 /// A path bound to its immutable compiled view. Its private state cannot be
@@ -242,6 +242,16 @@ impl PathTrie {
     #[must_use]
     pub fn subject(&self) -> (super::PrincipalKind, &str) {
         (self.subject.0, &self.subject.1)
+    }
+
+    /// Whether two views belong to the same authenticated volume, principal,
+    /// capability and native name semantics. Policy revisions may differ.
+    #[must_use]
+    pub fn same_binding(&self, other: &Self) -> bool {
+        self.config == other.config
+            && self.volume == other.volume
+            && self.subject == other.subject
+            && self.capability_binding == other.capability_binding
     }
 
     /// Policy revision used for every decision in this view.

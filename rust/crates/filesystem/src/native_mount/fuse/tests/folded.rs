@@ -213,9 +213,13 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
         (0..1024).map(|index| format!("Entry{index:04}")),
     ))?;
     let config = checkout.volume_config();
-    let source = MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new(
+            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+            config,
+        )?,
+        vec![],
+        None,
     )?;
     let work = fuse_fixture_work();
     let first = source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
