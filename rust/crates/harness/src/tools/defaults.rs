@@ -13,22 +13,51 @@ use std::sync::Arc;
 /// The standard coding toolset. Custom tools can be added to this registry.
 pub fn defaults() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::default();
-    for tool in [
-        command(
-            "bash",
-            "Run a bash command in the calling agent's workspace view",
-        ),
-        command(
-            "fs",
-            "Run one git facade command, including diff, merge and discard of agents/<ref>",
-        ),
-        crate::tool::files::read()?,
-        crate::tool::files::write()?,
-        crate::tool::files::edit()?,
-    ] {
-        registry.register((tool, None), &mut None, None)?;
-    }
+    bind_defaults(&mut registry, &mut Vec::new(), None, true, true)?;
     Ok(registry)
+}
+
+pub(crate) fn bind_defaults(
+    registry: &mut ToolRegistry,
+    grants: &mut Vec<String>,
+    bound: Option<&RuntimeScope>,
+    volume: bool,
+    workspace: bool,
+) -> Result<()> {
+    for (name, available) in [
+        ("bash", workspace),
+        ("fs", workspace),
+        ("read", volume),
+        ("write", volume),
+        ("edit", volume),
+    ] {
+        if !available {
+            continue;
+        }
+        let capability = crate::contract::capability::tool_call(name);
+        if bound.is_some_and(|scope| !scope.grants().contains(&capability)) {
+            continue;
+        }
+        let tool = match name {
+            "bash" => command(
+                name,
+                "Run a bash command in the calling task's composed workspace view",
+            ),
+            "fs" => command(
+                name,
+                "Run one git facade command, including diff, merge and discard of agents/<ref>",
+            ),
+            "read" => crate::tool::files::read()?,
+            "write" => crate::tool::files::write()?,
+            "edit" => crate::tool::files::edit()?,
+            _ => unreachable!(),
+        };
+        registry.register((tool, None), &mut None, None)?;
+        if bound.is_none() && !grants.contains(&capability) {
+            grants.push(capability);
+        }
+    }
+    Ok(())
 }
 
 fn command(name: &'static str, description: &str) -> Tool {

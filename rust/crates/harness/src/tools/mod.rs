@@ -9,3 +9,5 @@ pub use command::parse_command;
     not(target_arch = "wasm32")
 ))]
 pub mod git;
+
+pub(crate) use defaults::bind_defaults;

@@ -12,14 +12,14 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
             Some(name)
         );
     }
-    let mut custom = ToolRegistry::default();
-    custom.register((example_tool(), None), &mut None, None)?;
     let mut second = example_tool();
     second.definition.name = "example.second".into();
     let enabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
-        .tool(second)?
-        .tools(custom)?
+        .content(content())
+        .workspace_tools(Arc::new(Echo))
+        .tool(second)
+        .tools([example_tool()])
         .build()?;
     for name in names {
         assert_eq!(enabled.runtime().tool(name)?.name, name);
@@ -36,8 +36,8 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     );
     let disabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
-        .default_tools(false)
-        .tool(example_tool())?
+        .without_default_tools()
+        .tool(example_tool())
         .build()?;
     for name in names {
         assert!(matches!(
@@ -62,7 +62,8 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
     assert!(matches!(
         HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .tool(crate::tool::files::read()?)?
+            .content(content())
+            .tool(crate::tool::files::read()?)
             .build(),
         Err(Error::Conflict(_))
     ));
@@ -71,8 +72,68 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
         .agent_loop(Arc::new(DelegatingLoop))
         .build()?;
     for name in ["bash", "fs", "read", "write", "edit"] {
-        assert_eq!(bound.runtime().tool(name)?.name, name);
+        assert!(matches!(
+            bound.runtime().tool(name),
+            Err(Error::NotFound(_))
+        ));
         assert!(!bound.capabilities().contains(&format!("tool:call:{name}")));
+    }
+    Ok(())
+}
+
+struct Reader;
+impl conversation::ContentResidencyVerifier for Reader {}
+fn content() -> runtime::ContentBindings {
+    runtime::ContentBindings {
+        reader: Arc::new(Reader),
+        writer: None,
+    }
+}
+
+#[test]
+fn registration_and_grants_follow_available_bindings() -> Result<()> {
+    for volume in [false, true] {
+        for workspace in [false, true] {
+            let mut builder = HarnessBuilder::new().agent_loop(Arc::new(DelegatingLoop));
+            if volume {
+                builder = builder.content(content());
+            }
+            if workspace {
+                builder = builder.workspace_tools(Arc::new(Echo));
+            }
+            let harness = builder.build()?;
+            for (name, available) in [
+                ("bash", workspace),
+                ("fs", workspace),
+                ("read", volume),
+                ("write", volume),
+                ("edit", volume),
+            ] {
+                assert_eq!(harness.runtime().tool(name).is_ok(), available);
+                assert_eq!(
+                    harness
+                        .capabilities()
+                        .contains(&format!("tool:call:{name}")),
+                    available
+                );
+            }
+        }
+    }
+    let mut bindings = Bindings::local();
+    bindings.content = Some(content());
+    bindings.workspace_tools = Some(Arc::new(Echo));
+    bindings.scope =
+        runtime::RuntimeScope::new(Capabilities::new(["tool:call:read"]), Limits::default())?;
+    let harness = HarnessBuilder::new()
+        .bindings(bindings)
+        .agent_loop(Arc::new(DelegatingLoop))
+        .build()?;
+    assert_eq!(harness.runtime().tool("read")?.name, "read");
+    for name in ["bash", "fs", "write", "edit"] {
+        assert!(matches!(
+            harness.runtime().tool(name),
+            Err(Error::NotFound(_))
+        ));
     }
     Ok(())
 }

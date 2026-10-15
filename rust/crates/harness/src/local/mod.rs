@@ -155,11 +155,10 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?,
         );
-        let mut tools = if config.default_tools {
-            crate::tools::defaults()?
-        } else {
-            ToolRegistry::default()
-        };
+        let mut tools = ToolRegistry::default();
+        if config.default_tools {
+            crate::tools::bind_defaults(&mut tools, &mut Vec::new(), None, true, false)?;
+        }
         for tool in config.tools {
             tools.register((tool, None), &mut None, None)?;
         }

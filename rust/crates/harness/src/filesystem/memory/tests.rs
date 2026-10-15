@@ -160,7 +160,7 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             Arc::new(TextModel(requests.clone())),
         )
-        .tool(storage.list_files_tool(Limits::default())?)?
+        .tool(storage.list_files_tool(Limits::default())?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -653,7 +653,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
             model.clone(),
         )
         .grant(capability::MODEL_GENERATE)
-        .tool(storage.list_files_tool(limits)?)?
+        .tool(storage.list_files_tool(limits)?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -694,7 +694,7 @@ async fn memory_prompt_runs_with_attachments() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             Arc::new(TextModel(requests.clone())),
         )
-        .tool(storage.list_files_tool(Limits::default())?)?
+        .tool(storage.list_files_tool(Limits::default())?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
