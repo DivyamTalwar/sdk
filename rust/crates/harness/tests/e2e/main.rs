@@ -85,9 +85,9 @@ async fn run(case: Scenario) -> TestResult {
                 }
             }
             if let Some(input) = replay_input {
-                let requests = provider.request_count()?;
+                let requests = provider.request_count();
                 let replay = executor.execute(input, journal.as_ref()).await?;
-                if replay != actual || provider.request_count()? != requests {
+                if replay != actual || provider.request_count() != requests {
                     return Err("replay changed the result or dispatched the model again".into());
                 }
             }
@@ -95,12 +95,12 @@ async fn run(case: Scenario) -> TestResult {
         (None, Some(expected), Err(actual)) if actual.to_string().contains(expected) => {}
         (_, _, actual) => return Err(format!("unexpected result: {actual:?}").into()),
     }
-    if provider.remaining()? != 0 {
-        return Err(format!("{} unused scripted turns", provider.remaining()?).into());
+    if provider.remaining() != 0 {
+        return Err(format!("{} unused scripted turns", provider.remaining()).into());
     }
     if !case.expect.requests.is_empty() {
         let requests = provider
-            .requests()?
+            .requests()
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;

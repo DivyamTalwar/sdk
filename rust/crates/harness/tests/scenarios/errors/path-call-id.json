@@ -1,5 +1,5 @@
 {
-  "prompt": "Call IDs must not contain path separators.",
-  "turns": [[{"kind":"tool_call","call_id":"a/b","name":"read","arguments":{}},{"kind":"completed","metadata":null}]],
-  "expect": {"error":"tool call identity is invalid", "not_events":[{"kind":"tool_started"}]}
+  "prompt":"Call IDs must not contain path separators.",
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"a/b","name":"read","arguments":{}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"error":"tool call identity is invalid","not_events":[{"kind":"tool_started"}]}
 }
