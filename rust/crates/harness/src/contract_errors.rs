@@ -43,6 +43,14 @@ pub enum Error {
     /// Durable provider operation failed.
     #[error("storage failure: {0}")]
     Storage(String),
+    /// Native process creation, capture, or hook configuration IO failed.
+    #[error("process {kind}: {message}")]
+    Process {
+        /// Platform-neutral operation failure classification.
+        kind: &'static str,
+        /// Diagnostic returned by the process or IO runtime.
+        message: String,
+    },
     /// An actual SDK buffer reservation failure, without allocating a diagnostic.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
@@ -298,6 +306,7 @@ impl Error {
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
+            Self::Process { .. } => ErrorCode::Invalid,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
