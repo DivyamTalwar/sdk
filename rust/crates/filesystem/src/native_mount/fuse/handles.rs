@@ -432,7 +432,9 @@ impl FuseProjection {
         let path = &child.spelled;
         let stamp = source.view_stamp_with_meter(work)?;
         let (existing, proof) = match absent_since {
-            Some(held) if source.unchanged_since_with_meter(child.key(), None, held, work)? => {
+            Some(held)
+                if source.unchanged_since_with_meter(&child.spelled, None, held, work)? =>
+            {
                 (None, Some(held))
             }
             _ => (source.lookup_with_meter(path, work)?, stamp),
@@ -476,7 +478,7 @@ impl FuseProjection {
             let (handle, open_flags) = state.admit_file_handle(
                 source,
                 inode,
-                child.key(),
+                &child.spelled,
                 &lookup,
                 stamp,
                 flags,
@@ -490,6 +492,7 @@ impl FuseProjection {
             state.release_lookup_reference(inode, 1);
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        state.retain_spelling(inode, child)?;
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 }

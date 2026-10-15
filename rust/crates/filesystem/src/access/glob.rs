@@ -1,4 +1,5 @@
 use super::InvalidPolicy;
+include!(concat!(env!("OUT_DIR"), "/case_fold.rs"));
 use super::compilation::{MAXIMUM_NFA_STATES, spend};
 
 pub(super) fn valid_path(path: &str) -> bool {
@@ -24,7 +25,7 @@ pub(super) fn validate(pattern: &str) -> Result<(), InvalidPolicy> {
 }
 
 // Independent reference matcher: dynamic programming over path components.
-pub(super) fn matches(pattern: &str, path: &str) -> bool {
+pub(super) fn matches(pattern: &str, path: &str, folded: bool) -> bool {
     let parts: Vec<_> = if path.is_empty() {
         Vec::new()
     } else {
@@ -41,7 +42,7 @@ pub(super) fn matches(pattern: &str, path: &str) -> bool {
             }
         } else {
             for ((out, before), part) in next.iter_mut().skip(1).zip(&matched).zip(&parts) {
-                *out = *before && component_matches(component, part);
+                *out = *before && component_matches(component, part, folded);
             }
         }
         matched = next;
@@ -49,7 +50,7 @@ pub(super) fn matches(pattern: &str, path: &str) -> bool {
     matched.last().copied().unwrap_or(false)
 }
 
-fn component_matches(pattern: &str, text: &str) -> bool {
+fn component_matches(pattern: &str, text: &str, folded: bool) -> bool {
     let chars: Vec<_> = text.chars().collect();
     let mut matched: Vec<_> = (0..=chars.len()).map(|index| index == 0).collect();
     for token in pattern.chars() {
@@ -63,6 +64,21 @@ fn component_matches(pattern: &str, text: &str) -> bool {
         } else {
             for ((out, before), ch) in next.iter_mut().skip(1).zip(&matched).zip(&chars) {
                 *out = *before && (token == '?' || token == *ch);
+            }
+        }
+        if token == '?' && folded {
+            for (index, _) in matched.iter().enumerate().filter(|(_, before)| **before) {
+                for expansion in CASE_FOLD_EXPANSIONS {
+                    let end = index + expansion.chars().count();
+                    if chars
+                        .get(index..end)
+                        .is_some_and(|part| part.iter().copied().eq(expansion.chars()))
+                    {
+                        if let Some(out) = next.get_mut(end) {
+                            *out = true;
+                        }
+                    }
+                }
             }
         }
         matched = next;
@@ -114,7 +130,11 @@ impl Nfa {
         Ok(id)
     }
 
-    pub fn pattern(&mut self, pattern: &str) -> Result<(usize, usize), InvalidPolicy> {
+    pub fn pattern(
+        &mut self,
+        pattern: &str,
+        folded: bool,
+    ) -> Result<(usize, usize), InvalidPolicy> {
         if pattern.chars().count() > MAXIMUM_NFA_STATES {
             return Err(InvalidPolicy("glob compilation exceeds NFA state limit"));
         }
@@ -161,10 +181,26 @@ impl Nfa {
                                 .edges
                                 .push((Symbol::Component, current));
                         }
-                        '?' => self
-                            .node_mut(current)?
-                            .edges
-                            .push((Symbol::Component, next)),
+                        '?' => {
+                            self.node_mut(current)?
+                                .edges
+                                .push((Symbol::Component, next));
+                            if folded {
+                                for expansion in CASE_FOLD_EXPANSIONS {
+                                    let mut from = current;
+                                    let mut chars = expansion.chars().peekable();
+                                    while let Some(ch) = chars.next() {
+                                        let to = if chars.peek().is_none() {
+                                            next
+                                        } else {
+                                            self.node()?
+                                        };
+                                        self.node_mut(from)?.edges.push((Symbol::Literal(ch), to));
+                                        from = to;
+                                    }
+                                }
+                            }
+                        }
                         _ => self
                             .node_mut(current)?
                             .edges

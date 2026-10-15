@@ -248,7 +248,7 @@ impl ProjectionState {
                             stamp,
                             work,
                         )? && source.unchanged_since_with_meter(
-                            child.key(),
+                            &child.spelled,
                             Some(entry.node.file_id),
                             stamp,
                             work,
@@ -311,6 +311,7 @@ impl ProjectionState {
                 } else {
                     Duration::ZERO
                 };
+                self.retain_spelling(child_inode, child)?;
                 work.admit(Copy.delta(entry.name.len() as u64))?;
                 if listing.as_mut().ok_or(libc::EIO)?.push(
                     next,

@@ -206,7 +206,8 @@ pub struct Resource<'a> {
     pub generation: u64,
     /// Current head generation.
     pub head: u64,
-    /// Canonical volume-relative path, empty for root.
+    /// Lossless Unicode projection of the profile's native path, empty for root.
+    /// Other name encodings and non-Unicode native names are unsupported.
     pub path: &'a str,
 }
 

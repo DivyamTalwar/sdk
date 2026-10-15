@@ -888,6 +888,7 @@ proptest! {
         path in prop::collection::vec(prop_oneof![Just("a"), Just("A"), Just("b"), Just("aa"), Just("é"), Just("É"), Just("ΟΣ"), Just("ος")], 0..5),
         grant_path in glob_strategy(),
         folded in any::<bool>(),
+        profile in 0..4usize,
     ) {
         let principal = principal();
         let rules = rules.into_iter().enumerate().map(|(index, (deny, bits, path))|
@@ -898,6 +899,12 @@ proptest! {
         let context = Context { now: 100, approvals: 0 };
         let path = path.join("/");
         let mut res = resource(&principal.lineage, &path, 10);
+        res.config.profile = [
+            acyclic_fs::model::FilesystemProfile::Portable,
+            acyclic_fs::model::FilesystemProfile::Browser,
+            acyclic_fs::model::FilesystemProfile::Posix,
+            acyclic_fs::model::FilesystemProfile::Windows,
+        ][profile];
         if folded { res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
         let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
         let prepared = trie.prepare(&path)?;
