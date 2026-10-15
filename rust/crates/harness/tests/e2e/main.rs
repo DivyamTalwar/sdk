@@ -1,4 +1,6 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
+mod composer;
+mod drivers;
 mod execution;
 mod matchers;
 mod scenario;
@@ -90,6 +92,39 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
 }
 
 #[tokio::test]
+async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = root.join("summary/exact-capacity.json");
+    run(Scenario::load(&root, &baseline)?).await?;
+    for field in ["mode", "text", "result", "context", "budget"] {
+        let mut case = Scenario::load(&root, &baseline)?;
+        match field {
+            "mode" => {
+                case.kind = scenario::Kind::Turn;
+                case.prompt = case.instruction.take();
+            }
+            "text" => case.expect.text = Some("wrong".into()),
+            "result" => case.expect.result = Some(serde_json::json!({"source_messages":99})),
+            "context" => case.context.pop().map(|_| ()).ok_or("missing context")?,
+            "budget" => case.max_output_tokens = None,
+            _ => return Err("unknown summary mutation".into()),
+        }
+        assert!(run(case).await.is_err(), "accepted incorrect {field}");
+    }
+    let mut case = Scenario::load(&root, &root.join("summary/recover-prefix.json"))?;
+    case.recoveries
+        .first_mut()
+        .ok_or("missing recovery")?
+        .observed
+        .clear();
+    assert!(
+        run(case).await.is_err(),
+        "accepted incorrect summary recovery prefix"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accounting() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = root.join("compaction/threshold.json");
@@ -169,7 +204,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread")]
 async fn scenarios() -> TestResult {
     let started = Instant::now();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
@@ -188,8 +223,8 @@ async fn scenarios() -> TestResult {
         async move {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
-                let case = Scenario::load(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), run(case)).await??;
+                let case = scenario::load_value(&root, &case_path)?;
+                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await
@@ -197,7 +232,7 @@ async fn scenarios() -> TestResult {
             (path, result)
         }
     }))
-    .buffer_unordered(16);
+    .buffer_unordered(count);
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();
