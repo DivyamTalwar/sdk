@@ -84,7 +84,8 @@ struct Source {
 
 struct ReadPolicy {
     toml: bool,
-    hooks: bool,
+    hook_order: Option<usize>,
+    hook_settings_order: usize,
     mcp: Option<Dialect>,
     mcp_order: usize,
     local: bool,
@@ -168,6 +169,10 @@ impl NativeSettings {
         }
         let mut snapshot = Self::default();
         let mut selected = BTreeMap::new();
+        #[cfg(feature = "hooks")]
+        let mut hook_documents = Vec::new();
+        #[cfg(feature = "hooks")]
+        let mut disable_hooks: Option<(usize, Value)> = None;
         let mut unique = BTreeMap::<PathBuf, ReadPolicy>::new();
         for (order, source) in sources
             .into_iter()
@@ -187,7 +192,8 @@ impl NativeSettings {
                 Entry::Vacant(entry) => {
                     entry.insert(ReadPolicy {
                         toml,
-                        hooks: source.hooks,
+                        hook_order: source.hooks.then_some(order),
+                        hook_settings_order: order,
                         mcp: source.mcp,
                         mcp_order: order,
                         local: source.local,
@@ -203,7 +209,10 @@ impl NativeSettings {
                             "one settings file declares conflicting formats".into(),
                         ));
                     }
-                    prior.hooks |= source.hooks;
+                    if source.hooks {
+                        prior.hook_order.get_or_insert(order);
+                        prior.hook_settings_order = order;
+                    }
                     prior.mcp = prior.mcp.or(source.mcp);
                     if source.mcp.is_some() {
                         prior.mcp_order = order;
@@ -226,22 +235,19 @@ impl NativeSettings {
                     "settings file exceeds its read bound".into(),
                 ));
             }
-            #[cfg(feature = "hooks")]
-            if source.mcp.is_none() {
-                snapshot.hooks.add_document(parse(&bytes, source.toml)?)?;
-                continue;
-            }
             let mut document: BTreeMap<String, Value> = parse(&bytes, source.toml)?;
             #[cfg(feature = "hooks")]
-            if source.hooks
-                && let Some(hooks) = document.remove("hooks")
-            {
-                snapshot
-                    .hooks
-                    .add_document(crate::hooks::imports::Document {
-                        hooks: serde_json::from_value(hooks)
-                            .map_err(|error| Error::Invalid(format!("settings hooks: {error}")))?,
-                    })?;
+            if let Some(order) = source.hook_order {
+                if let Some(disabled) = document.remove("disableAllHooks")
+                    && disable_hooks
+                        .as_ref()
+                        .is_none_or(|(prior, _)| *prior < source.hook_settings_order)
+                {
+                    disable_hooks = Some((source.hook_settings_order, disabled));
+                }
+                if let Some(hooks) = document.remove("hooks") {
+                    hook_documents.push((order, hooks));
+                }
             }
             if let Some(dialect) = source.mcp {
                 let key = match dialect {
@@ -270,6 +276,26 @@ impl NativeSettings {
             let imported: ImportedServer = serde_json::from_value(imported)
                 .map_err(|error| Error::Invalid(format!("MCP server {name}: {error}")))?;
             snapshot.mcp.insert(name, imported, dialect)?;
+        }
+        #[cfg(feature = "hooks")]
+        {
+            let disabled = disable_hooks
+                .map(|(_, value)| serde_json::from_value::<bool>(value))
+                .transpose()
+                .map_err(|_| Error::Invalid("disableAllHooks must be a boolean".into()))?
+                .unwrap_or(false);
+            if !disabled {
+                hook_documents.sort_unstable_by_key(|(order, _)| *order);
+                for (_, hooks) in hook_documents {
+                    snapshot
+                        .hooks
+                        .add_document(crate::hooks::imports::Document {
+                            hooks: serde_json::from_value(hooks).map_err(|error| {
+                                Error::Invalid(format!("settings hooks: {error}"))
+                            })?,
+                        })?;
+                }
+            }
         }
         Ok(snapshot)
     }

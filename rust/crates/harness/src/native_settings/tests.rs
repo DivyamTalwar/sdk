@@ -325,3 +325,114 @@ async fn untrusted_hook_sections_do_not_block_trusted_project_mcp() -> Result<()
     );
     Ok(())
 }
+
+#[cfg(feature = "hooks")]
+async fn stop_hooks(
+    snapshot: NativeSettings,
+    fixture: &Fixture,
+) -> Result<crate::hooks::HookOutput> {
+    snapshot
+        .hooks
+        .run(
+            crate::hooks::HookEvent::Stop,
+            &fixture.workspace,
+            &fixture.workspace,
+            json!({}),
+            &crate::tool::ToolRegistry::default(),
+        )
+        .await
+}
+
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn disabling_hooks_uses_trusted_settings_precedence_before_registration() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let guard = json!({"Stop":[{"hooks":[{"type":"command",
+        "command":"nonexistent-settings-regression-guard", "args":[], "onFailure":"block"}]}]});
+    let user = fixture.home.join(".claude/settings.json");
+    let project = fixture.workspace.join(".claude/settings.json");
+    let local = fixture.workspace.join(".claude/settings.local.json");
+    write(
+        &user,
+        json!({"disableAllHooks":true, "hooks":guard}).to_string(),
+    )?;
+    write(
+        &project,
+        json!({"disableAllHooks":false, "hooks":guard}).to_string(),
+    )?;
+    for trust_mcp in [false, true] {
+        let snapshot = NativeSettings::load(fixture.config().trust_project_mcp(trust_mcp)).await?;
+        let output = stop_hooks(snapshot, &fixture).await?;
+        assert!(
+            output.diagnostics.is_empty(),
+            "untrusted project override ran: {output:?}"
+        );
+        assert!(output.blocked.is_none());
+    }
+    let snapshot = NativeSettings::load(fixture.config().trust_project_hooks(true)).await?;
+    let output = stop_hooks(snapshot, &fixture).await?;
+    assert_eq!(
+        output.diagnostics.len(),
+        2,
+        "trusted false must restore both guards"
+    );
+    assert!(output.blocked.is_some());
+    write(&local, br#"{"disableAllHooks":true,"hooks":42}"#)?;
+    let snapshot = NativeSettings::load(fixture.config().trust_project_hooks(true)).await?;
+    let output = stop_hooks(snapshot, &fixture).await?;
+    assert!(
+        output.diagnostics.is_empty(),
+        "disabled hooks must stay untyped: {output:?}"
+    );
+    assert!(output.blocked.is_none());
+    write(&user, br#"{"disableAllHooks":"invalid","hooks":42}"#)?;
+    assert!(
+        NativeSettings::load(fixture.config().trust_project_hooks(true))
+            .await
+            .is_ok(),
+        "overridden disable flag must remain untyped"
+    );
+    assert!(
+        NativeSettings::load(fixture.config()).await.is_err(),
+        "selected disable flag must be a boolean"
+    );
+    Ok(())
+}
+
+#[cfg(all(unix, feature = "hooks"))]
+#[tokio::test]
+async fn canonical_aliases_preserve_the_first_hook_bearing_source_order() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let hook = |name: &str| {
+        json!({"PreToolUse":[{"hooks":[{"type":"command", "command":format!(
+        "printf '%s' '{{\"hookSpecificOutput\":{{\"updatedInput\":{{\"selected\":\"{name}\"}},\"additionalContext\":\"{name}\"}}}}'"
+    ), "shell":"sh"}]}]})
+    };
+    let source = fixture.home.join(".claude.json");
+    write(&source, json!({"hooks":hook("project")}).to_string())?;
+    write(
+        &fixture.home.join(".claude/settings.json"),
+        json!({"hooks":hook("user")}).to_string(),
+    )?;
+    std::fs::create_dir_all(fixture.workspace.join(".claude")).map_err(Error::process_io)?;
+    std::os::unix::fs::symlink(
+        &source,
+        fixture.workspace.join(".claude/settings.local.json"),
+    )
+    .map_err(Error::process_io)?;
+    let snapshot = NativeSettings::load(fixture.config().trust_project_hooks(true)).await?;
+    let output = snapshot
+        .hooks
+        .run(
+            crate::hooks::HookEvent::PreToolUse,
+            &fixture.workspace,
+            &fixture.workspace,
+            json!({"tool_name":"custom"}),
+            &crate::tool::ToolRegistry::default(),
+        )
+        .await?;
+    assert!(output.diagnostics.is_empty(), "{output:?}");
+    assert_eq!(output.additional_context, ["user", "project"]);
+    assert_eq!(output.updated_input, Some(json!({"selected":"project"})));
+    Ok(())
+}
