@@ -1,10 +1,7 @@
 //! Shared optimistic-concurrency primitives for versioned control-plane records.
 
-#[cfg(all(test, feature = "model-checking", unix))]
-use loom::sync::Mutex;
+use crate::sync::Mutex;
 use std::collections::BTreeMap;
-#[cfg(not(all(test, feature = "model-checking", unix)))]
-use std::sync::Mutex;
 
 /// Bounded compare-and-swap retries before a coordinator reports contention.
 pub(crate) const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
