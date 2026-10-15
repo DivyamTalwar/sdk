@@ -125,7 +125,7 @@ where
         created: &MountLookup,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.created_handle(path, created, work)
+        self.created_handle(path, created, work, Ok)
     }
 
     fn detach_file_with_meter(
@@ -133,7 +133,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.detached_handle(path, work)
+        self.detached_handle(path, work, Ok)
     }
 
     fn reported_unchanged_since_with_meter(
@@ -383,13 +383,16 @@ where
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         boundary(&self.cancellation, |work| {
-            self.created_handle(path, created, work)
+            self.created_handle(path, created, work, Ok)
         })
         .map(|(file, _)| file)
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.detached_handle(path, work)).map(|(file, _)| file)
+        boundary(&self.cancellation, |work| {
+            self.detached_handle(path, work, Ok)
+        })
+        .map(|(file, _)| file)
     }
 
     fn read_link(

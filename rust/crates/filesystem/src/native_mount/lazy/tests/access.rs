@@ -127,3 +127,34 @@ async fn native_access_lazy_denied_mutations_do_not_promote_source()
     assert_eq!(view.read_range(&path, 0, 6)?.as_ref(), b"source");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn native_access_lazy_created_handle_keeps_authority_after_unlink()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let view = mounted_view(root.path(), "access-created-unlinked").await?;
+    publish_test_access(&view.authored, vec![deny("no-read", &[Action::Read], "**")])?;
+    let path = mounted(&["inbox"]);
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    let created = view.create_file(&path, FileMetadata::default(), None, &work)?;
+    let file = view.open_created(&path, &created)?;
+    file.write_range(0, Bytes::from_static(b"contents"))?;
+    assert!(matches!(
+        file.read_range(0, 8),
+        Err(MountSourceError::AccessDenied)
+    ));
+    view.remove(&path, Some(created.node.file_id), &work)?;
+    assert!(view.lookup(&path)?.is_none());
+    assert!(matches!(
+        file.read_range(0, 8),
+        Err(MountSourceError::AccessDenied)
+    ));
+    file.write_range(8, Bytes::from_static(b"!"))?;
+    assert!(matches!(
+        file.read_range(0, 9),
+        Err(MountSourceError::AccessDenied)
+    ));
+    Ok(())
+}

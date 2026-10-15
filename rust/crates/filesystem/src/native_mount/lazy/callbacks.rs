@@ -361,8 +361,9 @@ where
         self.require_path(path, crate::access::Action::Read, work)?;
         let lease = self.mutation_lease(None, Some(work))?;
         self.promote_locked(path, Some(work))?;
-        let file = self.authored.detach_file_with_meter(path, work)?;
-        self.bind_open_file(file, None, lease.generation, work)
+        self.authored.detached_handle(path, work, |file| {
+            self.bind_open_file(file, None, lease.generation, work)
+        })
     }
 
     fn read_link(
@@ -554,12 +555,9 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let lease = self.view_lease(None, Some(work))?;
-        self.bind_open_file(
-            self.authored.open_created_with_meter(path, created, work)?,
-            Some(created.node.file_id),
-            lease.generation,
-            work,
-        )
+        self.authored.created_handle(path, created, work, |file| {
+            self.bind_open_file(file, Some(created.node.file_id), lease.generation, work)
+        })
     }
 
     fn read_attribute(

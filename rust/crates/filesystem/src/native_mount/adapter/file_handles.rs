@@ -5,11 +5,14 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    pub(super) fn created_handle(
+    pub(in crate::native_mount) fn created_handle(
         &self,
         path: &MountPath,
         created: &MountLookup,
         work: &crate::NativeMaterializationWork,
+        wrap: impl FnOnce(
+            (Arc<dyn MountOpenFile>, u64),
+        ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         if created.node.kind != MountNodeKind::Regular {
             return Err(MountSourceError::Invalid(
@@ -23,7 +26,9 @@ where
             access::access_time()?,
         )?;
         authorize_file(
-            self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?,
+            wrap(
+                self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?,
+            )?,
             permissions,
             true,
             work,
@@ -154,10 +159,13 @@ where
         Ok((attached, 0))
     }
 
-    pub(super) fn detached_handle(
+    pub(in crate::native_mount) fn detached_handle(
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
+        wrap: impl FnOnce(
+            (Arc<dyn MountOpenFile>, u64),
+        ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
@@ -189,7 +197,7 @@ where
             }
             let file: Arc<dyn MountOpenFile> =
                 self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
-            authorize_file((file, 0), permissions, false, work)
+            authorize_file(wrap((file, 0))?, permissions, false, work)
         })
     }
 }
