@@ -54,7 +54,7 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     } else {
         run_turn(&executor, provider.as_ref(), journal.as_ref(), input, &case).await?;
     }
-    check_provider(&case.expect, &provider)?;
+    check_provider(&case.expect, &provider, journal.as_ref()).await?;
     check_events(&case.expect, journal.as_ref(), operation).await?;
     check_files(&case.expect, &storage).await
 }
@@ -198,9 +198,10 @@ async fn run_turn(
     Ok(())
 }
 
-fn check_provider(
+async fn check_provider(
     expected: &scenario::Expectations,
     provider: &ScriptedModelProvider,
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
 ) -> TestResult {
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
@@ -229,6 +230,33 @@ fn check_provider(
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
         matchers::ordered(expected, &requests, "requests")?;
+    }
+    if let Some(expected) = &expected.request_files {
+        if expected.len() != requests.len() {
+            return Err("request_files must match the number of observed requests".into());
+        }
+        for (index, (expected, request)) in expected.iter().zip(&requests).enumerate() {
+            let mut files = request
+                .messages
+                .iter()
+                .flat_map(|message| message.content.file_refs());
+            for (file_index, expected) in expected.iter().enumerate() {
+                let file = files
+                    .next()
+                    .ok_or_else(|| format!("request_files[{index}][{file_index}]: missing file"))?;
+                let actual = journal.load(file, None)?.await?;
+                if actual.as_ref() != expected.as_bytes() {
+                    return Err(format!(
+                        "request_files[{index}][{file_index}]: expected {expected:?}, got {:?}",
+                        String::from_utf8_lossy(&actual)
+                    )
+                    .into());
+                }
+            }
+            if files.next().is_some() {
+                return Err(format!("request_files[{index}]: unexpected file").into());
+            }
+        }
     }
     Ok(())
 }

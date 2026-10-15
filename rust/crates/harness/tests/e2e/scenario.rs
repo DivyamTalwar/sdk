@@ -55,6 +55,7 @@ pub struct Expectations {
     #[serde(default)]
     pub not_events: Vec<Value>,
     pub requests: Option<Vec<Value>>,
+    pub request_files: Option<Vec<Vec<String>>>,
     #[serde(default)]
     pub files: BTreeMap<String, Option<String>>,
 }

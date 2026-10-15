@@ -115,6 +115,29 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
 }
 
 #[tokio::test]
+async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = root.join("compaction/recover-summary.json");
+    run(Scenario::load(&root, &baseline)?).await?;
+    for files in [
+        vec![],
+        vec![vec![], vec![]],
+        vec![vec![], vec!["partial-".into()]],
+        vec![vec![], vec!["restored".into()]],
+        vec![vec![], vec!["wrong".into()]],
+        vec![vec!["partial-restored".into()], vec![]],
+    ] {
+        let mut case = Scenario::load(&root, &baseline)?;
+        case.expect.request_files = Some(files);
+        assert!(
+            run(case).await.is_err(),
+            "accepted incorrect summary attachment"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = root.join("recovery/midstream.json");
