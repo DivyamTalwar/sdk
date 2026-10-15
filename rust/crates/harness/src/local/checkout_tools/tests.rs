@@ -1,5 +1,4 @@
 use super::*;
-use futures::executor::block_on;
 use loom::{
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -24,6 +23,16 @@ fn checked_model(scenario: fn(bool), diagnostic: &str) {
     );
 }
 
+// The shim's admission waits are Loom condition-variable steps, so these
+// finite futures finish in one poll. Avoid a thread-local executor, which
+// cannot be nested across Loom's generator-backed threads.
+fn complete<F: Future>(future: F) -> F::Output {
+    match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("model operation did not finish"),
+    }
+}
+
 // Both variants call the production serialization function and its cfg(loom)
 // mutex shim. The negative control releases ownership before publication.
 fn publication(broken: bool) {
@@ -32,9 +41,9 @@ fn publication(broken: bool) {
         .map(|_| {
             let state = StateArc::clone(&state);
             thread::spawn(move || {
-                block_on(serialized(&state, async |mut cursor| {
+                complete(serialized(&state, async |mut cursor| {
                     let generation = cursor.0;
-                    assert_eq!(cursor.1.take(), Some(generation), "cursor torn");
+                    let consistent = cursor.1.take() == Some(generation);
                     if broken {
                         drop(cursor);
                         thread::yield_now();
@@ -46,14 +55,20 @@ fn publication(broken: bool) {
                         cursor.0 += 1;
                         cursor.1 = Some(cursor.0);
                     }
+                    consistent
                 }))
             })
         })
         .collect();
-    for command in commands {
-        command.join().unwrap();
-    }
-    assert_eq!(*block_on(lock_owned(state)), (2, Some(2)), "cursor torn");
+    let results: Vec<_> = commands
+        .into_iter()
+        .map(|command| command.join().unwrap())
+        .collect();
+    let final_state = *complete(lock_owned(state));
+    assert!(
+        results.into_iter().all(|consistent| consistent) && final_state == (2, Some(2)),
+        "cursor torn"
+    );
 }
 
 #[test]
@@ -76,10 +91,8 @@ fn cancellation(broken: bool) {
         Poll::Pending
     );
     drop(command);
-    assert!(
-        block_on(lock_owned(state)).is_none(),
-        "cancelled capture retained its cursor"
-    );
+    let invalidated = complete(lock_owned(state)).is_none();
+    assert!(invalidated, "cancelled capture retained its cursor");
 }
 
 #[test]
@@ -116,13 +129,15 @@ fn offloaded_cleanup(broken: bool) {
         Poll::Pending
     );
     drop(command); // The awaiting task is cancelled after submitting the job.
-    block_on(serialized(&state, async |_| {
-        assert!(
-            cleaned.load(Ordering::SeqCst),
-            "cleanup escaped checkout ownership"
-        );
-    }));
+    let completed_before_next_command =
+        complete(serialized(&state, async |_| cleaned.load(Ordering::SeqCst)));
     backend.unwrap().join().unwrap();
+    drop(state);
+    drop(cleaned);
+    assert!(
+        completed_before_next_command,
+        "cleanup escaped checkout ownership"
+    );
 }
 
 #[test]
