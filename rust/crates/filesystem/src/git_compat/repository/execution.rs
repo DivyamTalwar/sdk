@@ -8,37 +8,40 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        self.validate_workspace_tree(workspace_tree).await?;
-        executor
-            .validate()
-            .await
-            .map_err(GitCompatRunError::Executor)?;
-        match &command {
-            GitCommand::MergeContinue => {
-                return self.continue_join(workspace_tree, executor).await;
-            }
-            GitCommand::MergeAbort => return self.abort_join(executor).await,
-            GitCommand::Add { .. } => {
-                if let Some(pending) = self.pending_transition().await? {
-                    if matches!(pending.mutation, GitPendingMutation::Join { .. }) {
-                        return Ok(GitCommandOutput::NoOp);
-                    }
-                    return Err(GitCompatError::TransitionPending(pending.id).into());
+        crate::heap_future::in_heap(|| async move {
+            self.validate_workspace_tree(workspace_tree).await?;
+            executor
+                .validate()
+                .await
+                .map_err(GitCompatRunError::Executor)?;
+            match &command {
+                GitCommand::MergeContinue => {
+                    return self.continue_join(workspace_tree, executor).await;
                 }
+                GitCommand::MergeAbort => return self.abort_join(executor).await,
+                GitCommand::Add { .. } => {
+                    if let Some(pending) = self.pending_transition().await? {
+                        if matches!(pending.mutation, GitPendingMutation::Join { .. }) {
+                            return Ok(GitCommandOutput::NoOp);
+                        }
+                        return Err(GitCompatError::TransitionPending(pending.id).into());
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        let output = self.execute_validated(command, workspace_tree).await?;
-        executor
-            .validate()
-            .await
-            .map_err(GitCompatRunError::Executor)?;
-        match output {
-            GitCommandOutput::Prepared { transition, action } => {
-                self.finish(transition, &action, executor).await
+            let output = self.execute_validated(command, workspace_tree).await?;
+            executor
+                .validate()
+                .await
+                .map_err(GitCompatRunError::Executor)?;
+            match output {
+                GitCommandOutput::Prepared { transition, action } => {
+                    self.finish(transition, &action, executor).await
+                }
+                output => Ok(output),
             }
-            output => Ok(output),
-        }
+        })
+        .await
     }
 
     /// Parses argv and completes the requested filesystem transition.
@@ -59,13 +62,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         &self,
         executor: &E,
     ) -> Result<Option<GitCommandOutput>, GitCompatRunError<S::Error, E::Error>> {
-        match self.pending_transition().await? {
-            Some(pending) => self
-                .finish(pending.id, &pending.action, executor)
-                .await
-                .map(Some),
-            None => Ok(None),
-        }
+        crate::heap_future::in_heap(|| async move {
+            match self.pending_transition().await? {
+                Some(pending) => self
+                    .finish(pending.id, &pending.action, executor)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            }
+        })
+        .await
     }
 
     async fn finish<E: GitFilesystemExecutor>(
