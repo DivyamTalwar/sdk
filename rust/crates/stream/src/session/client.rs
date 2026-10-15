@@ -1,10 +1,7 @@
+use super::sync::{Arc, AtomicU64, Mutex, Ordering};
 use super::*;
 use crate::{RecordStream, grpc};
 use futures::{future::BoxFuture, stream::FuturesUnordered};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
-};
 use tokio::sync::mpsc;
 use tonic::{
     Request,
@@ -14,7 +11,7 @@ use tonic::{
 
 mod credit;
 use credit::{Credit, Released};
-type ReleaseSender = mpsc::UnboundedSender<Released>;
+type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
 mod progress;
@@ -44,7 +41,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 #[derive(Clone)]
 pub struct Client {
     commands: mpsc::Sender<Command>,
-    removed: mpsc::UnboundedSender<u64>,
+    removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
 }
 struct Delivery {
@@ -99,8 +96,8 @@ struct Pool {
     home_channel: TransportChannel,
     next_link: u64,
     commands: mpsc::Receiver<Command>,
-    removed: mpsc::UnboundedReceiver<u64>,
-    released: mpsc::UnboundedReceiver<Released>,
+    removed: Arc<signal::Signal<u64>>,
+    released: ReleaseSender,
     release_sender: ReleaseSender,
 }
 impl Client {
@@ -126,8 +123,8 @@ impl Client {
     ) -> Result<Self, StreamError> {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         // Drop produces at most one removal per admitted channel; it must never block.
-        let (removed, removals) = mpsc::unbounded_channel();
-        let (release_sender, released) = mpsc::unbounded_channel();
+        let removed = Arc::new(signal::Signal::new());
+        let release_sender = Arc::new(signal::Signal::new());
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
@@ -142,8 +139,8 @@ impl Client {
             home_channel: channel.clone(),
             next_link: 1,
             commands: receiver,
-            removed: removals,
-            released,
+            removed: Arc::clone(&removed),
+            released: Arc::clone(&release_sender),
             release_sender,
         };
         pool.home = pool.add_link(channel, "").await?;

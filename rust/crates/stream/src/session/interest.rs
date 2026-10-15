@@ -8,13 +8,7 @@ impl<P: StreamProvider> Session<P> {
         let mut ids = BTreeSet::new();
         let mut removed = 0;
         for remove in &interest.remove {
-            if remove.channel_id == 0
-                || remove.channel_id % 2 != 1
-                || remove.generation == 0
-                || !ids.insert(remove.channel_id)
-            {
-                return Err(StreamError::InvalidArgument);
-            }
+            unique(&mut ids, *remove)?;
             if self.channels.contains_key(&remove.channel_id) {
                 self.channel(remove.channel_id, remove.generation)?;
                 removed += 1;
@@ -26,13 +20,7 @@ impl<P: StreamProvider> Session<P> {
                 .channel
                 .as_ref()
                 .ok_or(StreamError::InvalidArgument)?;
-            if channel.channel_id == 0
-                || channel.channel_id % 2 != 1
-                || channel.generation == 0
-                || !ids.insert(channel.channel_id)
-            {
-                return Err(StreamError::InvalidArgument);
-            }
+            unique(&mut ids, *channel)?;
             match self.channels.get(&channel.channel_id) {
                 Some(old) if channel.generation <= old.generation => {
                     return Err(StreamError::InvalidArgument);
@@ -56,14 +44,14 @@ impl<P: StreamProvider> Session<P> {
             let Some(Kind::Follow(follow)) = subscription.kind else {
                 return Err(StreamError::Unsupported);
             };
-            let delivery = wire::SessionDelivery::try_from(follow.delivery)
-                .map_err(|_| StreamError::InvalidArgument)?;
-            if delivery == wire::SessionDelivery::Unspecified {
-                return Err(StreamError::InvalidArgument);
-            }
+            let latest = match wire::SessionDelivery::try_from(follow.delivery) {
+                Ok(wire::SessionDelivery::All) => false,
+                Ok(wire::SessionDelivery::Latest) => true,
+                _ => return Err(StreamError::InvalidArgument),
+            };
             let path = StreamPath::new(follow.path)?;
             let (cancel, cancelled) = oneshot::channel();
-            let (enabled, ready) = watch::channel(false);
+            let enabled = Arc::new(gate::Gate::new());
             let identity = channel;
             let source = follow_source(
                 Arc::clone(&self.provider),
@@ -71,13 +59,13 @@ impl<P: StreamProvider> Session<P> {
                 resume.next,
                 identity,
                 cancelled,
-                ready,
+                Arc::clone(&enabled),
             );
             opened.push((
                 identity,
                 Channel {
                     generation: identity.generation,
-                    latest: delivery == wire::SessionDelivery::Latest,
+                    latest,
                     pending: 0,
                     enabled,
                     credit: wire::SessionWindow::default(),
@@ -90,13 +78,13 @@ impl<P: StreamProvider> Session<P> {
             ));
         }
         for remove in interest.remove {
-            self.remove(remove.channel_id);
+            self.remove(remove.channel_id)?;
         }
         for (identity, channel, source) in opened {
-            self.remove(identity.channel_id);
+            self.remove(identity.channel_id)?;
             self.channels.insert(identity.channel_id, channel);
             self.sources.push(source);
-            self.refresh(Some(identity.channel_id));
+            self.refresh(Some(identity.channel_id))?;
         }
         self.revision = interest.revision;
         self.controls.push_back(frame(
@@ -109,7 +97,7 @@ impl<P: StreamProvider> Session<P> {
         Ok(())
     }
 
-    pub(super) fn remove(&mut self, id: u64) {
+    pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         self.channels.remove(&id);
         self.pending
             .retain(|pending| pending.frame.channel_id != id);
@@ -118,7 +106,7 @@ impl<P: StreamProvider> Session<P> {
             .iter()
             .map(|pending| pending.frame.encoded_len())
             .sum();
-        self.refresh(None);
+        self.refresh(None)
     }
 }
 
@@ -129,7 +117,7 @@ fn follow_source<P: StreamProvider>(
     from: u64,
     identity: wire::SessionChannel,
     cancelled: oneshot::Receiver<()>,
-    enabled: watch::Receiver<bool>,
+    enabled: Arc<gate::Gate>,
 ) -> Source {
     let state = (
         provider,
@@ -142,7 +130,7 @@ fn follow_source<P: StreamProvider>(
     );
     stream::try_unfold(
         state,
-        |(provider, path, mut next, mut records, mut opened, mut ended, mut enabled)| async move {
+        |(provider, path, mut next, mut records, mut opened, mut ended, enabled)| async move {
             loop {
                 if records.is_none() {
                     records = Some(provider.follow(path.clone(), next).await?);
@@ -154,34 +142,31 @@ fn follow_source<P: StreamProvider>(
                         )));
                     }
                 }
-                match admission::next_record(
+                if let Some(record) = admission::next_record(
                     records.as_mut().ok_or(StreamError::Unavailable)?,
-                    &mut enabled,
+                    &enabled,
                 )
                 .await?
                 {
-                    Some(record) => {
-                        next = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?;
-                        ended = 0;
-                        return Ok(Some((
-                            Event::Record(record),
-                            (provider, path, next, records, opened, ended, enabled),
-                        )));
+                    next = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(StreamError::OutOfRange)?;
+                    ended = 0;
+                    return Ok(Some((
+                        Event::Record(record),
+                        (provider, path, next, records, opened, ended, enabled),
+                    )));
+                } else {
+                    // EOF is transport recovery, never an idle record wakeup.
+                    // Keep already queued records on this generation intact.
+                    records = None;
+                    ended += 1;
+                    if ended >= 3 {
+                        return Err(StreamError::Unavailable);
                     }
-                    None => {
-                        // EOF is transport recovery, never an idle record wakeup.
-                        // Keep already queued records on this generation intact.
-                        records = None;
-                        ended += 1;
-                        if ended >= 3 {
-                            return Err(StreamError::Unavailable);
-                        }
-                        if ended > 1 {
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                        }
+                    if ended > 1 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
                 }
             }
@@ -190,4 +175,15 @@ fn follow_source<P: StreamProvider>(
     .take_until(cancelled)
     .map(move |event| (identity, event))
     .boxed()
+}
+
+fn unique(ids: &mut BTreeSet<u64>, channel: wire::SessionChannel) -> Result<(), StreamError> {
+    if channel.channel_id == 0
+        || channel.channel_id % 2 != 1
+        || channel.generation == 0
+        || !ids.insert(channel.channel_id)
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(())
 }

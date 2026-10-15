@@ -5,8 +5,8 @@ impl Pool {
         loop {
             tokio::select! {
                 command = self.commands.recv() => match command { Some(command) => self.command(command).await?, None => return Ok(()) },
-                released = self.released.recv() => { if let Some(released) = released { self.released(released).await?; } },
-                id = self.removed.recv() => match id { Some(id) => self.remove(id).await?, None => return Ok(()) },
+                released = self.released.next() => { self.released(released?).await?; },
+                id = self.removed.next() => self.remove(id?).await?,
                 ready = self.dials.next(), if !self.dials.is_empty() => {
                     let (node,result) = ready.ok_or(StreamError::Unavailable)?;
                     self.connecting.remove(&node);

@@ -30,7 +30,7 @@ impl<P: StreamProvider> Session<P> {
                     .ok_or(StreamError::Unavailable)?;
                 channel.ending = Some(error);
                 channel.cancel.take();
-                self.finish_if_drained(identity.channel_id);
+                self.finish_if_drained(identity.channel_id)?;
                 return Ok(());
             }
         };
@@ -85,17 +85,17 @@ impl<P: StreamProvider> Session<P> {
             .get_mut(&identity.channel_id)
             .ok_or(StreamError::Unavailable)?
             .pending += 1;
-        self.refresh(Some(identity.channel_id));
+        self.refresh(Some(identity.channel_id))?;
         Ok(())
     }
 
-    fn finish_if_drained(&mut self, id: u64) {
+    fn finish_if_drained(&mut self, id: u64) -> Result<(), StreamError> {
         if self
             .pending
             .iter()
             .any(|pending| pending.frame.channel_id == id)
         {
-            return;
+            return Ok(());
         }
         if let Some(channel) = self.channels.get(&id)
             && let Some(error) = &channel.ending
@@ -108,8 +108,9 @@ impl<P: StreamProvider> Session<P> {
                     message: String::new(),
                 }),
             ));
-            self.remove(id);
+            self.remove(id)?;
         }
+        Ok(())
     }
 
     pub(super) fn ready(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
@@ -154,8 +155,8 @@ impl<P: StreamProvider> Session<P> {
             if let Some(Body::Data(data)) = &pending.frame.body {
                 channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
             }
-            self.finish_if_drained(pending.frame.channel_id);
-            self.refresh(Some(pending.frame.channel_id));
+            self.finish_if_drained(pending.frame.channel_id)?;
+            self.refresh(Some(pending.frame.channel_id))?;
             return Ok(Some(pending.frame));
         }
         Ok(None)

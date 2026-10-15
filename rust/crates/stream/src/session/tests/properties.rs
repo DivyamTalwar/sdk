@@ -4,7 +4,7 @@ use proptest::prelude::*;
 
 fn empty_session(latest: bool) -> Session<MemoryStream> {
     let (cancel, _) = oneshot::channel();
-    let (enabled, _) = watch::channel(false);
+    let enabled = Arc::new(gate::Gate::new());
     Session {
         provider: Arc::new(MemoryStream::default()),
         limits: Limits::default(),

@@ -11,14 +11,18 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 mod admission;
 mod client;
+mod gate;
 mod interest;
+mod policy;
 mod queue;
 mod service;
+mod signal;
+mod sync;
 pub use client::Client;
 pub use service::Service;
 #[cfg(test)]
@@ -48,7 +52,7 @@ struct Channel {
     generation: u64,
     latest: bool,
     pending: usize,
-    enabled: watch::Sender<bool>,
+    enabled: Arc<gate::Gate>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
@@ -203,7 +207,7 @@ impl<P: StreamProvider> Session<P> {
                         .map_err(|_| StreamError::Capacity)?,
                 }),
             ));
-            self.refresh(None);
+            self.refresh(None)?;
             return Ok(());
         }
         if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
@@ -222,13 +226,13 @@ impl<P: StreamProvider> Session<P> {
             }
             Body::Window(grant) if input.channel_id == 0 && input.generation == 0 => {
                 wire_codec::session::grant_credit(&mut self.credit, &grant)?;
-                self.refresh(None);
+                self.refresh(None)?;
                 Ok(())
             }
             Body::Window(grant) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 wire_codec::session::grant_credit(&mut channel.credit, &grant)?;
-                self.refresh(Some(input.channel_id));
+                self.refresh(Some(input.channel_id))?;
                 Ok(())
             }
             Body::Ack(ack) => {
