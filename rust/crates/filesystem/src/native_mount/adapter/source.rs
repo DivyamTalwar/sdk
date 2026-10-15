@@ -94,6 +94,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self,
         checkout: &Checkout<A, O>,
         path: &MountPath,
+        action: crate::access::Action,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<Option<MountLookup>, MountSourceError>
     where
@@ -104,6 +105,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
+        self.require_access(&path, action)?;
         let work = inputs
             .carrier
             .original_native_work()
@@ -132,13 +134,18 @@ impl<A, O> CheckoutMountSource<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
         let mut candidate = self
             .checkout
             .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
             .await?;
         let lookup = self
-            .lookup_in(&candidate.checkout, path, inputs.carrier)
+            .lookup_in(
+                &candidate.checkout,
+                path,
+                crate::access::Action::Write,
+                inputs.carrier,
+            )
             .await?
             .ok_or(MountSourceError::NotFound)?;
         candidate
@@ -171,6 +178,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let cancellation = carrier.cancellation();
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
+        self.require_access(&path, crate::access::Action::Read)?;
         let observation = self
             .checkout
             .observe(
@@ -221,10 +229,32 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        self.lookup_identity(path, owner, carrier, true).await
+    }
+
+    pub(in crate::native_mount) async fn lookup_identity(
+        &self,
+        path: &MountPath,
+        owner: CallbackOwner,
+        carrier: &mut NativeDemandCarrier<'_>,
+        disclose: bool,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
         let cancellation = carrier.cancellation();
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
+        let access = self.pin_access(&path)?;
+        if disclose
+            && !access
+                .decide(crate::access::Action::List, access::access_time()?)
+                .allowed
+        {
+            return Ok(None);
+        }
         let observation = self
             .checkout
             .observe(
@@ -370,8 +400,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             ledger: Arc::clone(&self.checkout.ledger),
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
-            profile: self.profile,
-            limits: self.limits,
+            profile: self.config.profile,
+            limits: self.config.limits,
         }))
     }
 
@@ -391,6 +421,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         config: VolumeConfig,
         root: NamespacePath,
     ) -> Result<Self, NativeMountError> {
+        if config != checkout.config {
+            return Err(MountSourceError::AccessDenied.into());
+        }
         if !profile_is_native(config.profile) {
             return Err(NativeMountError::ProfileUnavailable {
                 profile: profile_name(config.profile),
@@ -401,8 +434,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok(Self {
             checkout,
             root,
-            limits: config.limits,
-            profile: config.profile,
+            config,
+            access_view: None,
             folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
                 && matches!(
                     config.profile,
@@ -422,27 +455,11 @@ impl<A, O> CheckoutMountSource<A, O> {
     }
 
     /// Returns the checkout's owning volume without filesystem I/O.
-    pub fn volume_id(&self) -> Result<VolumeId, MountSourceError>
-    where
-        A: Send + Sync,
-        O: Send + Sync,
-    {
-        let owner = ViewGate::callback_owner()?;
-        self.runtime.wait(|| async {
-            Ok(self
-                .checkout
-                .observe(
-                    owner,
-                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                        BOUNDARY_BUDGET,
-                        &self.cancellation,
-                    )),
-                    &self.cancellation,
-                    None,
-                )
-                .await?
-                .volume_id())
-        })
+    pub fn volume_id(&self) -> Result<VolumeId, MountSourceError> {
+        self.cancellation
+            .check()
+            .map_err(|_| MountSourceError::Stale)?;
+        Ok(self.checkout.volume_id)
     }
 
     /// Cancels future and in-flight canonical operations owned by this mount.
@@ -509,7 +526,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .map_err(MountSourceError::from)?;
         let decision = checkout
             .rebase_head(
-                self.limits.maximum_checkout_dependencies,
+                self.config.limits.maximum_checkout_dependencies,
                 WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
@@ -560,8 +577,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         if checkout.root().file_table == base.root().file_table {
             return Ok(());
         }
-        let root =
-            NamespacePath::new(Vec::new(), self.limits).map_err(MountSourceError::NamespacePath)?;
+        let root = NamespacePath::new(Vec::new(), self.config.limits)
+            .map_err(MountSourceError::NamespacePath)?;
         let work = capture_meter(BOUNDARY_BUDGET, &self.cancellation)?;
         let (installed, _allocation) = installed_changes(
             base,
@@ -583,13 +600,26 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    fn change_content<F: crate::facade::ContentFile>(
+    fn change_content(
         &self,
-        file: F,
-        change: ContentChange<F>,
+        file: NamespacePath,
+        change: ContentChange<NamespacePath>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
+            let view = self.access_snapshot()?;
+            let now = access::access_time()?;
+            let path = &file;
+            let permissions = view.pin(path).map_err(|_| MountSourceError::AccessDenied)?;
+            if let ContentChange::CloneFrom { source, .. } = &change {
+                access::require(
+                    &view
+                        .pin(source)
+                        .map_err(|_| MountSourceError::AccessDenied)?,
+                    crate::access::Action::Read,
+                    now,
+                )?;
+            }
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut candidate = self
                 .checkout
@@ -600,25 +630,28 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let node = match file.address() {
-                crate::facade::ContentAddress::File(id) => id,
-                crate::facade::ContentAddress::Path(path) => {
-                    candidate
-                        .checkout
-                        .inspector(
-                            &mut crate::kernel::allocation::KernelAccounting::native(
-                                work,
-                                work.cancellation(),
-                            ),
-                            work.cancellation(),
-                        )?
-                        .lookup_no_follow(path, work, work.cancellation())
-                        .await?
-                        .record
-                        .ok_or(MountSourceError::NotFound)?
-                        .file_id
+            let record = candidate
+                .checkout
+                .inspector(
+                    &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                    work.cancellation(),
+                )?
+                .lookup_no_follow(path, work, work.cancellation())
+                .await?
+                .record
+                .ok_or(MountSourceError::NotFound)?;
+            let node = record.file_id;
+            if !permissions
+                .decide(crate::access::Action::Write, now)
+                .allowed
+            {
+                if matches!(&change, ContentChange::Write { offset, .. } if *offset == mount_node(record).logical_bytes)
+                {
+                    access::require(&permissions, crate::access::Action::Append, now)?;
+                } else {
+                    access::require(&permissions, crate::access::Action::Write, now)?;
                 }
-            };
+            }
             candidate
                 .checkout
                 .change_content(

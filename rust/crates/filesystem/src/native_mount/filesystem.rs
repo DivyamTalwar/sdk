@@ -208,16 +208,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         name: &[u8],
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
-    /// Clones the actual immutable range between authenticated file identities.
-    fn clone_range_by_id(
-        &self,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
-        work: &NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>;
     /// Creates the actual same-volume hard-link binding.
     fn hard_link(
         &self,

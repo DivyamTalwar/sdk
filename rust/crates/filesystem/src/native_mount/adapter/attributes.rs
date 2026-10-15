@@ -18,7 +18,12 @@ where
                 .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
                 .await?;
             let lookup = self
-                .lookup_in(&candidate.checkout, path, &mut carrier)
+                .lookup_in(
+                    &candidate.checkout,
+                    path,
+                    crate::access::Action::Write,
+                    &mut carrier,
+                )
                 .await?
                 .ok_or(MountSourceError::NotFound)?;
             candidate
@@ -56,7 +61,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            let name = inputs.attribute_name(name, self.profile, self.limits)?;
+            self.require_access(&path, crate::access::Action::Read)?;
+            let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
             let observation = self
                 .checkout
                 .observe(
@@ -92,8 +98,9 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
+            self.require_access(&path, crate::access::Action::List)?;
             let cursor = cursor
-                .map(|bytes| inputs.attribute_name(bytes, self.profile, self.limits))
+                .map(|bytes| inputs.attribute_name(bytes, self.config.profile, self.config.limits))
                 .transpose()?;
             let observation = self
                 .checkout

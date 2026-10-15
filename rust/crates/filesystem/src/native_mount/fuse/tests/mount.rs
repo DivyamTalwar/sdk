@@ -371,7 +371,6 @@ impl MountFilesystem for GatedSource {
         list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountAttributePage, crate::NativeAllocation), MountSourceError>;
         write_attribute(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: crate::native_mount::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         remove_attribute(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-        clone_range_by_id(source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         hard_link(source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         folded_path_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<Option<(MountPath,u64)>, MountSourceError>;
         view_is_stable_with_meter(work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;

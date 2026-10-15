@@ -36,7 +36,12 @@ impl<A, O> CheckoutMountSource<A, O> {
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let mut components = inputs.vec(path.components().len())?;
             for component in path.components() {
-                let name = match native_name(component, self.profile, self.limits, &mut inputs) {
+                let name = match native_name(
+                    component,
+                    self.config.profile,
+                    self.config.limits,
+                    &mut inputs,
+                ) {
                     Ok(name) => name,
                     Err(
                         MountSourceError::Unsupported(_)
@@ -61,7 +66,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 let folded = LogicalName::new(
                     NameEncoding::Utf8,
                     folded,
-                    self.limits.maximum_component_bytes,
+                    self.config.limits.maximum_component_bytes,
                 )
                 .map_err(|error| {
                     MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))

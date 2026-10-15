@@ -19,10 +19,21 @@ fn sources(
     consistency: ConsistencyMode,
     publication: MountPublication,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    let config = VolumeConfig {
-        profile,
-        ..VolumeConfig::portable(Lifecycle::Ephemeral)
-    };
+    configured_sources(
+        VolumeConfig {
+            profile,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        },
+        consistency,
+        publication,
+    )
+}
+
+fn configured_sources(
+    config: VolumeConfig,
+    consistency: ConsistencyMode,
+    publication: MountPublication,
+) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let cancellation = CancellationToken::new();
@@ -51,8 +62,8 @@ fn sources(
         Arc::new(SharedCheckout::with_publication(checkout()?, publication))
     };
     Ok((
-        CheckoutMountSource::new(first, config)?,
-        CheckoutMountSource::new(second, config)?,
+        bind_test_access(CheckoutMountSource::new(first, config)?, vec![], None)?,
+        bind_test_access(CheckoutMountSource::new(second, config)?, vec![], None)?,
     ))
 }
 fn native_test_path(name: &str) -> MountPath {
@@ -88,3 +99,6 @@ include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");
 include!("source_limits.rs");
+
+pub(in crate::native_mount) mod access;
+use access::bind_test_access;

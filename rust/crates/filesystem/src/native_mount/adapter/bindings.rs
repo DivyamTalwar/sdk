@@ -13,6 +13,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
+            self.require_access(&path, crate::access::Action::Delete)?;
             let candidate = self
                 .checkout
                 .candidate(
@@ -33,7 +34,7 @@ where
                 .ok_or(MountSourceError::NotFound)?
                 .file_id;
             drop(inspector);
-            let owned = inputs.clone_namespace(path.components(), self.limits)?;
+            let owned = inputs.clone_namespace(path.components(), self.config.limits)?;
             self.mutate(
                 candidate,
                 AuthoredMutation::Remove {
@@ -59,6 +60,22 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
+            let view = self.access_snapshot()?;
+            let now = access::access_time()?;
+            access::require(
+                &view
+                    .pin(&source)
+                    .map_err(|_| MountSourceError::AccessDenied)?,
+                crate::access::Action::Rename,
+                now,
+            )?;
+            access::require(
+                &view
+                    .pin(&destination)
+                    .map_err(|_| MountSourceError::AccessDenied)?,
+                crate::access::Action::Rename,
+                now,
+            )?;
             let candidate = self
                 .checkout
                 .candidate(
@@ -85,8 +102,9 @@ where
                 .map(|record| record.file_id);
             drop(inspector);
             let change = AuthoredMutation::Rename {
-                source: inputs.clone_namespace(source.components(), self.limits)?,
-                destination: inputs.clone_namespace(destination.components(), self.limits)?,
+                source: inputs.clone_namespace(source.components(), self.config.limits)?,
+                destination: inputs
+                    .clone_namespace(destination.components(), self.config.limits)?,
                 replace,
             };
             self.mutate(
@@ -115,6 +133,8 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
+            self.require_access(&source, crate::access::Action::Admin)?;
+            self.require_access(&destination, crate::access::Action::Admin)?;
             let candidate = self
                 .checkout
                 .candidate(
@@ -136,8 +156,9 @@ where
                 .file_id;
             drop(inspector);
             let change = AuthoredMutation::HardLink {
-                source: inputs.clone_namespace(source.components(), self.limits)?,
-                destination: inputs.clone_namespace(destination.components(), self.limits)?,
+                source: inputs.clone_namespace(source.components(), self.config.limits)?,
+                destination: inputs
+                    .clone_namespace(destination.components(), self.config.limits)?,
             };
             self.mutate(
                 candidate,

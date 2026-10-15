@@ -554,6 +554,8 @@ impl ProjFsSession {
 
 pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
     match error.semantic_error() {
+        MountSourceError::AccessDenied => HRESULT::from_win32(5),
+        MountSourceError::ReadOnly => HRESULT::from_win32(19),
         MountSourceError::NotFound => HR_FILE_NOT_FOUND,
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,

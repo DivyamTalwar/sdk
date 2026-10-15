@@ -120,12 +120,16 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
         .map_err(|failure| failure.error)?
         .value;
     let config = checkout.volume_config();
-    let authored = Arc::new(CheckoutMountSource::new(
-        Arc::new(SharedCheckout::with_publication(
-            checkout,
-            MountPublication::Manual,
-        )),
-        config,
+    let authored = Arc::new(adapter::tests::access::bind_test_access(
+        CheckoutMountSource::new(
+            Arc::new(SharedCheckout::with_publication(
+                checkout,
+                MountPublication::Manual,
+            )),
+            config,
+        )?,
+        vec![],
+        None,
     )?);
     let cancellation = CancellationToken::new();
     CallbackRuntime::create()?;

@@ -53,9 +53,13 @@ pub(super) fn tracking_sources() -> Result<(MemorySource, MemorySource), Box<dyn
         2,
     )?;
     let mut sources = checkouts.into_iter().map(|checkout| {
-        MemorySource::new(
-            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-            config,
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
         )
     });
     match (sources.next(), sources.next()) {
@@ -80,8 +84,16 @@ pub(super) fn shared_sources(
     let checkout = checkouts.into_iter().next().ok_or("one checkout")?;
     let shared = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
     Ok((
-        MemorySource::new(Arc::clone(&shared), config)?,
-        MemorySource::new(shared, config)?,
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(Arc::clone(&shared), config)?,
+            vec![],
+            None,
+        )?,
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(shared, config)?,
+            vec![],
+            None,
+        )?,
     ))
 }
 
@@ -126,7 +138,11 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     let shared = Arc::new(crate::native_mount::SharedCheckout::new(
         checkouts.into_iter().next().ok_or("one checkout")?,
     ));
-    let around = MemorySource::new(Arc::clone(&shared), config)?;
+    let around = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new(Arc::clone(&shared), config)?,
+        vec![],
+        None,
+    )?;
     let path = name("write-authority");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&path, FileMetadata::default(), None, work)
@@ -139,13 +155,17 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     let guard = Arc::new(FuseWriteGuard {
         writable: AtomicBool::new(false),
     });
-    let source = MemorySource::new_at_meter(
-        shared,
-        config,
-        crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-        &original,
-        Some(&original),
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new_at_meter(
+            shared,
+            config,
+            crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+            &original,
+            Some(&original),
+        )?,
+        vec![],
+        None,
     )?
     .with_native_callback_guard(guard.clone());
     let source = source.into_arc_meter(&original)?;

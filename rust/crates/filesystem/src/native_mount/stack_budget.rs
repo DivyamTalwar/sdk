@@ -182,13 +182,19 @@ async fn lazy_workspace(
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     let config = checkout.volume_config();
-    let authored = Arc::new(CheckoutMountSource::new(
-        Arc::new(SharedCheckout::with_publication(
-            checkout,
-            MountPublication::Manual,
-        )),
-        config,
-    )?);
+    let authored = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            CheckoutMountSource::new(
+                Arc::new(SharedCheckout::with_publication(
+                    checkout,
+                    MountPublication::Manual,
+                )),
+                config,
+            )?,
+            vec![],
+            None,
+        )?,
+    );
     Ok((lazy, authored))
 }
 

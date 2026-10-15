@@ -106,7 +106,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_handle(path, work)
+        self.open_handle(path, false, work)
             .map(|(file, _)| (file.file, file.bytes))
     }
 
@@ -115,16 +115,16 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
-        self.open_handle(path, work)
+        self.open_handle(path, true, work)
     }
 
     fn open_created_with_meter(
         &self,
-        _path: &MountPath,
+        path: &MountPath,
         created: &MountLookup,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.created_handle(created, work)
+        self.created_handle(path, created, work)
     }
 
     fn detach_file_with_meter(
@@ -211,7 +211,7 @@ where
     }
 
     fn supports_posix_named_attributes(&self) -> bool {
-        self.profile == FilesystemProfile::Posix
+        self.config.profile == FilesystemProfile::Posix
     }
 
     fn flush_publishes(&self) -> bool {
@@ -370,16 +370,19 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.open_handle(path, work)).map(|(file, _)| file.file)
+        boundary(&self.cancellation, |work| {
+            self.open_handle(path, false, work)
+        })
+        .map(|(file, _)| file.file)
     }
 
     fn open_created(
         &self,
-        _path: &MountPath,
+        path: &MountPath,
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         boundary(&self.cancellation, |work| {
-            self.created_handle(created, work)
+            self.created_handle(path, created, work)
         })
         .map(|(file, _)| file)
     }
@@ -674,27 +677,6 @@ where
                 work,
             )
         })
-    }
-
-    fn clone_range_by_id(
-        &self,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        self.change_content(
-            destination_file_id,
-            ContentChange::CloneFrom {
-                source: source_file_id,
-                source_offset,
-                offset: destination_offset,
-                length,
-            },
-            work,
-        )
     }
 
     fn remove(

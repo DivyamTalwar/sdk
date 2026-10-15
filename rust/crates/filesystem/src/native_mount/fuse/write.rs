@@ -351,10 +351,9 @@ impl FuseProjection {
             }
             if source_lookup.node.link_count != 0 && destination_lookup.node.link_count != 0 {
                 match self.source_write(work, || {
-                    Ok(self.core.source.clone_range_by_id(
-                        source_lookup.node.file_id,
+                    Ok(destination_open.file(work)?.clone_from(
+                        source_open.file(work)?.as_ref().as_ref(),
                         source_offset,
-                        destination_lookup.node.file_id,
                         destination_offset,
                         copy_length,
                         work,

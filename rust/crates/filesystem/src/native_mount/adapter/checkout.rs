@@ -1,5 +1,7 @@
 /// Serialization and publication boundary for a canonical checkout.
 pub struct SharedCheckout<A, O> {
+    volume_id: VolumeId,
+    config: VolumeConfig,
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
@@ -47,6 +49,8 @@ impl<A, O> SharedCheckout<A, O> {
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
         let ledger = Arc::new(ViewLedger::default());
         Self {
+            volume_id: checkout.volume_id(),
+            config: checkout.volume_config(),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -79,6 +83,8 @@ impl<A, O> SharedCheckout<A, O> {
         let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(work))?;
         let view_gate = ViewGate::new_with_native_work(work)?;
         Ok(Arc::new(Self {
+            volume_id: checkout.volume_id(),
+            config: checkout.volume_config(),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,

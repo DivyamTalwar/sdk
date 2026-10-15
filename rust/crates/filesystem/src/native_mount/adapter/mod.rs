@@ -61,8 +61,8 @@ pub(super) struct CaptureSourceGate {
 pub struct CheckoutMountSource<A, O> {
     checkout: Arc<SharedCheckout<A, O>>,
     root: NamespacePath,
-    limits: VolumeLimits,
-    profile: FilesystemProfile,
+    config: VolumeConfig,
+    access_view: Option<Arc<crate::access::AccessView>>,
     folds_names: bool,
     cancellation: CancellationToken,
     capture_gate: Arc<StdMutex<CaptureSourceGate>>,
@@ -159,7 +159,10 @@ include!("bindings.rs");
 include!("namespace.rs");
 include!("history.rs");
 include!("source.rs");
+pub(in crate::native_mount) mod access;
+mod authorized_file;
 mod source_factory;
+pub(in crate::native_mount) use authorized_file::authorize_file;
 include!("work.rs");
 include!("locks.rs");
 include!("view_changes.rs");
@@ -173,4 +176,4 @@ mod records;
 mod sparse;
 use records::mount_node;
 #[cfg(test)]
-mod tests;
+pub(in crate::native_mount) mod tests;

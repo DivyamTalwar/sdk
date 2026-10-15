@@ -275,6 +275,13 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
+        let permissions = self.authored.permissions_for_path(path, work)?;
+        if !permissions
+            .decide(crate::access::Action::List, adapter::access::access_time()?)
+            .allowed
+        {
+            return Ok(None);
+        }
         let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -313,7 +320,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_proven(path, work)
+        self.open_authorized(path, false, work)
             .map(|(file, _)| (file.file, file.bytes))
     }
 
@@ -331,7 +338,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
-        let (file, proven) = self.open_proven(path, work)?;
+        let (file, proven) = self.open_authorized(path, true, work)?;
         let lookup = match proven {
             Some(lookup) => lookup,
             None => file.file.lookup_with_meter(work)?,
@@ -350,6 +357,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        self.require_path(path, crate::access::Action::Read, work)?;
         let lease = self.mutation_lease(None, Some(work))?;
         self.promote_locked(path, Some(work))?;
         let file = self.authored.detach_file_with_meter(path, work)?;
@@ -361,6 +369,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
+        self.require_path(path, crate::access::Action::Read, work)?;
         let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -558,6 +567,7 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+        self.require_path(path, crate::access::Action::Read, work)?;
         let _lease = self.view_lease(None, Some(work))?;
         if let Some(file) = self.detached_for_path(path, work)? {
             return file.read_attribute(name, work);
@@ -587,6 +597,7 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
+        self.require_path(path, crate::access::Action::List, work)?;
         let _lease = self.view_lease(None, Some(work))?;
         if let Some(file) = self.detached_for_path(path, work)? {
             return file.list_attributes_with_meter(cursor, maximum_entries, work);

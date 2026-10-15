@@ -79,7 +79,13 @@ fn checkout_context(
     publication: MountPublication,
 ) -> Result<(Arc<MemorySource>, DarwinMountContext, Work), Box<dyn std::error::Error>> {
     let (shared, config) = checkout(publication)?;
-    let source = Arc::new(MemorySource::new(shared, config)?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(shared, config)?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -103,7 +109,13 @@ fn test_context(
 #[test]
 fn close_publishes_only_what_its_handle_wrote() -> TestResult {
     let (shared, config) = checkout(MountPublication::CloseAndSync)?;
-    let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(Arc::clone(&shared), config)?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -157,7 +169,13 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
 #[test]
 fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
     let (shared, config) = checkout(MountPublication::Manual)?;
-    let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(Arc::clone(&shared), config)?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),

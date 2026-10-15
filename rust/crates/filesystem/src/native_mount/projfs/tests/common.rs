@@ -42,10 +42,13 @@ pub(super) async fn windows_checkout_source()
         .await
         .map_err(|failure| failure.error)?
         .value;
-    Ok(Arc::new(CheckoutMountSource::new(
-        Arc::new(SharedCheckout::new(checkout)),
-        config,
-    )?))
+    Ok(Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?,
+            vec![],
+            None,
+        )?,
+    ))
 }
 
 pub(super) fn mount_source(

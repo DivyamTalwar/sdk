@@ -71,6 +71,15 @@ where
         change: ContentChange<FileId>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        self.change_content_at(change, false, work)
+    }
+
+    fn change_content_at(
+        &self,
+        change: ContentChange<FileId>,
+        append_only: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut candidate = self
@@ -82,6 +91,16 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
+            if append_only {
+                let record = candidate
+                    .checkout
+                    .read_file_record_by_id(self.file_id, work, cancellation)
+                    .await?;
+                if !matches!(&change, ContentChange::Write { offset, .. } if *offset == mount_node(record).logical_bytes)
+                {
+                    return Err(MountSourceError::AccessDenied);
+                }
+            }
             candidate
                 .checkout
                 .change_content(
@@ -111,6 +130,37 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn clone_source(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(VolumeId, FileId), MountSourceError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        Ok((self.checkout.volume_id, self.file_id))
+    }
+
+    fn clone_from(
+        &self,
+        source: &dyn MountOpenFile,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        let (volume, source) = source.clone_source(work)?;
+        if volume != self.checkout.volume_id {
+            return Err(MountSourceError::AccessDenied);
+        }
+        self.change_content(
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            },
+            work,
+        )
+    }
+
     fn lookup_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -223,6 +273,22 @@ where
                 offset,
                 bytes: bytes.bytes,
             },
+            work,
+        )
+    }
+
+    fn append_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.change_content_at(
+            ContentChange::Write {
+                offset,
+                bytes: bytes.bytes,
+            },
+            true,
             work,
         )
     }
@@ -352,6 +418,19 @@ where
                     offset,
                     bytes: bytes.into(),
                 },
+                work,
+            )
+        })
+    }
+
+    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        boundary(&self.cancellation, |work| {
+            self.change_content_at(
+                ContentChange::Write {
+                    offset,
+                    bytes: bytes.into(),
+                },
+                true,
                 work,
             )
         })
