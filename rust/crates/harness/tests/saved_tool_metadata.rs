@@ -139,6 +139,7 @@ async fn completed_turn_retains_provider_metadata_in_next_conversation_and_repla
                     provider,
                 )
                 .tool(Tool {
+                    hook_names: &[],
                     definition: ToolDefinition {
                         name: "echo".into(),
                         revision: "1".into(),
