@@ -27,17 +27,27 @@ impl StockExecution<'_> {
             } if *recorded == step && call_id == &invocation.call_id => Some(reference),
             _ => None,
         });
-        if let Some(reference) = started
-            && load_json::<ToolInvocation>(journal, reference, self.io)
-                .await?
-                .0
-                != invocation
-        {
-            return Err(stock_boundary(
-                self.io,
-                Conflict,
-                "tool call identity is bound to another invocation",
-            ));
+        let metadata = prior_messages
+            .iter()
+            .rev()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolCall(call) if call.call_id == invocation.call_id => {
+                    Some(&call.metadata)
+                }
+                _ => None,
+            })
+            .unwrap_or(&Value::Null);
+        if let Some(reference) = started {
+            let recorded =
+                load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io).await?;
+            if recorded.0.invocation != invocation || &recorded.0.metadata != metadata {
+                return Err(stock_boundary(
+                    self.io,
+                    Conflict,
+                    "tool call identity is bound to another invocation",
+                ));
+            }
         }
         if let Some(reason) = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolFailed {
@@ -81,7 +91,10 @@ impl StockExecution<'_> {
             self.execute_tool_invocation(
                 journal,
                 (operation_id, step),
-                &invocation,
+                crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata,
+                },
                 tool,
                 &mut context,
                 started.is_some(),
@@ -224,17 +237,18 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
-        invocation: &ToolInvocation,
+        record: crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
         tool: &crate::tool::Tool,
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
     ) -> Result<crate::model::ToolResultContent> {
         let (operation_id, step) = identity;
+        let invocation = record.invocation;
         let claimed = self
             .claim_tool_invocation(
                 journal,
                 (operation_id, step),
-                invocation,
+                &record,
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 context,
                 started,
@@ -303,13 +317,14 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
-        invocation: &ToolInvocation,
+        record: &crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] context: &Option<
             crate::runtime::ToolContext,
         >,
         started: bool,
     ) -> Result<bool> {
         let (operation_id, step) = identity;
+        let invocation = record.invocation;
         let claimed = if started {
             false
         } else {
@@ -319,7 +334,7 @@ impl StockExecution<'_> {
                     work,
                 )
             })?;
-            let reference = stage_json(journal, operation_id, &key, invocation, self.io).await?;
+            let reference = stage_json(journal, operation_id, &key, record, self.io).await?;
             let (tail, current) = self
                 .tool_records(journal, operation_id, step, &invocation.call_id)
                 .await?;
