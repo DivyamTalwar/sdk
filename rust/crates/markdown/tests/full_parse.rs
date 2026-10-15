@@ -1,6 +1,9 @@
 use super::*;
 use proptest::prelude::*;
 
+#[path = "reference_updates.rs"]
+mod reference_updates;
+
 fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
     let source = source.replace("\r\n", "\n").replace('\r', "\n");
