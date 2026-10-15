@@ -22,6 +22,16 @@ name = "local-harness"
 path = "tests/local_harness.rs"
 required-features = ["filesystem-local"]
 
+[[test]]
+name = "git_executor"
+path = "tests/git_executor.rs"
+required-features = ["filesystem-local", "native-execution"]
+
+[[test]]
+name = "default_tools"
+path = "tests/default_tools.rs"
+required-features = ["filesystem"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

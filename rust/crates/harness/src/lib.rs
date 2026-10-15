@@ -65,6 +65,7 @@ pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
 pub mod tool;
+pub mod tools;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
