@@ -84,6 +84,12 @@ mod native_process;
 pub use native_process::{NativeProcessAuthority, NativeProcessProvider};
 mod native_capture_bounds;
 mod native_contract;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub mod native_paths;
 pub use native_contract::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
