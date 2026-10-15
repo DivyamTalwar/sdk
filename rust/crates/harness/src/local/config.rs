@@ -4,54 +4,52 @@ use super::*;
 pub enum LocalProject {
     /// A normal checkout, opened lazily without importing its files.
     Workspace(PathBuf),
-    /// An existing project volume in the configured local filesystem.
-    Volume(VolumeRef),
+    /// An existing project volume in a local filesystem directory.
+    Volume {
+        directory: PathBuf,
+        volume: VolumeRef,
+    },
 }
 
-/// Durable local composition. Custom tools are additive to the default hook.
+impl From<PathBuf> for LocalProject {
+    fn from(path: PathBuf) -> Self {
+        Self::Workspace(path)
+    }
+}
+impl From<&Path> for LocalProject {
+    fn from(path: &Path) -> Self {
+        Self::Workspace(path.into())
+    }
+}
+impl From<&PathBuf> for LocalProject {
+    fn from(path: &PathBuf) -> Self {
+        Self::Workspace(path.clone())
+    }
+}
+
+/// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
-    pub(super) directory: PathBuf,
     pub(super) project: LocalProject,
-    pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
+    pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context: ContextPipeline,
-    pub(super) defaults: Vec<Tool>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
-    /// Content, projection and model-loop bounds.
-    pub limits: Limits,
-    /// Durable task execution bounds.
-    pub run_limits: TaskRunLimits,
-    /// Durable session admission bounds.
-    pub session_limits: SessionLimits,
-    /// Maximum number of concurrently running local tasks.
-    pub concurrency: usize,
-    /// Explicit stock compaction policy; `None` derives budgets from model capacity.
-    pub compaction: Option<crate::context::CompactionPolicy>,
-    /// Clock used by durable admission and leases; replaceable in scripted scenarios.
-    pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    pub(super) limits: Limits,
+    pub(super) run_limits: TaskRunLimits,
+    pub(super) session_limits: SessionLimits,
+    pub(super) concurrency: usize,
+    pub(super) compaction: Option<crate::context::CompactionPolicy>,
+    pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
 impl LocalHarnessConfig {
-    /// Opens a checkout and stores durable state under `.acyclic/harness`.
+    /// Selects a checkout or configured volume and its stock model binding.
     #[must_use]
-    pub fn workspace(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        Self::new(path.join(".acyclic/harness"), LocalProject::Workspace(path))
-    }
-
-    /// Opens an existing project volume in `directory/filesystem`.
-    #[must_use]
-    pub fn volume(directory: impl Into<PathBuf>, volume: VolumeRef) -> Self {
-        Self::new(directory.into(), LocalProject::Volume(volume))
-    }
-
-    fn new(directory: PathBuf, project: LocalProject) -> Self {
+    pub fn new(project: impl Into<LocalProject>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
         Self {
-            directory,
-            project,
-            model: None,
+            project: project.into(),
+            model,
             context: ContextPipeline::default(),
-            defaults: Vec::new(),
             tools: Vec::new(),
             default_tools: true,
             limits: Limits::default(),
@@ -67,46 +65,64 @@ impl LocalHarnessConfig {
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
     }
-
-    /// Selects a durable state directory independently of the checkout.
-    #[must_use]
-    pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
-        self.directory = directory.into();
-        self
-    }
-
-    /// Binds the stock executor's model and streaming provider.
-    #[must_use]
-    pub fn model(mut self, model: Model, provider: Arc<dyn ModelProvider>) -> Self {
-        self.model = Some((model, provider));
-        self
-    }
-
     /// Selects the stock model's context pipeline.
     #[must_use]
     pub fn context(mut self, context: ContextPipeline) -> Self {
         self.context = context;
         self
     }
-
-    /// Supplies the exported coding toolset hook, filled by the tools composition.
-    #[must_use]
-    pub fn default_tools(mut self, tools: Vec<Tool>) -> Self {
-        self.defaults = tools;
-        self
-    }
-
     /// Disables the default set, retaining every custom tool.
     #[must_use]
     pub fn without_default_tools(mut self) -> Self {
         self.default_tools = false;
         self
     }
-
+    /// Adds one custom tool to the enabled default set.
+    #[must_use]
+    pub fn tool(mut self, tool: Tool) -> Self {
+        self.tools.push(tool);
+        self
+    }
     /// Adds custom tools to the enabled default set.
     #[must_use]
-    pub fn tools(mut self, tools: Vec<Tool>) -> Self {
+    pub fn tools(mut self, tools: impl IntoIterator<Item = Tool>) -> Self {
         self.tools.extend(tools);
+        self
+    }
+    /// Selects content, projection and model-loop bounds.
+    #[must_use]
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+    /// Selects durable execution bounds.
+    #[must_use]
+    pub fn run_limits(mut self, limits: TaskRunLimits) -> Self {
+        self.run_limits = limits;
+        self
+    }
+    /// Selects durable admission bounds.
+    #[must_use]
+    pub fn session_limits(mut self, limits: SessionLimits) -> Self {
+        self.session_limits = limits;
+        self
+    }
+    /// Selects maximum concurrent local tasks.
+    #[must_use]
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
+        self
+    }
+    /// Selects an explicit compaction policy, validated without changing its budgets.
+    #[must_use]
+    pub fn compaction(mut self, policy: crate::context::CompactionPolicy) -> Self {
+        self.compaction = Some(policy);
+        self
+    }
+    /// Selects the clock used by durable admission and leases.
+    #[must_use]
+    pub fn clock(mut self, clock: Arc<dyn acyclic_stream::UnixMillisClock>) -> Self {
+        self.clock = clock;
         self
     }
 }

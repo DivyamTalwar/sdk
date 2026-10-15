@@ -27,6 +27,8 @@ use std::{
 mod config;
 mod owner;
 mod runtime;
+#[cfg(test)]
+mod tests;
 mod turn;
 #[cfg(feature = "native-execution")]
 mod workspace;
@@ -68,9 +70,7 @@ impl LocalHarness {
         if config.concurrency == 0 {
             return Err(Error::Invalid("local concurrency is zero".into()));
         }
-        let (model, provider) = config
-            .model
-            .ok_or_else(|| Error::Invalid("local model binding is missing".into()))?;
+        let (model, provider) = config.model;
         model.validate()?;
         let compaction = match config.compaction {
             Some(crate::context::CompactionPolicy::Disabled) => {
@@ -100,12 +100,15 @@ impl LocalHarness {
                 return Err(Error::Invalid("local workspace is not a directory".into()));
             }
         }
-        let directory = owner::directory(&config.directory)?;
+        let directory = owner::directory(&owner::state_directory(&config.project)?)?;
         let owner = owner::Owner::open(&directory, &config.project)?;
         let filesystem =
-            acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
-                .await
-                .map_err(storage)?;
+            acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
+                LocalProject::Workspace(_) => directory.join("filesystem"),
+                LocalProject::Volume { directory, .. } => directory.clone(),
+            }))
+            .await
+            .map_err(storage)?;
         let provider_ref = owner.project.provider();
         #[cfg(feature = "native-execution")]
         let workspace = match &config.project {
@@ -120,7 +123,7 @@ impl LocalHarness {
                 )
                 .await?,
             ),
-            LocalProject::Volume(_) => None,
+            LocalProject::Volume { .. } => None,
         };
         let files = FilesystemHost::new(filesystem, provider_ref, None)?;
         // A configured project is opened, never silently replaced by an empty volume.
@@ -154,13 +157,12 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?,
         );
-        let mut tools = ToolRegistry::default();
-        for tool in config
-            .defaults
-            .into_iter()
-            .filter(|_| config.default_tools)
-            .chain(config.tools)
-        {
+        let mut tools = if config.default_tools {
+            defaults()?
+        } else {
+            ToolRegistry::default()
+        };
+        for tool in config.tools {
             tools.register((tool, None), &mut None, None)?;
         }
         let issuer = AuthorityIssuer::new(
@@ -211,7 +213,7 @@ impl LocalHarness {
 
     /// Durable task runtime shared by stock and custom executors.
     #[must_use]
-    pub const fn runtime(&self) -> &Arc<LocalTaskRuntime> {
+    pub(crate) const fn runtime(&self) -> &Arc<LocalTaskRuntime> {
         &self.runtime
     }
     /// Durable content and project host.
@@ -221,7 +223,7 @@ impl LocalHarness {
     }
     /// Durable event store.
     #[must_use]
-    pub const fn stream(&self) -> &Arc<LocalStream> {
+    pub(crate) const fn stream(&self) -> &Arc<LocalStream> {
         &self.stream
     }
     /// Selected project view.
@@ -241,17 +243,17 @@ impl LocalHarness {
     }
     /// Owner issuer for authenticated host operations.
     #[must_use]
-    pub const fn issuer(&self) -> &AuthorityIssuer {
+    pub(crate) const fn issuer(&self) -> &AuthorityIssuer {
         &self.issuer
     }
     /// Owner authority verifier.
     #[must_use]
-    pub const fn verifier(&self) -> &AuthorityVerifier {
+    pub(crate) const fn verifier(&self) -> &AuthorityVerifier {
         &self.verifier
     }
     /// Host owner scope, including journal storage grants.
     #[must_use]
-    pub const fn owner_scope(&self) -> &Scope {
+    pub(crate) const fn owner_scope(&self) -> &Scope {
         &self.signed
     }
     /// Complete enabled tool registry.
@@ -278,4 +280,9 @@ impl LocalHarness {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+// Replaced by crate::tools::defaults when the coding-tool composition (#503) lands.
+fn defaults() -> Result<ToolRegistry> {
+    Ok(ToolRegistry::default())
 }

@@ -22,6 +22,31 @@ impl Drop for Owner {
     }
 }
 
+pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
+    let (path, volume) = match project {
+        LocalProject::Workspace(path) => (path, None),
+        LocalProject::Volume { directory, volume } => (directory, Some(volume)),
+    };
+    let canonical = fs::canonicalize(path).map_err(storage)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.local.state/v1\0");
+    hash.update(canonical.as_os_str().as_encoded_bytes());
+    if let Some(volume) = volume {
+        hash.update(volume.storage_name(&mut None)?.as_bytes());
+    }
+    let root = dirs::data_local_dir()
+        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))?;
+    let directory = root
+        .join("acyclic/harness")
+        .join(hash.finalize().to_hex().as_str());
+    if matches!(project, LocalProject::Workspace(_)) && directory.starts_with(&canonical) {
+        return Err(Error::Invalid(
+            "per-user harness state would be inside the checkout".into(),
+        ));
+    }
+    Ok(directory)
+}
+
 pub(super) fn directory(path: &Path) -> Result<PathBuf> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -38,12 +63,11 @@ impl Owner {
     pub(super) fn open(directory: &Path, selection: &LocalProject) -> Result<Self> {
         let workspace = match selection {
             LocalProject::Workspace(path) => Some(fs::canonicalize(path).map_err(storage)?),
-            LocalProject::Volume(_) => None,
+            LocalProject::Volume { .. } => None,
         };
-        if workspace
-            .as_ref()
-            .is_some_and(|workspace| workspace.starts_with(directory))
-        {
+        if workspace.as_ref().is_some_and(|workspace| {
+            workspace.starts_with(directory) || directory.starts_with(workspace)
+        }) {
             return Err(Error::Invalid(
                 "local state directory must not contain the checkout".into(),
             ));
@@ -65,7 +89,7 @@ impl Owner {
             Ok(owner) => owner,
             Err(Error::NotFound(_)) => {
                 let project = match selection {
-                    LocalProject::Volume(volume) => volume.clone(),
+                    LocalProject::Volume { volume, .. } => volume.clone(),
                     LocalProject::Workspace(_) => VolumeRef::new(
                         crate::resources::ProviderRef::new(
                             "local".into(),
@@ -80,8 +104,7 @@ impl Owner {
                     )?,
                 };
                 let mut key = [0; 32];
-                key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-                key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+                getrandom::fill(&mut key).map_err(storage)?;
                 let owner = Self {
                     key,
                     agent: AgentId::new(),
@@ -107,7 +130,7 @@ impl Owner {
             || owner.project.provider().family() != "filesystem"
             || owner.workspace != workspace
             || owner.workspace_identity != workspace_identity
-            || matches!(selection, LocalProject::Volume(volume) if volume != &owner.project)
+            || matches!(selection, LocalProject::Volume { volume, .. } if volume != &owner.project)
         {
             return Err(Error::Unauthorized(
                 "local state belongs to a different workspace or volume".into(),

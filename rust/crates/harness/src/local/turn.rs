@@ -1,6 +1,8 @@
 use super::*;
 use crate::{executor::TurnOutput, runtime::TaskStateProvider};
 
+const TRANSITIONS_PER_SLICE: u32 = 32;
+
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
     pub fn commands(
@@ -120,25 +122,33 @@ impl LocalHarness {
             labels: Default::default(),
         };
         let commands = self.commands()?;
-        let mut attempt =
-            match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
-                crate::distributed::WorkPull::Claimed(lease) => {
-                    Some(Box::pin(self.runtime.resume_task(lease, &commands, 32, None)).await)
+        let mut attempt = match Box::pin(self.runtime.task_host().recover_work(task, &mut None))
+            .await?
+        {
+            crate::distributed::WorkPull::Claimed(lease) => Some(
+                Box::pin(
+                    self.runtime
+                        .resume_task(lease, &commands, TRANSITIONS_PER_SLICE, None),
+                )
+                .await,
+            ),
+            crate::distributed::WorkPull::Unresolved { error, .. } => {
+                if self.runtime.task_host().outcome(task).await?.is_none() {
+                    return Err(error);
                 }
-                crate::distributed::WorkPull::Unresolved { error, .. } => {
-                    if self.runtime.task_host().outcome(task).await?.is_none() {
-                        return Err(error);
-                    }
-                    None
-                }
-                crate::distributed::WorkPull::Idle => {
-                    Box::pin(
-                        self.runtime
-                            .run_operation(&worker, task, &commands, 32, None),
-                    )
-                    .await?
-                }
-            };
+                None
+            }
+            crate::distributed::WorkPull::Idle => {
+                Box::pin(self.runtime.run_operation(
+                    &worker,
+                    task,
+                    &commands,
+                    TRANSITIONS_PER_SLICE,
+                    None,
+                ))
+                .await?
+            }
+        };
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -147,8 +157,27 @@ impl LocalHarness {
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
-                    attempt =
-                        Some(Box::pin(self.runtime.resume_task(lease, &commands, 32, None)).await);
+                    attempt = Some(
+                        Box::pin(self.runtime.resume_task(
+                            lease,
+                            &commands,
+                            TRANSITIONS_PER_SLICE,
+                            None,
+                        ))
+                        .await,
+                    );
+                }
+                Some(crate::filesystem::TaskWorkerAttempt::Progress(
+                    crate::filesystem::TaskWorkerOutcome::Suspended { .. },
+                )) => {
+                    attempt = Box::pin(self.runtime.run_operation(
+                        &worker,
+                        task,
+                        &commands,
+                        TRANSITIONS_PER_SLICE,
+                        None,
+                    ))
+                    .await?;
                 }
                 _ => break,
             }
@@ -174,14 +203,13 @@ impl LocalHarness {
         if !terminal {
             Box::pin(self.advance(task)).await?;
             if self.runtime.task_host().outcome(task).await?.is_none() {
-                return Err(Error::Indeterminate(OperationId::from_bytes(
-                    task.into_bytes(),
-                )));
+                let admission = self.runtime.task_host().observe_admission(task).await?;
+                return Err(Error::Indeterminate(admission.operation_id));
             }
         }
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
-            crate::Outcome::Failed { message } => Err(Error::Conflict(message)),
+            crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
             crate::Outcome::Cancelled => Err(Error::InteractionRejected(
                 crate::InteractionRejection::Cancelled,
             )),
