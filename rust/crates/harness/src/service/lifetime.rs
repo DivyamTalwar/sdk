@@ -30,6 +30,7 @@ struct State<L> {
 }
 
 #[cfg(all(test, loom))]
+#[path = "lifetime/models.rs"]
 mod models;
 
 /// Cancelling the caller stops the independently owned connection drain.

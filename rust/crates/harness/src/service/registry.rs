@@ -44,4 +44,5 @@ impl<H: ?Sized> Registry<H> {
 }
 
 #[cfg(all(test, loom))]
+#[path = "registry/models.rs"]
 mod models;
