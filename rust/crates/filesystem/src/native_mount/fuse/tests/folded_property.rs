@@ -4,6 +4,40 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
+    // The paged uniqueness validator agrees with the volume's public native
+    // key for arbitrary sets of distinct stored spellings.
+    #[test]
+    fn directory_validation_agrees_with_volume_identity(
+        names in prop::collection::btree_set(prop_oneof![
+            "[a-zA-Z]{1,4}",
+            prop::sample::select(vec!["Straße", "STRASSE", "ΟΣ", "ος", "ﬃ", "ffi", "İ", "i\u{307}", "ΐ"])
+                .prop_map(str::to_owned),
+        ], 0..16),
+    ) {
+        let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
+        let expected = names.iter().map(|name| {
+            crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
+                name.as_bytes().to_vec(), config.limits.maximum_component_bytes)
+                .map(|name| name.case_fold_key())
+        }).collect::<Result<std::collections::BTreeSet<_>, _>>()?.len() == names.len();
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let actual = runtime.block_on(async {
+            let mut checkout = crate::facade::test_fixtures::folded_checkout(names).await?;
+            let cancellation = crate::CancellationToken::new();
+            let root = crate::kernel::NamespacePath::new(Vec::new(), config.limits)?;
+            let record = checkout.lookup_no_follow(&root, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await?.value.record.ok_or("root missing")?;
+            let crate::kernel::FilePayload::Directory { entries } = record.payload else {
+                return Err("root is not a directory".into());
+            };
+            let mut accounting = crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED, &cancellation);
+            let unique = checkout.unique_folded_tree(entries, &mut accounting, &cancellation).await?;
+            Ok::<_, Box<dyn std::error::Error>>(unique)
+        }).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(actual, expected);
+    }
+
     // Identity stays equal to the volume key; all I/O and parked streams retain
     // the native spelling, including after a rename through another alias.
     #[test]
