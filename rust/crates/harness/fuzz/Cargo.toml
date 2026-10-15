@@ -9,8 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-serde = "1"
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "test-support"] }
 
 [[bin]]
@@ -26,5 +27,3 @@ path = "fuzz_targets/records.rs"
 test = false
 doc = false
 bench = false
-
-[workspace]
