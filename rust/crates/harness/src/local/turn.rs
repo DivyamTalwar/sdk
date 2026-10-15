@@ -115,12 +115,7 @@ impl LocalHarness {
         }
     }
 
-    async fn advance(&self, task: TaskId) -> Result<()> {
-        let commands = self.commands()?;
-        Box::pin(self.advance_with_commands(task, &commands)).await
-    }
-
-    pub(super) async fn advance_with_commands(
+    pub(super) async fn advance(
         &self,
         task: TaskId,
         commands: &dyn crate::filesystem::TaskCommandHost,
@@ -211,7 +206,8 @@ impl LocalHarness {
             )
         );
         if !terminal {
-            Box::pin(self.advance(task)).await?;
+            let commands = self.commands()?;
+            Box::pin(self.advance(task, &commands)).await?;
             if self.runtime.task_host().outcome(task).await?.is_none() {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));

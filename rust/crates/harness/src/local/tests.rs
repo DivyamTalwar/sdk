@@ -617,7 +617,7 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
         return Err(Error::Conflict("stock admission rejected".into()));
     };
     let commands = PendingCommand(std::sync::atomic::AtomicUsize::new(0));
-    harness.advance_with_commands(task, &commands).await?;
+    Box::pin(harness.advance(task, &commands)).await?;
     assert_eq!(commands.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(harness.runtime.task_host().outcome(task).await?.is_none());
     let suspension = harness
