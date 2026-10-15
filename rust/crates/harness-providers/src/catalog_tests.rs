@@ -77,6 +77,7 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
         Credentials::explicit(BTreeMap::from([
             ("openai".into(), "fixture".into()),
             ("anthropic".into(), "fixture".into()),
+            ("gemini".into(), "fixture".into()),
         ])),
         script,
     );
@@ -91,14 +92,24 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
             json!({"thinking":{"type":"enabled","budget_tokens":2048}}),
             "thinking",
         ),
+        (
+            "gemini/gemini-2.5-pro",
+            json!({"generationConfig":{"thinkingConfig":{"thinkingBudget":2048},"responseMimeType":"application/json"}}),
+            "generationConfig",
+        ),
     ] {
         let provider = registry.resolve_with_options(selection, options.clone())?;
         let (prepared, _) = request(&provider)?;
         assert_eq!(provider.model().options, options);
-        assert_eq!(
-            projection::body(&provider, prepared.request())?[field],
-            options[field]
-        );
+        let body = projection::body(&provider, prepared.request())?;
+        for (field, configured) in options.as_object().expect("fixture options") {
+            for (key, value) in configured.as_object().expect("fixture option controls") {
+                assert_eq!(&body[field][key], value);
+            }
+        }
+        if field == "generationConfig" {
+            assert_eq!(body[field]["maxOutputTokens"], provider.context_output());
+        }
         let mut changed = provider.model().clone();
         changed.options = json!({});
         assert!(provider.context_capacity(&changed).is_err());

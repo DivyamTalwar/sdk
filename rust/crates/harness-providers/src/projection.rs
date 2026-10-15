@@ -213,7 +213,11 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         Adapter::Gemini => {
             map.remove("model");
             map.insert("contents".into(), json!(messages));
-            map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
+            map.entry("generationConfig")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or_else(|| invalid("Gemini generationConfig must be an object"))?
+                .insert("maxOutputTokens".into(), json!(max));
             if !system.is_empty() {
                 map.insert(
                     "systemInstruction".into(),
