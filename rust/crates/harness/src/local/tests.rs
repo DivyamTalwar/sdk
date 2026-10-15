@@ -79,6 +79,98 @@ fn model() -> Result<Model> {
     Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)
 }
 
+#[cfg(all(unix, feature = "native-execution"))]
+#[tokio::test]
+async fn stock_executor_binds_shell_and_git_to_the_selected_workspace() -> Result<()> {
+    for checkout in [false, true] {
+        let directory = tempfile::tempdir().map_err(super::storage)?;
+        let provider = scripted([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall {
+                    call_id: "shell".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command":"printf shell-ran; printf project-output > from-shell.txt"}),
+                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall {
+                    call_id: "git".into(),
+                    name: "fs".into(),
+                    arguments: json!({"command":"git status"}),
+                }),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]),
+            ScriptedTurn::Text("commands finished".into()),
+        ]);
+        let config = if checkout {
+            LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
+        } else {
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                provider.clone(),
+            )?
+        };
+        let harness = LocalHarness::open(config).await?;
+        assert_eq!(
+            harness.run("run shell and git").await?.text,
+            "commands finished"
+        );
+        let requests = provider.requests();
+        let results: Vec<_> = requests
+            .last()
+            .ok_or_else(|| Error::NotFound("model request".into()))?
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                crate::model::ModelContentPart::ToolResult {
+                    name,
+                    content: crate::model::ToolResultContent::Json { value },
+                    ..
+                } => Some((name.as_str(), value)),
+                _ => None,
+            })
+            .collect();
+        let shell = results
+            .iter()
+            .find(|(name, _)| *name == "bash")
+            .ok_or_else(|| Error::NotFound("shell result".into()))?
+            .1;
+        assert_eq!(shell["success"], true, "{shell:?}");
+        let stdout = shell["stdout"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("shell stdout".into()))?;
+        assert!(stdout.starts_with("shell-ran"), "{shell:?}");
+        let project = crate::filesystem::workspace_ref(
+            harness.project().provider().clone(),
+            &harness.project().storage_name(&mut None)?,
+        )?;
+        assert_eq!(
+            harness
+                .filesystem()
+                .read(&project, None, "/from-shell.txt", 1024, None)
+                .await?
+                .as_ref(),
+            b"project-output"
+        );
+        let git = results
+            .iter()
+            .find(|(name, _)| *name == "fs")
+            .ok_or_else(|| Error::NotFound("git result".into()))?
+            .1;
+        assert!(
+            matches!(
+                serde_json::from_value::<acyclic_fs::GitCommandOutput>(git.clone())
+                    .map_err(super::storage)?,
+                acyclic_fs::GitCommandOutput::Status(_)
+            ),
+            "{git:?}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -> Result<()> {
     let capacity = ModelContextCapacity {
@@ -381,7 +473,7 @@ async fn stock_executor_calls_default_and_custom_tools() -> Result<()> {
             ScriptedEvent::Event(ModelEvent::ToolCall {
                 call_id: "default".into(),
                 name: "write".into(),
-                arguments: json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
+                arguments: json!({"path":"src/main.rs","text":"fn main() {}\n","media_type":"text/plain","display_name":"main.rs"}),
             }),
             ScriptedEvent::Event(ModelEvent::ToolCall {
                 call_id: "custom".into(),
@@ -401,6 +493,29 @@ async fn stock_executor_calls_default_and_custom_tools() -> Result<()> {
     .await?;
     assert_eq!(harness.run("call both tools").await?.text, "both tools ran");
     assert_eq!(provider.dispatches().len(), 2);
+    let project = crate::filesystem::workspace_ref(
+        harness.project().provider().clone(),
+        &harness.project().storage_name(&mut None)?,
+    )?;
+    assert_eq!(
+        harness
+            .filesystem()
+            .read(&project, None, "/src/main.rs", 1024, None)
+            .await?
+            .as_ref(),
+        b"fn main() {}\n"
+    );
+    let scratch = crate::filesystem::workspace_ref(
+        harness.scratch().provider().clone(),
+        &harness.scratch().storage_name(&mut None)?,
+    )?;
+    assert!(matches!(
+        harness
+            .filesystem()
+            .read(&scratch, None, "/src/main.rs", 1024, None)
+            .await,
+        Err(Error::NotFound(_))
+    ));
     Ok(())
 }
 

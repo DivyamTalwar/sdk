@@ -33,6 +33,8 @@ mod turn;
 mod wire;
 #[cfg(feature = "native-execution")]
 mod workspace;
+#[cfg(feature = "native-execution")]
+mod workspace_tools;
 pub use config::{LocalHarnessConfig, LocalProject};
 #[cfg(feature = "native-execution")]
 pub use workspace::LocalWorkspace;
@@ -59,7 +61,7 @@ pub struct LocalHarness {
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(feature = "native-execution")]
-    workspace: Option<workspace::LocalWorkspace>,
+    workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
 impl LocalHarness {
@@ -112,7 +114,7 @@ impl LocalHarness {
         let provider_ref = owner.project.provider();
         #[cfg(feature = "native-execution")]
         let workspace = match &config.project {
-            LocalProject::Workspace(path) => Some(
+            LocalProject::Workspace(path) => Some(Arc::new(
                 workspace::open(
                     &filesystem,
                     &owner.project,
@@ -122,9 +124,11 @@ impl LocalHarness {
                     acyclic_fs::OperationId::from_bytes(owner.task.into_bytes()),
                 )
                 .await?,
-            ),
+            )),
             LocalProject::Volume { .. } => None,
         };
+        #[cfg(feature = "native-execution")]
+        let tool_filesystem = filesystem.clone();
         let files = FilesystemHost::new(filesystem, provider_ref, None)?;
         // A configured project is opened, never silently replaced by an empty volume.
         files
@@ -136,6 +140,15 @@ impl LocalHarness {
                 None,
             )
             .await?;
+        #[cfg(feature = "native-execution")]
+        let workspace_tools = workspace_tools::open(
+            &config.project,
+            workspace.clone(),
+            &directory,
+            &owner.project,
+            tool_filesystem,
+        )
+        .await?;
         let scratch = VolumeRef::new(
             provider_ref.clone(),
             format!("scratch-{}", owner.agent),
@@ -189,6 +202,8 @@ impl LocalHarness {
             session_limits: config.session_limits,
             concurrency: config.concurrency,
             clock: config.clock,
+            #[cfg(feature = "native-execution")]
+            workspace_tools,
         })
         .await?;
         Ok(Self {
@@ -247,8 +262,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub const fn workspace(&self) -> Option<&LocalWorkspace> {
-        self.workspace.as_ref()
+    pub fn workspace(&self) -> Option<&LocalWorkspace> {
+        self.workspace.as_deref()
     }
 }
 
