@@ -9,12 +9,14 @@ mod capability;
 mod compilation;
 mod decision;
 mod glob;
+mod mount;
 mod trie;
 
 pub use capability::{
     Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX, VolumeOperation,
 };
 pub use decision::{Decision, Denial, decide};
+pub use mount::MountMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub use trie::PathTrie;

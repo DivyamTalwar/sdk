@@ -144,11 +144,39 @@ impl PathTrie {
     /// including expiry of a deny rule; the caller recompiles on an invalid view.
     #[must_use]
     pub fn decide(&self, action: Action, path: &str, now: u64) -> Decision<'_> {
+        let outcome = self
+            .terminal(path, now)
+            .and_then(|node| node.decisions.get(action as usize));
+        match outcome {
+            Some(outcome) => Decision {
+                allowed: outcome.denial.is_none(),
+                rule_id: outcome
+                    .rule
+                    .and_then(|id| self.rules.get(id).map(String::as_str)),
+                denial: outcome.denial,
+                policy_version: self.version,
+            },
+            None => Decision::denied(self.version, Denial::Invalid),
+        }
+    }
+
+    pub(super) fn action_mask(&self, path: &str, now: u64) -> u16 {
+        self.terminal(path, now).map_or(0, |node| {
+            node.decisions
+                .iter()
+                .enumerate()
+                .fold(0, |mask, (index, outcome)| {
+                    mask | (u16::from(outcome.denial.is_none()) << index)
+                })
+        })
+    }
+
+    fn terminal(&self, path: &str, now: u64) -> Option<&State> {
         if now < self.valid_from
             || !super::glob::valid_path(path)
             || self.valid_until.is_some_and(|expiry| now >= expiry)
         {
-            return Decision::denied(self.version, Denial::Invalid);
+            return None;
         }
         let mut state = 0;
         for ch in path.chars() {
@@ -162,31 +190,9 @@ impl PathTrie {
                     .binary_search(&ch)
                     .unwrap_or(self.alphabet.len())
             };
-            let Some(next) = self
-                .states
-                .get(state)
-                .and_then(|node| node.transitions.get(symbol))
-            else {
-                return Decision::denied(self.version, Denial::Invalid);
-            };
-            state = *next;
+            state = *self.states.get(state)?.transitions.get(symbol)?;
         }
-        let outcome = self
-            .states
-            .get(state)
-            .and_then(|node| node.decisions.get(action as usize))
-            .copied();
-        match outcome {
-            Some(outcome) => Decision {
-                allowed: outcome.denial.is_none(),
-                rule_id: outcome
-                    .rule
-                    .and_then(|id| self.rules.get(id).map(String::as_str)),
-                denial: outcome.denial,
-                policy_version: self.version,
-            },
-            None => Decision::denied(self.version, Denial::Invalid),
-        }
+        self.states.get(state)
     }
 }
 
