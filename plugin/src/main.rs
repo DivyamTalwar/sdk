@@ -105,7 +105,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use acyclic_harness::filesystem::native_paths::{
     remove_tree_checked, root_materialization_directory,
-    root_materialization_directory_with_native_work, root_materialization_root,
+    root_materialization_directory_with_native_work,
 };
 use acyclic_harness::tools::git::*;
 use adapter_state::*;
