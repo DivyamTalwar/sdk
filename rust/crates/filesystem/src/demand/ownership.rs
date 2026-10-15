@@ -31,6 +31,14 @@ impl SourcePayloadOwnership {
         }
         Ok(Self::Borrowed)
     }
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) fn original_work(&self) -> Option<&NativeMaterializationWork> {
+        match self {
+            Self::Borrowed => None,
+            Self::Allocation { _allocation } => Some(_allocation.work()),
+            Self::Registered(custody, _) => custody.original.as_ref(),
+        }
+    }
     pub(crate) fn retain<W: SourceDemandReadWork>(
         &self,
         bytes: u64,
