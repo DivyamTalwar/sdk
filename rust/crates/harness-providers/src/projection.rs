@@ -1,0 +1,269 @@
+use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
+use acyclic_harness::{
+    Result,
+    context::ModelTokenCount,
+    model::{
+        FileProjectionPolicy, ModelContent, ModelContentPart, ModelDataPart, ModelMessage,
+        ModelRequest, ModelRole, PreparedModelRequest, ToolResultContent,
+    },
+};
+use serde_json::{Value, json};
+
+pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
+    let mut base = validate_url(&provider.config.base_url)?;
+    let path = format!("{}/", base.path().trim_end_matches('/'));
+    base.set_path(&path);
+    let suffix = match provider.config.adapter {
+        Adapter::Anthropic => "messages".into(),
+        Adapter::Responses => "responses".into(),
+        Adapter::Chat => "chat/completions".into(),
+        Adapter::Gemini => {
+            let name = &provider.model.name;
+            if name.contains('/') || name.contains(':') || name.contains('?') || name.contains('#')
+            {
+                return Err(invalid("invalid Gemini model name"));
+            }
+            format!("models/{name}:streamGenerateContent?alt=sse")
+        }
+    };
+    base.join(&suffix)
+        .map(String::from)
+        .map_err(|_| invalid("invalid model endpoint"))
+}
+
+pub(crate) fn count(
+    provider: &ResolvedModel,
+    prepared: &PreparedModelRequest,
+) -> Result<ModelTokenCount> {
+    let request = prepared.request();
+    let mut fixed = body(provider, request)?;
+    let field = match provider.config.adapter {
+        Adapter::Responses => "input",
+        Adapter::Gemini => "contents",
+        _ => "messages",
+    };
+    fixed[field] = json!([]);
+    // One token per encoded byte is a conservative bound for text byte-tokenizers.
+    // Count provider JSON escaping and per-message protocol framing as well.
+    let size = |value: &Value| -> Result<u32> {
+        let bytes = serde_json::to_vec(value).map_err(|error| invalid(error.to_string()))?;
+        u32::try_from(bytes.len().saturating_add(64))
+            .map_err(|_| invalid("token count exceeds u32"))
+    };
+    let message_tokens = request
+        .messages
+        .iter()
+        .map(|message| {
+            size(&Value::Array(project_message(
+                provider.config.adapter,
+                message,
+            )?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ModelTokenCount {
+        request_digest: prepared.request_digest(),
+        fixed_tokens: size(&fixed)?,
+        message_tokens,
+    })
+}
+
+pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
+    let adapter = provider.config.adapter;
+    let mut messages = Vec::new();
+    let mut system = Vec::new();
+    for message in &request.messages {
+        if message.role == ModelRole::System
+            && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
+        {
+            system.push(text_content(&message.content)?);
+        } else {
+            messages.extend(project_message(adapter, message)?);
+        }
+    }
+    let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {
+        Adapter::Anthropic => json!({"name":tool.name,"description":tool.description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":tool.name,"description":tool.description,
+            "parameters":tool.input_schema,"strict":false}),
+        Adapter::Chat => json!({"type":"function","function":{"name":tool.name,
+            "description":tool.description,"parameters":tool.input_schema}}),
+        Adapter::Gemini => json!({"name":tool.name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+    }).collect();
+    let max = request
+        .max_output_tokens
+        .unwrap_or(provider.context_output());
+    if max == 0 || max > provider.context_output() {
+        return Err(invalid("requested output exceeds selected model capacity"));
+    }
+    let mut body = request.model.options.clone();
+    let map = body
+        .as_object_mut()
+        .ok_or_else(|| invalid("model options must be an object"))?;
+    map.insert("model".into(), json!(request.model.name));
+    match adapter {
+        Adapter::Chat => {
+            map.insert("messages".into(), json!(messages));
+            map.insert("stream".into(), json!(true));
+            map.insert("stream_options".into(), json!({"include_usage":true}));
+            map.insert("max_completion_tokens".into(), json!(max));
+            if !tools.is_empty() {
+                map.insert("tools".into(), json!(tools));
+            }
+        }
+        Adapter::Responses => {
+            map.insert("input".into(), json!(messages));
+            map.insert("stream".into(), json!(true));
+            map.insert("store".into(), json!(false));
+            map.insert("max_output_tokens".into(), json!(max));
+            map.insert("tools".into(), json!(tools));
+        }
+        Adapter::Anthropic => {
+            map.insert("messages".into(), json!(messages));
+            map.insert("stream".into(), json!(true));
+            map.insert("max_tokens".into(), json!(max));
+            if !system.is_empty() {
+                map.insert("system".into(), json!(system.join("\n\n")));
+            }
+            if !tools.is_empty() {
+                map.insert("tools".into(), json!(tools));
+            }
+        }
+        Adapter::Gemini => {
+            map.remove("model");
+            map.insert("contents".into(), json!(messages));
+            map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
+            if !system.is_empty() {
+                map.insert(
+                    "systemInstruction".into(),
+                    json!({"parts":[{"text":system.join("\n\n")}]}),
+                );
+            }
+            if !tools.is_empty() {
+                map.insert("tools".into(), json!([{"functionDeclarations":tools}]));
+            }
+        }
+    }
+    Ok(body)
+}
+
+fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value>> {
+    let role = match message.role {
+        ModelRole::System => "system",
+        ModelRole::User => "user",
+        ModelRole::Assistant => "assistant",
+        ModelRole::Tool => "tool",
+    };
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    let mut results = Vec::new();
+    if let ModelContent::Text(text) = &message.content {
+        texts.push(text.clone());
+    }
+    for part in message.content.parts() {
+        match part {
+            ModelContentPart::Text { text } => texts.push(text.clone()),
+            ModelContentPart::File { file, policy } => texts.push(file_text(file, policy)?),
+            ModelContentPart::ToolCall { call_id, name, arguments } => calls.push(match adapter {
+                Adapter::Anthropic => json!({"type":"tool_use","id":call_id,"name":name,"input":arguments}),
+                Adapter::Responses => json!({"type":"function_call","call_id":call_id,"name":name,
+                    "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}),
+                Adapter::Chat => json!({"id":call_id,"type":"function","function":{"name":name,
+                    "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}}),
+                Adapter::Gemini => json!({"functionCall":{"id":call_id,"name":name,"args":arguments}}),
+            }),
+            ModelContentPart::ToolResult { call_id, name, content } => {
+                let text = result_text(content)?;
+                results.push(match adapter {
+                    Adapter::Anthropic => json!({"type":"tool_result","tool_use_id":call_id,"content":text}),
+                    Adapter::Responses => json!({"type":"function_call_output","call_id":call_id,"output":text}),
+                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
+                    Adapter::Gemini => json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}}),
+                });
+            }
+        }
+    }
+    let mut output = Vec::new();
+    match adapter {
+        Adapter::Chat => {
+            if !texts.is_empty() || !calls.is_empty() || results.is_empty() {
+                let mut value = json!({"role":role,"content":if texts.is_empty() {Value::Null} else {json!(texts.join("\n"))}});
+                if !calls.is_empty() {
+                    value["tool_calls"] = json!(calls);
+                }
+                output.push(value);
+            }
+            output.extend(results);
+        }
+        Adapter::Responses => {
+            if !texts.is_empty() {
+                output.push(json!({"role":role,"content":texts.join("\n")}));
+            }
+            output.extend(calls);
+            output.extend(results);
+        }
+        Adapter::Anthropic | Adapter::Gemini => {
+            let mut parts: Vec<_> = texts
+                .into_iter()
+                .map(|text| {
+                    if adapter == Adapter::Anthropic {
+                        json!({"type":"text","text":text})
+                    } else {
+                        json!({"text":text})
+                    }
+                })
+                .collect();
+            parts.extend(calls);
+            parts.extend(results);
+            output.push(if adapter == Adapter::Anthropic {
+                json!({"role":if role == "tool" {"user"} else {role},"content":parts})
+            } else {
+                json!({"role":if role == "assistant" {"model"} else {"user"},"parts":parts})
+            });
+        }
+    }
+    Ok(output)
+}
+
+fn result_text(content: &ToolResultContent) -> Result<String> {
+    match content {
+        ToolResultContent::Json { value } => {
+            serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
+        }
+        ToolResultContent::Parts { parts } => parts
+            .iter()
+            .map(|part| match part {
+                ModelDataPart::Text { text } => Ok(text.clone()),
+                ModelDataPart::File { file, policy } => file_text(file, policy),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|parts| parts.join("\n")),
+    }
+}
+
+fn text_content(content: &ModelContent) -> Result<String> {
+    if let ModelContent::Text(text) = content {
+        return Ok(text.clone());
+    }
+    content
+        .parts()
+        .iter()
+        .map(|part| match part {
+            ModelContentPart::Text { text } => Ok(text.clone()),
+            ModelContentPart::File { file, policy } => file_text(file, policy),
+            _ => Err(invalid("system messages cannot contain tool exchanges")),
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|parts| parts.join("\n"))
+}
+
+fn file_text(
+    file: &acyclic_harness::conversation::FileRef,
+    policy: &FileProjectionPolicy,
+) -> Result<String> {
+    if !matches!(policy, FileProjectionPolicy::Reference) {
+        return Err(invalid(
+            "file bytes require an owner-mediated text projection before dispatch",
+        ));
+    }
+    let value = serde_json::to_string(file).map_err(|e| invalid(e.to_string()))?;
+    Ok(format!("[file: {value}]"))
+}
