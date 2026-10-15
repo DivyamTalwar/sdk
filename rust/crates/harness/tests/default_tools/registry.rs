@@ -140,12 +140,12 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
 
 #[test]
 fn registry_merge_rejects_duplicates_before_mutating_destination() -> Result<()> {
-    let mut destination = crate::tools::defaults()?;
+    let destination = crate::tools::defaults()?;
     let mut incoming = ToolRegistry::default();
     incoming.register((example_tool(), None), &mut None, None)?;
     incoming.register((crate::tool::files::read()?, None), &mut None, None)?;
     assert!(matches!(
-        destination.extend(incoming),
+        destination.clone().extend(incoming),
         Err(Error::Conflict(_))
     ));
     assert!(destination.get("example.echo", None, None)?.is_none());
@@ -162,8 +162,7 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     custom.register((second, None), &mut None, None)?;
     custom.select_model_version("example.echo", "2")?;
     custom.remove_from_model("example.echo")?;
-    let mut combined = crate::tools::defaults()?;
-    combined.extend(custom)?;
+    let mut combined = crate::tools::defaults()?.extend(custom)?;
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
     assert!(combined.get("example.echo", Some("2"), None)?.is_some());

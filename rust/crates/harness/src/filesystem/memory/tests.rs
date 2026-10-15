@@ -161,8 +161,7 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
         file_bytes: 65536,
         ..Default::default()
     };
-    let mut tools = crate::tools::defaults()?;
-    tools.extend(crate::filesystem::recursive_tools::<
+    let mut tools = crate::tools::defaults()?.extend(crate::filesystem::recursive_tools::<
         MemoryStream,
         MemoryAuthorityBackend,
         MemoryObjectBackend,
@@ -483,8 +482,7 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let mut tools = crate::tools::defaults()?;
-    tools.extend(crate::filesystem::recursive_tools::<
+    let mut tools = crate::tools::defaults()?.extend(crate::filesystem::recursive_tools::<
         MemoryStream,
         MemoryAuthorityBackend,
         MemoryObjectBackend,
@@ -575,12 +573,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     );
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
-    assert!(
-        requests[0]
-            .tools
-            .iter()
-            .any(|tool| tool.name == "read")
-    );
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "read"));
     assert!(requests[1].messages.iter().any(|message| matches!(
         &message.content,
         crate::model::ModelContent::Part(crate::model::ModelContentPart::ToolResult { .. })
