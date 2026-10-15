@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFile, spawnSync} from 'node:child_process';
+import {execFile} from 'node:child_process';
 import {copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
@@ -14,10 +14,11 @@ async function fixture(body) {
  const env = {...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: absent,
   GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false',
   GIT_CONFIG_KEY_1: 'core.attributesFile', GIT_CONFIG_VALUE_1: absent};
- const git = (args, input) => {
-  const result = spawnSync('git', args, {cwd: root, env, input, encoding: 'utf8'});
-  assert.equal(result.status, 0, result.stderr);
- };
+ const git = (args, input) => new Promise((accept, reject) => {
+  const child = execFile('git', args, {cwd: root, env}, error => error ? reject(error) : accept());
+  child.stdin.on('error', reject);
+  child.stdin.end(input);
+ });
  const history = [];
  const previous = new Map();
  let mark = 0;
@@ -43,9 +44,9 @@ async function fixture(body) {
  };
  const tag = name => append(`reset refs/tags/${name}\nfrom :${mark}\n\n`);
  const check = async () => {
-  git(['init', '-q', '--initial-branch=fixture', '--template=']);
-  git(['fast-import', '--quiet'], Buffer.concat([...history, Buffer.from('done\n')]));
-  git(['read-tree', 'HEAD']);
+  await git(['init', '-q', '--initial-branch=fixture', '--template=']);
+  await git(['fast-import', '--quiet'], Buffer.concat([...history, Buffer.from('done\n')]));
+  await git(['read-tree', 'HEAD']);
   try {
    return {status: 0, ...await execute(process.execPath, ['scripts/static-ci.mjs'], {cwd: root, env})};
   } catch (error) {
