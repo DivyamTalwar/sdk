@@ -92,3 +92,36 @@ fn signed_delegation_only_narrows() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn production_labels_use_the_filesystem_vocabulary() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_fs::access::{
+        DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation,
+    };
+    let prefixes = [
+        VolumeOperation::Read.capability_prefix(),
+        VolumeOperation::Write.capability_prefix(),
+        FILE_READ_PREFIX,
+        DIRECTORY_READ_PREFIX,
+        SCOPE_PREFIX,
+    ];
+    let mut directories = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(&path)?;
+                for prefix in prefixes {
+                    assert!(
+                        !source.contains(&format!("\"{prefix}")),
+                        "duplicated vocabulary in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}

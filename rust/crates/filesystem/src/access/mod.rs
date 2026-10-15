@@ -9,6 +9,7 @@ mod capability;
 mod compilation;
 mod decision;
 mod glob;
+mod names;
 mod trie;
 
 pub use capability::{
@@ -17,7 +18,7 @@ pub use capability::{
 pub use decision::{Decision, Denial, decide};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-pub use trie::PathTrie;
+pub use trie::{PathTrie, PreparedPath};
 
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
@@ -193,6 +194,8 @@ pub struct ResourcePattern {
 /// Borrowed concrete resource, with the authoritative current head.
 #[derive(Clone, Copy, Debug)]
 pub struct Resource<'a> {
+    /// Authoritative volume name semantics, never supplied by the caller.
+    pub config: crate::VolumeConfig,
     /// Root-first resource task ancestry.
     pub lineage: &'a [String],
     /// Volume identity.
