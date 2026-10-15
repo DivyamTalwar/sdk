@@ -91,7 +91,9 @@ where
                             inputs
                                 .allocation
                                 .as_mut()
-                                .ok_or(MountSourceError::AccessDenied)?
+                                .ok_or(MountSourceError::NativeWork(
+                                    crate::NativeTreeMaterializationError::InvalidLayout,
+                                ))?
                                 .absorb(&mut allocation)
                                 .map_err(MountSourceError::NativeWork)?;
                         }
