@@ -143,11 +143,9 @@ pub async fn select_model_context(
                 }
                 (
                     ModelRole::Assistant,
-                    ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                    }),
+                    ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+                        call_id, name, arguments,
+                    ))),
                 )
             }
             MessageKind::ToolResult => {
@@ -202,7 +200,7 @@ async fn project_tool_result(
         }
     }
     let Some(ModelMessage {
-        content: ModelContent::Part(ModelContentPart::ToolCall { name, .. }),
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { name, .. })),
         ..
     }) = linked
     else {

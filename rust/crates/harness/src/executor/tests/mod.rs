@@ -221,11 +221,11 @@ struct ScriptedModel {
 }
 
 fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
-    ModelEvent::ToolCall {
-        call_id: call_id.into(),
-        name: "example.echo".into(),
+    ModelEvent::ToolCall(crate::model::ToolCall::new(
+        call_id.into(),
+        "example.echo".into(),
         arguments,
-    }
+    ))
 }
 
 impl Default for ScriptedModel {
