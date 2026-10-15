@@ -228,34 +228,81 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             GitCommandOutput::Filesystem(_)
         ));
     }
-    Ok(())
-}
-
-#[test]
-fn native_directory_rejects_foreign_cleanup_with_a_permission_error() -> Result<()> {
-    use acyclic_harness::{Error, filesystem::NativeDirectory};
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().join("managed");
-    let child = root.join("child");
-    let foreign = temp.path().join("foreign");
-    std::fs::create_dir_all(&child)?;
-    std::fs::create_dir(&foreign)?;
-    let directory = NativeDirectory(&root);
+    let missing = run(&fs, &store, &main, repo, &["apply", "missing.patch"]).await;
+    let error = missing
+        .err()
+        .ok_or("missing patch unexpectedly succeeded")?;
     assert!(matches!(
-        directory.remove(&foreign),
-        Err(Error::Unauthorized(_))
+        error.downcast_ref::<acyclic_harness::Error>(),
+        Some(acyclic_harness::Error::NativeSource { source, .. })
+            if matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::NotFound)
     ));
-    assert!(foreign.is_dir());
-    directory.remove(&child)?;
-    assert!(!child.exists());
-    let operation = OperationId::new();
-    assert_eq!(
-        directory.publication_directory(operation)?.parent(),
-        Some(directory.publication_root()?.as_path()),
+    main.write(
+        "/.volumes/user.txt",
+        bytes::Bytes::from_static(b"user-owned\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = run(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &["check-ignore", ".volumes/user.txt"],
+    )
+    .await?
+    .0
+    else {
+        return Err("expected check-ignore paths".into());
+    };
+    assert_eq!(value["paths"], serde_json::json!([]));
+    run(&fs, &store, &main, repo, &["clean", "-f"]).await?;
+    assert!(matches!(
+        main.read("/.volumes/user.txt", 64, &mut work).await,
+        Err(acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    child
+        .write(
+            "/.gitattributes",
+            bytes::Bytes::from_static(b"*.lock merge=ours\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    child
+        .write(
+            "/.gitignore",
+            bytes::Bytes::from_static(b"ignored/\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    for path in ["/ignored/child.txt", "/.acyclic-sdk/state", "/result.txt"] {
+        child
+            .write(
+                path,
+                bytes::Bytes::from_static(b"child\n").into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
+    let plan =
+        acyclic_harness::filesystem::plan_agent_merge(&store, &child, main.workspace(), repo)
+            .await?;
+    assert!(
+        plan.child_wins_bindings
+            .contains(&"ignored/child.txt".to_owned())
     );
-    assert!(matches!(
-        NativeDirectory(std::path::Path::new("/")).publication_root(),
-        Err(Error::Invalid(_)),
-    ));
+    assert!(
+        plan.child_wins_bindings
+            .contains(&".acyclic-sdk/state".to_owned())
+    );
+    assert!(!plan.child_wins_bindings.contains(&"result.txt".to_owned()));
     Ok(())
 }

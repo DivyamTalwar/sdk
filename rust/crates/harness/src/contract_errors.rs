@@ -249,6 +249,18 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An SDK git operation failure retaining the complete typed cause.
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    #[error("{source}")]
+    NativeGit {
+        /// Original capture, coordination, patch, lineage or durable-state cause.
+        #[source]
+        source: Box<crate::tools::git::Failure>,
+    },
     /// An actual native process timeout, without a new boxed IO error.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -332,7 +344,7 @@ impl Error {
                 feature = "native-execution",
                 not(target_arch = "wasm32")
             ))]
-            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
+            Self::NativeWorkspacePublication { .. } | Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
