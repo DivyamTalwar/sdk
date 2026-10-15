@@ -178,6 +178,9 @@ async fn defaults_are_additive_and_opt_out_retains_custom_grants() -> Result<()>
             defaults
         );
         assert!(admission.grants.contains("tool:call:test.custom"));
+        assert!(admission.grants.contains("mail:read"));
+        assert!(admission.grants.contains("mail:send"));
+        assert!(admission.grants.contains("operation:wake"));
         assert!(
             admission.grants.contains(
                 &harness

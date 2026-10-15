@@ -30,6 +30,9 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         "conversation:select_context".to_owned(),
         "operation:observe".to_owned(),
         "operation:cancel".to_owned(),
+        "operation:wake".to_owned(),
+        "mail:read".to_owned(),
+        "mail:send".to_owned(),
         "fork:publish".to_owned(),
         "project:merge".to_owned(),
         format!(
