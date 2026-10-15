@@ -1,6 +1,8 @@
 use pulldown_cmark::{BrokenLink, Event, LinkType, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 
+mod chain;
+
 pub(crate) type Key = unicase::UniCase<String>;
 type Definition = (String, String, usize);
 
@@ -32,6 +34,8 @@ impl References {
     }
 
     pub(crate) fn update(&mut self, source: &str, offset: usize, prefix: usize) -> HashSet<Key> {
+        #[cfg(test)]
+        PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         let parser = Parser::new_ext(source, crate::options());
         let pending: HashMap<_, _> = parser
             .reference_definitions()
@@ -93,6 +97,7 @@ pub(crate) struct Template {
 
 enum Node {
     Event(Event<'static>),
+    Sequence(Shared),
     Choice {
         key: Key,
         present: Shared,
@@ -178,6 +183,7 @@ impl Template {
 #[cfg(test)]
 std::thread_local! {
     pub(crate) static COMPILED_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Compiler {
@@ -200,6 +206,8 @@ impl Compiler {
         }
         let padded = (inline && source.ends_with([' ', '\t'])).then(|| format!("{source}x"));
         let source = padded.as_deref().unwrap_or(source);
+        #[cfg(test)]
+        PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         let mut callback = |link: BrokenLink<'_>| {
             let label = normalize(&link.reference);
             (!blocked.iter().any(|entry| {
@@ -243,19 +251,9 @@ impl Compiler {
         // Resolving an inner link disables enclosing link brackets in CommonMark.
         // Its missing alternative therefore needs the enclosing source context,
         // rather than just the reference's own span.
-        let nested = events.iter().find_map(|(event, range)| {
-            let Event::Start(Tag::Link { link_type, id, .. }) = event else {
-                return None;
-            };
-            if matches!(
-                link_type,
-                LinkType::Inline | LinkType::Autolink | LinkType::Email
-            ) {
-                return None;
-            }
-            enclosed(source, range.start).then(|| (normalize(id), range.clone()))
-        });
-        let present = self.nodes(source, offset, &events, &blocked);
+        let enclosing = enclosing(source, &events);
+        let nested = nested(&events, &enclosing);
+        let present = self.nodes(source, offset, &events, &blocked, &enclosing);
         let nodes = if let Some((label, range)) = nested {
             let mut denied = blocked.clone();
             denied.push(Blocked {
@@ -269,7 +267,7 @@ impl Compiler {
                 &denied,
                 (inline, paragraph, task),
             );
-            Shared::from([Node::Choice {
+            self.shared(vec![Node::Choice {
                 key: label,
                 present,
                 missing,
@@ -287,6 +285,7 @@ impl Compiler {
         offset: usize,
         events: &[(Event<'static>, std::ops::Range<usize>)],
         blocked: &[Blocked],
+        enclosing: &[Option<usize>],
     ) -> Shared {
         let (Some((first, begin)), Some((last, end))) = (events.first(), events.last()) else {
             return Shared::from([]);
@@ -309,7 +308,9 @@ impl Compiler {
         let mut result = Vec::new();
         let mut index = 0;
         while let Some((event, _)) = events.get(index) {
-            if let Some((node, after)) = self.reference(source, offset, events, index, &blocked) {
+            if let Some((node, after)) =
+                self.reference(source, offset, events, index, &blocked, enclosing)
+            {
                 result.push(node);
                 index = after;
             } else {
@@ -317,14 +318,19 @@ impl Compiler {
                 index += 1;
             }
         }
-        #[cfg(test)]
-        {
-            self.nodes += result.len();
-        }
-        let result = Shared::from(result);
+        let result = self.shared(result);
         self.memo.insert(memo, result.clone());
         result
     }
+
+    fn shared(&mut self, nodes: Vec<Node>) -> Shared {
+        #[cfg(test)]
+        {
+            self.nodes += nodes.len();
+        }
+        Shared::from(nodes)
+    }
+
     fn reference(
         &mut self,
         source: &str,
@@ -332,6 +338,7 @@ impl Compiler {
         events: &[(Event<'static>, std::ops::Range<usize>)],
         index: usize,
         blocked: &[Blocked],
+        enclosing: &[Option<usize>],
     ) -> Option<(Node, usize)> {
         let (event, range) = events.get(index)?;
         let key = match event {
@@ -345,21 +352,34 @@ impl Compiler {
             }
             _ => return None,
         };
-        self.keys.insert(key.clone());
         let end = matching_end(events, index + 1);
+        let target = recovery_end(source, range.end);
+        let (after, recovery) = recovery_range(events, end + 1, target, range.end);
+        if target == recovery
+            && enclosing.get(range.start).copied().flatten().is_none()
+            && let Some(nodes) = chain::compile(
+                self,
+                source.get(range.start..target)?,
+                events.get(index..after)?,
+                range.start,
+            )
+        {
+            return Some((Node::Sequence(nodes), after));
+        }
+        self.keys.insert(key.clone());
         let content = self.nodes(
             source,
             offset,
             events.get(index + 1..end).unwrap_or_default(),
             blocked,
+            enclosing,
         );
-        let target = recovery_end(source, range.end);
-        let (after, recovery) = recovery_range(events, end + 1, target, range.end);
         let following = self.nodes(
             source,
             offset,
             events.get(end + 1..after).unwrap_or_default(),
             blocked,
+            enclosing,
         );
         let mut denied = blocked.to_vec();
         denied.push(Blocked {
@@ -388,6 +408,29 @@ impl Compiler {
     }
 }
 
+fn nested(
+    events: &[(Event<'_>, std::ops::Range<usize>)],
+    enclosing: &[Option<usize>],
+) -> Option<(Key, std::ops::Range<usize>)> {
+    events.iter().find_map(|(event, range)| {
+        let Event::Start(Tag::Link { link_type, id, .. }) = event else {
+            return None;
+        };
+        if matches!(
+            link_type,
+            LinkType::Inline | LinkType::Autolink | LinkType::Email
+        ) {
+            return None;
+        }
+        enclosing
+            .get(range.start)
+            .copied()
+            .flatten()
+            .is_some()
+            .then(|| (normalize(id), range.clone()))
+    })
+}
+
 fn relevant(blocked: &[Blocked], start: usize, end: usize) -> Vec<Blocked> {
     blocked
         .iter()
@@ -396,22 +439,54 @@ fn relevant(blocked: &[Blocked], start: usize, end: usize) -> Vec<Blocked> {
         .collect()
 }
 
-fn enclosed(source: &str, end: usize) -> bool {
-    let mut depth = 0usize;
+fn opaque(events: &[(Event<'_>, std::ops::Range<usize>)]) -> Vec<std::ops::Range<usize>> {
+    events
+        .iter()
+        .filter_map(|(event, range)| {
+            matches!(
+                event,
+                Event::Code(_)
+                    | Event::InlineHtml(_)
+                    | Event::Start(Tag::Link {
+                        link_type: LinkType::Autolink | LinkType::Email,
+                        ..
+                    })
+            )
+            .then(|| range.clone())
+        })
+        .collect()
+}
+
+fn enclosing(source: &str, events: &[(Event<'_>, std::ops::Range<usize>)]) -> Vec<Option<usize>> {
+    let mut openings = Vec::new();
+    let mut result = Vec::with_capacity(source.len() + 1);
+    let opaque = opaque(events);
+    let mut span = 0;
     let mut escaped = false;
-    for byte in source.bytes().take(end) {
+    for (index, byte) in source.bytes().enumerate() {
+        result.push(openings.last().copied());
+        while opaque.get(span).is_some_and(|range| range.end <= index) {
+            span += 1;
+        }
+        if opaque.get(span).is_some_and(|range| range.start <= index) {
+            escaped = false;
+            continue;
+        }
         if escaped {
             escaped = false;
         } else {
             match byte {
                 b'\\' => escaped = true,
-                b'[' => depth += 1,
-                b']' => depth = depth.saturating_sub(1),
+                b'[' => openings.push(index),
+                b']' => {
+                    openings.pop();
+                }
                 _ => {}
             }
         }
     }
-    depth > 0
+    result.push(openings.last().copied());
+    result
 }
 
 fn event_kind(event: &Event<'_>) -> String {
@@ -511,6 +586,7 @@ fn emit(nodes: &[Node], references: &References, events: &mut Vec<Event<'static>
         };
         match node {
             Node::Event(event) => events.push(event.clone()),
+            Node::Sequence(nodes) => pending.extend(nodes.iter().rev().map(Emit::Node)),
             Node::Choice {
                 key,
                 present,

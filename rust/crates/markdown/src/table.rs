@@ -24,9 +24,18 @@ impl Table {
             Event::Start(Tag::TableHead | Tag::TableRow) => self.rows.push(Vec::new()),
             Event::Start(Tag::TableCell) => self.cell.clear(),
             Event::End(TagEnd::TableCell) => {
-                let mut lines = render::render_styled(&self.cell, self.style);
+                let lines = render::render_styled(&self.cell, self.style);
                 if let Some(row) = self.rows.last_mut() {
-                    row.push(lines.pop().unwrap_or_default());
+                    let mut cell = Line::default();
+                    for (index, line) in lines.into_iter().enumerate() {
+                        if index > 0 {
+                            cell.push(" ↵ ", self.style, None);
+                        }
+                        for span in line.spans {
+                            cell.push(&span.text, span.style, span.link.as_deref());
+                        }
+                    }
+                    row.push(cell);
                 }
             }
             Event::End(TagEnd::TableHead | TagEnd::TableRow) => {}

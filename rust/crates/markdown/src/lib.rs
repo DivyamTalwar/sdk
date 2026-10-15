@@ -63,6 +63,12 @@ impl Cached {
         state: render::Renderer,
         events: &[(Event<'_>, Range<usize>)],
     ) -> Option<Self> {
+        if matches!(
+            events.first(),
+            Some((Event::Start(Tag::CodeBlock(_) | Tag::HtmlBlock), _))
+        ) {
+            return None;
+        }
         // Loose-list paragraph ranges can begin after the task marker even
         // though its event belongs to the paragraph. Keep it in the template.
         for (event, marker) in events {

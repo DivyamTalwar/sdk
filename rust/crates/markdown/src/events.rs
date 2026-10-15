@@ -5,6 +5,8 @@ pub(crate) fn parse<'a>(
     source: &'a str,
     references: &crate::References,
 ) -> Vec<(Event<'a>, Range<usize>)> {
+    #[cfg(test)]
+    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut callback = |link: BrokenLink<'_>| {
         references
             .get(&crate::normalize(&link.reference))

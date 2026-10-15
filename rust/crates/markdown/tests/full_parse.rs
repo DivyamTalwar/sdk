@@ -511,6 +511,35 @@ fn adjacent_reference_alternatives_share_suffixes() {
 }
 
 #[test]
+fn adjacent_reference_parser_bytes_scale_linearly() {
+    let mut previous = 0;
+    for count in [16, 32, 64, 128] {
+        let source = format!("{}\n\n", "[text][ref]".repeat(count));
+        let before = references::PARSED_BYTES.get();
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let parsed = references::PARSED_BYTES.get() - before;
+        assert!(
+            parsed <= source.len() * 16,
+            "{} bytes parsed {parsed}",
+            source.len()
+        );
+        if previous > 0 {
+            assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}");
+        }
+        println!("{} input bytes: {parsed} parser bytes", source.len());
+        previous = parsed;
+        assert_eq!(markdown.lines(), full_parse(&source));
+    }
+}
+
+#[test]
+fn late_definitions_do_not_reinterpret_literal_indented_code() {
+    let source = "[x](url)    indented\n\n    more[r]: url\ntext\n\n[r]: /later\n\n";
+    check_chunks(source, &[2, 2]);
+}
+
+#[test]
 fn nested_reference_fuzz_regression() {
     let data = b"[a][b][c\xec\xec\xec\xec\xec[]\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec[a][b]\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec](url)[d*[e]\n\x08[b]: /one\n\n[e]: /two\n\n";
     let source = String::from_utf8_lossy(data);
@@ -534,6 +563,48 @@ fn linear_work_preserves_quoted_tasks_when_references_resolve() {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn adjacent_reference_total_parser_work_is_linear(
+        count in 2usize..48,
+        labels in prop::collection::vec(0usize..12, 1..8),
+        cuts in prop::collection::vec(1usize..24, 1..8),
+    ) {
+        let words = ["word", "a b", "**bold**", "*em*", "é", "a\tb", "&#97;", "a\\]b", "`code`", "`x[y]`", "`[`", "<span title='[x]'>a</span>"];
+        let pattern: String = (0..count).map(|index| {
+            let label = labels.get(index % labels.len()).and_then(|index| words.get(*index)).copied().unwrap_or_default();
+            format!("[{label}][ref{index}]")
+        }).collect();
+        let mut previous = 0;
+        for copies in [1, 2] {
+            let source = format!("{}\n\n", pattern.repeat(copies));
+            let before = references::PARSED_BYTES.get();
+            let mut markdown = Markdown::default();
+            markdown.push(&source);
+            let parsed = references::PARSED_BYTES.get() - before;
+            prop_assert!(parsed <= source.len() * 16, "{} input bytes: {parsed} parser bytes", source.len());
+            if previous > 0 { prop_assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}"); }
+            previous = parsed;
+            prop_assert_eq!(markdown.lines(), full_parse(&source));
+            let definitions = "[ref0]: /first\n\n[word]: /word\n\n[ref1]: /second\n\n";
+            markdown.push(definitions);
+            prop_assert_eq!(markdown.lines(), full_parse(&format!("{source}{definitions}")));
+        }
+        check_chunks(&format!("{pattern}\n\n[ref0]: /first\n\n[word]: /word\n\n"), &cuts);
+    }
+
+    #[test]
+    fn decoded_table_newlines_preserve_every_cell_segment(
+        parts in prop::collection::vec("[a-zA-Z0-9]{1,12}", 2..6),
+        entity in prop_oneof![Just("&#10;"), Just("&#13;"), Just("&NewLine;")],
+    ) {
+        let source = format!("| title |\n| - |\n| {} |\n", parts.join(entity));
+        let mut markdown = Markdown::default();
+        markdown.push(&source);
+        let rendered: String = markdown.lines().iter().flat_map(|line| &line.spans).map(|span| span.text.as_str()).collect();
+        prop_assert!(rendered.contains(&parts.join(" ↵ ")), "{rendered:?}");
+        check_chunks(&source, &[1, 7]);
+    }
+
     #[test]
     fn nested_links_match_random_chunkings(
         prefix in "[a-z ]{0,8}",
