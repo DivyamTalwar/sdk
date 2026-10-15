@@ -17,6 +17,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "local-recursive-fork"
+path = "tests/local_recursive_fork.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
 name = "context-continuation"
 path = "tests/context_continuation.rs"
 required-features = ["filesystem-local"]
@@ -25,6 +30,16 @@ required-features = ["filesystem-local"]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client-commands"
+path = "tests/client_commands.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "task-workflow"
+path = "tests/task_workflow.rs"
+required-features = ["filesystem-local"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -67,6 +82,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
