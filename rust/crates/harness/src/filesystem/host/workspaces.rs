@@ -20,17 +20,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let workspace = self.open(reference, Some(io)).await?;
         let bytes = match generation {
-            Some(reference) => io.sdk(
-                self.generation(&workspace, reference, Some(io))
-                    .await?
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-            None => io.sdk(
-                workspace
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
+            Some(reference) => {
+                let pinned = self.generation(&workspace, reference, Some(io)).await?;
+                crate::conversation::BoundedContentFuture::new(Some(io), || {
+                    pinned
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .map(|result| io.sdk(result))
+                })?
+                .await?
+            }
+            None => {
+                crate::conversation::BoundedContentFuture::new(Some(io), || {
+                    workspace
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .map(|result| io.sdk(result))
+                })?
+                .await?
+            }
         };
         if io.original_native_work().is_none() {
             io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;

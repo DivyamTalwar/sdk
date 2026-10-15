@@ -59,6 +59,16 @@ async fn local_content_publication_futures_stay_bounded() -> Result<()> {
     eprintln!("local content publication future: {bytes} bytes");
     assert!(bytes < 4096, "publication future is {bytes} bytes");
     let file = publication.await?;
+    let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name(&mut None)?)?;
+    let read = host.read(&workspace, None, "/file.txt", 4096, None);
+    let pinned = host.read_pinned_io(&file, 4096, None);
+    let sizes = [std::mem::size_of_val(&read), std::mem::size_of_val(&pinned)];
+    eprintln!("local content read/pinned future sizes: {sizes:?}");
+    assert!(
+        sizes.iter().all(|size| *size < 16 * 1024),
+        "read/pinned future sizes: {sizes:?}"
+    );
+    drop((read, pinned));
     assert_eq!(
         host.read_pinned_io(&file, 4096, None).await?.as_ref(),
         b"content"

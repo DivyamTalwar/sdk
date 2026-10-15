@@ -34,6 +34,7 @@ use acyclic_fs::{
     Workspace, WorkspaceError, WorkspaceStat,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
+use futures::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 
@@ -204,13 +205,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let path = rendered.0;
                 let opened = (self).open(&workspace, Some(io)).await?;
                 let pinned = (self).generation(&opened, &generation, Some(io)).await?;
-                let bytes = pinned
-                    .read(&path, maximum_bytes, original, io.cancellation())
-                    .await
-                    .map_err(|source| Error::NativeWorkspace {
-                        source: Box::new(source),
-                        custody: None,
-                    })?;
+                let bytes = crate::conversation::BoundedContentFuture::new(Some(io), || {
+                    pinned
+                        .read(&path, maximum_bytes, original, io.cancellation())
+                        .map(|result| {
+                            result.map_err(|source| Error::NativeWorkspace {
+                                source: Box::new(source),
+                                custody: None,
+                            })
+                        })
+                })?
+                .await?;
                 fork_preparer_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
@@ -246,11 +251,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(io) => {
                     let opened = (self).open(&workspace, Some(io)).await?;
                     let pinned = (self).generation(&opened, &generation, Some(io)).await?;
-                    let bytes = io.receive(
+                    let remaining = io.remaining()?;
+                    let bytes = crate::conversation::BoundedContentFuture::new(Some(io), || {
                         pinned
-                            .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
-                            .await,
-                    )?;
+                            .read(&path, maximum_bytes, remaining, io.cancellation())
+                            .map(|result| io.receive(result))
+                    })?
+                    .await?;
                     let capacity = bytes.retained_capacity().ok_or_else(|| {
                         stock_boundary(
                             Some(io),
@@ -263,8 +270,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     bytes
                 }
                 None => {
-                    self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                        .await?
+                    crate::conversation::BoundedContentFuture::new(None, || {
+                        self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
+                    })?
+                    .await?
                 }
             };
             crate::executor::with_history_io(io, |work| {
