@@ -89,9 +89,21 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
         .await
         .map_err(Error::process_io)?;
     let address = listener.local_addr().map_err(Error::process_io)?;
-    let mut command = Command::new(std::env::current_exe().map_err(Error::process_io)?);
-    command.args(["--exact", "mcp::stdio::native::tests::native_child_is_initialized_once_and_kept_until_the_transport_drops",
-        "--nocapture", "--skip", &format!("mcp-child:{address}")]);
+    let executable = std::env::current_exe().map_err(Error::process_io)?;
+    let arguments = format!(
+        "--exact mcp::stdio::native::tests::native_child_is_initialized_once_and_kept_until_the_transport_drops --nocapture --skip mcp-child:{address}"
+    );
+    // The test runner's banner is not an MCP protocol message.
+    #[cfg(windows)]
+    let command = acyclic_native_runtime::shell_command(
+        &format!("call \"{}\" {arguments} >NUL", executable.display()),
+        Some("cmd"),
+    );
+    #[cfg(not(windows))]
+    let command = acyclic_native_runtime::shell_command(
+        &format!("\"{}\" {arguments} >/dev/null", executable.display()),
+        Some("sh"),
+    );
     let mut future = Box::pin(StdioMcpTransport::spawn(command, 4096, 5000));
     let (mut stream, _) = tokio::select! {
         accepted = listener.accept() => accepted.map_err(Error::process_io)?,
