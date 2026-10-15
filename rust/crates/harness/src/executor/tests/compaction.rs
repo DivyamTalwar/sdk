@@ -20,12 +20,14 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             )])
             .with_reconciliations([
                 ScriptedReconciliation {
+                    orphan: false,
                     observed,
                     continuation: Some(vec![ModelEvent::Content {
                         delta: "second-".into(),
                     }]),
                 },
                 ScriptedReconciliation {
+                    orphan: false,
                     observed: expanded,
                     continuation: Some(vec![
                         ModelEvent::Content {
@@ -74,8 +76,8 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 .await?,
             summary
         );
-        assert_eq!(provider.request_count(), 1);
-        assert_eq!(provider.reconciliation_count(), 2);
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(provider.reconciliations().len(), 2);
     }
     Ok(())
 }
