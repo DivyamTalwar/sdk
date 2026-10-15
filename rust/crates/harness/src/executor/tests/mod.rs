@@ -686,6 +686,7 @@ impl crate::context::ContextStage for OnceStage {
 
 mod compaction;
 mod content;
+mod invocation_bounds;
 mod recovery;
 mod replay;
 mod tools_1;
