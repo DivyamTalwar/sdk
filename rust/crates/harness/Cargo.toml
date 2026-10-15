@@ -82,6 +82,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+diffy.workspace = true
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
@@ -146,3 +147,8 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "client-diff"
+path = "tests/client_diff.rs"
+required-features = ["filesystem"]

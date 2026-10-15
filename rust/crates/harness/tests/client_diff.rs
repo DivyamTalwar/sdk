@@ -1,0 +1,469 @@
+//! Golden patches and incremental pinned-file query projection.
+
+use acyclic_fs::Fs;
+use acyclic_harness::{
+    AgentId, Capabilities, IdempotencyKey, Result,
+    client::{DiffLimits, DiffPath, DiffPublication, DiffView, FileDiff},
+    context::{ContextRoot, PinnedContextPath},
+    conversation::{
+        ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef,
+    },
+    core::{AggregateKind, Authority, AuthorityIssuer},
+    filesystem::{FilesystemContentVerifier, FilesystemHost},
+    resources::ProviderRef,
+};
+use serde::Deserialize;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+#[derive(Deserialize)]
+struct Golden {
+    before: Option<String>,
+    after: Option<String>,
+    kind: String,
+    added: u64,
+    removed: u64,
+    patch: String,
+}
+
+#[test]
+fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cases: Vec<Golden> = serde_json::from_str(include_str!("client_diff_cases.json"))?;
+    for case in cases {
+        let diff = FileDiff::between(
+            case.before.as_deref().map(str::as_bytes),
+            case.after.as_deref().map(str::as_bytes),
+        )
+        .expect("changed");
+        assert_eq!(diff.patch, case.patch);
+        assert_eq!(diff.added, case.added);
+        assert_eq!(diff.removed, case.removed);
+        assert_eq!(serde_json::to_value(diff.kind)?, case.kind);
+        assert!(!diff.binary);
+        assert_eq!(diff.hunks.len(), 1);
+    }
+    for (before, after, exists, binary) in [
+        (None, None, false, false),
+        (Some(&b"same\n"[..]), Some(&b"same\n"[..]), false, false),
+        (None, Some(&b""[..]), true, false),
+        (Some(&b""[..]), None, true, false),
+        (None, Some(&b"\0"[..]), true, true),
+        (Some(&b"\xff"[..]), Some(&b"\xfe"[..]), true, true),
+    ] {
+        let diff = FileDiff::between(before, after);
+        assert_eq!(diff.is_some(), exists);
+        if let Some(diff) = diff {
+            assert_eq!(diff.binary, binary);
+        }
+    }
+    Ok(())
+}
+
+struct Fixture {
+    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
+    root: ContextRoot,
+    writer: ContentGrant,
+    reader: Arc<dyn ContentResidencyVerifier>,
+}
+
+impl Fixture {
+    async fn new() -> Result<Self> {
+        let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = AgentId::from_bytes([1; 16]);
+        let volume = VolumeRef::new(
+            provider,
+            "sources".into(),
+            VolumeClass::SessionShared,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let issuer = AuthorityIssuer::new(
+            "diff",
+            [9; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "test".into(),
+            },
+        );
+        let scope = issuer
+            .issue(
+                "owner",
+                &Capabilities::new([
+                    volume.capability(VolumeOperation::Read, &mut None)?,
+                    volume.capability(VolumeOperation::Write, &mut None)?,
+                    volume.directory_read_capability("", &mut None)?,
+                ]),
+                Some(agent),
+                None,
+                &mut None,
+            )
+            .expect("scope");
+        host.create_volume(&volume).await?;
+        let verifier = issuer.verifier(&mut None).expect("verifier");
+        let writer = ContentGrant::verify(
+            &verifier,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+        Ok(Self {
+            host,
+            root: ContextRoot {
+                volume,
+                directory: String::new(),
+            },
+            writer,
+            reader,
+        })
+    }
+    async fn put(&self, path: &str, text: &str, key: &str) -> Result<()> {
+        self.host
+            .put_content(
+                &self.root.volume,
+                &self.writer,
+                path,
+                text.as_bytes(),
+                "text/plain",
+                "source",
+                1_000_000,
+                &IdempotencyKey::new(key)?,
+                None,
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+    async fn source(&self, path: &str) -> Result<PinnedContextPath> {
+        let page = self
+            .reader
+            .list_private_directory(&self.root.volume, "", "", None, None, 128, None)?
+            .await?;
+        Ok(PinnedContextPath {
+            root: self.root.clone(),
+            generation: page.generation,
+            path: path.into(),
+        })
+    }
+}
+
+struct Reader<'a> {
+    inner: &'a dyn ContentResidencyVerifier,
+    reads: AtomicUsize,
+}
+impl ContentResidencyVerifier for Reader<'_> {
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        prefix: &'a str,
+        path: &'a str,
+        generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io acyclic_harness::conversation::ContentIo>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_harness::conversation::FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .read_private_path(volume, prefix, path, generation, maximum_bytes, io)
+    }
+}
+
+fn limits() -> DiffLimits {
+    DiffLimits {
+        files: 32,
+        changes: 16,
+        file_bytes: 1024,
+        render_bytes: 8192,
+    }
+}
+
+#[tokio::test]
+async fn deletion_only_publications_keep_the_published_generation() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("a.txt", "removed\n", "base").await?;
+    let base = fixture.source("a.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    let workspace = acyclic_harness::filesystem::workspace_ref(
+        fixture.root.volume.provider().clone(),
+        &fixture.root.volume.storage_name(&mut None)?,
+    )?;
+    let generation = fixture
+        .host
+        .apply(
+            &workspace,
+            Some(&base.generation),
+            &[acyclic_harness::filesystem::WorkspaceMutation::Remove {
+                path: "/a.txt".into(),
+            }],
+            &IdempotencyKey::new("delete")?,
+        )
+        .await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: generation.clone(),
+        paths: vec![DiffPath {
+            path: "a.txt".into(),
+            base: Some(base),
+            current: None,
+        }],
+    };
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+    };
+    assert_eq!(
+        view.apply(&publication, &reader, limits()).await?,
+        ["a.txt"]
+    );
+    assert_eq!(view.generation(), &generation);
+    assert_eq!(view.line_counts(), (0, 1));
+    assert_eq!(
+        view.files()["a.txt"].kind,
+        acyclic_harness::client::DiffKind::Removed
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn query_follow_waits_for_push_and_stops_on_a_cursor_gap() -> Result<()> {
+    use futures::{FutureExt as _, StreamExt as _};
+    let fixture = Fixture::new().await?;
+    fixture.put("a.txt", "before\n", "base").await?;
+    let base = fixture.source("a.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    fixture.put("a.txt", "after\n", "edit").await?;
+    let current = fixture.source("a.txt").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: current.generation.clone(),
+        paths: vec![DiffPath {
+            path: "a.txt".into(),
+            base: Some(base),
+            current: Some(current),
+        }],
+    };
+    let (mut sender, receiver) = futures::channel::mpsc::channel(1);
+    {
+        let follow = view.follow(Box::pin(receiver), fixture.reader.as_ref(), limits());
+        futures::pin_mut!(follow);
+        assert!(follow.next().now_or_never().is_none());
+        sender
+            .try_send(Ok(publication.clone()))
+            .expect("bounded push");
+        assert_eq!(follow.next().await.expect("publication")?, ["a.txt"]);
+        let mut gap = publication.clone();
+        gap.paths.clear();
+        sender.try_send(Ok(gap)).expect("bounded push");
+        assert!(follow.next().await.expect("cursor error").is_err());
+        assert!(follow.next().await.is_none());
+    }
+    assert_eq!(view.generation(), &publication.generation);
+    assert_eq!(view.line_counts(), (1, 1));
+    Ok(())
+}
+
+#[tokio::test]
+async fn publications_update_only_named_files_and_keep_the_fork_base() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("a.txt", "base\n", "a-base").await?;
+    fixture.put("untouched.txt", "keep\n", "untouched").await?;
+    let base = fixture.source("a.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+    };
+    for (index, current, expected) in [
+        (1, "first\n", 1),
+        (2, "second\nmore\n", 1),
+        (3, "base\n", 0),
+    ] {
+        fixture
+            .put("a.txt", current, &format!("edit-{index}"))
+            .await?;
+        let source = fixture.source("a.txt").await?;
+        let publication = DiffPublication {
+            previous: view.generation().clone(),
+            generation: source.generation.clone(),
+            paths: vec![DiffPath {
+                path: "a.txt".into(),
+                base: Some(base.clone()),
+                current: Some(source),
+            }],
+        };
+        assert_eq!(
+            view.apply(&publication, &reader, limits()).await?,
+            ["a.txt"]
+        );
+        assert_eq!(view.files().len(), expected);
+        if let Some(diff) = view.files().get("a.txt") {
+            assert!(diff.patch.contains("-base\n"));
+            assert!(!diff.patch.contains("-first\n"));
+        }
+        assert_eq!(reader.reads.load(Ordering::SeqCst), index * 2);
+        let mut resumed = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+        let snapshot = DiffPublication {
+            previous: base.generation.clone(),
+            ..publication.clone()
+        };
+        resumed
+            .apply(&snapshot, fixture.reader.as_ref(), limits())
+            .await?;
+        assert_eq!(resumed.files(), view.files());
+        assert_eq!(resumed.line_counts(), view.line_counts());
+        assert_eq!(resumed.generation(), view.generation());
+        assert!(
+            view.apply(&publication, &reader, limits())
+                .await?
+                .is_empty()
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), index * 2);
+    }
+    assert_eq!(view.line_counts(), (0, 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_full_view_can_replace_a_file_in_one_atomic_publication() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("old.txt", "baseline\n", "base").await?;
+    let base = fixture.source("old.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    fixture.put("old.txt", "old\n", "old").await?;
+    let old = fixture.source("old.txt").await?;
+    view.apply(
+        &DiffPublication {
+            previous: base.generation.clone(),
+            generation: old.generation.clone(),
+            paths: vec![DiffPath {
+                path: "old.txt".into(),
+                base: Some(base.clone()),
+                current: Some(old),
+            }],
+        },
+        fixture.reader.as_ref(),
+        DiffLimits {
+            files: 1,
+            ..limits()
+        },
+    )
+    .await?;
+    fixture.put("new.txt", "new\n", "new").await?;
+    fixture.put("old.txt", "baseline\n", "restore").await?;
+    let new = fixture.source("new.txt").await?;
+    let restored = PinnedContextPath {
+        path: "old.txt".into(),
+        ..new.clone()
+    };
+    let generation = new.generation.clone();
+    view.apply(
+        &DiffPublication {
+            previous: view.generation().clone(),
+            generation,
+            paths: vec![
+                DiffPath {
+                    path: "new.txt".into(),
+                    base: None,
+                    current: Some(new),
+                },
+                DiffPath {
+                    path: "old.txt".into(),
+                    base: Some(base),
+                    current: Some(restored),
+                },
+            ],
+        },
+        fixture.reader.as_ref(),
+        DiffLimits {
+            files: 1,
+            ..limits()
+        },
+    )
+    .await?;
+    assert_eq!(view.files().keys().collect::<Vec<_>>(), ["new.txt"]);
+    assert_eq!(view.line_counts(), (1, 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_publications_leave_the_view_and_cursor_unchanged() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("a.txt", "base\n", "base").await?;
+    let base = fixture.source("a.txt").await?;
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
+    fixture.put("a.txt", "changed\n", "edit").await?;
+    let source = fixture.source("a.txt").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: source.generation.clone(),
+        paths: vec![DiffPath {
+            path: "a.txt".into(),
+            base: Some(base.clone()),
+            current: Some(source.clone()),
+        }],
+    };
+    let before = serde_json::to_string(&view).expect("JSON");
+    for limits in [
+        DiffLimits {
+            file_bytes: 1,
+            ..limits()
+        },
+        DiffLimits {
+            render_bytes: 1,
+            ..limits()
+        },
+        DiffLimits {
+            changes: 0,
+            ..limits()
+        },
+    ] {
+        assert!(
+            view.apply(&publication, fixture.reader.as_ref(), limits)
+                .await
+                .is_err()
+        );
+        assert_eq!(serde_json::to_string(&view).expect("JSON"), before);
+    }
+    let mut duplicate = publication.clone();
+    duplicate.paths.push(duplicate.paths[0].clone());
+    assert!(
+        view.apply(&duplicate, fixture.reader.as_ref(), limits())
+            .await
+            .is_err()
+    );
+    let mut wrong_source = publication.clone();
+    wrong_source.paths[0].base = Some(source);
+    assert!(
+        view.apply(&wrong_source, fixture.reader.as_ref(), limits())
+            .await
+            .is_err()
+    );
+    view.apply(&publication, fixture.reader.as_ref(), limits())
+        .await?;
+    let mut conflicting = publication.clone();
+    conflicting.paths.clear();
+    assert!(
+        view.apply(&conflicting, fixture.reader.as_ref(), limits())
+            .await
+            .is_err()
+    );
+    Ok(())
+}
