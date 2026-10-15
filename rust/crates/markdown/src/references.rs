@@ -442,7 +442,7 @@ fn relevant(blocked: &[Blocked], start: usize, end: usize) -> Vec<Blocked> {
 fn opaque(events: &[(Event<'_>, std::ops::Range<usize>)]) -> Vec<std::ops::Range<usize>> {
     events
         .iter()
-        .filter_map(|(event, range)| {
+        .filter(|(event, _)| {
             matches!(
                 event,
                 Event::Code(_)
@@ -452,8 +452,8 @@ fn opaque(events: &[(Event<'_>, std::ops::Range<usize>)]) -> Vec<std::ops::Range
                         ..
                     })
             )
-            .then(|| range.clone())
         })
+        .map(|(_, range)| range.clone())
         .collect()
 }
 
