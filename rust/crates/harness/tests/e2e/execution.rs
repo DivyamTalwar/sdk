@@ -205,13 +205,12 @@ fn check_provider(
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
     }
-    if provider.recoveries().len() != 0 {
-        return Err(format!(
-            "{} unused reconciliation replies",
-            provider.recoveries().len()
-        )
-        .into());
+    let recoveries = provider.recoveries();
+    if !recoveries.is_empty() {
+        return Err(format!("{} unused reconciliation replies", recoveries.len()).into());
     }
+    let requests = provider.requests();
+    let reconciliations = provider.reconciliations();
     for (label, expected, actual) in [
         (
             "requests",
@@ -221,7 +220,7 @@ fn check_provider(
         (
             "reconciliations",
             expected.reconciliation_count,
-            provider.reconciliations().len(),
+            reconciliations.len(),
         ),
     ] {
         if expected.is_some_and(|expected| expected != actual) {
@@ -229,8 +228,7 @@ fn check_provider(
         }
     }
     if !expected.requests.is_empty() {
-        let requests = provider
-            .requests()
+        let requests = requests
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
