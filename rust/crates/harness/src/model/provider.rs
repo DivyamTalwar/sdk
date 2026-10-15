@@ -26,6 +26,10 @@ pub enum ModelEvent {
         /// Schema-defined arguments.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
+        /// Opaque provider continuation data, retained with the call for replay.
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+        metadata: Value,
     },
     /// Completed model step.
     Completed {
@@ -104,9 +108,13 @@ impl ModelEvent {
                 call_id,
                 name,
                 arguments,
+                metadata,
             } => add(
                 add(call_id.capacity() as u64, name.capacity() as u64)?,
-                crate::executor::json::json_value_logical_owned_bytes(arguments)?,
+                add(
+                    crate::executor::json::json_value_logical_owned_bytes(arguments)?,
+                    crate::executor::json::json_value_logical_owned_bytes(metadata)?,
+                )?,
             )?,
             Self::Completed { metadata } => {
                 crate::executor::json::json_value_logical_owned_bytes(metadata)?

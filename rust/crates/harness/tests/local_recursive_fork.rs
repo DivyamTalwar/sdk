@@ -116,6 +116,7 @@ impl ModelProvider for PrefixModel {
         let mut events = Vec::new();
         if requests.len() == 1 {
             events.push(Ok(ModelEvent::ToolCall {
+                metadata: serde_json::Value::Null,
                 call_id: "fork-plan".into(),
                 name: "example.fork".into(),
                 arguments: self.children.clone(),

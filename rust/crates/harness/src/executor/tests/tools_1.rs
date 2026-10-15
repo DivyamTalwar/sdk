@@ -25,7 +25,12 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         json!({"type":"object"}),
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
-    let model = Arc::new(ScriptedModel::default());
+    let continuation = json!({"gemini_thought_signature":"signed"});
+    let mut fixture = ScriptedModel::default();
+    if let Ok(ModelEvent::ToolCall { metadata, .. }) = &mut fixture.responses[0][0] {
+        *metadata = continuation.clone();
+    }
+    let model = Arc::new(fixture);
     let base = StockExecutor::new(
         Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
         model.clone(),
@@ -88,9 +93,17 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     let result = executor.execute(input.clone(), &journal).await?;
     assert_eq!(result.text, "done");
     let reads = journal.3.load(Ordering::SeqCst);
-    executor
+    let prefix = executor
         .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
         .await?;
+    assert!(prefix.request().messages.iter().any(|message| matches!(
+        &message.content,
+        ModelContent::Part(ModelContentPart::ToolCall { metadata, .. }) if metadata == &continuation
+    )));
+    assert!(model.requests.lock().unwrap()[1].messages.iter().any(|message| matches!(
+        &message.content,
+        ModelContent::Part(ModelContentPart::ToolCall { metadata, .. }) if metadata == &continuation
+    )));
     assert!(journal.3.load(Ordering::SeqCst) > reads);
     assert_eq!(executor.execute(input, &journal).await?, result);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);

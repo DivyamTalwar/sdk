@@ -133,6 +133,7 @@ impl Registry {
             return Err(invalid("model provider API key is unavailable"));
         }
         Ok(ResolvedModel {
+            estimator: crate::accounting::TokenEstimator::new(config.adapter),
             model,
             config,
             capacity,
@@ -144,6 +145,7 @@ impl Registry {
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    pub(crate) estimator: crate::accounting::TokenEstimator,
     /// Immutable harness model identity.
     pub(crate) model: Model,
     pub(crate) config: ProviderConfig,
@@ -205,16 +207,24 @@ impl ModelProvider for ResolvedModel {
                 #[cfg(target_arch = "wasm32")]
                 headers.insert("anthropic-dangerous-direct-browser-access".into(), "true".into());
             }
+            let body = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
+            let input_bytes = body.len();
             let response = self.transport.send(crate::HttpRequest {
                 url: projection::endpoint(self)?, headers,
-                body: serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?,
+                body,
             }).await?;
             if !(200..300).contains(&response.status) {
-                Err(invalid(format!("model HTTP status {}", response.status)))?;
+                Err(crate::http_error(response.status))?;
             }
             use futures::StreamExt as _;
-            let mut events = crate::stream::events(self.config.adapter, response.body, self.config.max_event_bytes);
-            while let Some(event) = events.next().await { yield event?; }
+            let mut events = crate::stream::events(self.config.adapter, response.body, self.config.max_event_bytes, dispatch);
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if let ModelEvent::Completed { metadata } = &event {
+                    self.estimator.observe(input_bytes, metadata);
+                }
+                yield event;
+            }
         })
     }
 }

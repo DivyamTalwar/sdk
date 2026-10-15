@@ -34,6 +34,7 @@ impl StockExecution<'_> {
                 call_id,
                 name,
                 arguments,
+                metadata,
             } = event
             {
                 let invocation = ToolInvocation::for_model_call(
@@ -44,16 +45,16 @@ impl StockExecution<'_> {
                     arguments,
                     self.native_work(),
                 )?;
-                stock_vec_push(&mut calls, invocation, self.io)?;
+                stock_vec_push(&mut calls, (invocation, metadata), self.io)?;
             }
         }
         if !retained.admission.completed
             || calls.is_empty()
-            || through_call.is_some_and(|id| !calls.iter().any(|call| call.call_id == id))
+            || through_call.is_some_and(|id| !calls.iter().any(|(call, _)| call.call_id == id))
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        for invocation in calls {
+        for (invocation, metadata) in calls {
             let projection = completed_tool_projection(
                 journal,
                 &records,
@@ -72,6 +73,7 @@ impl StockExecution<'_> {
                         call_id: stock_string_copy(&invocation.call_id, self.io)?,
                         name: stock_string_copy(&invocation.name, self.io)?,
                         arguments: invocation.arguments,
+                        metadata,
                     }),
                 },
                 self.io,

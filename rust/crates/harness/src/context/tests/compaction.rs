@@ -5,6 +5,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     let call = ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Part(ModelContentPart::ToolCall {
+            metadata: serde_json::Value::Null,
             call_id: "call".into(),
             name: "tool".into(),
             arguments: Value::Null,

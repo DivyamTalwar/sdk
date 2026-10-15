@@ -273,6 +273,7 @@ impl ModelProvider for InterruptedModel {
             return Box::pin(futures::stream::iter([
                 Ok(if attempt == 0 {
                     ModelEvent::ToolCall {
+                        metadata: serde_json::Value::Null,
                         call_id: "provider-call".into(),
                         name: "test.restore".into(),
                         arguments: json!({"file":file,"approval":true}),

@@ -92,6 +92,7 @@ where
         ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Parts(vec![ModelContentPart::ToolCall {
+                metadata: serde_json::Value::Null,
                 call_id: invocation.call_id.clone(),
                 name: invocation.name.clone(),
                 arguments: invocation.arguments,

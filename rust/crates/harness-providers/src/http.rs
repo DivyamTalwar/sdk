@@ -55,18 +55,16 @@ impl HttpTransport for ReqwestTransport {
             for (name, value) in request.headers {
                 builder = builder.header(name, value);
             }
-            let response = builder
-                .body(request.body)
-                .send()
-                .await
-                .map_err(|_| super::invalid("model HTTP exchange failed"))?;
+            let response = builder.body(request.body).send().await.map_err(|_| {
+                acyclic_harness::Error::Storage("model HTTP exchange failed".into())
+            })?;
             Ok(HttpResponse {
                 status: response.status().as_u16(),
-                body: Box::pin(
-                    response.bytes_stream().map(|chunk| {
-                        chunk.map_err(|_| super::invalid("model HTTP body interrupted"))
-                    }),
-                ),
+                body: Box::pin(response.bytes_stream().map(|chunk| {
+                    chunk.map_err(|_| {
+                        acyclic_harness::Error::Storage("model HTTP body interrupted".into())
+                    })
+                })),
             })
         })
     }

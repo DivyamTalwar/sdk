@@ -22,13 +22,20 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
                         } else {
                             String::new()
                         },
+                        metadata: Value::Null,
                     };
                     if state.calls.insert(index(value, "index")?, call).is_some() {
                         return Err(invalid("repeated tool block"));
                     }
                 }
                 Some("text") => text(&mut events, &block["text"], false),
-                Some("thinking") => text(&mut events, &block["thinking"], true),
+                Some("thinking") => {
+                    state.thinking.insert(index(value, "index")?, block.clone());
+                    text(&mut events, &block["thinking"], true);
+                }
+                Some("redacted_thinking") => {
+                    state.thinking.insert(index(value, "index")?, block.clone());
+                }
                 _ => {}
             }
         }
@@ -36,7 +43,26 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
             let delta = &value["delta"];
             match delta["type"].as_str() {
                 Some("text_delta") => text(&mut events, &delta["text"], false),
-                Some("thinking_delta") => text(&mut events, &delta["thinking"], true),
+                Some("thinking_delta" | "signature_delta") => {
+                    let key = if delta["type"] == "thinking_delta" {
+                        "thinking"
+                    } else {
+                        "signature"
+                    };
+                    let block = state.thinking.entry(index(value, "index")?).or_insert_with(
+                        || serde_json::json!({"type":"thinking", "thinking":"", "signature":""}),
+                    );
+                    if block[key].is_null() {
+                        block[key] = Value::String(String::new());
+                    }
+                    let Value::String(retained) = &mut block[key] else {
+                        return Err(invalid("invalid thinking block string"));
+                    };
+                    append(retained, delta.get(key), maximum)?;
+                    if key == "thinking" {
+                        text(&mut events, &delta["thinking"], true);
+                    }
+                }
                 Some("input_json_delta") => {
                     let call = state
                         .calls
@@ -57,9 +83,14 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
         Some("message_delta") => {
             state.usage(&value["usage"]);
             if let Some(reason) = value["delta"].get("stop_reason") {
-                state
-                    .metadata
-                    .insert("finish_reason".into(), reason.clone());
+                state.metadata.insert(
+                    "finish_reason".into(),
+                    if reason == "max_tokens" {
+                        Value::String("length".into())
+                    } else {
+                        reason.clone()
+                    },
+                );
             }
         }
         Some("message_stop") => state.terminal = true,

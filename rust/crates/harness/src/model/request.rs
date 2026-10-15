@@ -130,6 +130,7 @@ impl ModelRequest {
                 call_id,
                 name,
                 arguments,
+                ..
             } => {
                 charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                 crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;

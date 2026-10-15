@@ -328,6 +328,7 @@ fn independently_selected_event_budget_still_rejects_excess_observations() -> Re
     limits.validate(&mut None)?;
     let mut admission = ModelEventAdmission::default();
     let event = ModelEvent::ToolCall {
+        metadata: serde_json::Value::Null,
         call_id: "call-1".into(),
         name: "example.echo".into(),
         arguments: Value::Null,

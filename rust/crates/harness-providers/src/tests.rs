@@ -68,9 +68,10 @@ fn chunks(input: &str, width: usize) -> acyclic_stream::BoxProviderStream<'stati
 async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Result<()> {
     for (adapter, fixture) in fixtures() {
         for width in [1, 7, 1024] {
-            let events: Vec<_> = stream::events(adapter, chunks(fixture, width), 4096)
-                .try_collect()
-                .await?;
+            let events: Vec<_> =
+                stream::events(adapter, chunks(fixture, width), 4096, parser_dispatch())
+                    .try_collect()
+                    .await?;
             assert_eq!(events.len(), 4, "{adapter:?}");
             assert_eq!(
                 events[0],
@@ -87,6 +88,11 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             assert_eq!(
                 events[2],
                 ModelEvent::ToolCall {
+                    metadata: if adapter == Adapter::Anthropic {
+                        json!({"anthropic_thinking":[{"type":"thinking","thinking":"think","signature":""}]})
+                    } else {
+                        serde_json::Value::Null
+                    },
                     call_id: "call".into(),
                     name: "echo".into(),
                     arguments: json!({"value":1})
@@ -115,16 +121,22 @@ async fn errors_truncation_and_event_limits_fail_every_adapter() {
             "data: {}\n\n",
             "data: invalid\n\n",
         ] {
-            let result: Result<Vec<_>> = stream::events(adapter, chunks(input, 1), 1024)
-                .try_collect()
-                .await;
+            let result: Result<Vec<_>> =
+                stream::events(adapter, chunks(input, 1), 1024, parser_dispatch())
+                    .try_collect()
+                    .await;
             assert!(result.is_err(), "{adapter:?} {input}");
         }
         assert!(
-            stream::events(adapter, chunks("data: {\"text\":\"oversized\"}\n\n", 1), 8)
-                .try_collect::<Vec<_>>()
-                .await
-                .is_err()
+            stream::events(
+                adapter,
+                chunks("data: {\"text\":\"oversized\"}\n\n", 1),
+                8,
+                parser_dispatch()
+            )
+            .try_collect::<Vec<_>>()
+            .await
+            .is_err()
         );
     }
 }
@@ -146,7 +158,7 @@ async fn malformed_chat_batches_emit_no_tool_calls_or_completion() {
             "data: {}\n\ndata: [DONE]\n\n",
             json!({"choices":[{"delta":{"tool_calls":calls}}]})
         );
-        let mut events = stream::events(Adapter::Chat, chunks(&input, 3), 4096);
+        let mut events = stream::events(Adapter::Chat, chunks(&input, 3), 4096, parser_dispatch());
         let mut failed = false;
         while let Some(event) = events.next().await {
             assert!(event.is_err());
@@ -189,6 +201,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         sent: Mutex::new(Vec::new()),
     });
     let provider = ResolvedModel {
+        estimator: crate::accounting::TokenEstimator::new(adapter),
         model: Model {
             provider: "fixture".into(),
             name: "model".into(),
@@ -385,6 +398,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall {
+                        metadata: serde_json::Value::Null,
                         call_id: "call".into(),
                         name: "echo".into(),
                         arguments: json!({"value":1}),
@@ -419,12 +433,13 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             .map_err(|_| invalid("poisoned fixture"))?;
         let body = json(&sent[0].body)?;
         assert!(
-            u64::from(count.fixed_tokens)
+            (u64::from(count.fixed_tokens)
                 + count
                     .message_tokens
                     .iter()
                     .map(|count| u64::from(*count))
-                    .sum::<u64>()
+                    .sum::<u64>())
+                * 3
                 >= sent[0].body.len() as u64
         );
         match adapter {
@@ -481,7 +496,7 @@ async fn model_content_is_available_before_the_network_stream_completes() -> Res
         };
         let chunk = Bytes::from(format!("data: {value}\n\n"));
         let body = futures::stream::once(async { Ok(chunk) }).chain(futures::stream::pending());
-        let mut events = stream::events(adapter, Box::pin(body), 4096);
+        let mut events = stream::events(adapter, Box::pin(body), 4096, parser_dispatch());
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.next())
             .await
             .map_err(|_| invalid("provider buffered content until completion"))?;
@@ -512,7 +527,7 @@ async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
             yield Bytes::copy_from_slice(fixture.as_bytes());
             futures::future::pending::<()>().await;
         };
-        let mut stream = stream::events(adapter, Box::pin(body), 4096);
+        let mut stream = stream::events(adapter, Box::pin(body), 4096, parser_dispatch());
         assert!(stream.next().await.transpose()?.is_some());
         assert!(!cancelled.load(Ordering::SeqCst));
         drop(stream);
@@ -520,3 +535,14 @@ async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
     }
     Ok(())
 }
+
+fn parser_dispatch() -> ModelDispatch {
+    ModelDispatch {
+        operation_id: acyclic_harness::OperationId::new(),
+        step: 0,
+        request_digest: [0; 32],
+    }
+}
+
+#[path = "review_tests.rs"]
+mod review;
