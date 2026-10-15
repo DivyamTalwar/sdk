@@ -7,7 +7,7 @@ use crate::test_support::{
 };
 use crate::{
     Admission, Error, LocalHarness, LocalHarnessConfig, OperationId, Result,
-    context::{ModelContextCapacity, ModelTokenCount},
+    context::ModelContextCapacity,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
@@ -23,11 +23,7 @@ use std::{
 };
 
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
-    Arc::new(
-        ScriptedModelProvider::new(turns)
-            .with_context_capacity(capacity())
-            .with_token_counter(|request| Ok(token_count(request))),
-    )
+    Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))
 }
 fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
@@ -39,24 +35,20 @@ fn capacity() -> ModelContextCapacity {
         output_tokens: 4096,
     }
 }
-fn token_count(request: &PreparedModelRequest) -> ModelTokenCount {
-    ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: 8,
-        message_tokens: vec![8; request.request().messages.len()],
-    }
-}
 
 struct Interrupted {
     started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     inner: ScriptedModelProvider,
 }
 impl ModelProvider for Interrupted {
-    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(capacity())
+    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
+        self.inner.context_capacity(model)
     }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        Ok(token_count(request))
+    fn count_tokens(
+        &self,
+        request: &PreparedModelRequest,
+    ) -> Result<crate::context::ModelTokenCount> {
+        self.inner.count_tokens(request)
     }
     fn generate<'a>(
         &'a self,
@@ -306,7 +298,6 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
             "discarded interrupted response".into(),
         )])
         .with_context_capacity(capacity())
-        .with_token_counter(|request| Ok(token_count(request)))
         .with_reconciliations([ScriptedReconciliation {
             observed: vec![],
             continuation: Some(vec![
