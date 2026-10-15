@@ -58,11 +58,18 @@ struct Cached {
 impl Cached {
     fn new(
         source: &str,
-        range: Range<usize>,
+        mut range: Range<usize>,
         lines: Range<usize>,
         state: render::Renderer,
         events: &[(Event<'_>, Range<usize>)],
     ) -> Option<Self> {
+        // Loose-list paragraph ranges can begin after the task marker even
+        // though its event belongs to the paragraph. Keep it in the template.
+        for (event, marker) in events {
+            if matches!(event, Event::TaskListMarker(_)) {
+                range.start = range.start.min(marker.start);
+            }
+        }
         let quotes = source
             .get(line_start(source, range.start)..range.start)
             .unwrap_or_default()

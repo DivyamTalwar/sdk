@@ -521,6 +521,17 @@ fn nested_reference_fuzz_regression() {
     check_chunks(&source, &cuts);
 }
 
+#[test]
+fn linear_work_preserves_quoted_tasks_when_references_resolve() {
+    let data = b"> 3. [x] t\0\0\0\x80ask [r]\n>\n>    more\n\n[r]: /url\n\n";
+    let source = String::from_utf8_lossy(data);
+    let cuts: Vec<_> = data
+        .iter()
+        .map(|byte| usize::from(*byte) % 31 + 1)
+        .collect();
+    check_chunks(&source, &cuts);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
@@ -556,8 +567,8 @@ proptest! {
     }
 
     #[test]
-    fn review_cases_match_random_chunkings(case in 0usize..8, cuts in prop::collection::vec(1usize..20, 1..12)) {
-        let cases = [LAZY_LIST, "    indented\n\n    more", "paragraph word, word. yes! x: y - z + 2 = 4? ", "```text\na\n```\n\n```text\nb\n```\n\n", "- [x] task [r]\n\n[r]: /url\n\n", "> | a | b |\n> | - | - |\n> | [r] | d |\n>\n\n[r]: /url\n\n", "100. [x] task\n\n     more\n", "[r][r][r][r]\n\n[r]: /url\n\n"];
+    fn review_cases_match_random_chunkings(case in 0usize..9, cuts in prop::collection::vec(1usize..20, 1..12)) {
+        let cases = [LAZY_LIST, "    indented\n\n    more", "paragraph word, word. yes! x: y - z + 2 = 4? ", "```text\na\n```\n\n```text\nb\n```\n\n", "- [x] task [r]\n\n[r]: /url\n\n", "> | a | b |\n> | - | - |\n> | [r] | d |\n>\n\n[r]: /url\n\n", "100. [x] task\n\n     more\n", "[r][r][r][r]\n\n[r]: /url\n\n", "> 3. [x] task [r]\n>\n>    more\n\n[r]: /url\n\n"];
         check_chunks(cases.get(case).copied().unwrap_or_default(), &cuts);
     }
 
