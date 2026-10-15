@@ -565,7 +565,8 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
         if workspace.id() != physical.workspace_id {
             return Ok(());
         }
-        let directory = root_materialization_directory(&physical.path, operation_id)
+        let directory = NativeDirectory(&physical.path)
+            .publication_directory(operation_id)
             .map_err(PluginRootMaterializerError)?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
@@ -623,7 +624,8 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .remove_materialization_async(operation_id)
             .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        let directory = root_materialization_directory(&physical.path, operation_id)
+        let directory = NativeDirectory(&physical.path)
+            .publication_directory(operation_id)
             .map_err(PluginRootMaterializerError)?;
         match fs::remove_dir_all(&directory) {
             Ok(()) => {}

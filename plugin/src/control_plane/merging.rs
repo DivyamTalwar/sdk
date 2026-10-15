@@ -132,8 +132,10 @@ impl ControlPlane {
                 .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)
                 .map_err(display)?;
-            let child_wins_bindings = git_ignore_policy(&lazy_source)
-                .await?
+            let child_wins_bindings = WorkspacePolicy::load(&lazy_source)
+                .await
+                .map_err(display)?
+                .ignore
                 .newly_ignored_paths_at(&source_head, &changed, &tracked)
                 .await
                 .map_err(display)?;
