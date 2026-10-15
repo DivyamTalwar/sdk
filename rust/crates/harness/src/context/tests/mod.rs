@@ -31,6 +31,7 @@ fn native_retention_policy() -> FileProjectionPolicy {
 fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -> Result<Context> {
     let mut calls: Vec<_> = (0..results)
         .map(|index| ModelContentPart::ToolCall {
+            metadata: serde_json::Value::Null,
             call_id: format!("native-{index}"),
             name: "native.tool".into(),
             arguments: Value::Null,

@@ -304,10 +304,14 @@ impl ModelContentPart {
                 call_id,
                 name,
                 arguments,
+                metadata,
             } => Self::ToolCall {
                 call_id: copy_text(call_id, quota)?,
                 name: copy_text(name, quota)?,
                 arguments: crate::core::copy(arguments, quota, |value: &serde_json::Value, _| {
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })?,
+                metadata: crate::core::copy(metadata, quota, |value: &serde_json::Value, _| {
                     crate::executor::json::json_value_logical_owned_bytes(value)
                 })?,
             },

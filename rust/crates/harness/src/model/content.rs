@@ -73,6 +73,10 @@ pub enum ModelContentPart {
         /// Schema-defined arguments.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
+        /// Opaque provider continuation data preserved from the original model event.
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+        metadata: Value,
     },
     /// Paired tool result.
     ToolResult {
@@ -173,8 +177,15 @@ impl ModelContent {
                 ModelContentPart::File { file, policy } => {
                     policy.validate_file(file, limits, work)?;
                 }
-                ModelContentPart::ToolCall { arguments, .. } => {
+                ModelContentPart::ToolCall {
+                    arguments,
+                    metadata,
+                    ..
+                } => {
                     value_bound(arguments, limits.render_bytes, work)?;
+                    if !metadata.is_null() {
+                        value_bound(metadata, limits.render_bytes, work)?;
+                    }
                 }
                 ModelContentPart::ToolResult { content, .. } => {
                     content.validate_limits(limits, work)?;

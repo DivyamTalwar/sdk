@@ -269,6 +269,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
     messages.push(ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Part(ModelContentPart::ToolCall {
+            metadata: serde_json::Value::Null,
             call_id: invocation.call_id.clone(),
             name: invocation.name.clone(),
             arguments: invocation.arguments.clone(),

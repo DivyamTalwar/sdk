@@ -41,16 +41,21 @@ pub(super) fn parse(state: &mut State, value: &Value, maximum: usize) -> Result<
             call.arguments.clear();
             append(&mut call.arguments, value.get("arguments"), maximum)?;
         }
-        Some("response.completed") => {
+        Some("response.completed" | "response.incomplete") => {
             let response = &value["response"];
             if response["status"]
                 .as_str()
-                .is_some_and(|status| status != "completed")
+                .is_some_and(|status| !matches!(status, "completed" | "incomplete"))
             {
                 return Err(invalid("Responses generation did not complete"));
             }
             state.identity(response);
             state.usage(&response["usage"]);
+            if value["type"] == "response.incomplete" || response["status"] == "incomplete" {
+                state
+                    .metadata
+                    .insert("finish_reason".into(), Value::String("length".into()));
+            }
             state.terminal = true;
         }
         _ => {}

@@ -305,6 +305,7 @@ where
                 call_id,
                 name,
                 arguments,
+                ..
             } = event
             {
                 let invocation = crate::tool::ToolInvocation::for_model_call(

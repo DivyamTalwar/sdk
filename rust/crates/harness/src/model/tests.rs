@@ -26,6 +26,7 @@ fn exchange(request: &mut ModelRequest) {
         ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Part(ModelContentPart::ToolCall {
+                metadata: serde_json::Value::Null,
                 call_id: "call-1".into(),
                 name: "echo".into(),
                 arguments: json!("é"),
@@ -461,6 +462,41 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
     let mut oversized = request()?;
     oversized.model.options = json!({"large":"x".repeat(64 * 1024 * 1024 + 1)});
     assert!(PreparedModelRequest::prepare(oversized, Limits::default(), None).is_ok());
+    Ok(())
+}
+
+#[test]
+fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Result<()> {
+    let mut input = request()?;
+    exchange(&mut input);
+    let ModelContent::Part(ModelContentPart::ToolCall { metadata, .. }) =
+        &mut input.messages[1].content
+    else {
+        unreachable!()
+    };
+    *metadata = json!({"signature":"signed", "nested":[{"provider":"opaque"}]});
+    let original = PreparedModelRequest::prepare(input.clone(), Limits::default(), None)?;
+    let decoded = PreparedModelRequest::decode(original.bytes(), Limits::default(), None)?;
+    assert_eq!(decoded.request(), &input);
+    assert!(
+        PreparedModelRequest::prepare(
+            input.clone(),
+            Limits {
+                render_bytes: 16,
+                ..Limits::default()
+            },
+            None
+        )
+        .is_err()
+    );
+    let ModelContent::Part(ModelContentPart::ToolCall { metadata, .. }) =
+        &mut input.messages[1].content
+    else {
+        unreachable!()
+    };
+    *metadata = json!({"signature":"different"});
+    let changed = PreparedModelRequest::prepare(input, Limits::default(), None)?;
+    assert_ne!(original.request_digest(), changed.request_digest());
     Ok(())
 }
 

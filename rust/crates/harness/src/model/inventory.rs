@@ -55,9 +55,13 @@ impl ModelContentPart {
                 call_id,
                 name,
                 arguments,
+                metadata,
             } => add(
                 add(call_id.capacity() as u64, name.capacity() as u64)?,
-                crate::executor::json::json_value_logical_owned_bytes(arguments)?,
+                add(
+                    crate::executor::json::json_value_logical_owned_bytes(arguments)?,
+                    crate::executor::json::json_value_logical_owned_bytes(metadata)?,
+                )?,
             ),
             Self::ToolResult {
                 call_id,

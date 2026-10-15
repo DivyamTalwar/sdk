@@ -26,6 +26,7 @@ fn main() -> Result<()> {
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall {
+                    metadata: serde_json::Value::Null,
                     call_id: "call-1".into(),
                     name: "echo".into(),
                     arguments: json!("é"),

@@ -607,6 +607,7 @@ impl ModelProvider for ReadFileModel {
             );
             Box::pin(stream::iter(vec![
                 Ok(ModelEvent::ToolCall {
+                    metadata: serde_json::Value::Null,
                     call_id: "read".into(),
                     name: "acyclic.read_file".into(),
                     arguments: json!({"file": file}),

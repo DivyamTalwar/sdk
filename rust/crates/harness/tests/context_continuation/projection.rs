@@ -190,6 +190,7 @@ pub(super) fn typed_payload_source() -> Context {
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall {
+                    metadata: serde_json::Value::Null,
                     call_id: "previous-call".into(),
                     name: "echo".into(),
                     arguments: serde_json::json!({"value":"é🦀"}),

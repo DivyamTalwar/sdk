@@ -1350,7 +1350,7 @@ export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | 
 /**
  * Ordered streaming model event.
  */
-export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue; metadata?: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 
 /**
  * Ordinary configurable threshold compaction; no model-family heuristic.
@@ -1675,7 +1675,7 @@ export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projecti
 /**
  * Structured content requiring an explicit provider projection.
  */
-export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
+export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue; metadata?: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
 
 /**
  * Structured parent and stable logical child slot.

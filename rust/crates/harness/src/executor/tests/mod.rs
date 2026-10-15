@@ -222,6 +222,7 @@ struct ScriptedModel {
 
 fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
     ModelEvent::ToolCall {
+        metadata: Value::Null,
         call_id: call_id.into(),
         name: "example.echo".into(),
         arguments,

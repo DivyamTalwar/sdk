@@ -177,6 +177,7 @@ impl Registry {
             return Err(invalid("model provider API key is unavailable"));
         }
         Ok(ResolvedModel {
+            estimator: crate::accounting::TokenEstimator::new(config.adapter),
             model,
             config,
             capacity,
@@ -190,6 +191,7 @@ impl Registry {
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    pub(crate) estimator: crate::accounting::TokenEstimator,
     /// Immutable harness model identity.
     pub(crate) model: Model,
     pub(crate) config: ProviderConfig,
@@ -233,6 +235,7 @@ impl ModelProvider for ResolvedModel {
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         crate::dispatch::generate(self, request, dispatch)
+
     }
 }
 

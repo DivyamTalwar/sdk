@@ -147,6 +147,7 @@ pub async fn select_model_context(
                         call_id,
                         name,
                         arguments,
+                        metadata: serde_json::Value::Null,
                     }),
                 )
             }
