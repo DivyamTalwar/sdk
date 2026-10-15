@@ -50,10 +50,16 @@ pub(super) fn folded_projection(
             &crate::CancellationToken::new(),
         ))?;
     }
-    let source = Arc::new(MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
-    )?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
+        )?,
+    );
     let core = projection_core(
         source.clone(),
         crate::WorkBudget::UNBOUNDED,
