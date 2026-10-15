@@ -100,11 +100,11 @@ async fn execute_case(
         .enumerate()
         .map(|(index, arguments)| {
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("plan-{index}"),
-                    name: "update_plan".into(),
-                    arguments: arguments.clone(),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    format!("plan-{index}"),
+                    "update_plan".into(),
+                    arguments.clone(),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),

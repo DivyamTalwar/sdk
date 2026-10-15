@@ -1,0 +1,215 @@
+use super::*;
+use crate::HttpResponse;
+use acyclic_stream::BoxProviderFuture;
+use bytes::Bytes;
+use proptest::prelude::*;
+use std::sync::{Arc, Mutex};
+
+struct Refresh {
+    status: u16,
+    response: Value,
+    sent: Mutex<Vec<HttpRequest>>,
+}
+
+impl HttpTransport for Refresh {
+    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            self.sent
+                .lock()
+                .map_err(|_| invalid("fixture poisoned"))?
+                .push(request);
+            tokio::task::yield_now().await;
+            let chunk = Bytes::from(self.response.to_string());
+            Ok(HttpResponse {
+                status: self.status,
+                body: Box::pin(futures::stream::once(async { Ok(chunk) })),
+            })
+        })
+    }
+}
+
+fn jwt(expiry: i64) -> String {
+    format!(
+        "header.{}.signature",
+        URL_SAFE_NO_PAD.encode(json!({"exp":expiry}).to_string())
+    )
+}
+
+fn auth(access: &str) -> Value {
+    json!({"auth_mode":"chatgpt", "tokens":{"access_token":access,"id_token":"old-id",
+        "refresh_token":"old-refresh","account_id":"account"},"agent_identity":{"preserve":true},
+        "last_refresh":"2026-01-01T00:00:00Z"})
+}
+
+fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, Refresh)> {
+    let root = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
+    let path = root.path().join("auth.json");
+    std::fs::write(&path, auth(access).to_string()).map_err(|error| invalid(error.to_string()))?;
+    let transport = Refresh {
+        status,
+        response: json!({"access_token":jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600),
+        "id_token":"new-id","refresh_token":"new-refresh"}),
+        sent: Mutex::new(Vec::new()),
+    };
+    Ok((root, CodexLogin::from_path(path), transport))
+}
+
+#[tokio::test]
+async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
+    let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let (root, login, transport) = fixture(&access, 200)?;
+    let (bearer, account) = login.bearer(&transport, None).await?;
+    assert_eq!(bearer, access);
+    assert_eq!(account.as_deref(), Some("account"));
+    assert!(
+        transport
+            .sent
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?
+            .is_empty()
+    );
+    assert!(root.path().join("auth.json").is_file());
+    Ok(())
+}
+
+#[tokio::test]
+async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> Result<()> {
+    let (root, login, transport) =
+        fixture(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 299), 200)?;
+    let (access, account) = login.bearer(&transport, None).await?;
+    assert_eq!(access, transport.response["access_token"]);
+    assert_eq!(account.as_deref(), Some("account"));
+    let stored = crate::json(
+        &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
+    )?;
+    assert_eq!(stored["agent_identity"], json!({"preserve":true}));
+    assert_eq!(stored["tokens"]["refresh_token"], "new-refresh");
+    assert_eq!(stored["tokens"]["id_token"], "new-id");
+    assert_eq!(stored["tokens"]["account_id"], "account");
+    assert!(OffsetDateTime::parse(stored["last_refresh"].as_str().unwrap_or(""), &Rfc3339).is_ok());
+    let requests = transport
+        .sent
+        .lock()
+        .map_err(|_| invalid("fixture poisoned"))?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
+    let body = crate::json(&requests[0].body)?;
+    assert_eq!(body["client_id"], CLIENT_ID);
+    assert_eq!(body["grant_type"], "refresh_token");
+    assert_eq!(body["refresh_token"], "old-refresh");
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_login_serializes_refresh_and_reloads_the_winner() -> Result<()> {
+    let (_root, first, transport) = fixture(&jwt(0), 200)?;
+    let transport = Arc::new(transport);
+    let (left, right) = futures::join!(
+        first.bearer(transport.as_ref(), None),
+        first.bearer(transport.as_ref(), None)
+    );
+    assert_eq!(left?, right?);
+    assert_eq!(
+        transport
+            .sent
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[path = "codex_race_tests.rs"]
+mod races;
+
+#[tokio::test]
+async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Result<()> {
+    let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let (root, login, mut transport) = fixture(&access, 200)?;
+    transport.response = json!({"access_token":"updated-access"});
+    let (updated, _) = login.bearer(&transport, Some(&access)).await?;
+    assert_eq!(updated, "updated-access");
+    let stored = crate::json(
+        &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
+    )?;
+    assert_eq!(stored["tokens"]["refresh_token"], "old-refresh");
+    assert_eq!(stored["tokens"]["id_token"], "old-id");
+    Ok(())
+}
+
+#[tokio::test]
+async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Result<()> {
+    let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let (root, login, mut transport) = fixture(&access, 200)?;
+    transport.response = json!({"refresh_token":"rotated-refresh","id_token":"rotated-id"});
+    assert_eq!(login.bearer(&transport, Some(&access)).await?.0, access);
+    let stored = crate::json(
+        &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
+    )?;
+    assert_eq!(stored["tokens"]["refresh_token"], "rotated-refresh");
+    assert_eq!(stored["tokens"]["id_token"], "rotated-id");
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> Result<()> {
+    let (root, login, transport) = fixture(&jwt(0), 400)?;
+    let before =
+        std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
+    assert!(login.bearer(&transport, None).await.is_err());
+    assert_eq!(
+        before,
+        std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?
+    );
+    let mut changed = auth(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600));
+    changed["tokens"]["account_id"] = json!("another-account");
+    std::fs::write(root.path().join("auth.json"), changed.to_string())
+        .map_err(|e| invalid(e.to_string()))?;
+    assert!(login.bearer(&transport, None).await.is_err());
+    Ok(())
+}
+
+#[test]
+fn unreadable_expiry_uses_eight_day_fallback() {
+    let now = OffsetDateTime::parse("2026-10-15T12:00:00Z", &Rfc3339)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let mut auth = auth("opaque");
+    auth["last_refresh"] = json!("2026-10-08T12:00:01Z");
+    assert!(!needs_refresh(&auth, now));
+    auth["last_refresh"] = json!("2026-10-07T12:00:00Z");
+    assert!(needs_refresh(&auth, now));
+    auth["last_refresh"] = json!("invalid");
+    assert!(needs_refresh(&auth, now));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn accepted_auth_documents_have_a_lossless_canonical_codec(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+        if let Ok(auth) = decode_auth(&bytes) {
+            let bytes = serde_json::to_vec(&auth).unwrap();
+            prop_assert_eq!(decode_auth(&bytes).unwrap(), auth);
+        }
+    }
+
+    #[test]
+    fn unicode_credentials_and_unrelated_fields_survive_the_auth_codec(text in ".{0,128}") {
+        let mut document = auth(&format!("key{text}"));
+        document["agent_identity"] = json!({"arbitrary":text});
+        prop_assert_eq!(decode_auth(&serde_json::to_vec(&document).unwrap()).unwrap(), document);
+    }
+
+    #[test]
+    fn jwt_refresh_boundary_matches_the_signed_expiry(expiry in any::<i64>()) {
+        prop_assert_eq!(needs_refresh(&auth(&jwt(expiry)), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
+    }
+}
+
+#[test]
+fn checked_in_auth_seed_exercises_an_accepted_document() {
+    let seed = include_bytes!("../fuzz/corpus/provider_stream/auth.json");
+    assert!(decode_auth(&seed[1..]).is_ok());
+    crate::fuzzing::assert_stream_invariants(seed);
+}

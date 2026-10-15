@@ -128,13 +128,17 @@ pub async fn select_model_context(
         })?;
         let (role, content) = match message.kind {
             MessageKind::ToolCall => {
-                let (call_id, name, arguments) =
-                    artifacts::read_invocation(resolver, &message.content, limits.render_bytes, io)
+                let call =
+                    artifacts::read_tool_call(resolver, &message.content, limits.render_bytes, io)
                         .await?;
                 with_history_io(io, |work| {
-                    crate::tool::ToolInvocation::validate_identity(&call_id, Some(&name), work)
+                    crate::tool::ToolInvocation::validate_identity(
+                        &call.call_id,
+                        Some(&call.name),
+                        work,
+                    )
                 })?;
-                if message.tool_call_id.as_deref() != Some(call_id.as_str()) {
+                if message.tool_call_id.as_deref() != Some(call.call_id.as_str()) {
                     return Err(stock_boundary(
                         io,
                         Invalid,
@@ -143,11 +147,7 @@ pub async fn select_model_context(
                 }
                 (
                     ModelRole::Assistant,
-                    ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                    }),
+                    ModelContent::Part(ModelContentPart::ToolCall(call)),
                 )
             }
             MessageKind::ToolResult => {
@@ -202,7 +202,7 @@ async fn project_tool_result(
         }
     }
     let Some(ModelMessage {
-        content: ModelContent::Part(ModelContentPart::ToolCall { name, .. }),
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { name, .. })),
         ..
     }) = linked
     else {

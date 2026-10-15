@@ -621,7 +621,7 @@ export class AgentHarness {
           ...(wire.max_output_tokens == null ? {} : { maxOutputTokens: wire.max_output_tokens }),
           signal: context.signal,
         };
-        for await (const event of model.provider.generate(admittedRequest)) {
+        for await (const event of model.provider.generate(admittedRequest, { operationId: id, step })) {
           const admitted = this.contracts.admitModelEvent(event, this.components.limits, admission);
           admission = admitted.state;
           const admittedEvent = admitted.event;

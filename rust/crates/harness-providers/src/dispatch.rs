@@ -1,0 +1,127 @@
+use crate::{Adapter, HttpRequest, HttpResponse, ResolvedModel, invalid, projection};
+use acyclic_harness::{
+    Result,
+    model::{ModelDispatch, ModelEvent, PreparedModelRequest},
+};
+use acyclic_stream::BoxProviderStream;
+use futures::StreamExt as _;
+use std::{borrow::Cow, collections::BTreeMap};
+
+pub(crate) fn generate(
+    provider: &ResolvedModel,
+    request: PreparedModelRequest,
+    dispatch: ModelDispatch,
+) -> BoxProviderStream<'_, Result<ModelEvent>> {
+    Box::pin(async_stream::try_stream! {
+        provider.validate(&request.request().model)?;
+        if request.request_digest() != dispatch.request_digest {
+            Err(invalid("model dispatch digest differs from prepared request"))?;
+        }
+        let body = encode(provider, &request, None).await?;
+        let body = bytes::Bytes::from(body);
+        let input_bytes = body.len();
+        let auth = authenticate(provider).await?;
+        let response = send(provider, dispatch, body.clone(), auth.0.as_deref(), auth.1.as_deref()).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let response = if response.status == 401 {
+            if let Some(login) = &provider.codex_login {
+                drop(response);
+                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref()).await?;
+                send(provider, dispatch, body, Some(&key), account.as_deref()).await?
+            } else { response }
+        } else { response };
+        drop(auth);
+        if !(200..300).contains(&response.status) {
+            Err(crate::http_error(response.status))?;
+        }
+        let mut events = crate::stream::events(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch);
+        while let Some(event) = events.next().await {
+            let event = event?;
+            if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }
+            yield event;
+        }
+    })
+}
+
+pub(crate) async fn authenticate(
+    provider: &ResolvedModel,
+) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(login) = &provider.codex_login {
+        let (key, account) = login.bearer(provider.transport.as_ref(), None).await?;
+        return Ok((Some(Cow::Owned(key)), account));
+    }
+    Ok((provider.key.as_deref().map(Cow::Borrowed), None))
+}
+
+pub(crate) async fn encode(
+    provider: &ResolvedModel,
+    request: &PreparedModelRequest,
+    io: Option<&acyclic_harness::conversation::ContentIo>,
+) -> Result<Vec<u8>> {
+    let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
+    let body = projection::body(provider, request.request(), &mut files)?;
+    serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
+}
+
+async fn send(
+    provider: &ResolvedModel,
+    dispatch: ModelDispatch,
+    body: bytes::Bytes,
+    key: Option<&str>,
+    account: Option<&str>,
+) -> Result<HttpResponse> {
+    provider
+        .transport
+        .send(HttpRequest {
+            url: projection::endpoint(provider)?,
+            headers: headers(provider, dispatch, key, account),
+            body,
+        })
+        .await
+}
+
+pub(crate) fn headers(
+    provider: &ResolvedModel,
+    dispatch: ModelDispatch,
+    key: Option<&str>,
+    account: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut headers = provider.config.headers.clone();
+    headers.insert("accept".into(), "text/event-stream".into());
+    if let Some(key) = key {
+        let (name, value) = match provider.config.adapter {
+            Adapter::Anthropic => ("x-api-key", key.into()),
+            Adapter::Gemini => ("x-goog-api-key", key.into()),
+            _ => ("authorization", format!("Bearer {key}")),
+        };
+        headers.insert(name.into(), value);
+    }
+    if provider.config.adapter == Adapter::Anthropic {
+        headers.insert("anthropic-version".into(), "2023-06-01".into());
+        #[cfg(target_arch = "wasm32")]
+        headers.insert(
+            "anthropic-dangerous-direct-browser-access".into(),
+            "true".into(),
+        );
+    }
+    if let Some(account) = account {
+        headers.insert("chatgpt-account-id".into(), account.into());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if provider.codex_login.is_some() {
+        headers.insert("originator".into(), "acyclic_harness".into());
+        headers.insert(
+            "user-agent".into(),
+            concat!("acyclic-harness/", env!("CARGO_PKG_VERSION")).into(),
+        );
+        headers.insert("session-id".into(), dispatch.operation_id.to_string());
+        headers.insert("thread-id".into(), dispatch.operation_id.to_string());
+        headers.insert(
+            "x-client-request-id".into(),
+            format!("{}-{}", dispatch.operation_id, dispatch.step),
+        );
+    }
+    let _ = dispatch;
+    headers
+}
