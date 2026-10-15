@@ -155,7 +155,7 @@ async fn relocated_codex_configuration_and_duplicate_paths_are_loaded_once() -> 
 #[cfg(unix)]
 #[tokio::test]
 async fn symlinked_settings_keep_the_format_of_the_configured_path() -> Result<()> {
-    use super::native::process_error;
+    let process_error = Error::process_io;
     let root = tempfile::tempdir().map_err(process_error)?;
     let home = root.path().join("home");
     let codex = home.join(".codex");
