@@ -1,6 +1,6 @@
 #![no_main]
 
-use acyclic_fs::{GitCommand, parse_git_argv};
+use acyclic_fs::{GitCommand, git_compat::parse_git_argv};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
