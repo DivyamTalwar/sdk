@@ -45,10 +45,11 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
             .map(|(index, (name, command))| call(index, name, command))
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
-        directory.path(),
-        (model()?, provider.clone()),
-    ))
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
+            .without_default_tools()
+            .tools(super::checked_tools::defaults()?),
+    )
     .await?;
     let output = harness.run("edit and inspect the checkout").await;
     if let Err(error) = &output {

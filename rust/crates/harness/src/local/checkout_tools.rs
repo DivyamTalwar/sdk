@@ -6,12 +6,13 @@ use crate::{
 };
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
+use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 
 mod bash;
 mod capture;
 mod git;
-#[cfg(test)]
+mod lock;
+#[cfg(all(test, loom))]
 mod tests;
 
 pub(super) struct CheckoutTools {
@@ -24,7 +25,7 @@ pub(super) struct CheckoutTools {
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
-    state: Arc<AsyncMutex<State>>,
+    state: StateArc<AsyncMutex<State>>,
 }
 
 struct State {
@@ -35,10 +36,10 @@ struct State {
 // Keep the whole command, including its publication and cursor replacement,
 // inside one guard. The async model exercises this same boundary.
 async fn serialized<T, R>(
-    state: &Arc<AsyncMutex<T>>,
+    state: &StateArc<AsyncMutex<T>>,
     command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> R,
 ) -> R {
-    command(Arc::clone(state).lock_owned().await).await
+    command(lock_owned(StateArc::clone(state)).await).await
 }
 
 // A submitted blocking job owns the guard until its body and cleanup finish,
@@ -65,7 +66,7 @@ impl CheckoutTools {
             capture_policy,
             workspace,
             clock,
-            state: Arc::new(AsyncMutex::new(State {
+            state: StateArc::new(AsyncMutex::new(State {
                 active: None,
                 watcher: None,
             })),

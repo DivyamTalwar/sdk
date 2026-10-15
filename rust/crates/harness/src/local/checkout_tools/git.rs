@@ -1,6 +1,7 @@
 //! The shared git facade over the active checkout view.
 use super::*;
 use std::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
 impl CheckoutTools {
     pub(super) async fn fs(
