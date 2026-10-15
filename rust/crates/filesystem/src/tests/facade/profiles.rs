@@ -320,33 +320,8 @@ async fn require_nfc_volume_rejects_non_normalized_names() -> TestResult {
 #[tokio::test]
 async fn full_case_fold_legacy_alias_collisions_fail_closed() -> TestResult {
     let cancel = CancellationToken::new();
-    let (_, mut checkout) = fixture(config(), &cancel).await?;
-    let first = create(
-        &mut checkout,
-        "Straße",
-        OwnedBytes::from_static(b"first"),
-        &cancel,
-    )
-    .await?;
-    let second = create(
-        &mut checkout,
-        "STRASSE",
-        OwnedBytes::from_static(b"second"),
-        &cancel,
-    )
-    .await?;
-    let mut fillers = Vec::new();
-    for index in 0..255 {
-        fillers.push(AuthoredMutation::CreateFile {
-            path: path(&format!("Sa{index:03}"))?,
-            bytes: OwnedBytes::new(),
-            metadata: FileMetadata::default(),
-        });
-    }
-    checkout
-        .apply_authored_transaction(fillers, B, &cancel)
-        .await?;
-    checkout.volume.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    let (mut checkout, [first, second]) =
+        crate::facade::test_fixtures::legacy_folded_checkout().await?;
     let before = checkout_state(&checkout);
     for (name, expected) in [("Straße", first), ("STRASSE", second)] {
         assert_eq!(

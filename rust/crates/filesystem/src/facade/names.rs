@@ -55,9 +55,10 @@ pub(super) fn name_fold_equal(
     Ok(equal)
 }
 
-pub(super) fn folded_binding_collision<'a>(
+pub(super) fn folded_binding_match<'a>(
     target: &LogicalName,
     folded_target: &[u8],
+    include_exact: bool,
     allowed: &[FileId],
     entries: impl Iterator<Item = &'a crate::kernel::TreeEntry>,
     accounting: &mut KernelAccounting<'_>,
@@ -65,8 +66,9 @@ pub(super) fn folded_binding_collision<'a>(
     let mut found = None;
     for entry in entries {
         let folded = name_fold_key(&entry.name, accounting)?;
-        let collision =
-            entry.name != *target && !allowed.contains(&entry.file_id) && folded.0 == folded_target;
+        let collision = (include_exact || entry.name != *target)
+            && !allowed.contains(&entry.file_id)
+            && folded.0 == folded_target;
         let bytes = folded.0.capacity() as u64;
         retire_name_owned(folded, bytes, accounting)?;
         if collision {
@@ -526,6 +528,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(lookup.0.record.ok_or(FsError::NotFound)?.file_id)
     }
 
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn require_unique_folded_name(
+        &mut self,
+        parent: &[LogicalName],
+        name: &LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        if let Some(found) = self
+            .find_case_folded_sibling_with_accounting(
+                parent,
+                name,
+                accounting,
+                cancellation,
+                &[],
+                true,
+            )
+            .await?
+        {
+            let bytes = found.0.retained_bytes() as u64;
+            retire_name_owned(found, bytes, accounting)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn require_unique_folded_path(
+        &mut self,
+        path: &NamespacePath,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        for (index, name) in path.components().iter().enumerate() {
+            self.require_unique_folded_name(
+                &path.components()[..index],
+                name,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub(super) fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
         &'a mut self,
         parent_components: &'a [LogicalName],
@@ -580,9 +626,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                                 cancellation,
                             )
                             .await?;
-                        if let Some(name) = folded_binding_collision(
+                        if let Some(name) = folded_binding_match(
                             target,
                             &folded_target.0,
+                            unique,
                             allowed_file_ids,
                             page.0.entries.iter(),
                             accounting,

@@ -101,9 +101,12 @@ impl InodeEntry {
         let file_id = self.lookup.node.file_id;
         let current = if self.lookup.node.kind == MountNodeKind::Directory {
             match self.bindings.first() {
-                Some(anchor) => {
-                    source.unchanged_since_with_meter(&anchor.path, Some(file_id), stamp, work)?
-                }
+                Some(anchor) => source.unchanged_since_with_meter(
+                    anchor.native_path(),
+                    Some(file_id),
+                    stamp,
+                    work,
+                )?,
                 None => false,
             }
         } else {
@@ -198,7 +201,8 @@ impl ProjectionState {
         &mut self,
         source: &MountPath,
         destination: &MountPath,
-        spelled: (&MountPath, &MountPath),
+        spelled: &MountPath,
+        parent_inode: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
@@ -217,11 +221,11 @@ impl ProjectionState {
                 debug_assert!(previous.is_none(), "a path is bound to one inode");
                 if let Some(path) = rebased {
                     fuse_reserve(&mut replacements, 1, work)?;
-                    let native = if binding.spelled.is_some() || destination != spelled.1 {
+                    let native = if binding.spelled.is_some() || destination != spelled {
                         Some(fuse_rebase_path(
                             binding.native_path(),
                             source.components().len(),
-                            spelled.1,
+                            spelled,
                             work,
                         )?)
                     } else {
@@ -232,7 +236,8 @@ impl ProjectionState {
             }
         }
         // Prepare every path before changing aliases.
-        self.streams.rename_prefix(spelled.0, spelled.1, work)?;
+        self.streams
+            .rename_prefix(source, spelled, parent_inode, &self.by_inode, work)?;
         for (inode, index, path, native) in replacements.drain(..) {
             let binding = self
                 .by_inode

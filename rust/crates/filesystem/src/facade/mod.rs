@@ -305,3 +305,6 @@ use workspace_creation::decode_first_creation_record;
 pub(crate) mod test_authority;
 
 use crate::kernel::{decode_published_generation, decode_volume_created};
+
+#[cfg(all(test, feature = "memory", feature = "distributed"))]
+pub(crate) mod test_fixtures;

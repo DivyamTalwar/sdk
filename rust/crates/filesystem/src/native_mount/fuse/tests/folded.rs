@@ -1,0 +1,205 @@
+use super::*;
+use crate::native_mount::fuse::FuseProjection;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn folded_projection() -> Result<(FuseProjection, Arc<MemorySource>), Box<dyn std::error::Error>> {
+    let mut config = crate::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
+    let source = Arc::new(shared_sources(config)?.0);
+    let core = projection_core(
+        source.clone(),
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    Ok((
+        FuseProjection {
+            core,
+            skips_opendir: false,
+        },
+        source,
+    ))
+}
+
+fn lookup(
+    projection: &FuseProjection,
+    parent: u64,
+    value: &str,
+    work: &crate::NativeMaterializationWork,
+) -> Result<u64, NativeMountError> {
+    Ok(projection
+        .lookup_entry(parent, std::ffi::OsStr::new(value), work)?
+        .attr
+        .ino
+        .0)
+}
+
+#[test]
+fn folded_legacy_collisions_cannot_reuse_a_warm_inode() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let (checkout, [first, _]) =
+        runtime.block_on(crate::facade::test_fixtures::legacy_folded_checkout())?;
+    let config = checkout.volume_config();
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
+        )?,
+    );
+    let work = fuse_fixture_work();
+    let core = projection_core(
+        source.clone(),
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let projection = FuseProjection {
+        core,
+        skips_opendir: false,
+    };
+    let stamp = source.view_stamp_with_meter(&work)?;
+    // Model an already warm exact binding; no alias may inherit its identity.
+    let inode = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .intern_projected(
+            crate::native_mount::fuse::FuseOwned::empty(name("strasse")),
+            &regular(first, 0),
+            stamp,
+            true,
+            &work,
+        )?;
+    for spelling in ["Straße", "STRASSE", "strasse"] {
+        assert!(
+            matches!(
+                projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new(spelling), &work),
+                Err(NativeMountError::Source(MountSourceError::Filesystem(
+                    crate::FsError::NameCollision
+                )))
+            ),
+            "{spelling}"
+        );
+    }
+    assert_eq!(
+        projection
+            .core
+            .state()
+            .map_err(NativeMountError::from)?
+            .by_inode
+            .get(&inode)
+            .ok_or("warm inode missing")?
+            .lookup
+            .node
+            .file_id,
+        first
+    );
+    assert!(matches!(
+        source.read_directory_with_meter(&MountPath::root(), None, 256, &work),
+        Err(MountSourceError::Filesystem(crate::FsError::NameCollision))
+    ));
+    Ok(())
+}
+
+#[test]
+fn folded_nested_directory_stream_uses_parent_identity() -> TestResult {
+    let (projection, source) = folded_projection()?;
+    let work = fuse_fixture_work();
+    source.create_directory(&name("Dir"), FileMetadata::default(), &work)?;
+    source.create_directory(
+        &name("Dir").child(b"Child".to_vec()),
+        FileMetadata::default(),
+        &work,
+    )?;
+    let parent = lookup(&projection, ROOT_INODE, "Dir", &work)?;
+    let child = lookup(&projection, parent, "Child", &work)?;
+    let stream = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .directory_stream(source.as_ref(), child, 0, &work)?;
+    assert_eq!(stream.parent_inode, parent);
+    assert_ne!(stream.parent_inode, ROOT_INODE);
+    assert_eq!(*stream.path, name("Dir").child(b"Child".to_vec()));
+    Ok(())
+}
+
+#[test]
+fn folded_alias_rename_rebases_parked_native_streams() -> TestResult {
+    let (projection, source) = folded_projection()?;
+    let work = fuse_fixture_work();
+    source.create_directory(&name("Dir"), FileMetadata::default(), &work)?;
+    source.create_directory(
+        &name("Dir").child(b"Child".to_vec()),
+        FileMetadata::default(),
+        &work,
+    )?;
+    source.create_directory(&name("Other"), FileMetadata::default(), &work)?;
+    let destination_parent = lookup(&projection, ROOT_INODE, "Other", &work)?;
+    let parent = lookup(&projection, ROOT_INODE, "Dir", &work)?;
+    let child = lookup(&projection, parent, "Child", &work)?;
+    {
+        let mut state = projection.core.state().map_err(NativeMountError::from)?;
+        for inode in [parent, child] {
+            let stream = state.directory_stream(source.as_ref(), inode, 0, &work)?;
+            let parking = state.streams.prepare_park(&work)?;
+            state.streams.park(inode, stream, parking);
+        }
+    }
+    projection.rename_name(
+        ROOT_INODE,
+        std::ffi::OsStr::new("dir"),
+        destination_parent,
+        std::ffi::OsStr::new("Moved"),
+        0,
+        &work,
+    )?;
+    let mut state = projection.core.state().map_err(NativeMountError::from)?;
+    for (inode, expected) in [
+        (parent, name("Other").child(b"Moved".to_vec())),
+        (
+            child,
+            name("Other")
+                .child(b"Moved".to_vec())
+                .child(b"Child".to_vec()),
+        ),
+    ] {
+        let stream = state.directory_stream(source.as_ref(), inode, 0, &work)?;
+        assert_eq!(*stream.path, expected);
+        assert_eq!(
+            stream.parent_inode,
+            if inode == parent {
+                destination_parent
+            } else {
+                parent
+            }
+        );
+        source.read_directory_with_meter(&stream.path, None, 16, &work)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn folded_expanding_directory_facts_keep_native_spelling() -> TestResult {
+    let (projection, source) = folded_projection()?;
+    let work = fuse_fixture_work();
+    let long = "ΐ".repeat(100);
+    source.create_directory(&name(&long), FileMetadata::default(), &work)?;
+    let inode = lookup(&projection, ROOT_INODE, &long, &work)?;
+    for _ in 0..2 {
+        let (attributes, _) = projection.node_attributes(inode, None, &work)?;
+        assert_eq!(attributes.ino.0, inode);
+        assert_eq!(attributes.kind, fuser::FileType::Directory);
+    }
+    let stream = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .directory_stream(source.as_ref(), inode, 0, &work)?;
+    assert_eq!(*stream.path, name(&long));
+    source.read_directory_with_meter(&stream.path, None, 16, &work)?;
+    Ok(())
+}
