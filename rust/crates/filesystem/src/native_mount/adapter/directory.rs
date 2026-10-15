@@ -80,10 +80,23 @@ where
                     pin: None,
                 });
             }
+            // Continue after the last examined source entry even when the page
+            // contains no visible entries. Filtering must not truncate traversal.
             let next_cursor = if page.has_more {
-                entries
+                page.entries
                     .last()
-                    .map(|entry| inputs.copy_bytes(&entry.name))
+                    .map(|entry| {
+                        let (name, allocation) = native_mount_name(&entry.name, inputs.carrier)?;
+                        if let Some(mut allocation) = allocation {
+                            inputs
+                                .allocation
+                                .as_mut()
+                                .ok_or(MountSourceError::AccessDenied)?
+                                .absorb(&mut allocation)
+                                .map_err(MountSourceError::NativeWork)?;
+                        }
+                        Ok::<_, MountSourceError>(name)
+                    })
                     .transpose()?
             } else {
                 None

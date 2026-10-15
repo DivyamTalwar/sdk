@@ -341,6 +341,12 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
         let page =
             source.read_directory_with_meter(&MountPath::root(), cursor.as_deref(), 1, &work)?;
         listed.extend(page.entries.iter().map(|entry| entry.name.clone()));
+        if page.entries.is_empty() {
+            assert!(
+                page.next_cursor().is_some(),
+                "ambiguous page lost its source frontier"
+            );
+        }
         cursor = page.next_cursor().map(<[u8]>::to_vec);
         if cursor.is_none() {
             break;
