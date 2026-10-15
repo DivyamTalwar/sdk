@@ -248,7 +248,9 @@ impl HookOutput {
         let mut value = match serde_json::from_str::<Value>(text) {
             Ok(value) => value,
             Err(error) => {
-                if text.starts_with(['{', '[']) {
+                if text.starts_with('{')
+                    || text.starts_with('[') && event != HookEvent::SessionStart
+                {
                     return Err(Error::Invalid(format!(
                         "hook output JSON is invalid: {error}"
                     )));
