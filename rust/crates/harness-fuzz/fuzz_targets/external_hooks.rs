@@ -106,6 +106,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(hook) = serde_json::from_slice::<Hook>(input)
         && let Ok(request) = request(hook.host, &hook.event, hook.input)
     {
+        acyclic_harness::test_support::fuzz_external_command(&request);
         if let acyclic_harness::external_executor::ExternalAction::RunTool {
             name, arguments, ..
         } = &request.action
@@ -136,6 +137,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Ok(request) = serde_json::from_slice::<ExternalRequest>(input) {
+        acyclic_harness::test_support::fuzz_external_command(&request);
         if let Ok(call) = request.tool_call(&acyclic_harness::tools::defaults()?) {
             let bytes = serde_json::to_vec(&call)?;
             assert_eq!(

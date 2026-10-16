@@ -9,9 +9,19 @@ pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation,
 pub use task_volume_work::measure as measure_task_volume_work;
 
 /// Exercises local owner configuration and credential parsers without I/O.
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub fn fuzz_local_owner_input(bytes: &[u8]) {
     crate::external_executor::fuzz_local_owner_input(bytes);
+}
+
+/// Exercises the typed native-to-stock command decoder without dispatching effects.
+#[cfg(feature = "filesystem")]
+pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest) {
+    crate::external_executor::fuzz_command(request);
 }
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,

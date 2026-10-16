@@ -62,6 +62,8 @@ impl Fixture {
             "operation:cancel".to_owned(),
             "task:spawn:acyclic.command_session@1".to_owned(),
             "tool:call:write".to_owned(),
+            "mail:read".to_owned(),
+            "mail:send".to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
             volume.directory_read_capability("", &mut None)?,
@@ -116,11 +118,20 @@ impl Fixture {
             &tasks,
             &machines,
             &tools,
-            SessionLimits {
-                active_tasks: 1,
-                total_tasks: 1,
-                depth: 1,
-                model_steps: 1,
+            if binding == VolumeBinding::Recursive {
+                SessionLimits {
+                    active_tasks: 8,
+                    total_tasks: 16,
+                    depth: 4,
+                    model_steps: 16,
+                }
+            } else {
+                SessionLimits {
+                    active_tasks: 1,
+                    total_tasks: 1,
+                    depth: 1,
+                    model_steps: 1,
+                }
             },
             1,
             65_536,

@@ -102,8 +102,12 @@ where
                     "request differs from the retained command".into(),
                 ));
             }
-            let mut failure =
-                validate_command(&request, &command, &payload, self.runtime.tool_registry())?;
+            let mut failure = validate_command(
+                &request,
+                &command.kind,
+                &payload,
+                self.runtime.tool_registry(),
+            )?;
             let result_key = request.result_key(task.clone()).map_err(storage)?;
             let started = FileValue::new(
                 FileKey::Task {
@@ -246,13 +250,23 @@ where
     }
 }
 
-fn validate_command(
+pub(super) fn validate_command(
     request: &ExternalRequest,
-    command: &WorkflowCommand,
+    kind: &str,
     payload: &Value,
     tools: &crate::tool::ToolRegistry,
 ) -> Result<Option<&'static str>> {
-    if command.kind == TOOL_TASK_COMMAND_KIND {
+    if kind != LIFECYCLE {
+        if let Some((expected_kind, expected)) = request.task_command()? {
+            if kind != expected_kind || *payload != expected {
+                return Err(Error::Conflict(
+                    "task command differs from the original native request".into(),
+                ));
+            }
+            return Ok(None);
+        }
+    }
+    if kind == TOOL_TASK_COMMAND_KIND {
         let actual: ToolTaskCommand = serde::Deserialize::deserialize(payload)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         if actual != request.tool_call_at(tools, Some(&actual.revision))? {
@@ -262,7 +276,7 @@ fn validate_command(
         }
         return Ok(None);
     }
-    if command.kind != LIFECYCLE {
+    if kind != LIFECYCLE {
         return Err(Error::Unsupported(
             "external command kind is not bound".into(),
         ));

@@ -11,14 +11,13 @@ use rmcp::{
 };
 use serde_json::{Value, json};
 
-/// The installed native clients expose the enabled default registry verbatim.
+/// Coding tools and task commands share one native catalog.
 pub fn native_tool_catalog() -> Result<Value> {
-    Ok(json!({"tools":crate::tools::defaults()?.definitions(None)?}))
+    Ok(json!({"tools":super::command_catalog::catalog()?}))
 }
 
 fn tools() -> Result<Vec<Tool>> {
-    crate::tools::defaults()?
-        .definitions(None)?
+    super::command_catalog::catalog()?
         .into_iter()
         .map(|definition| {
             let Value::Object(schema) = handoff::schema(definition.input_schema) else {

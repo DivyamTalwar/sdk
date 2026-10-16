@@ -270,18 +270,27 @@ where
                     )?;
                     break 'admission admission;
                 }
-                self.runtime
-                    .harness()
-                    .registered_admission(
-                        operation,
-                        &input.name,
-                        &input.version,
-                        input.input,
-                        Some((task, context.scope())),
-                        None,
-                        None,
-                    )?
-                    .0
+                match self.runtime.harness().registered_admission(
+                    operation,
+                    &input.name,
+                    &input.version,
+                    input.input,
+                    Some((task, context.scope())),
+                    None,
+                    None,
+                ) {
+                    Ok((admission, _)) => admission,
+                    // Registration is synchronous validation: no admission,
+                    // allocation or effect has been attempted at this point.
+                    Err(error) => {
+                        return ready(
+                            Outcome::<Value>::Failed {
+                                message: error.to_string(),
+                            },
+                            None,
+                        );
+                    }
+                }
             };
             return self
                 .admit(

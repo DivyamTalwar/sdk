@@ -71,6 +71,7 @@ pub(crate) enum VolumeBinding {
     ChangedArguments,
     ForgedLifecycle,
     RetainedRevision,
+    Recursive,
 }
 
 async fn run_write_session(binding: VolumeBinding) -> Result<()> {

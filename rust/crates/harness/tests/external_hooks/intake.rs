@@ -148,6 +148,11 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
                 "tool_input":{"path":"incomplete.txt"}}),
             ),
             (
+                "PreToolUse",
+                json!({"tool_use_id":"task-schema", "tool_name":"acyclic_spawn",
+                "tool_input":{"name":"missing-version","kind":"forged-executor"}}),
+            ),
+            (
                 "PostToolUse",
                 json!({"tool_use_id":"missing", "tool_response":{"ok":true}}),
             ),
@@ -271,7 +276,7 @@ async fn publish(
     Ok(file)
 }
 
-async fn deliver(
+pub(super) async fn deliver(
     fixture: &Fixture,
     folder: &Component,
     request: &ExternalRequest,

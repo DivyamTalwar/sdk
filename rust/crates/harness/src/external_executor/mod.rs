@@ -7,6 +7,8 @@ mod cancellation;
 mod catalog;
 mod client;
 #[cfg(feature = "filesystem")]
+mod command_catalog;
+#[cfg(feature = "filesystem")]
 mod commands;
 mod failure;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
@@ -25,6 +27,10 @@ mod mcp;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 mod native;
 mod normalize;
+#[cfg(feature = "filesystem")]
+mod prepared;
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
+pub(crate) use prepared::fuzz_command;
 #[cfg(feature = "filesystem")]
 mod publication;
 mod request;

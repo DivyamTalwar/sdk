@@ -66,6 +66,9 @@ mod session;
 #[path = "external_hooks/session_runtime.rs"]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod session_runtime;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "external_hooks/task_commands.rs"]
+mod task_commands;
 #[path = "external_hooks/tool_input.rs"]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_input;
