@@ -1,7 +1,7 @@
 use std::io;
 
 #[cfg(acyclic_sdk_docs_loom)]
-pub type Lock = loom::sync::Mutex<()>;
+pub type Lock = loom::sync::Arc<loom::sync::Mutex<()>>;
 #[cfg(not(acyclic_sdk_docs_loom))]
 pub type Lock = std::fs::File;
 
@@ -26,16 +26,34 @@ impl Drop for Held<'_> {
     }
 }
 
-// Lock order: one identity lock, then storage I/O. Nested identity lookups are
-// forbidden; the same checker runs in production and in the Loom models.
+// Lock order on misses: one identity lock, then storage I/O. Validated hits
+// need only a record read. Nested lookups are forbidden on either path.
 pub fn get_or_compute<T>(
-    lock: &Lock,
-    read: impl FnOnce() -> io::Result<Option<T>>,
+    open_lock: impl FnOnce() -> io::Result<Lock>,
+    read: impl FnMut() -> io::Result<Option<T>>,
+    compute: impl FnOnce() -> io::Result<T>,
+    publish: impl FnOnce(&T) -> io::Result<()>,
+) -> io::Result<T> {
+    cached::<true, T>(open_lock, read, compute, publish)
+}
+
+fn cached<const FAST: bool, T>(
+    open_lock: impl FnOnce() -> io::Result<Lock>,
+    mut read: impl FnMut() -> io::Result<Option<T>>,
     compute: impl FnOnce() -> io::Result<T>,
     publish: impl FnOnce(&T) -> io::Result<()>,
 ) -> io::Result<T> {
     ENTERED.with(|entered| assert!(!entered.replace(true), "nested identity cache lock"));
     let _entered = Entered;
+    if FAST {
+        if let Some(value) = read()? {
+            return Ok(value);
+        }
+    }
+    let lock = match open_lock() {
+        Ok(lock) => lock,
+        Err(_) => return compute(),
+    };
     #[cfg(acyclic_sdk_docs_loom)]
     let _held = lock.lock().unwrap();
     #[cfg(not(acyclic_sdk_docs_loom))]
@@ -43,7 +61,7 @@ pub fn get_or_compute<T>(
         if lock.lock().is_err() {
             return compute();
         }
-        Held(lock)
+        Held(&lock)
     };
     lookup(read, compute, publish)
 }
@@ -69,4 +87,14 @@ pub fn without_lock<T>(
     publish: impl FnOnce(&T) -> io::Result<()>,
 ) -> io::Result<T> {
     lookup(read, compute, publish)
+}
+
+#[cfg(acyclic_sdk_docs_loom)]
+pub fn without_fast_read<T>(
+    open_lock: impl FnOnce() -> io::Result<Lock>,
+    read: impl FnMut() -> io::Result<Option<T>>,
+    compute: impl FnOnce() -> io::Result<T>,
+    publish: impl FnOnce(&T) -> io::Result<()>,
+) -> io::Result<T> {
+    cached::<false, T>(open_lock, read, compute, publish)
 }

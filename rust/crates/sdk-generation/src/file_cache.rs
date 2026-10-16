@@ -123,19 +123,6 @@ fn shared_identity(path: &Path, cache: &Path) -> Result<String, CliError> {
     };
     let key = crate::sha256_bytes(&bytes);
     let record = cache.join(path_key.trim_start_matches("sha256:"));
-    if fs::create_dir_all(cache).is_err() {
-        return crate::sha256_file(&path);
-    }
-    let lock = match fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(cache.join(format!("{}.lock", path_key.trim_start_matches("sha256:"))))
-    {
-        Ok(lock) => lock,
-        Err(_) => return crate::sha256_file(&path),
-    };
     let unchanged = || {
         if stamp(&path).map_err(io_error)? != before {
             return Err(CliError("file changed while reading identity".into()));
@@ -143,7 +130,15 @@ fn shared_identity(path: &Path, cache: &Path) -> Result<String, CliError> {
         Ok(())
     };
     crate::shared_cache::get_or_compute(
-        &lock,
+        || {
+            fs::create_dir_all(cache)?;
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(cache.join(format!("{}.lock", path_key.trim_start_matches("sha256:"))))
+        },
         || {
             unchanged().map_err(std::io::Error::other)?;
             use std::io::Read;

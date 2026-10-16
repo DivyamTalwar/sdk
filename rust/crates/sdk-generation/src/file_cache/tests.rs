@@ -270,6 +270,27 @@ fn shared_identity_reads_once_and_recovers_corrupt_records() {
         crate::sha256_bytes(b"identity")
     );
     assert_eq!(crate::artifacts::HASH_BYTES.get() - before, 8);
+    // A warm hit must work without opening the writer lock at all.
+    let lock = fs::read_dir(&cache)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "lock")
+        })
+        .unwrap();
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    assert_eq!(
+        shared_identity(&path, &cache).unwrap(),
+        crate::sha256_bytes(b"identity")
+    );
+    assert_eq!(
+        crate::artifacts::HASH_BYTES.get() - before,
+        8,
+        "a cached reader opened the unusable writer lock and rehashed"
+    );
+    fs::remove_dir(&lock).unwrap();
     for entry in fs::read_dir(&cache).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_none() {

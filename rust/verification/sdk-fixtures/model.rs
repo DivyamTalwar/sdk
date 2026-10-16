@@ -306,7 +306,7 @@ fn shared_identity_model(broken: bool, fail_first: bool) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = Some(2);
     builder.check(move || {
-        let lock = Arc::new(shared_cache::Lock::new(()));
+        let lock = shared_cache::Lock::new(Mutex::new(()));
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let calls = Arc::new(AtomicUsize::new(0));
         let jobs = [0, 1].map(|_| {
@@ -334,7 +334,7 @@ fn shared_identity_model(broken: bool, fail_first: bool) {
                 if broken {
                     shared_cache::without_lock(read, compute, publish)
                 } else {
-                    shared_cache::get_or_compute(&lock, read, compute, publish)
+                    shared_cache::get_or_compute(|| Ok(Arc::clone(&lock)), read, compute, publish)
                 }
             })
         });
@@ -379,16 +379,70 @@ fn failed_shared_computation_releases_the_lock_for_retry() {
 #[should_panic(expected = "nested identity cache lock")]
 fn shared_identity_lock_order_checker_rejects_nesting() {
     loom::model(|| {
-        let a = shared_cache::Lock::new(());
-        let b = shared_cache::Lock::new(());
+        let a = shared_cache::Lock::new(Mutex::new(()));
+        let b = shared_cache::Lock::new(Mutex::new(()));
         let _: std::io::Result<()> = shared_cache::get_or_compute(
-            &a,
+            || Ok(Arc::clone(&a)),
             || {
-                shared_cache::get_or_compute(&b, || Ok(None), || Ok(()), |_| Ok(()))?;
+                shared_cache::get_or_compute(
+                    || Ok(Arc::clone(&b)),
+                    || Ok(None),
+                    || Ok(()),
+                    |_| Ok(()),
+                )?;
                 Ok(None)
             },
             || Ok(()),
             |_| Ok(()),
         );
     });
+}
+
+fn warm_identity(broken: bool) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(move || {
+        let lock = shared_cache::Lock::new(Mutex::new(()));
+        // Record storage is a leaf below the identity lock; the fast read drops
+        // it before opening the identity lock on a miss.
+        let record = Arc::new(Mutex::new(vec![1, 2]));
+        let opens = Arc::new(AtomicUsize::new(0));
+        let jobs = [0, 1].map(|_| {
+            let (lock, record, opens) =
+                (Arc::clone(&lock), Arc::clone(&record), Arc::clone(&opens));
+            loom::thread::spawn(move || {
+                let open = || {
+                    opens.fetch_add(1, Ordering::SeqCst);
+                    Ok(lock)
+                };
+                let read = || Ok(Some(record.lock().unwrap().clone()));
+                let compute = || panic!("validated hit was recomputed");
+                let publish = |_: &Vec<usize>| panic!("validated hit was republished");
+                if broken {
+                    shared_cache::without_fast_read(open, read, compute, publish)
+                } else {
+                    shared_cache::get_or_compute(open, read, compute, publish)
+                }
+            })
+        });
+        for job in jobs {
+            assert_eq!(job.join().unwrap().unwrap(), [1, 2]);
+        }
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            0,
+            "cached reader opened the exclusive lock"
+        );
+    });
+}
+
+#[test]
+fn validated_identity_hits_never_open_the_exclusive_lock() {
+    warm_identity(false);
+}
+
+#[test]
+#[should_panic(expected = "cached reader opened the exclusive lock")]
+fn negative_control_detects_serialized_identity_hits() {
+    warm_identity(true);
 }
