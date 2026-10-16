@@ -1,6 +1,6 @@
 //! The WASM boundary uses these canonical serde types, without a second codec.
 use acyclic_harness::{
-    client::{FileClientLimits, QueryViewLimits},
+    client::{FileClientDurability, FileClientLimits, QueryViewLimits},
     task_volume::{Component, Cursor, FileKey, Generation, Query},
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -65,5 +65,14 @@ pub fn exercise(bytes: &[u8]) {
         files: bytes.len(),
         segments: bytes.len(),
         bytes: turn,
+    });
+    round_trip(FileClientLimits {
+        commands: bytes.len().max(1),
+        bytes: turn,
+        durability: if turn & 1 == 0 {
+            FileClientDurability::Accepted
+        } else {
+            FileClientDurability::Durable
+        },
     });
 }
