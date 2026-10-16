@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    client::{ClientViews, GoalPanel},
+    client::{ClientSession, GoalPanel, MemoryClientState},
     filesystem::FilesystemContentVerifier,
     task_volume::{FileKey, FileQuerySource, Query},
 };
@@ -44,24 +44,28 @@ async fn render_case(case: Case) -> Result<()> {
     let head_source = reader.file_query(harness.journal_volume(), BOUNDARY_BUDGET)?;
     let goal_query = Query::File(FileKey::Goal);
     let head_query = Query::File(FileKey::RequestHead);
-    let goal = goal_source
-        .observe_files(goal_query.clone(), None, 1, 65536)
-        .await
-        .map_err(super::super::super::storage)?;
-    let head = head_source
-        .observe_files(head_query.clone(), None, 1, 65536)
-        .await
-        .map_err(super::super::super::storage)?;
-    let goal_snapshot = goal.snapshot.unwrap();
-    let head_snapshot = head.snapshot.unwrap();
-    let goal_id = (goal_snapshot.cursor.volume, goal_snapshot.cursor.query);
-    let head_id = (head_snapshot.cursor.volume, head_snapshot.cursor.query);
+    let mut client = ClientSession::open(MemoryClientState::default())?;
+    let mut changes = client
+        .select_goal_view(&goal_source, &head_source, 65536)
+        .await?;
+    let goal_cursor = client
+        .views()
+        .queries
+        .values()
+        .find(|view| view.query() == &goal_query)
+        .unwrap()
+        .cursor();
+    let goal_id = (goal_cursor.volume, goal_cursor.query);
+    let head_cursor = client
+        .views()
+        .queries
+        .values()
+        .find(|view| view.query() == &head_query)
+        .unwrap()
+        .cursor();
+    let head_id = (head_cursor.volume, head_cursor.query);
     assert_ne!(goal_id.0, head_id.0);
-    let mut views = ClientViews::default();
-    views.query_snapshot(goal_query.clone(), goal_snapshot, 1, 65536)?;
-    views.query_snapshot(head_query.clone(), head_snapshot, 1, 65536)?;
-    views.bind_goal_sources(goal_id, head_id)?;
-    let mut omitted_head = views.clone();
+    let mut omitted_head = client.views().clone();
     check_output(&case, harness.run("Start the objective").await)?;
     let goal_final = goal_source
         .observe_files(goal_query, None, 1, 65536)
@@ -77,10 +81,9 @@ async fn render_case(case: Case) -> Result<()> {
         .snapshot
         .unwrap()
         .cursor;
-    let mut changes = futures::stream::select(goal.changes, head.changes);
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        while views.queries[&goal_id].cursor().position != goal_final.position
-            || views.queries[&head_id].cursor().position != head_final.position
+        while client.views().queries[&goal_id].cursor().position != goal_final.position
+            || client.views().queries[&head_id].cursor().position != head_final.position
         {
             let change = changes
                 .next()
@@ -95,15 +98,21 @@ async fn render_case(case: Case) -> Result<()> {
                     removed: change.removed.clone(),
                 })?;
             }
-            views.query_change(change)?;
+            client.query_change(change)?;
         }
         Ok::<_, Error>(())
     })
     .await
     .expect("publication follows stalled")?;
-    assert_eq!(views.queries[&goal_id].cursor().commit, goal_final.commit);
-    assert_eq!(views.queries[&head_id].cursor().commit, head_final.commit);
-    let view = views.goal_view(goal_id.0, goal_id.1).unwrap();
+    assert_eq!(
+        client.views().queries[&goal_id].cursor().commit,
+        goal_final.commit
+    );
+    assert_eq!(
+        client.views().queries[&head_id].cursor().commit,
+        head_final.commit
+    );
+    let view = client.views().goal_view(goal_id.0, goal_id.1).unwrap();
     assert_eq!(
         view.progress.unwrap().continuations as usize,
         case.tasks - 1,

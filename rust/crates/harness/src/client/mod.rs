@@ -52,6 +52,7 @@ pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod file_query;
 pub use file_query::{FileQueryView, GoalFileView};
 mod goal_view;
+mod goal_selection;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]
 mod goal_panel;
