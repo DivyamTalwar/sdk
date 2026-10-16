@@ -15,6 +15,8 @@ use acyclic_harness::{
 use acyclic_stream::MemoryStream;
 use futures::StreamExt as _;
 use std::sync::Arc;
+#[path = "file_query/goals.rs"]
+mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
 use objects::CountingObjects;

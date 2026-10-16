@@ -1,8 +1,10 @@
 use acyclic_harness::{
     AgentId, Result,
+    client::{ClientViews, GoalFileView},
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    goal::{GoalStatus, GoalView},
+    goal::{GoalState, GoalStatus, GoalView},
     resources::ProviderRef,
+    task_volume::{Cursor, FileKey, FileValue, Generation, Query, SCHEMA, Snapshot},
 };
 
 const LIMIT: u64 = 8192;
@@ -40,7 +42,53 @@ pub fn check(data: &[u8]) -> Result<()> {
     if data.len() as u64 > LIMIT {
         return Ok(());
     }
-    if let Ok(view) = GoalView::from_file(file(data)?, data, LIMIT) {
+    let state = GoalState::from_bytes(data, LIMIT);
+    let view = GoalView::from_file(file(data)?, data, LIMIT);
+    assert_eq!(state.is_ok(), view.is_ok());
+    let query = Query::File(FileKey::Goal);
+    let cursor = Cursor {
+        volume: [1; 32],
+        epoch: Default::default(),
+        schema: SCHEMA,
+        query: *blake3::hash(&serde_json::to_vec(&query).unwrap()).as_bytes(),
+        position: 1,
+        accepted: 1,
+        durable: 1,
+        commit: [2; 32],
+    };
+    let mut views = ClientViews::default();
+    views.query_snapshot(
+        query,
+        Snapshot {
+            generation: Generation {
+                volume: cursor.volume,
+                epoch: cursor.epoch,
+                position: cursor.position,
+                commit: cursor.commit,
+            },
+            files: vec![FileValue::new(FileKey::Goal, data.to_vec())],
+            cursor: cursor.clone(),
+        },
+        1,
+        LIMIT as usize,
+    )?;
+    match (views.goal(cursor.volume, cursor.query), &state) {
+        (Some(GoalFileView::Present { goal }), Ok(state)) => {
+            assert_eq!(goal, state);
+            let encoded = serde_json::to_value(state).unwrap();
+            assert_eq!(
+                serde_json::from_value::<GoalState>(encoded).unwrap(),
+                *state
+            );
+        }
+        (Some(GoalFileView::Invalid { .. }), Err(_)) => {}
+        _ => panic!("client goal differs from the shared parser"),
+    }
+    if let Ok(view) = view {
+        let state = state?;
+        assert_eq!(state.status, view.status);
+        assert_eq!(state.reason, view.reason);
+        assert_eq!(state.markdown, view.markdown);
         round_trip(&view, view.reason.as_deref())?;
     }
     // Even malformed frontmatter exercises arbitrary Unicode reason encoding.

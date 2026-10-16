@@ -23,6 +23,43 @@ pub enum GoalStatus {
     Done,
 }
 
+/// Parsed contents of an observed GOAL.md, without inventing a filesystem reference.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalState {
+    /// Frontmatter status; plain Markdown defaults to active.
+    pub status: GoalStatus,
+    /// Explanation attached to a blocked or completed goal.
+    pub reason: Option<String>,
+    /// Markdown body, excluding frontmatter.
+    pub markdown: String,
+}
+
+impl GoalState {
+    /// Parses bounded bytes already delivered by an authorized file query.
+    pub fn from_bytes(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
+        if bytes.len() as u64 > maximum_bytes {
+            return Err(Error::Invalid("goal file exceeds byte bound".into()));
+        }
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| Error::Invalid("GOAL.md requires UTF-8".into()))?;
+        let (frontmatter, markdown) = parse(text)?;
+        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
+            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
+        {
+            return Err(Error::Invalid(
+                "goal body leaves no status metadata headroom".into(),
+            ));
+        }
+        encoded_reason(frontmatter.reason.as_deref())?;
+        Ok(Self {
+            status: frontmatter.status,
+            reason: frontmatter.reason,
+            markdown: markdown.to_owned(),
+        })
+    }
+}
+
 /// Disposable rendering of one immutable private goal file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,22 +155,16 @@ impl GoalView {
             ));
         }
         source.descriptor().verify(bytes, &mut None)?;
-        let text = std::str::from_utf8(bytes)
-            .map_err(|_| Error::Invalid("GOAL.md requires UTF-8".into()))?;
-        let (frontmatter, markdown) = parse(text)?;
-        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
-            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
-        {
-            return Err(Error::Invalid(
-                "goal body leaves no status metadata headroom".into(),
-            ));
-        }
-        encoded_reason(frontmatter.reason.as_deref())?;
+        let GoalState {
+            status,
+            reason,
+            markdown,
+        } = GoalState::from_bytes(bytes, maximum_bytes)?;
         Ok(Self {
             source,
-            status: frontmatter.status,
-            reason: frontmatter.reason,
-            markdown: markdown.to_owned(),
+            status,
+            reason,
+            markdown,
         })
     }
 
