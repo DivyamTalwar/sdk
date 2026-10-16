@@ -332,6 +332,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
         let workspace = (self).open(&reference, Some(io)).await?;
         let pinned = (self).generation(&workspace, generation, Some(io)).await?;
+        let label = crate::core::filesystem_scope_label(
+            grant.policy_scope(),
+            &mut Some(&mut io.history_io()),
+        )?;
+        let view = self
+            .access_view(&workspace, grant.policy_scope(), pinned.id(), label, io)
+            .await?;
+        let allowed = view
+            .0
+            .decide(
+                acyclic_fs::access::Action::Read,
+                path,
+                super::super::access::access_now(),
+            )
+            .allowed;
+        drop(view);
+        if !allowed {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "filesystem access decision denied read",
+            ));
+        }
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)

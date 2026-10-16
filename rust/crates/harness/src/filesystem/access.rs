@@ -12,6 +12,10 @@ use std::marker::PhantomData;
 pub(in crate::filesystem) const INITIAL_POLICY: &[u8] = include_bytes!("access/initial.json");
 const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
 
+pub(in crate::filesystem) fn access_now() -> u64 {
+    acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000
+}
+
 fn record<'a, T: PreparationRecord>(
     io: &'a PreparationIo,
     bytes: &[u8],
@@ -54,6 +58,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if label.is_none() && !inherited_reference {
             super::require_file_read(scope, reference, io)?;
         }
+        let workspace_ref =
+            fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
+        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace_ref = (workspace_ref, workspace_hold);
+        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
+        let mut generation = [0; 32];
+        io.charge(WorkCounters {
+            source_bytes_read: reference.version().len() as u64,
+            items_examined: reference.version().len() as u64,
+            ..Default::default()
+        })?;
+        hex::decode_to_slice(reference.version(), &mut generation)
+            .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
+        let generation = GenerationId::new(Digest::from_bytes(generation));
+        let compiled = self
+            .access_view(&workspace, scope, generation, label, io)
+            .await?;
+        let allowed = compiled
+            .0
+            .decide(Action::Read, reference.path(), access_now())
+            .allowed;
+        drop(compiled);
+        if !allowed {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "filesystem access decision denied read",
+            ));
+        }
+        let pinned = io.sdk(
+            workspace
+                .generation(generation, io, io.cancellation())
+                .await,
+        )?;
+        fork_preparer_io::retain(&pinned, Some(io)).await?;
+        let path = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+        })?;
+        let path_hold = io.guard_owned(path.capacity() as u64)?;
+        let path = (path, path_hold);
+        let bytes = read_generation(&pinned, &path.0, maximum_bytes, Some(io)).await?;
+        reference
+            .descriptor()
+            .verify(&bytes, &mut Some(&mut io.history_io()))?;
+        Ok(bytes)
+    }
+
+    // Scope is immutable and authenticated by the owning verifier/grant constructor.
+    // The caller checks its request-specific legacy authority before using this view.
+    pub(in crate::filesystem) async fn access_view<'a>(
+        &self,
+        workspace: &Workspace<A, O>,
+        scope: &Scope,
+        generation: GenerationId,
+        label: Option<&str>,
+        io: &'a PreparationIo,
+    ) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 2])> {
         let payload = if let Some(label) = label {
             label
                 .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
@@ -63,11 +124,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             LEGACY_READ
         };
         let capability = record::<Capability>(io, payload, crate::wire::ErrorCode::Unauthorized)?;
-        let workspace_ref =
-            fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
-        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
-        let workspace_ref = (workspace_ref, workspace_hold);
-        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
         let head = io.sdk(
             workspace
                 .checkout(
@@ -99,21 +155,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let bytes_hold = io.guard_bytes(&bytes.bytes)?;
         let bytes = (bytes, bytes_hold);
         let policy = record::<Policy>(io, &bytes.0.bytes, crate::wire::ErrorCode::Storage)?;
-        let mut generation = [0; 32];
-        io.charge(WorkCounters {
-            source_bytes_read: reference.version().len() as u64,
-            items_examined: reference.version().len() as u64,
-            ..Default::default()
-        })?;
-        hex::decode_to_slice(reference.version(), &mut generation)
-            .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
         let (selected, latest) = io.sdk(
             head.0
-                .generation_position(
-                    GenerationId::new(Digest::from_bytes(generation)),
-                    io,
-                    io.cancellation(),
-                )
+                .generation_position(generation, io, io.cancellation())
                 .await,
         )?;
         let subject = crate::executor::with_history_io(Some(io), |work| match scope.agent() {
@@ -149,7 +193,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let volume_hold = io.guard_owned(volume.capacity() as u64)?;
         let volume = (volume, volume_hold);
         let context = Context {
-            now: acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000,
+            now: access_now(),
             approvals: 0,
         };
         let resource = Resource {
@@ -158,7 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             volume: &volume.0,
             generation: selected.get(),
             head: latest.get(),
-            path: reference.path(),
+            path: "",
         };
         let mut remaining = usize::try_from(io.remaining()?.items_examined).unwrap_or(usize::MAX);
         let before = remaining;
@@ -212,43 +256,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if retained != 0 {
             return Err(io.invalid("compiled access storage exceeds admission"));
         }
-        let allowed = compiled
-            .0
-            .decide(Action::Read, reference.path(), context.now)
-            .allowed;
-        drop(compiled);
         drop(volume);
         drop(principal);
         drop(policy);
         drop(capability);
         drop(bytes);
         drop(head);
-        if !allowed {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "filesystem access decision denied read",
-            ));
-        }
-        let pinned = io.sdk(
-            workspace
-                .generation(
-                    GenerationId::new(Digest::from_bytes(generation)),
-                    io,
-                    io.cancellation(),
-                )
-                .await,
-        )?;
-        fork_preparer_io::retain(&pinned, Some(io)).await?;
-        let path = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
-        })?;
-        let path_hold = io.guard_owned(path.capacity() as u64)?;
-        let path = (path, path_hold);
-        let bytes = read_generation(&pinned, &path.0, maximum_bytes, Some(io)).await?;
-        reference
-            .descriptor()
-            .verify(&bytes, &mut Some(&mut io.history_io()))?;
-        Ok(bytes)
+        Ok(compiled)
     }
 }

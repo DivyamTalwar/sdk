@@ -9,7 +9,7 @@ use acyclic_harness::{
     },
     core::{AggregateKind, Authority, AuthorityIssuer, Scope},
     filesystem::{FilesystemContentVerifier, FilesystemHost},
-    resources::ProviderRef,
+    resources::{GenerationRef, ProviderRef},
 };
 use proptest::prelude::*;
 use std::{error::Error, sync::Arc};
@@ -27,6 +27,16 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn generation(&self) -> Result<GenerationRef, Box<dyn Error>> {
+        Ok(GenerationRef::new(
+            self.volume.provider(),
+            &hex::decode(self.file.version())?,
+            None,
+            None,
+        )?
+        .0)
+    }
+
     async fn new() -> Result<Self, Box<dyn Error>> {
         Self::with_policy(true).await
     }
@@ -260,8 +270,9 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
         "secrets",
         &mut None,
     )?;
-    for denied in [false, true, false] {
-        fixture.policy(denied, if denied { 3 } else { 4 }).await?;
+    let generation = fixture.generation()?;
+    for (revision, denied) in [false, true, false].into_iter().enumerate() {
+        fixture.policy(denied, 2 + revision as u64).await?;
         for grant in [&volume, &exact, &directory] {
             assert_eq!(
                 fixture
@@ -271,6 +282,21 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
                     .is_ok(),
                 !denied,
             );
+        }
+        let prefix = fixture
+            .host
+            .read_private_prefix(
+                &fixture.volume,
+                &directory,
+                fixture.file.path(),
+                &generation,
+                3,
+                None,
+            )
+            .await;
+        assert_eq!(prefix.is_ok(), !denied);
+        if !denied {
+            assert_eq!(prefix?.as_ref(), b"pri");
         }
     }
     let write = ContentGrant::verify(
@@ -397,6 +423,13 @@ proptest! {
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.file,
             )?;
             let allowed = fixture.host.read_content(&fixture.file, &grant, 4096, None).await.is_ok();
+            assert_eq!(allowed, !deny && grants_path && !expired);
+            let grant = ContentGrant::verify_directory_read(
+                &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
+            )?;
+            let allowed = fixture.host.read_private_prefix(
+                &fixture.volume, &grant, fixture.file.path(), &fixture.generation()?, 3, None,
+            ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             Ok::<_, Box<dyn Error>>(())
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;
