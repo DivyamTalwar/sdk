@@ -4,10 +4,10 @@ fn update(source: &str, definition: &str) -> (usize, usize) {
     let mut markdown = Markdown::default();
     markdown.push(source);
     let cached = markdown.cached.len();
-    let lines = markdown.lines.len();
     let visits = markdown.reference_cache_visits;
     let moved = markdown.reference_moved_lines;
     markdown.push(definition);
+    let lines = markdown.lines.len();
     let visits = markdown.reference_cache_visits - visits;
     let moved = markdown.reference_moved_lines - moved;
     assert!(
@@ -96,6 +96,14 @@ fn one_batch_can_expand_and_shrink_different_blocks() {
     check_chunks(&format!("{source}{definitions}"), &[1, 3, 7]);
 }
 
+#[test]
+fn doubling_keeps_the_same_mix_of_affected_blocks() {
+    let pattern = "[x][a&#10;b]\n\n[unaffected]\n\n[unaffected]\n\n";
+    let small = update(pattern, "[a&#10;b]: /url\n\n");
+    let large = update(&pattern.repeat(2), "[a&#10;b]: /url\n\n");
+    assert_eq!(large, (2 * small.0, 2 * small.1));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
@@ -104,16 +112,22 @@ proptest! {
         affected in prop::collection::vec(any::<bool>(), 1..8),
         entity in prop_oneof![Just("&#10;"), Just("&#13;"), Just("&NewLine;")],
         image in any::<bool>(),
+        growing in prop::collection::vec(any::<bool>(), 1..8),
     ) {
+        let mut pattern = String::new();
+        for index in 0..count {
+            if index == 0 || affected.get(index % affected.len()).copied().unwrap_or(false) {
+                if growing.get(index % growing.len()).copied().unwrap_or(false) {
+                    pattern.push_str(&format!("[outer [x][ref]](u{entity}v)\n\n"));
+                } else {
+                    pattern.push_str(&format!("{}[x][a{entity}b]\n\n", if image { "!" } else { "" }));
+                }
+            } else { pattern.push_str("[unaffected]\n\n"); }
+        }
         let mut previous = None;
         for copies in [1, 2] {
-            let mut source = String::new();
-            for index in 0..count * copies {
-                if index == 0 || affected.get(index % affected.len()).copied().unwrap_or(false) {
-                    source.push_str(&format!("{}[x][a{entity}b]\n\n", if image { "!" } else { "" }));
-                } else { source.push_str("[unaffected]\n\n"); }
-            }
-            let work = update(&source, &format!("[a{entity}b]: /url\n\n"));
+            let source = pattern.repeat(copies);
+            let work = update(&source, &format!("[a{entity}b]: /url\n\n[ref]: /ref\n\n"));
             if let Some((visits, moved)) = previous {
                 prop_assert!(work.0 * 10 <= visits * 22, "{visits} -> {} cache visits", work.0);
                 prop_assert!(work.1 * 10 <= moved * 22, "{moved} -> {} moved lines", work.1);
