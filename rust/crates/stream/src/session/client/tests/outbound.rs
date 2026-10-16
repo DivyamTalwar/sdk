@@ -2,6 +2,7 @@ use super::*;
 
 struct PausedPeer {
     counts: Arc<Counts>,
+    resume: Arc<tokio::sync::Notify>,
     closed: Arc<tokio::sync::Notify>,
 }
 struct Closed(Arc<tokio::sync::Notify>);
@@ -44,13 +45,14 @@ impl StreamSessionService for PausedPeer {
         );
         let guard = Closed(Arc::clone(&self.closed));
         let following = stream::try_unfold(
-            (input, false, guard),
-            |(mut input, moved, guard)| async move {
+            (input, false, guard, Arc::clone(&self.resume)),
+            |(mut input, moved, guard, resume)| async move {
                 if moved {
                     // Retain the request and response while consuming no more
                     // controls. HTTP/2 eventually exhausts its receive window.
-                    future::pending::<()>().await;
-                    drop((input, guard));
+                    resume.notified().await;
+                    while input.message().await?.is_some() {}
+                    drop(guard);
                     return Ok(None);
                 }
                 let interest = input
@@ -77,7 +79,7 @@ impl StreamSessionService for PausedPeer {
                         resume: None,
                     }),
                 );
-                Ok(Some((moved, (input, true, guard))))
+                Ok(Some((moved, (input, true, guard, resume))))
             },
         );
         Ok(Reply::new(
@@ -88,8 +90,10 @@ impl StreamSessionService for PausedPeer {
     }
 }
 
-async fn paused_peer()
--> Result<(Fixture, Arc<tokio::sync::Notify>), Box<dyn std::error::Error + Send + Sync>> {
+async fn paused_peer() -> Result<
+    (Fixture, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
     let counts = Arc::new(Counts::default());
@@ -104,8 +108,10 @@ async fn paused_peer()
         }
     });
     let closed = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
     let host = PausedPeer {
         counts: Arc::clone(&counts),
+        resume: Arc::clone(&resume),
         closed: Arc::clone(&closed),
     };
     let server = tokio::spawn(
@@ -125,6 +131,7 @@ async fn paused_peer()
             counts,
             server,
         },
+        resume,
         closed,
     ))
 }
@@ -137,7 +144,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         let memory = Arc::new(MemoryStream::default());
         append(&memory, "healthy", 1).await?;
         let healthy = Fixture::open(Arc::clone(&memory), "healthy").await?;
-        let (paused, closed) = paused_peer().await?;
+        let (paused, resume, closed) = paused_peer().await?;
         let destination = healthy.channel.clone();
         let connect: Connect = Arc::new(move |node| {
             assert_eq!(node.node_id, "healthy");
@@ -183,6 +190,10 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         assert_eq!(healthy.counts.actors.load(Ordering::Relaxed), 0);
         drop(records);
         drop(client);
+        // Hyper cannot finish a buffered request body while the peer withholds
+        // HTTP/2 credit. All isolation/cancellation assertions ran while paused;
+        // now allow the peer to drain and observe the request's eventual EOF.
+        resume.notify_one();
         phase.set("waiting for cancelled RPC cleanup");
         closed.notified().await;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
