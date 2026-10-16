@@ -28,13 +28,20 @@ path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
 
 [[test]]
-name = "task-volume"
-path = "tests/task_volume.rs"
-
-[[test]]
 name = "default_tools"
 path = "tests/default_tools.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "task_view"
+path = "tests/task_view.rs"
+
+[[test]]
+name = "filesystem_access"
+path = "tests/filesystem_access.rs"
+[[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
 
 [[test]]
 name = "mcp-loom"

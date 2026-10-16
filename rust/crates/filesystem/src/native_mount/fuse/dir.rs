@@ -332,6 +332,7 @@ impl ProjectionState {
                     self.retain_spelling(child_inode, child)?;
                     Duration::ZERO
                 };
+                self.retain_spelling(child_inode, child)?;
                 work.admit(Copy.delta(entry.name.len() as u64))?;
                 if listing.as_mut().ok_or(libc::EIO)?.push(
                     next,

@@ -51,6 +51,7 @@ pub(crate) type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
+    task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -76,11 +77,17 @@ impl LocalHarness {
             }
             let (model, provider) = config.model;
             model.validate()?;
-            let mut tools = if config.default_tools {
-                crate::tools::defaults()?
-            } else {
-                ToolRegistry::default()
-            };
+            let mut tools = ToolRegistry::default();
+            if config.default_tools {
+                crate::tools::bind_defaults(
+                    &mut tools,
+                    &mut Vec::new(),
+                    None,
+                    true,
+                    cfg!(feature = "native-execution")
+                        && matches!(&config.project, LocalProject::Workspace(_)),
+                )?;
+            }
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
@@ -171,8 +178,16 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
+            let task_files = Arc::new(
+                crate::task_volume::TaskVolume::open(
+                    Arc::clone(&stream),
+                    acyclic_stream::StreamPath::new("task-files").map_err(storage)?,
+                )
+                .await?,
+            );
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),
+                task_files: Arc::clone(&task_files),
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
                 stream,
@@ -193,6 +208,7 @@ impl LocalHarness {
             Ok(Self {
                 files,
                 runtime,
+                task_files,
                 project: owner.project.clone(),
                 scratch,
                 journal,
@@ -207,6 +223,11 @@ impl LocalHarness {
                 workspace,
             })
         })
+    }
+
+    /// Trusted host's task-file volume; clients render its bounded live queries.
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskVolume<LocalStream>> {
+        &self.task_files
     }
 
     /// Durable content and project host.
@@ -246,8 +267,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub fn workspace(&self) -> Option<&LocalWorkspace> {
-        self.workspace.as_deref()
+    pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
+        self.workspace.as_ref()
     }
 }
 

@@ -1,18 +1,18 @@
 //! Owned async locking: Tokio in production, instrumented ownership under Loom.
-#[cfg(not(loom))]
+#[cfg(not(acyclic_harness_loom))]
 pub(super) use std::sync::Arc;
-#[cfg(not(loom))]
+#[cfg(not(acyclic_harness_loom))]
 pub(super) use tokio::sync::{Mutex, OwnedMutexGuard};
 
-#[cfg(not(loom))]
+#[cfg(not(acyclic_harness_loom))]
 pub(super) fn lock_owned<T>(mutex: Arc<Mutex<T>>) -> impl Future<Output = OwnedMutexGuard<T>> {
     mutex.lock_owned()
 }
 
-#[cfg(loom)]
+#[cfg(acyclic_harness_loom)]
 pub(super) use modeled::{Arc, Mutex, OwnedMutexGuard, lock_owned};
 
-#[cfg(loom)]
+#[cfg(acyclic_harness_loom)]
 mod modeled {
     pub use loom::sync::Arc;
     use loom::sync::{Condvar, Mutex as DataMutex};
