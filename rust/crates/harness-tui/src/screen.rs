@@ -14,6 +14,8 @@ pub struct Screen<'a> {
     pub header: Line<'a>,
     /// Already rendered transcript rows, including the current streaming tail.
     pub transcript: &'a [Line<'a>],
+    /// Visible current reasoning, folded from the same agent stream.
+    pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
     pub terminal: &'a [Line<'a>],
     /// Diff rows supplied by the markdown/diff renderer.
@@ -66,7 +68,7 @@ impl Screen<'_> {
     pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
         let height = self.areas(area, input).transcript.height;
         if self.overlay.is_empty() {
-            self.transcript.len().saturating_sub(usize::from(height))
+            (self.reasoning.len() + self.transcript.len()).saturating_sub(usize::from(height))
         } else {
             self.overlay
                 .len()
@@ -165,7 +167,24 @@ impl Screen<'_> {
         let areas = self.areas(frame.area(), input);
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
         if self.overlay.is_empty() {
-            rows(frame, self.transcript, areas.transcript, transcript_scroll);
+            for (row, line) in self
+                .reasoning
+                .iter()
+                .chain(self.transcript)
+                .skip(transcript_scroll)
+                .take(usize::from(areas.transcript.height))
+                .enumerate()
+            {
+                frame.render_widget(
+                    line,
+                    Rect::new(
+                        areas.transcript.x,
+                        areas.transcript.y + row as u16,
+                        areas.transcript.width,
+                        1,
+                    ),
+                );
+            }
         } else {
             let block = Block::default()
                 .borders(Borders::ALL)

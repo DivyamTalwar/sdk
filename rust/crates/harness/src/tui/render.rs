@@ -40,6 +40,8 @@ pub struct ClientRenderer {
     stable: usize,
     turn: Option<crate::OperationId>,
     stream: StreamText,
+    reasoning: StreamText,
+    reasoning_rows: Vec<Line<'static>>,
     transcript: Vec<Line<'static>>,
     goal_source: String,
     goal: Vec<Line<'static>>,
@@ -98,9 +100,20 @@ impl ClientRenderer {
             }
             if self.turn != transcript.streaming_turn {
                 self.turn = transcript.streaming_turn;
+                self.reasoning = StreamText::default();
                 self.stream = StreamText::default();
                 self.transcript.truncate(self.stable);
             }
+            let changed_reasoning = self.reasoning.push(&transcript.reasoning);
+            self.reasoning_rows.truncate(changed_reasoning);
+            self.reasoning_rows.extend(
+                self.reasoning
+                    .markdown
+                    .lines()
+                    .iter()
+                    .skip(changed_reasoning)
+                    .map(line),
+            );
             let changed = self.stream.push(&transcript.streaming_text);
             self.transcript.truncate(self.stable + changed);
             self.transcript
@@ -111,6 +124,8 @@ impl ClientRenderer {
             self.turn = None;
             self.stream = StreamText::default();
             self.transcript.clear();
+            self.reasoning = StreamText::default();
+            self.reasoning_rows.clear();
         }
         if let Some(tools) = views.tools.get(&key) {
             for tool in tools.values().filter(|tool| tool.result.is_none()) {
@@ -210,7 +225,21 @@ impl ClientRenderer {
         if view == Some("shortcuts") {
             self.help.refresh(files)?;
         }
+        let settings = files.state(CommandFileRoot::Config, "settings.json")?;
+        let reasoning = settings
+            .as_ref()
+            .and_then(|value| value.get("reasoning"))
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| crate::Error::Invalid("reasoning must be a boolean".into()))
+            })
+            .transpose()?
+            .unwrap_or(false);
         let mut screen = self.screen();
+        if reasoning {
+            screen.reasoning = &self.reasoning_rows;
+        }
         match view {
             Some("shortcuts") => {
                 screen.overlay = &self.help.lines;

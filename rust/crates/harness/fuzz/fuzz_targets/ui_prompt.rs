@@ -151,5 +151,20 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(replayed.editor.text(), projected.editor.text());
             assert_eq!(replayed.history().entries(), projected.history().entries());
             assert_eq!(replayed.keymap, projected.keymap);
+            let selected = data.first().copied().unwrap_or(0) % 3;
+            let reasoning = match selected {
+                0 => serde_json::json!(false),
+                1 => serde_json::json!(true),
+                _ => serde_json::json!("invalid"),
+            };
+            files
+                .write_state(
+                    CommandFileRoot::Config,
+                    "settings.json",
+                    &serde_json::json!({"reasoning":reasoning}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(renderer.screen_for(&files).is_ok(), selected != 2);
         });
 });
