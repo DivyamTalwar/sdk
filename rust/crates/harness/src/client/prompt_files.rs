@@ -3,7 +3,7 @@ use super::{CommandFileRoot, CommandSession, restore_tui_prompt, save_tui_draft}
 use crate::{
     Error, Result,
     task_volume::FileValue,
-    tui::{PromptHistory, PromptInput},
+    tui::{InputKeymap, PromptHistory, PromptInput},
 };
 use acyclic_stream::StreamProvider;
 
@@ -13,6 +13,7 @@ use acyclic_stream::StreamProvider;
 pub struct PromptFiles {
     draft: Option<FileValue>,
     history: Option<FileValue>,
+    keymap: Option<FileValue>,
 }
 
 fn history(file: Option<&FileValue>) -> Result<PromptHistory> {
@@ -25,7 +26,7 @@ fn history(file: Option<&FileValue>) -> Result<PromptHistory> {
 }
 
 impl PromptFiles {
-    /// Apply changed files together, validating both before mutating the editor.
+    /// Apply changed files together, validating every file before mutating the editor.
     pub fn refresh<P: StreamProvider + ?Sized>(
         &mut self,
         files: &CommandSession<P>,
@@ -33,21 +34,35 @@ impl PromptFiles {
     ) -> Result<()> {
         let draft = files.state_file(CommandFileRoot::Session, "draft.json")?;
         let entries = files.state_file(CommandFileRoot::Config, "history.json")?;
+        let bindings = files.state_file(CommandFileRoot::Config, "keymap.json")?;
         let draft_changed = self.draft.as_ref() != draft;
         let history_changed = self.history.as_ref() != entries;
-        if !draft_changed && !history_changed {
+        let keymap_changed = self.keymap.as_ref() != bindings;
+        if !draft_changed && !history_changed && !keymap_changed {
             return Ok(());
         }
-        // Decode in isolation; malformed bytes must leave both caches and input
+        // Decode in isolation; malformed bytes must leave all caches and input
         // at their old cut so a repaired publication can be applied later.
         let mut decoded = PromptInput::default();
         restore_tui_prompt(files, &mut decoded)?;
+        let keymap = bindings
+            .map(|file| {
+                let text = std::str::from_utf8(&file.bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                InputKeymap::from_json(text).map_err(|error| Error::Invalid(error.to_string()))
+            })
+            .transpose()?
+            .unwrap_or_default();
         if draft_changed {
             input.editor.set_text(decoded.editor.text(), 0);
         }
         if history_changed {
             input.replace_history(history(entries)?);
         }
+        if keymap_changed {
+            input.keymap = keymap;
+        }
+        self.keymap = bindings.cloned();
         self.draft = draft.cloned();
         self.history = entries.cloned();
         Ok(())

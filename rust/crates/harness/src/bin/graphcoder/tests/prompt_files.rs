@@ -177,3 +177,50 @@ async fn continuation_enter_saves_draft_without_recording_a_submission() {
     assert_eq!(replayed.editor.text(), input.editor.text());
     assert!(replayed.history().entries().is_empty());
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: every followed override drives dispatch and generated help from
+    // the same map; invalid replacement files preserve that map and the prompt.
+    #[test]
+    fn followed_keymaps_drive_unicode_editing_and_reject_partial_updates(sequence in proptest::collection::vec(0u8..4, 1..6)) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut files = session().await;
+            let mut projection = PromptFiles::default();
+            let mut input = PromptInput::default();
+            for (index, action) in sequence.into_iter().enumerate() {
+                let target = ["Home", "End", "Ctrl+a", ""][usize::from(action)];
+                let value = serde_json::json!({"Ctrl+l":target});
+                files.write_state(CommandFileRoot::Config, "keymap.json", &value).await.unwrap();
+                projection.refresh(&files, &mut input).unwrap();
+                let loaded = input.keymap.clone();
+                let round_trip = acyclic_harness::tui::InputKeymap::from_json(&loaded.to_json().unwrap()).unwrap();
+                proptest::prop_assert_eq!(&loaded, &round_trip);
+                proptest::prop_assert_eq!(input.keymap.help().contains("Ctrl+l\t"), action != 3);
+                input.editor = acyclic_harness::tui::Editor::new("日本語 é 👩‍💻");
+                input.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL), 1, 78);
+                input.committed_text("!", 2);
+                let expected = match action {
+                    0 => "!日本語 é 👩‍💻",
+                    1 | 3 => "日本語 é 👩‍💻!",
+                    _ => "!",
+                };
+                proptest::prop_assert_eq!(input.editor.text(), expected);
+                let mut terminal = super::Terminal::new(super::TestBackend::new(80, 20)).unwrap();
+                terminal.draw(|frame| { acyclic_harness::tui::Screen::default().render(frame, &input, &mut super::Viewport::default(), 0, 0); }).unwrap();
+                proptest::prop_assert!(super::screen_text(&terminal).contains(expected));
+                let pending = format!("pending draft {index}");
+                files.write_state(CommandFileRoot::Session, "draft.json", &serde_json::json!(pending)).await.unwrap();
+                files.write_state(CommandFileRoot::Config, "keymap.json", &serde_json::json!({"Ctrl+l":"not a chord"})).await.unwrap();
+                proptest::prop_assert!(projection.refresh(&files, &mut input).is_err());
+                proptest::prop_assert_eq!(input.editor.text(), expected);
+                proptest::prop_assert_eq!(&input.keymap, &loaded);
+                files.write_state(CommandFileRoot::Config, "keymap.json", &value).await.unwrap();
+                projection.refresh(&files, &mut input).unwrap();
+                proptest::prop_assert_eq!(input.editor.text(), pending.as_str());
+            }
+            Ok(())
+        })?;
+    }
+}
