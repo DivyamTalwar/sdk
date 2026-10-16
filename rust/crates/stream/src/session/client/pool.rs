@@ -248,6 +248,23 @@ impl Pool {
                 }) {
                     return Err(StreamError::Unavailable);
                 }
+                if let Kind::Follow(follow) = &route.kind {
+                    let preceding = wire_codec::session::preceding_follow(
+                        follow,
+                        opened.resume.as_ref().ok_or(StreamError::Unavailable)?,
+                    )?;
+                    if let Err(error) = wire_codec::session::confirm_follow(preceding, &opened) {
+                        if let Some(ready) = route.ready.take() {
+                            let _ = ready.send(Err(error.clone()));
+                        }
+                        let records = route.records.clone();
+                        self.remove(id)?;
+                        tokio::spawn(async move {
+                            let _ = records.send(Err(error)).await;
+                        });
+                        return Ok(());
+                    }
+                }
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Ok(id));
                 }
@@ -258,6 +275,13 @@ impl Pool {
             Some(Body::Closed(closed)) => {
                 let error =
                     StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
+                if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
+                    && let Some(ready) = route.ready.take()
+                {
+                    let _ = ready.send(Err(error));
+                    self.routes.remove(&id);
+                    return Ok(());
+                }
                 // Errors are delivered after all earlier records, using one reserved slot.
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Ok(id));
@@ -404,7 +428,8 @@ impl Pool {
     pub(super) fn fail(&mut self, error: &StreamError) {
         for (id, mut route) in std::mem::take(&mut self.routes) {
             if let Some(ready) = route.ready.take() {
-                let _ = ready.send(Ok(id));
+                let checked = matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty());
+                let _ = ready.send(if checked { Err(error.clone()) } else { Ok(id) });
             }
             let error = error.clone();
             let records = route.records;
