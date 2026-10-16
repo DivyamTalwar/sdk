@@ -144,8 +144,10 @@ pub fn archive_plan(
                 .insert(format!("{directory}/Cargo.lock"), digest.clone());
             ResolutionLock::DocsProducer { sha256: digest }
         };
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata(
+        let metadata = archive_metadata(
             &manifest,
+            cargo,
+            &resolution_lock,
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(cargo),
                 lock_selection: Some(
