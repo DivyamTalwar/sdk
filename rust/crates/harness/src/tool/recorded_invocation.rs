@@ -56,8 +56,8 @@ impl ToolInvocation {
                 work,
             )?;
             Self::validate_identity(&self.call_id, Some(&self.name), work)?;
-            crate::conversation::validate_json_numbers(&self.arguments, work)?;
-            crate::conversation::validate_json_numbers(metadata, work)
+            crate::conversation::validate_json_value(&self.arguments, work)?;
+            crate::conversation::validate_json_value(metadata, work)
         })
     }
 }

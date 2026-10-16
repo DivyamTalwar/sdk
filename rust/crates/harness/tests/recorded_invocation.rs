@@ -62,12 +62,21 @@ proptest! {
     fn admitted_records_always_project_and_replay(
         text in ".{0,96}", signature in ".{0,96}", depth in 0usize..140,
         file_bytes in 128u64..4096, render_bytes in 128u64..4096,
+        reserved in prop::option::of((any::<bool>(), any::<bool>(), 0usize..8)),
     ) {
         let mut nested = json!(0);
         for _ in 0..depth { nested = json!([nested]); }
-        let record = record(json!({"data":text, "nested":nested}), json!({"signature":signature}));
+        let mut record = record(json!({"data":text, "nested":nested}), json!({"signature":signature}));
+        if let Some((in_arguments, number_marker, nesting)) = reserved {
+            let key = if number_marker { "$serde_json::private::Number" } else { "$serde_json::private::RawValue" };
+            let mut marker = json!({"signature":"opaque", key:"null"});
+            for _ in 0..nesting { marker = json!([marker]); }
+            if in_arguments { record.invocation.arguments["marker"] = marker; }
+            else { record.metadata["marker"] = marker; }
+        }
         let limits = Limits {file_bytes, render_bytes, ..Limits::default()};
         let admitted = record.invocation.validate_recorded(&record.metadata, limits, None).is_ok();
+        if reserved.is_some() { prop_assert!(!admitted); }
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(2_000_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
@@ -90,4 +99,43 @@ fn checked_in_saved_record_corpus() {
     for entry in std::fs::read_dir(directory).unwrap() {
         input::check(&std::fs::read(entry.unwrap().path()).unwrap());
     }
+}
+
+#[test]
+fn private_serde_marker_maps_are_rejected_before_execution() {
+    for marker in [
+        "$serde_json::private::RawValue",
+        "$serde_json::private::Number",
+    ] {
+        for in_arguments in [true, false] {
+            let payload = json!({"signature":"opaque", marker:"null"});
+            let record = if in_arguments {
+                record(payload, Value::Null)
+            } else {
+                record(json!({}), payload)
+            };
+            assert!(
+                record
+                    .invocation
+                    .validate_recorded(&record.metadata, Limits::default(), None)
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn reserved_marker_negative_control_breaks_unchecked_persisted_replay() {
+    let record = record(
+        json!({}),
+        json!({"signature":"opaque", "$serde_json::private::RawValue":"null"}),
+    );
+    let unchecked = serde_json::to_vec(&record).unwrap();
+    assert!(serde_json::from_slice::<Record>(&unchecked).is_err());
+    assert!(
+        record
+            .invocation
+            .validate_recorded(&record.metadata, Limits::default(), None)
+            .is_err()
+    );
 }
