@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import extension, { type Invoke } from "../../pi/index.ts";
+import type { Invoke } from "../../pi/index.ts";
+
+// Pi supplies these modules to installed extensions through its loader. Resolve
+// the real pinned TUI here as well; the source shim lives outside this fixture.
+const require = createRequire(import.meta.url);
+const { createJiti } = require("jiti");
+const extension: typeof import("../../pi/index.ts").default = await createJiti(import.meta.url, {
+  tryNative: false,
+  alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui") },
+}).import("../../pi/index.ts", { default: true });
 
 type Handler = (event: Record<string, unknown>, context: ExtensionContext) => Promise<unknown>;
 const definitions = ["bash", "fs", "read", "write", "edit"].map(name => ({
