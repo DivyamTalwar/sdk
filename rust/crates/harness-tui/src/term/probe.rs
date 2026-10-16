@@ -19,9 +19,14 @@ pub trait ProbeIo {
     fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()>;
     /// Return available bytes, or zero at EOF/deadline. Must not block past it.
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize>;
+    /// Install the initial mode snapshot before setup, when the transport owns
+    /// a terminal lifecycle. Scripted transports need no lifecycle state.
+    fn detected(&mut self, _caps: &Capabilities) -> io::Result<()> {
+        Ok(())
+    }
 }
 
-/// Bounded startup result. Replay `input` into the input decoder after setup.
+/// Validated query replies accumulated by the whole-stream decoder.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProbeReplies {
     /// Primary device attributes were received.
@@ -42,19 +47,29 @@ pub struct ProbeReplies {
     pub graphics: Option<bool>,
     /// DA1 sixel attribute.
     pub sixel: Option<bool>,
-    /// User bytes received during detection, including unrecognized sequences.
-    pub input: Vec<u8>,
+    /// At least one validated terminal reply arrived.
+    pub answered: bool,
 }
 
 impl ProbeReplies {
-    /// Resolve each answered query before its environment fallback.
+    /// Use environment capability guesses only when no valid reply arrived.
     pub fn capabilities(&self, env: &Environment) -> Capabilities {
-        let mut caps = env.fallback();
+        let answered = self.answered
+            || self.sentinel
+            || self.identity.is_some()
+            || self.keyboard_flags.is_some()
+            || self.background.is_some()
+            || self.rgb.is_some()
+            || self.smulx.is_some()
+            || self.graphics.is_some()
+            || !self.modes.is_empty();
+        let mut caps = if answered {
+            env.transport()
+        } else {
+            env.fallback()
+        };
         if let Some(identity) = &self.identity {
             caps.apply_identity(identity);
-        }
-        if caps.colour == ColourDepth::Ansi16 && env.get("TERM").contains("256color") {
-            caps.colour = ColourDepth::Indexed256;
         }
         caps.modes.clone_from(&self.modes);
         if self.keyboard_flags.is_some() {
@@ -63,10 +78,10 @@ impl ProbeReplies {
         if let Some(rgb) = self.rgb {
             caps.colour = if rgb {
                 ColourDepth::TrueColour
-            } else if env.get("TERM").contains("256color") {
+            } else if caps.colour == ColourDepth::TrueColour {
                 ColourDepth::Indexed256
             } else {
-                ColourDepth::Ansi16
+                caps.colour
             };
         }
         if let Some(smulx) = self.smulx {
@@ -101,11 +116,13 @@ impl ProbeReplies {
 /// layer retains unrelated input and adds APC, which VTE does not dispatch.
 #[derive(Default)]
 pub struct Probe {
-    /// Decoded replies and input received before the sentinel.
+    /// Decoded replies, including those received after the startup sentinel.
     pub replies: ProbeReplies,
     frame: Vec<u8>,
     state: u8,
-    count: usize,
+    pub(crate) input: Vec<Vec<u8>>,
+    discarding: bool,
+    string_kind: u8,
 }
 
 impl Probe {
@@ -134,17 +151,19 @@ impl Probe {
         batch
     }
 
-    /// Consume at most the bounded startup budget, stopping exactly at DA1.
-    /// The caller owns and must retain the unconsumed suffix.
+    /// Classify a bounded chunk, including replies received after DA1. Partial
+    /// control frames remain here across startup and input reads.
     pub fn feed(&mut self, bytes: &[u8]) -> usize {
         let mut used = 0;
         for &byte in bytes {
-            if self.replies.sentinel || self.count == PROBE_LIMIT {
-                break;
-            }
-            self.count += 1;
             used += 1;
-            self.frame.push(byte);
+            if self.frame.len() == PROBE_LIMIT {
+                self.frame.clear();
+                self.discarding = true;
+            }
+            if !self.discarding {
+                self.frame.push(byte);
+            }
             if self.state != 0 && matches!(byte, 0x18 | 0x1a) {
                 self.finish(false);
                 continue;
@@ -154,7 +173,11 @@ impl Probe {
                 0 => self.finish(false),
                 1 => match byte {
                     b'[' => self.state = 2,
-                    b']' | b'P' | b'_' => self.state = 3,
+                    b']' | b'P' | b'_' => {
+                        self.string_kind = byte;
+                        self.state = 3;
+                    }
+                    b'O' => self.state = 5,
                     _ => self.finish(false),
                 },
                 2 if (0x40..=0x7e).contains(&byte) => self.finish(true),
@@ -164,8 +187,9 @@ impl Probe {
                     self.frame.push(byte);
                     self.state = 1;
                 }
-                3 if byte == 7 && self.frame.starts_with(b"\x1b]") => self.finish(true),
+                3 if byte == 7 && self.string_kind == b']' => self.finish(true),
                 3 if byte == 0x1b => self.state = 4,
+                4 if byte == 0x1b && self.frame.starts_with(b"\x1bPtmux;") => self.state = 3,
                 4 if byte == b'\\' => self.finish(true),
                 4 if byte != 0x1b => {
                     self.frame.pop();
@@ -174,7 +198,10 @@ impl Probe {
                     self.frame.extend_from_slice(&[0x1b, byte]);
                     self.state = match byte {
                         b'[' => 2,
-                        b']' | b'P' | b'_' => 3,
+                        b']' | b'P' | b'_' => {
+                            self.string_kind = byte;
+                            3
+                        }
                         _ => {
                             self.finish(false);
                             0
@@ -183,16 +210,51 @@ impl Probe {
                 }
                 _ => {}
             }
+            if self.state == 5 && self.frame.len() == 3 {
+                self.finish(false);
+            }
         }
         used
     }
 
-    /// Return a truncated escape sequence as input on timeout, never discard it.
+    /// Resolve only an isolated Escape key. Partial replies stay quarantined
+    /// until their terminator arrives, even after the startup deadline.
     pub fn finish_input(&mut self) {
-        self.finish(false);
+        if self.frame == b"\x1b" {
+            self.finish(false);
+        }
     }
 
     fn finish(&mut self, parse: bool) {
+        if self.discarding {
+            self.discarding = false;
+            self.frame.clear();
+            self.state = 0;
+            return;
+        }
+        if self.frame.starts_with(b"\x1bPtmux;") && parse {
+            let frame = std::mem::take(&mut self.frame);
+            self.state = 0;
+            let body = frame
+                .get(7..frame.len().saturating_sub(2))
+                .unwrap_or_default();
+            let mut previous_escape = false;
+            let mut decoded = Vec::new();
+            for &byte in body {
+                if byte == 0x1b && !previous_escape {
+                    previous_escape = true;
+                    continue;
+                }
+                decoded.push(byte);
+                previous_escape = false;
+            }
+            // A tmux envelope is terminal traffic, never user input. One level
+            // is sufficient; nested envelopes are discarded without recursion.
+            if !decoded.starts_with(b"\x1bPtmux;") {
+                self.feed(&decoded);
+            }
+            return;
+        }
         let mut handler = ReplyHandler {
             replies: &mut self.replies,
             recognized: false,
@@ -216,8 +278,10 @@ impl Probe {
                 parser.advance(&mut handler, &self.frame);
             }
         }
-        if !handler.recognized {
-            self.replies.input.extend_from_slice(&self.frame);
+        if handler.recognized {
+            self.replies.answered = true;
+        } else {
+            self.input.push(std::mem::take(&mut self.frame));
         }
         self.frame.clear();
         self.state = 0;
@@ -348,16 +412,23 @@ fn parse_rgb(bytes: &[u8]) -> Option<[u8; 3]> {
 pub fn detect(
     io: &mut impl ProbeIo,
     env: &Environment,
-) -> io::Result<(Capabilities, ProbeReplies)> {
-    let mut probe = Probe::default();
+) -> io::Result<(Capabilities, super::Decoder)> {
+    let mut decoder = super::Decoder::default();
     if env.get("TERM") == "dumb" {
-        return Ok((probe.replies.capabilities(env), probe.replies));
+        return Ok((decoder.replies().capabilities(env), decoder));
     }
     let deadline = Instant::now() + PROBE_TIMEOUT;
     io.send(&Probe::batch(env.fallback().multiplexer), deadline)?;
     let mut buffer = [0; 1024];
-    while Instant::now() < deadline && !probe.replies.sentinel && probe.count < PROBE_LIMIT {
-        let count = match io.receive(&mut buffer, deadline) {
+    let mut total = 0;
+    while Instant::now() < deadline && !decoder.replies().sentinel && total < PROBE_LIMIT {
+        let available = buffer.len().min(PROBE_LIMIT - total);
+        let count = match io.receive(
+            buffer
+                .get_mut(..available)
+                .ok_or(io::ErrorKind::InvalidInput)?,
+            deadline,
+        ) {
             Err(error)
                 if matches!(
                     error.kind(),
@@ -378,21 +449,10 @@ pub fn detect(
                 "probe transport exceeded buffer",
             )
         })?;
-        let used = probe.feed(bytes);
-        probe.finish_input_if_done();
-        probe
-            .replies
-            .input
-            .extend_from_slice(bytes.get(used..).unwrap_or_default());
+        total += count;
+        decoder.feed(bytes)?;
     }
-    probe.finish_input();
-    Ok((probe.replies.capabilities(env), probe.replies))
-}
-
-impl Probe {
-    fn finish_input_if_done(&mut self) {
-        if self.replies.sentinel || self.count == PROBE_LIMIT {
-            self.finish_input();
-        }
-    }
+    let caps = decoder.replies().capabilities(env);
+    io.detected(&caps)?;
+    Ok((caps, decoder))
 }

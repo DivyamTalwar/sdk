@@ -210,8 +210,8 @@ impl Environment {
         self.0.get(key).map_or("", String::as_str)
     }
 
-    pub(crate) fn fallback(&self) -> Capabilities {
-        let mut caps = Capabilities {
+    pub(crate) fn transport(&self) -> Capabilities {
+        Capabilities {
             remote: self.0.keys().any(|key| key.starts_with("SSH_")),
             multiplexer: if self.0.contains_key("TMUX") {
                 Multiplexer::Tmux
@@ -222,7 +222,11 @@ impl Environment {
             },
             dumb: self.get("TERM") == "dumb",
             ..Capabilities::default()
-        };
+        }
+    }
+
+    pub(crate) fn fallback(&self) -> Capabilities {
+        let mut caps = self.transport();
         if caps.dumb {
             caps.colour = ColourDepth::Monochrome;
             return caps;
@@ -263,6 +267,12 @@ impl Capabilities {
         let modern = kitty || wezterm || ghostty || iterm || foot || alacritty || windows || vscode;
         self.colour = if modern {
             ColourDepth::TrueColour
+        } else if xterm
+            || name.contains("apple_terminal")
+            || name.contains("tmux")
+            || name.contains("screen")
+        {
+            ColourDepth::Indexed256
         } else {
             ColourDepth::Ansi16
         };

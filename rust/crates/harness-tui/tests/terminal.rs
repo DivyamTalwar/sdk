@@ -4,6 +4,7 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
+use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::*;
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
@@ -12,6 +13,12 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 use serde::Deserialize;
+
+fn keys(text: &str) -> Vec<InputEvent> {
+    text.chars()
+        .map(|c| InputEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)))
+        .collect()
+}
 
 #[derive(Deserialize)]
 struct Profile {
@@ -120,18 +127,14 @@ fn profile_detection_and_setup_matrix() -> Result<(), Box<dyn std::error::Error>
         let (detected, _) = detect(&mut responder, &profile.env())?;
         assert_eq!(responder.sent, Probe::batch(detected.multiplexer));
         for chunk_size in [1, 2, 7, 1024] {
-            let mut probe = Probe::default();
+            let mut decoder = Decoder::default();
             for chunk in profile.replies().chunks(chunk_size) {
-                probe.feed(chunk);
+                decoder.feed(chunk)?;
             }
-            assert!(probe.replies.sentinel, "{}", profile.name);
-            assert!(
-                probe.replies.input.is_empty(),
-                "{} {:?}",
-                profile.name,
-                probe.replies.input
-            );
-            let caps = probe.replies.capabilities(&profile.env());
+            assert!(decoder.take_events().is_empty());
+            let probe = decoder.replies();
+            assert!(probe.sentinel, "{}", profile.name);
+            let caps = probe.capabilities(&profile.env());
             assert_eq!(caps, detected, "{}", profile.name);
             assert_eq!(
                 format!("{:?}", caps.images),
@@ -226,8 +229,8 @@ fn batch_deadline_sentinel_and_replay() -> io::Result<()> {
         replies: b"typed\x1b[?62;4cafter".to_vec(),
         reads: 0,
     };
-    let (_, replies) = detect(&mut io, &Environment::default())?;
-    assert_eq!(replies.input, b"typedafter");
+    let (_, mut decoder) = detect(&mut io, &Environment::default())?;
+    assert_eq!(decoder.take_events(), keys("typedafter"));
     assert_eq!(io.reads, 1);
     assert!(io.sent.ends_with(b"\x1b[c"));
     assert_eq!(io.sent, Probe::batch(Multiplexer::None));
@@ -247,7 +250,7 @@ fn query_overrides_environment_and_mux_requires_inner_reply() {
     probe.feed(b"\x1bP>|kitty\x1b\\\x1bP0+r524742\x1b\\\x1b[?2026;0$y\x1b_Gi=314159;ENOTSUP\x1b\\\x1b[?62;1c");
     let caps = probe.replies.capabilities(&env);
     assert_eq!(caps.images, ImageProtocol::Placeholder);
-    assert_eq!(caps.colour, ColourDepth::Ansi16);
+    assert_eq!(caps.colour, ColourDepth::Indexed256);
     assert_eq!(caps.mode(2026), ModeState::Unsupported);
     assert!(caps.passthrough);
     let caps = ProbeReplies {
@@ -352,28 +355,35 @@ fn quiet_dumb_timeout_and_incomplete_input() -> io::Result<()> {
     assert!(script.sent.is_empty());
     assert_eq!(script.reads, 0);
     script.replies = b"text\x1b]unfinished".to_vec();
-    let (_, replies) = detect(&mut script, &Environment::default())?;
-    assert_eq!(replies.input, b"text\x1b]unfinished");
-    assert!(!replies.sentinel);
+    let (_, mut decoder) = detect(&mut script, &Environment::default())?;
+    assert_eq!(decoder.take_events(), keys("text"));
+    assert!(!decoder.replies().sentinel);
     Ok(())
 }
 
 #[test]
-fn malformed_replies_do_not_swallow_user_input() {
+fn malformed_replies_do_not_swallow_user_input() -> io::Result<()> {
     for input in [
         b"\x1b]11;rgb:ffff/0000/0000\x18typed".as_slice(),
         b"\x1b[?2026;7:1;2$ytyped",
         b"\x1b]invalid\x1b[13;5utyped",
     ] {
-        let mut probe = Probe::default();
+        let mut decoder = Decoder::default();
         for chunk in input.chunks(2) {
-            probe.feed(chunk);
+            decoder.feed(chunk)?;
         }
-        probe.finish_input();
-        assert_eq!(probe.replies.input, input);
-        assert!(probe.replies.modes.is_empty());
-        assert!(probe.replies.background.is_none());
+        let mut expected = keys("typed");
+        if input.ends_with(b"\x1b[13;5utyped") {
+            expected.insert(
+                0,
+                InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+            );
+        }
+        assert_eq!(decoder.take_events(), expected);
+        assert!(decoder.replies().modes.is_empty());
+        assert!(decoder.replies().background.is_none());
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -396,10 +406,10 @@ fn controlling_tty_probe_and_os_state_restore() -> Result<(), Box<dyn std::error
         );
         assert!(fcntl_getfl(&observer)?.contains(OFlags::NONBLOCK));
         controller.write_all(b"typed\x1b[?0u\x1b[?62;4c")?;
-        let (caps, replies) = detect(&mut tty, &Environment::default())?;
+        let (caps, mut decoder) = detect(&mut tty, &Environment::default())?;
         assert_eq!(caps.keyboard, KeyboardProtocol::Kitty);
         assert_eq!(caps.images, ImageProtocol::Sixel);
-        assert_eq!(replies.input, b"typed");
+        assert_eq!(decoder.take_events(), keys("typed"));
     }
     let restored = tcgetattr(&observer)?;
     assert_eq!(restored.input_modes, original.input_modes);
@@ -534,7 +544,6 @@ proptest! {
         let states = [ModeState::Unsupported, ModeState::Set, ModeState::Reset, ModeState::AlwaysSet, ModeState::AlwaysReset];
         prop_assert_eq!(split.replies.modes.get(&mode), states.get(usize::from(state)));
         prop_assert!(split.replies.sentinel);
-        prop_assert!(split.replies.input.is_empty());
     }
 
     #[test]
@@ -546,6 +555,5 @@ proptest! {
         for bytes in bytes.chunks(chunk) { split.feed(bytes); }
         split.finish_input();
         prop_assert_eq!(&whole.replies, &split.replies);
-        prop_assert!(split.replies.input.len() <= PROBE_LIMIT);
     }
 }

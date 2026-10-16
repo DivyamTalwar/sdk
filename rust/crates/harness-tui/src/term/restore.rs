@@ -17,6 +17,7 @@ pub struct RestoreGuard<W: Write> {
     writer: W,
     undo: Vec<(u16, Vec<u8>)>,
     modes: std::collections::BTreeMap<u16, ModeState>,
+    desired: Vec<u16>,
 }
 
 impl<W: Write> RestoreGuard<W> {
@@ -26,6 +27,7 @@ impl<W: Write> RestoreGuard<W> {
             writer,
             undo: Vec::new(),
             modes: caps.modes.clone(),
+            desired: Vec::new(),
         }
     }
 
@@ -53,6 +55,9 @@ impl<W: Write> RestoreGuard<W> {
         let undo = format!("\x1b[?{mode}l").into_bytes();
         // Journal before writing: write_all can fail after emitting a prefix.
         self.undo.push((mode, undo));
+        if !self.desired.contains(&mode) {
+            self.desired.push(mode);
+        }
         self.modes.insert(mode, ModeState::Set);
         if let Err(error) = self.writer.write_all(format!("\x1b[?{mode}h").as_bytes()) {
             let _ = self.restore();
@@ -64,6 +69,22 @@ impl<W: Write> RestoreGuard<W> {
     /// Write application output using this guard's terminal connection.
     pub fn writer(&mut self) -> &mut W {
         &mut self.writer
+    }
+
+    pub(crate) fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
+        if !self.undo.is_empty() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        self.modes.clone_from(&caps.modes);
+        Ok(())
+    }
+
+    #[cfg(any(unix, feature = "model-checking"))]
+    pub(crate) fn reapply(&mut self) -> io::Result<()> {
+        for mode in self.desired.clone() {
+            self.enable_mode(mode)?;
+        }
+        self.writer.flush()
     }
 
     /// Attempt every undo even if one fails. Failed undo records remain for a

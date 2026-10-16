@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
@@ -8,20 +8,15 @@ use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 use super::{PROBE_TIMEOUT, ProbeIo};
 
 /// Exclusive controlling-terminal connection with raw mode and descriptor flags
-/// restored on drop. Own this outside the output restore guard so DEC modes
-/// are undone before the original line discipline is restored.
-pub struct Tty {
+/// restored on drop. The lifecycle restores its output guard first so DEC
+/// modes are undone before the original line discipline is restored.
+pub(crate) struct RawTty {
     file: File,
     original: Termios,
     flags: OFlags,
 }
 
-impl Tty {
-    /// Use the controlling terminal even when stdout is redirected.
-    pub fn open() -> io::Result<Self> {
-        Self::from_file(OpenOptions::new().read(true).write(true).open("/dev/tty")?)
-    }
-
+impl RawTty {
     /// Take exclusive ownership of a terminal descriptor (also usable with a
     /// PTY slave). Preserve already-enabled raw mode and nonblocking flags.
     pub fn from_file(file: File) -> io::Result<Self> {
@@ -42,9 +37,31 @@ impl Tty {
 
     /// Restore OS terminal state explicitly; drop retries the same operations.
     pub fn restore(&mut self) -> io::Result<()> {
-        let termios = tcsetattr(&self.file, OptionalActions::Now, &self.original);
+        let termios = tcsetattr(&self.file, OptionalActions::Now, &self.original).and_then(|()| {
+            #[cfg(target_os = "macos")]
+            if !self
+                .original
+                .local_modes
+                .contains(rustix::termios::LocalModes::PENDIN)
+            {
+                // Darwin sets PENDIN when ICANON is restored and preserves it
+                // across tcsetattr. FIONREAD runs ttypend without consuming
+                // input: queued bytes reenter the original line discipline
+                // and the synthetic PENDIN bit is cleared (xnu tty.c/ttnread).
+                let _ = rustix::io::ioctl_fionread(&self.file)?;
+            }
+            Ok(())
+        });
         let flags = fcntl_setfl(&self.file, self.flags);
         termios.and(flags).map_err(Into::into)
+    }
+
+    pub(crate) fn reapply(&mut self) -> io::Result<()> {
+        let mut raw = self.original.clone();
+        raw.make_raw();
+        tcsetattr(&self.file, OptionalActions::Now, &raw)?;
+        fcntl_setfl(&self.file, self.flags | OFlags::NONBLOCK)?;
+        Ok(())
     }
 
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
@@ -61,7 +78,7 @@ impl Tty {
     }
 }
 
-impl ProbeIo for Tty {
+impl ProbeIo for RawTty {
     fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
         while !bytes.is_empty() {
             let count = self.write_until(bytes, deadline)?;
@@ -86,7 +103,7 @@ impl ProbeIo for Tty {
     }
 }
 
-impl Write for Tty {
+impl Write for RawTty {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.write_until(bytes, Instant::now() + PROBE_TIMEOUT)
     }
@@ -104,7 +121,7 @@ fn pause(deadline: Instant) {
     );
 }
 
-impl Drop for Tty {
+impl Drop for RawTty {
     fn drop(&mut self) {
         let _ = self.restore();
     }
