@@ -149,7 +149,7 @@ impl ChildRequest {
 }
 
 /// Files owned by a parent below `agents/<ref>/`.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ChildFile {
     /// Immutable spawn prompt with optional model and tool frontmatter.
     Request,

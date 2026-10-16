@@ -50,7 +50,13 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
     let source = loom::future::block_on(Box::pin(files.inner.index.lock()));
     let mut values = super::super::FileIndex::default();
     for (key, value) in source.files.range(..) {
-        values.insert(key.clone(), value.clone());
+        values.insert(
+            key.clone(),
+            super::super::StoredFile {
+                file: value.file.clone(),
+                position: value.position,
+            },
+        );
     }
     let inner = TaskVolume {
         provider: files.inner.provider.clone(),
@@ -199,15 +205,12 @@ fn competing_appends(
     right: &FileValue,
     broken: bool,
 ) -> (bool, bool) {
-    let (left_request, left_file) = loom::future::block_on(Box::pin(first.inner.prepare_append(
-        cut,
-        left,
-        Vec::new(),
-        None,
-    )))
+    let (left_request, left_file, left_next) = loom::future::block_on(Box::pin(
+        first.inner.prepare_append(cut, left, Vec::new(), None),
+    ))
     .unwrap()
     .unwrap();
-    let (mut right_request, right_file) = loom::future::block_on(Box::pin(
+    let (mut right_request, right_file, right_next) = loom::future::block_on(Box::pin(
         second.inner.prepare_append(cut, right, Vec::new(), None),
     ))
     .unwrap()
@@ -231,6 +234,7 @@ fn competing_appends(
             cut,
             right_request,
             right_file,
+            right_next,
             None,
         )))
         .is_ok()
@@ -239,6 +243,7 @@ fn competing_appends(
         cut,
         left_request,
         left_file,
+        left_next,
         None,
     )))
     .is_ok();
@@ -428,7 +433,13 @@ fn child_terminal_freeze(broken: bool) {
                 .files
                 .insert(
                     cancelled.key.clone(),
-                    FileValue::new(cancelled.key.clone(), Control::Resume.bytes().to_vec()),
+                    super::super::StoredFile {
+                        file: FileValue::new(
+                            cancelled.key.clone(),
+                            Control::Resume.bytes().to_vec(),
+                        ),
+                        position: cut.position,
+                    },
                 );
         }
         let completion = child_status(ChildStatus {

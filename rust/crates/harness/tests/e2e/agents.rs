@@ -6,7 +6,7 @@ use acyclic_harness::{
     task_volume::{FileKey, Query},
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
-use acyclic_stream::BoxProviderStream;
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -49,9 +49,15 @@ impl ModelProvider for Models {
         self.get(&model.name)?.context_capacity(model)
     }
 
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        self.get(&request.request().model.name)?
-            .count_tokens(request)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            self.get(&request.request().model.name)?
+                .count_tokens(request)
+                .await
+        })
     }
 
     fn generate<'a>(
