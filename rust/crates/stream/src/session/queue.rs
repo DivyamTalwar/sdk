@@ -11,7 +11,7 @@ impl<P: StreamProvider> Session<P> {
         }) else {
             return Ok(());
         };
-        let record = match record {
+        let (after, item, key) = match record {
             Ok(Event::Opened) => {
                 self.controls.push_back(frame(
                     identity.channel_id,
@@ -22,7 +22,30 @@ impl<P: StreamProvider> Session<P> {
                 ));
                 return Ok(());
             }
-            Ok(Event::Record(record)) => record,
+            Ok(Event::Child(child, after)) => (
+                after,
+                Item::Child(wire::Child {
+                    path: child.path.to_string(),
+                }),
+                None,
+            ),
+            Ok(Event::Record(record)) => {
+                let next = record
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(StreamError::OutOfRange)?;
+                let (item, key) = if channel.latest {
+                    let value = match wire::SessionLatestValue::decode(record.value.as_ref()) {
+                        Ok(value) if !value.key.is_empty() => value,
+                        _ => return self.record(identity, Err(StreamError::InvalidArgument)),
+                    };
+                    let key = (!value.attention).then(|| value.key.clone());
+                    (Item::LatestValue(value), key)
+                } else {
+                    (Item::Record(wire_codec::record_wire(record)), None)
+                };
+                (cursor(next), item, key)
+            }
             Err(error) => {
                 let channel = self
                     .channels
@@ -34,25 +57,12 @@ impl<P: StreamProvider> Session<P> {
                 return Ok(());
             }
         };
-        let next = record
-            .sequence
-            .checked_add(1)
-            .ok_or(StreamError::OutOfRange)?;
-        let (item, key) = if channel.latest {
-            let value = match wire::SessionLatestValue::decode(record.value.as_ref()) {
-                Ok(value) if !value.key.is_empty() => value,
-                _ => return self.record(identity, Err(StreamError::InvalidArgument)),
-            };
-            let key = (!value.attention).then(|| value.key.clone());
-            (Item::LatestValue(value), key)
-        } else {
-            (Item::Record(wire_codec::record_wire(record)), None)
-        };
+        let next = after.next;
         let frame = frame(
             identity.channel_id,
             identity.generation,
             Body::Data(wire::SessionData {
-                after: Some(cursor(next)),
+                after: Some(after),
                 accepted: next,
                 durable: 0,
                 item: Some(item),

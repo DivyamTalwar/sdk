@@ -78,6 +78,47 @@ fn cursor(broken: bool) {
     });
 }
 
+fn opaque_cursor(broken: bool) {
+    loom::model(move || {
+        let cursor = Arc::new(progress::Progress::new(0));
+        let consuming = Arc::clone(&cursor);
+        let consuming = loom::thread::spawn(move || consuming.consume_opaque(1, 0, b"child"));
+        let moving = Arc::clone(&cursor);
+        let moving = loom::thread::spawn(move || {
+            let early = if broken {
+                Some(moving.position()?.1)
+            } else {
+                None
+            };
+            moving.fence()?;
+            let (next, opaque) = moving.position()?;
+            Ok::<_, StreamError>((next, early.unwrap_or(opaque)))
+        });
+        let consumed = consuming.join().unwrap().unwrap();
+        let position = moving.join().unwrap().unwrap();
+        assert_eq!(
+            position,
+            if consumed {
+                (1, b"child".to_vec())
+            } else {
+                (0, Vec::new())
+            },
+            "resume must atomically retain the opaque cursor"
+        );
+        assert!(!cursor.consume_opaque(1, position.0, b"stale").unwrap());
+        assert_eq!(cursor.position().unwrap(), position);
+    });
+}
+#[test]
+fn child_consumption_and_movement_keep_one_cursor() {
+    opaque_cursor(false);
+}
+#[test]
+#[should_panic(expected = "resume must atomically retain the opaque cursor")]
+fn opaque_cursor_negative_control_splits_the_resume_cut() {
+    opaque_cursor(true);
+}
+
 #[test]
 fn channel_allocation_is_unique_and_never_wraps() {
     allocate(false);

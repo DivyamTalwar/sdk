@@ -15,6 +15,7 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
         channels: BTreeMap::from([(
             1,
             Channel {
+                children: false,
                 generation: 1,
                 latest,
                 enabled,
@@ -38,6 +39,17 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+
+    // Child resume bytes round-trip exactly and must name a direct child.
+    #[test]
+    fn child_resume_round_trip_checks_its_parent(name in "[a-z]{1,8}", nested in any::<bool>(), next in 1_u64..1024) {
+        let request = crate::ChildrenRequest { parent: Some(StreamPath::new("agents").unwrap()), limit: 1 };
+        let path = if nested { format!("agents/other/{name}") } else { format!("agents/{name}") };
+        let resume = wire::SessionCursor { next, opaque: Bytes::from(path) };
+        let decoded = wire::SessionCursor::decode(resume.encode_to_vec().as_slice()).unwrap();
+        prop_assert_eq!(&decoded, &resume);
+        prop_assert_eq!(children::validate_resume(&request, &decoded).is_ok(), !nested);
+    }
 
     // Property: ALL preserves every offset; LATEST retains every attention and
     // exactly the final ordinary value for each key, in original cursor order.

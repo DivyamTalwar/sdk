@@ -15,6 +15,7 @@ use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 mod admission;
+mod children;
 mod client;
 mod gate;
 mod interest;
@@ -51,6 +52,7 @@ impl Default for Limits {
 struct Channel {
     generation: u64,
     latest: bool,
+    children: bool,
     pending: usize,
     enabled: Arc<gate::Gate>,
     credit: wire::SessionWindow,
@@ -66,6 +68,7 @@ struct Pending {
 enum Event {
     Opened,
     Record(crate::Record),
+    Child(crate::Child, wire::SessionCursor),
 }
 type Source = BoxStream<'static, (wire::SessionChannel, Result<Event, StreamError>)>;
 
@@ -238,7 +241,8 @@ impl<P: StreamProvider> Session<P> {
             Body::Ack(ack) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 let applied = ack.applied.ok_or(StreamError::InvalidArgument)?;
-                if !applied.opaque.is_empty()
+                if (!channel.children && !applied.opaque.is_empty())
+                    || (applied.next == channel.sent.next && applied.opaque != channel.sent.opaque)
                     || applied.next < channel.applied.next
                     || applied.next > channel.sent.next
                 {

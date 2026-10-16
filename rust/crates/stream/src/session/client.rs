@@ -45,15 +45,21 @@ pub struct Client {
     next_id: Arc<AtomicU64>,
 }
 struct Delivery {
-    record: crate::Record,
+    item: Received,
+    sequence: u64,
+    opaque: Bytes,
     generation: u64,
     credit: Credit,
+}
+enum Received {
+    Record(crate::Record),
+    Child(crate::Child),
 }
 enum Command {
     Open {
         id: u64,
         acknowledge: bool,
-        path: StreamPath,
+        kind: Kind,
         progress: Arc<Progress>,
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
@@ -61,10 +67,11 @@ enum Command {
 }
 struct Route {
     node: String,
-    path: StreamPath,
+    kind: Kind,
     generation: u64,
     placement_epoch: u64,
     received: u64,
+    received_opaque: Bytes,
     acknowledge: bool,
     acknowledged: u64,
     opened: bool,
@@ -165,6 +172,44 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
+        let kind = Kind::Follow(wire::SessionFollow {
+            path: path.to_string(),
+            delivery: wire::SessionDelivery::All as i32,
+        });
+        Ok(self
+            .open_kind(kind, from, acknowledge)
+            .await?
+            .map(|item| match item? {
+                Received::Record(record) => Ok(record),
+                _ => Err(StreamError::Unavailable),
+            })
+            .boxed())
+    }
+    /// Discovers direct children on the same per-node session as record follows.
+    pub async fn children(
+        &self,
+        request: crate::ChildrenRequest,
+    ) -> Result<crate::ChildStream, StreamError> {
+        crate::memory::validate_limit(request.limit)?;
+        let kind = Kind::Children(wire::ChildrenRequest {
+            parent: request.parent.map(|path| path.to_string()),
+            limit: request.limit,
+        });
+        Ok(self
+            .open_kind(kind, 0, true)
+            .await?
+            .map(|item| match item? {
+                Received::Child(child) => Ok(child),
+                _ => Err(StreamError::Unavailable),
+            })
+            .boxed())
+    }
+    async fn open_kind(
+        &self,
+        kind: Kind,
+        from: u64,
+        acknowledge: bool,
+    ) -> Result<BoxStream<'static, Result<Received, StreamError>>, StreamError> {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
         let progress = Arc::new(Progress::new(from));
@@ -181,7 +226,7 @@ impl Client {
             .send(Command::Open {
                 id,
                 acknowledge,
-                path,
+                kind,
                 progress,
                 records,
                 ready,
@@ -201,12 +246,20 @@ impl Client {
                     .ok_or(StreamError::Unavailable)??;
                 // Delivery disposal returns capacity on every exit, including
                 // stale-generation suppression and cancellation of the cursor.
-                let fresh = cursor
-                    .progress
-                    .consume(delivery.generation, delivery.record.sequence)?;
+                let fresh = if delivery.opaque.is_empty() {
+                    cursor
+                        .progress
+                        .consume(delivery.generation, delivery.sequence)?
+                } else {
+                    cursor.progress.consume_opaque(
+                        delivery.generation,
+                        delivery.sequence,
+                        &delivery.opaque,
+                    )?
+                };
                 drop(delivery.credit);
                 if fresh {
-                    return Ok(Some((delivery.record, cursor)));
+                    return Ok(Some((delivery.item, cursor)));
                 }
             }
         })

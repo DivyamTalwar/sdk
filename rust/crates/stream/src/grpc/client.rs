@@ -1,6 +1,21 @@
 use super::*;
 
 impl Client {
+    async fn session(&self) -> Result<&crate::session::Client, StreamError> {
+        // Include callers waiting behind another initializer in the deadline.
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            self.sessions.get_or_try_init(|| {
+                crate::session::Client::open(
+                    self.channel.clone(),
+                    self.authorization.clone(),
+                    self.session_ca.clone(),
+                )
+            }),
+        )
+        .await
+        .map_err(|_| StreamError::Unavailable)?
+    }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
     pub fn without_delivery_acknowledgements(mut self) -> Self {
@@ -154,54 +169,14 @@ impl StreamProvider for Client {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        // Include waiting behind another initializer in this call's deadline.
-        let session = tokio::time::timeout(
-            Duration::from_secs(4),
-            self.sessions.get_or_try_init(|| {
-                crate::session::Client::open(
-                    self.channel.clone(),
-                    self.authorization.clone(),
-                    self.session_ca.clone(),
-                )
-            }),
-        )
-        .await
-        .map_err(|_| StreamError::Unavailable)??;
-        session
+        self.session()
+            .await?
             .follow_with_ack(path, from, self.acknowledge_deliveries)
             .await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let body = wire::ChildrenRequest {
-            parent: request.parent.map(|path| path.to_string()),
-            limit: request.limit,
-        };
-        let (response, mut completion) = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.children(request).await })
-            })
-            .await?;
-        let mut response = completion.span.scope(response);
-        let mut children = Vec::new();
-        while let Some(item) = response.next().await {
-            let item = item.map_err(|error| {
-                completion.status(&error);
-                status(&error)
-            })?;
-            let child = item
-                .child
-                .ok_or(StreamError::Unavailable)
-                .and_then(|child| {
-                    Ok(Child {
-                        path: path(child.path)?,
-                    })
-                })
-                .inspect_err(|_| completion.invalid_response())?;
-            children.push(child);
-        }
-        completion.ok();
-        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
+        self.session().await?.children(request).await
     }
 
     async fn children_page(

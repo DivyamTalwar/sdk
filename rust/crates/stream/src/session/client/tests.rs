@@ -576,3 +576,39 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     assert!(fixture.counts.sessions.load(Ordering::Relaxed) >= 3);
     Ok(())
 }
+
+#[tokio::test]
+async fn child_replay_and_records_share_the_native_node_session() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "agents/m", 1).await?;
+    append(&provider, "agents/a", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&provider), "children").await?;
+    let client = fixture.client()?;
+    let mut records = client.follow(StreamPath::new("agents/m")?, 1).await?;
+    let mut children = client
+        .children(crate::ChildrenRequest {
+            parent: Some(StreamPath::new("agents")?),
+            limit: 8,
+        })
+        .await?;
+    let mut paths = Vec::new();
+    for _ in 0..2 {
+        paths.push(
+            tokio::time::timeout(Duration::from_secs(1), children.next())
+                .await?
+                .ok_or("discovery ended")??
+                .path,
+        );
+    }
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![StreamPath::new("agents/a")?, StreamPath::new("agents/m")?]
+    );
+    append(&provider, "agents/m", 1).await?;
+    assert_eq!(next(&mut records).await?.sequence, 1);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
+    Ok(())
+}

@@ -72,8 +72,9 @@ impl Pool {
     }
     pub(super) async fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let next = route.progress.next()?;
+        let (next, opaque) = route.progress.position()?;
         route.received = next;
+        route.received_opaque = opaque.clone().into();
         route.opened = false;
         route.credit = wire::SessionWindow::default();
         let link = self
@@ -86,11 +87,11 @@ impl Pool {
                 channel_id: id,
                 generation: route.generation,
             }),
-            resume: Some(cursor(next)),
-            kind: Some(Kind::Follow(wire::SessionFollow {
-                path: route.path.to_string(),
-                delivery: wire::SessionDelivery::All as i32,
-            })),
+            resume: Some(wire::SessionCursor {
+                next,
+                opaque: opaque.into(),
+            }),
+            kind: Some(route.kind.clone()),
         };
         link.sender
             .send(frame(

@@ -38,34 +38,56 @@ impl<P: StreamProvider> Session<P> {
         for subscription in interest.upsert {
             let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
             let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
-            if !resume.opaque.is_empty() {
-                return Err(StreamError::InvalidArgument);
-            }
-            let Some(Kind::Follow(follow)) = subscription.kind else {
-                return Err(StreamError::Unsupported);
-            };
-            let latest = match wire::SessionDelivery::try_from(follow.delivery) {
-                Ok(wire::SessionDelivery::All) => false,
-                Ok(wire::SessionDelivery::Latest) => true,
-                _ => return Err(StreamError::InvalidArgument),
-            };
-            let path = StreamPath::new(follow.path)?;
             let (cancel, cancelled) = oneshot::channel();
             let enabled = Arc::new(gate::Gate::new());
             let identity = channel;
-            let source = follow_source(
-                Arc::clone(&self.provider),
-                path,
-                resume.next,
-                identity,
-                cancelled,
-                Arc::clone(&enabled),
-            );
+            let children = matches!(subscription.kind, Some(Kind::Children(_)));
+            let (latest, source) = match subscription.kind {
+                Some(Kind::Follow(follow)) => {
+                    if !resume.opaque.is_empty() {
+                        return Err(StreamError::InvalidArgument);
+                    }
+                    let latest = match wire::SessionDelivery::try_from(follow.delivery) {
+                        Ok(wire::SessionDelivery::All) => false,
+                        Ok(wire::SessionDelivery::Latest) => true,
+                        _ => return Err(StreamError::InvalidArgument),
+                    };
+                    let path = StreamPath::new(follow.path)?;
+                    (
+                        latest,
+                        follow_source(
+                            Arc::clone(&self.provider),
+                            path,
+                            resume.next,
+                            identity,
+                            cancelled,
+                            Arc::clone(&enabled),
+                        ),
+                    )
+                }
+                Some(Kind::Children(request)) => {
+                    let request = wire_codec::children_from_wire(request)?;
+                    children::validate_resume(&request, &resume)?;
+                    (
+                        false,
+                        children::source(
+                            Arc::clone(&self.provider),
+                            request,
+                            resume.clone(),
+                            identity,
+                            cancelled,
+                            Arc::clone(&enabled),
+                        ),
+                    )
+                }
+                _ => return Err(StreamError::Unsupported),
+            };
             opened.push((
                 identity,
                 Channel {
                     generation: identity.generation,
                     latest,
+                    children,
                     pending: 0,
                     enabled,
                     credit: wire::SessionWindow::default(),

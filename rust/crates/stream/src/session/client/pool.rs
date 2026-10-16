@@ -37,7 +37,7 @@ impl Pool {
             Command::Open {
                 id,
                 acknowledge,
-                path,
+                kind,
                 progress,
                 records,
                 ready,
@@ -54,10 +54,11 @@ impl Pool {
                     id,
                     Route {
                         node: self.home.clone(),
-                        path,
+                        kind,
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
+                        received_opaque: Bytes::new(),
                         acknowledge,
                         acknowledged: from,
                         opened: false,
@@ -98,7 +99,7 @@ impl Pool {
         let owner = route.node.clone();
         let current = route.generation;
         if node == owner && generation == current && route.acknowledge && route.credit.frames == 0 {
-            let applied = route.progress.next()?;
+            let (applied, opaque) = route.progress.position()?;
             if applied <= route.acknowledged {
                 return self.grant(id).await;
             }
@@ -109,7 +110,10 @@ impl Pool {
                     id,
                     current,
                     Body::Ack(wire::SessionAck {
-                        applied: Some(cursor(applied)),
+                        applied: Some(wire::SessionCursor {
+                            next: applied,
+                            opaque: opaque.into(),
+                        }),
                     }),
                 ),
             )
@@ -144,11 +148,9 @@ impl Pool {
         }
         match input.body {
             Some(Body::Opened(opened)) => {
-                if opened
-                    .resume
-                    .as_ref()
-                    .is_none_or(|resume| resume.next != route.received || !resume.opaque.is_empty())
-                {
+                if opened.resume.as_ref().is_none_or(|resume| {
+                    resume.next != route.received || resume.opaque != route.received_opaque
+                }) {
                     return Err(StreamError::Unavailable);
                 }
                 if let Some(ready) = route.ready.take() {
@@ -228,26 +230,35 @@ impl Pool {
         epoch: u64,
     ) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let Some(Item::Record(record)) = data.item else {
-            return Err(StreamError::Unavailable);
-        };
-        let record = wire_codec::record(record)?;
         let after = data.after.ok_or(StreamError::Unavailable)?;
-        if record.sequence != route.received
-            || after.next
-                != record
-                    .sequence
-                    .checked_add(1)
-                    .ok_or(StreamError::OutOfRange)?
-            || !after.opaque.is_empty()
+        let (item, sequence) = match (&route.kind, data.item) {
+            (Kind::Follow(_), Some(Item::Record(record))) if after.opaque.is_empty() => {
+                let record = wire_codec::record(record)?;
+                let sequence = record.sequence;
+                (Received::Record(record), sequence)
+            }
+            (Kind::Children(request), Some(Item::Child(child))) => {
+                let path = StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?;
+                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref() {
+                    return Err(StreamError::Unavailable);
+                }
+                (Received::Child(crate::Child { path }), route.received)
+            }
+            _ => return Err(StreamError::Unavailable),
+        };
+        if sequence != route.received
+            || after.next != sequence.checked_add(1).ok_or(StreamError::OutOfRange)?
             || data.durable > data.accepted
             || data.accepted < after.next
         {
             return Err(StreamError::Unavailable);
         }
         route.received = after.next;
+        route.received_opaque = after.opaque.clone();
         let delivery = Delivery {
-            record,
+            item,
+            sequence,
+            opaque: after.opaque,
             generation,
             credit: Credit::new(
                 self.release_sender.clone(),
