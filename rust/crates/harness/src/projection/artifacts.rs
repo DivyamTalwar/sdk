@@ -181,38 +181,15 @@ pub(crate) async fn read_value<'a>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let (value, hold) = io.decode(std::marker::PhantomData::<Value>, &bytes, Invalid)?;
-        validate_numbers(&value, Some(io))?;
+        with_history_io(Some(io), |work| {
+            crate::conversation::validate_json_numbers(&value, work)
+        })?;
         return Ok((value, Some(hold)));
     }
     let value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    validate_numbers(&value, None)?;
+    crate::conversation::validate_json_numbers(&value, &mut None)?;
     Ok((value, None))
-}
-
-fn validate_numbers(value: &Value, io: Option<&PreparationIo>) -> Result<()> {
-    crate::model::charge_items(io, 1)?;
-    match value {
-        Value::Array(values) => values
-            .iter()
-            .try_for_each(|value| validate_numbers(value, io)),
-        Value::Object(values) => values
-            .values()
-            .try_for_each(|value| validate_numbers(value, io)),
-        Value::Number(number)
-            if !crate::conversation::is_exact_js_integer(number)
-                || number
-                    .as_f64()
-                    .is_some_and(|value| !crate::conversation::is_exact_js_number(value)) =>
-        {
-            Err(stock_boundary(
-                io,
-                Invalid,
-                "tool artifact contains an inexact number",
-            ))
-        }
-        _ => Ok(()),
-    }
 }
 
 #[cfg(feature = "filesystem")]
