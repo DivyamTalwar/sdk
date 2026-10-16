@@ -144,6 +144,51 @@ impl Write for Tty {
 
 impl Drop for Tty {
     fn drop(&mut self) {
-        let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
+        if lifecycle::detach(self.owner, &self.state, RawTty::restore).is_err() {
+            let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::fs::{OFlags, fcntl_getfl};
+    use rustix::termios::{LocalModes, tcgetattr};
+
+    #[test]
+    fn delayed_old_state_drop_preserves_reopened_pty() -> io::Result<()> {
+        let pty = rustix_openpty::openpty(None, None)?;
+        let observer = File::from(pty.user);
+        let original = tcgetattr(&observer)?;
+        let flags = fcntl_getfl(&observer)?;
+        let old = Tty::from_file(observer.try_clone()?)?;
+        // Keep the old descriptor alive past detach, exactly as a concurrent
+        // signal callback can. No scheduling or timing assumptions are needed.
+        let retained = Arc::clone(&old.state);
+        drop(old);
+        let new = Tty::from_file(observer.try_clone()?)?;
+        drop(retained);
+        lifecycle::active(&new.state, |_| Ok(()))?;
+        assert!(
+            !tcgetattr(&observer)?
+                .local_modes
+                .contains(LocalModes::ICANON)
+        );
+        assert_eq!(fcntl_getfl(&observer)?, flags | OFlags::NONBLOCK);
+        drop(new);
+        let restored = tcgetattr(&observer)?;
+        assert_eq!(restored.input_modes, original.input_modes);
+        assert_eq!(restored.output_modes, original.output_modes);
+        assert_eq!(restored.control_modes, original.control_modes);
+        assert_eq!(restored.local_modes, original.local_modes);
+        assert_eq!(
+            format!("{:?}", restored.special_codes),
+            format!("{:?}", original.special_codes)
+        );
+        assert_eq!(restored.input_speed(), original.input_speed());
+        assert_eq!(restored.output_speed(), original.output_speed());
+        assert_eq!(fcntl_getfl(&observer)?, flags);
+        Ok(())
     }
 }

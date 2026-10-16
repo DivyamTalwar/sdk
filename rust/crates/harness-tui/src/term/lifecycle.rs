@@ -40,7 +40,11 @@ pub(crate) fn detach<W: Write>(
 ) -> io::Result<()> {
     let mut owner = owner.lock().map_err(|_| io::ErrorKind::Other)?;
     let result = restore(state, true, os_restore);
-    *owner = None;
+    // Failed restoration retains ownership; a new session must never inherit
+    // an unfinished journal or race a later restoration attempt.
+    if result.is_ok() {
+        *owner = None;
+    }
     result
 }
 
@@ -111,6 +115,98 @@ pub(crate) fn resume<W: Write>(
 mod terminal_lifecycle_model {
     use super::*;
     use crate::term::ModeState;
+
+    // Fake OS state is acquired last, after owner -> state; never in reverse.
+    struct Terminal {
+        raw: Arc<Mutex<bool>>,
+        broken_drop: bool,
+    }
+
+    impl Write for Terminal {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for Terminal {
+        fn drop(&mut self) {
+            // Negative control reproduces the removed RawTty destructor.
+            if self.broken_drop {
+                *self.raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = false;
+            }
+        }
+    }
+
+    fn reopen_model(broken_drop: bool) {
+        loom::model(move || {
+            let raw = Arc::new(Mutex::new(false));
+            let owner = Arc::new(Mutex::new(None));
+            let old = attach(&owner, || {
+                *raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = true;
+                Ok(Terminal {
+                    raw: Arc::clone(&raw),
+                    broken_drop,
+                })
+            })
+            .unwrap_or_else(|error| panic!("{error:?}"));
+            let reopening = Arc::clone(&owner);
+            let new_raw = Arc::clone(&raw);
+            let worker = loom::thread::spawn(move || {
+                attach(&reopening, || {
+                    *new_raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = true;
+                    Ok(Terminal {
+                        raw: new_raw,
+                        broken_drop: false,
+                    })
+                })
+                .ok()
+            });
+            detach(&owner, &old, |tty| {
+                *tty.raw.lock().unwrap_or_else(|error| panic!("{error:?}")) = false;
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("{error:?}"));
+            loom::thread::yield_now();
+            drop(old);
+            if let Some(new) = worker.join().unwrap_or_else(|error| panic!("{error:?}")) {
+                active(&new, |_| {
+                    assert!(
+                        *raw.lock().unwrap_or_else(|error| panic!("{error:?}")),
+                        "old destructor recooked new session"
+                    );
+                    Ok(())
+                })
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            }
+        });
+    }
+
+    #[test]
+    fn delayed_destructor_cannot_restore_over_reopened_terminal() {
+        reopen_model(false);
+    }
+
+    #[test]
+    fn negative_control_detects_restoration_after_owner_release() {
+        assert!(std::panic::catch_unwind(|| reopen_model(true)).is_err());
+    }
+
+    #[test]
+    fn failed_restoration_keeps_owner_until_successful_retry() {
+        loom::model(|| {
+            let owner = Mutex::new(None);
+            let state =
+                attach(&owner, || Ok(Vec::new())).unwrap_or_else(|error| panic!("{error:?}"));
+            assert!(detach(&owner, &state, |_| Err(io::ErrorKind::Other.into())).is_err());
+            assert!(attach(&owner, || Ok(Vec::new())).is_err());
+            detach(&owner, &state, |_| Ok(())).unwrap_or_else(|error| panic!("{error:?}"));
+            assert!(attach(&owner, || Ok(Vec::new())).is_ok());
+        });
+    }
 
     fn owner_model(broken: bool) {
         loom::model(move || {

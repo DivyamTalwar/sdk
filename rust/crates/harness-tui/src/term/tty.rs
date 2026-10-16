@@ -8,7 +8,7 @@ use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 use super::{PROBE_TIMEOUT, ProbeIo};
 
 /// Exclusive controlling-terminal connection with raw mode and descriptor flags
-/// restored on drop. The lifecycle restores its output guard first so DEC
+/// restored by the owning lifecycle before releasing ownership. DEC
 /// modes are undone before the original line discipline is restored.
 pub(crate) struct RawTty {
     file: File,
@@ -22,20 +22,20 @@ impl RawTty {
     pub fn from_file(file: File) -> io::Result<Self> {
         let original = tcgetattr(&file)?;
         let flags = fcntl_getfl(&file)?;
-        let tty = Self {
+        let mut tty = Self {
             file,
             original,
             flags,
         };
-        let mut raw = tty.original.clone();
-        raw.make_raw();
-        // The guard exists before either fallible mutation.
-        tcsetattr(&tty.file, OptionalActions::Now, &raw)?;
-        fcntl_setfl(&tty.file, flags | OFlags::NONBLOCK)?;
+        if let Err(error) = tty.reapply() {
+            let _ = tty.restore();
+            return Err(error);
+        }
         Ok(tty)
     }
 
-    /// Restore OS terminal state explicitly; drop retries the same operations.
+    /// Restore while the lifecycle still holds exclusive ownership. There is
+    /// no destructor restoration: retained state can outlive a newer session.
     pub fn restore(&mut self) -> io::Result<()> {
         let termios = tcsetattr(&self.file, OptionalActions::Now, &self.original).and_then(|()| {
             #[cfg(target_os = "macos")]
@@ -119,10 +119,4 @@ fn pause(deadline: Instant) {
     std::thread::sleep(
         Duration::from_millis(1).min(deadline.saturating_duration_since(Instant::now())),
     );
-}
-
-impl Drop for RawTty {
-    fn drop(&mut self) {
-        let _ = self.restore();
-    }
 }
