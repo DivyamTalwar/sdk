@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Read, Write};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -6,13 +6,27 @@ use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 pub(super) const MODE: &str = "ACYCLIC_PROJFS_METADATA_CLIENT";
 const PATH: &str = "ACYCLIC_PROJFS_METADATA_PATH";
-const READY: &str = "ACYCLIC_METADATA_READY";
+#[path = "metadata_output.rs"]
+mod output;
+use output::READY;
 
-pub(super) fn run(
+pub(super) async fn run(
     mode: &str,
     path: &Path,
     before_action: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // An overlapped server lets the test runtime receive readiness and drain
+    // output directly, without a reader thread or a channel handoff.
+    let pipe_name = format!(r"\\.\pipe\acyclic-metadata-{}", uuid::Uuid::new_v4());
+    let stdout = tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(true)
+        .access_inbound(true)
+        .access_outbound(false)
+        .max_instances(1)
+        .in_buffer_size(4096)
+        .out_buffer_size(0)
+        .create(&pipe_name)?;
+    let child_stdout = std::fs::OpenOptions::new().write(true).open(&pipe_name)?;
     let module = module_path!()
         .split_once("::")
         .expect("client belongs to a test crate")
@@ -28,46 +42,50 @@ pub(super) fn run(
             .env(MODE, mode)
             .env(PATH, path)
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped()),
+            .stdout(std::process::Stdio::from(child_stdout)),
     )?;
-    let stdout = child.take_stdout().ok_or("client stdout missing")?;
-    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-    let reader = std::thread::spawn(move || -> io::Result<()> {
-        let mut stdout = io::BufReader::new(stdout);
-        let mut line = String::new();
-        let mut ready = Some(ready_tx);
-        while stdout.read_line(&mut line)? != 0 {
-            if line.trim_end() == READY {
-                if let Some(sender) = ready.take() {
-                    let _ = sender.send(());
+    let mut stdout = tokio::io::BufReader::new(stdout);
+    let mut line = String::new();
+    let action: Result<(), Box<dyn std::error::Error>> = async {
+        let ready = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                stdout.get_ref().connect().await?;
+                if !output::read_output(&mut stdout, &mut line, true, |line| eprint!("{line}"))
+                    .await?
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "client exited before readiness",
+                    ));
                 }
-            } else {
-                eprint!("{line}");
-            }
-            line.clear();
-        }
-        Ok(())
-    });
-    let action: Result<(), Box<dyn std::error::Error>> = (|| {
-        ready_rx.recv_timeout(Duration::from_secs(5))?;
-        before_action()?;
-        let mut stdin = child.take_stdin().ok_or("client stdin missing")?;
-        stdin.write_all(b"g")?;
-        drop(stdin);
-        let status = child.wait(Duration::from_secs(20))?;
+                Ok(())
+            })
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "client readiness timed out"))?
+        };
+        output::after_ready(ready, before_action, || {
+            let mut stdin = child
+                .take_stdin()
+                .ok_or_else(|| io::Error::other("client stdin missing"))?;
+            stdin.write_all(b"g")
+        })
+        .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        tokio::time::timeout_at(
+            deadline,
+            output::read_output(&mut stdout, &mut line, false, |line| eprint!("{line}")),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "client completion timed out"))??;
+        let status = child.wait(deadline.saturating_duration_since(tokio::time::Instant::now()))?;
         if !status.success() {
             return Err(format!("metadata client failed: {status}").into());
         }
         Ok(())
-    })();
+    }
+    .await;
     let cleanup = child.terminate(None);
-    let output = reader
-        .join()
-        .map_err(|_| io::Error::other("client output reader panicked"))
-        .and_then(std::convert::identity);
-    action
-        .and(cleanup.map_err(Into::into))
-        .and(output.map_err(Into::into))
+    action.and(cleanup.map_err(Into::into))
 }
 
 fn start_action() -> io::Result<()> {

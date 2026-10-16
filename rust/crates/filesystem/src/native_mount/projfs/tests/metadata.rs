@@ -11,7 +11,8 @@ async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_cap
     client::run("late", &file, || {
         session.flush_callbacks(&work)?;
         Ok(())
-    })?;
+    })
+    .await?;
     session.flush_callbacks(&work)?;
     let captured = source
         .lookup(&windows_path("late.txt"))?
@@ -34,7 +35,7 @@ async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std:
     let source = windows_checkout_source_with_files(FILES).await?;
     let (_root, destination, mut session) = mount_source(&source)?;
     eprintln!("stress mounted {:?}", started.elapsed());
-    client::run("stress", &destination, || Ok(()))?;
+    client::run("stress", &destination, || Ok(())).await?;
     eprintln!("stress client complete {:?}", started.elapsed());
     session.flush_callbacks(&work)?;
     session.revalidate(&work)?;
@@ -80,7 +81,7 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
     for _ in 0..3 {
         assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
     }
-    client::run("readonly", &projected, || Ok(()))?;
+    client::run("readonly", &projected, || Ok(())).await?;
     mount.sync().await?;
     mount.unmount().await?;
 
