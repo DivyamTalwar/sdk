@@ -73,7 +73,10 @@ async fn roundtrip(prompt: String) -> Result<()> {
     );
     assert_eq!(provider.requests().len(), 1);
     drop(owner);
-    drop(harness);
+    // Retain the exact native owner: successful reopening must come from close
+    // detaching its namespace, rather than Arc destruction happening to win.
+    let retained_mounts = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
+    harness.close().await?;
 
     let harness = LocalHarness::open(
         LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
@@ -87,6 +90,7 @@ async fn roundtrip(prompt: String) -> Result<()> {
         128,
     )
     .await?;
+    drop(retained_mounts);
     assert!(owner.take_request().is_none());
     assert!(
         consume_local_command(&mut owner, &harness, &observed)
@@ -95,6 +99,8 @@ async fn roundtrip(prompt: String) -> Result<()> {
     );
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(owner.output_page(0)?.unwrap()["ok"], output);
+    drop(owner);
+    harness.close().await?;
     Ok(())
 }
 
@@ -131,5 +137,51 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(provider.requests().len(), 0);
+    drop(owner);
+    harness.close().await?;
+    Ok(())
+}
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let make = || {
+        LocalHarnessConfig::new(directory.path(), (model().unwrap(), scripted([])))
+            .without_default_tools()
+    };
+    let harness = LocalHarness::open(make()).await?;
+    let retained = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
+    assert!(retained.mounts().any(|(_, mount)| {
+        mount
+            .view
+            .source
+            .as_ref()
+            .is_some_and(|source| source.native.is_some())
+    }));
+    drop(harness);
+    let failure = match LocalHarness::open(make()).await {
+        Err(error) => error,
+        Ok(reopened) => {
+            reopened.close().await?;
+            panic!("negative control lost its retained native owner");
+        }
+    };
+    assert!(
+        failure
+            .to_string()
+            .contains("mount destination is already owned"),
+        "{failure:?}"
+    );
+    for (_, mount) in retained.mounts() {
+        if let Some(native) = mount
+            .view
+            .source
+            .as_ref()
+            .and_then(|source| source.native.as_ref())
+        {
+            native.unmount().await?;
+        }
+    }
     Ok(())
 }

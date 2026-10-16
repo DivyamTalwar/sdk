@@ -752,5 +752,5 @@ mod mcp;
 #[cfg(feature = "tui")]
 mod documents;
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", feature = "native-execution"))]
 mod command_files;

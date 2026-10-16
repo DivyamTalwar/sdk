@@ -437,3 +437,30 @@ fn admitted_task(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>)
         Admission::Rejected { reason } => Err(Error::Conflict(reason)),
     }
 }
+
+impl LocalHarness {
+    /// Closes quiescent native mounts before releasing their provider handles.
+    /// An admitted unfinished turn must first settle or be recovered by its owner.
+    pub async fn close(self) -> Result<()> {
+        let (head, _) = self.current_turn().await?;
+        if !self.head_is_terminal(head.as_ref()).await? {
+            return Err(Error::Conflict(
+                "cannot close an unfinished local turn".into(),
+            ));
+        }
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            for (_, mount) in workspace.mounts.mounts() {
+                if let Some(native) = mount
+                    .view
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.native.as_ref())
+                {
+                    native.unmount().await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
