@@ -4,6 +4,9 @@ import { retainedDataBytes, retainedArrayTailBytes, cloneStructuredValue, assert
 import { requestBound } from "./client-requests.js";
 import { NativeContracts } from "./native-contracts.js";
 
+const appendCommands = Array.prototype.push;
+const apply = Reflect.apply;
+
 export interface OutboxStore {
   load(): Promise<readonly ClientCommand[]>;
   /** A fixed enqueue cut prevents an active producer from extending one flush. */
@@ -154,11 +157,12 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     do {
       const read = this.loadPage;
       owned &&= read === readOwnedOutboxPage;
-      const page = await Reflect.apply(read, this, [after, through]);
+      const page = await apply(read, this, [after, through]);
       through = page.throughSequence;
       after = page.afterSequence;
       const start = commands.length;
-      commands.push(...page.commands);
+      if (owned) apply(appendCommands, commands, page.commands);
+      else commands.push(...page.commands);
       if (commands.length > this.#limits.maximumCommands) throw new RangeError("outbox capacity exceeded");
       // Only the built-in reader returns private clones that no caller can mutate.
       bytes = owned ? retainedArrayTailBytes(commands, this.#limits.maximumResidentBytes, start, bytes)

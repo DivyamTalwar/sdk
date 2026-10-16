@@ -9,7 +9,7 @@ export function pageCommand(index: number): ClientCommand {
   return {
     operationId: `01010101-0101-0101-0101-${String(index).padStart(12, "0")}` as ClientCommand["operationId"],
     authority: { kind: "conversation", id: "outbox-pages" }, kind: "message.append",
-    payload: { metadata: { sequence: index } }, offlineSafe: true,
+    payload: { metadata: { sequence: BigInt(index) } }, offlineSafe: true,
   };
 }
 

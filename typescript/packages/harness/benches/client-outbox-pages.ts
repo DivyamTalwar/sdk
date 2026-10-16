@@ -1,14 +1,26 @@
-import { outboxFixture } from "../test/client-outbox-page-fixture.js";
-import { IndexedDbClientStore } from "../src/client-store.js";
 import { estimateShallowMemoryUsageOf } from "bun:jsc";
 
 const baseline = process.env.HARNESS_OUTBOX_PAGE_BEFORE;
 if (!baseline) throw new Error("HARNESS_OUTBOX_PAGE_BEFORE must name an explicit baseline module");
+const mode = process.env.HARNESS_OUTBOX_PAGE_MODE ?? "timing";
+const original = Object.getOwnPropertyDescriptor;
+let reads = 0, descriptors = 0, estimatedDescriptorBytes = 0;
+if (mode === "work") {
+  // Install the non-retaining observer before modules capture their intrinsics.
+  // Timing runs import with the actual, unwrapped intrinsics.
+  Object.getOwnPropertyDescriptor = (value, key) => {
+    const descriptor = original(value, key);
+    if (key === "operationId") reads++;
+    if (descriptor) { descriptors++; estimatedDescriptorBytes += estimateShallowMemoryUsageOf(descriptor); }
+    return descriptor;
+  };
+}
+const { outboxFixture } = await import("../test/client-outbox-page-fixture.js");
+const { IndexedDbClientStore } = await import("../src/client-store.js");
 const { IndexedDbClientStore: Before } = await import(baseline) as typeof import("../src/client-store.js");
 const count = Number(process.env.HARNESS_OUTBOX_PAGE_COUNT ?? "1024");
 if (![0, 64, 129, 1024].includes(count)) throw new Error("unsupported outbox page benchmark count");
 const stores = [await outboxFixture(count, undefined, Before), await outboxFixture(count)];
-const mode = process.env.HARNESS_OUTBOX_PAGE_MODE ?? "timing";
 const median = (values: number[]) => values.sort((left, right) => left - right)[values.length >> 1]!;
 let checksum = 0;
 
@@ -44,18 +56,11 @@ if (mode === "timing") {
   }
 } else {
   for (let index = 0; index < 2; index++) {
-    const original = Object.getOwnPropertyDescriptor;
-    let reads = 0, descriptors = 0, estimatedDescriptorBytes = 0;
-    Object.getOwnPropertyDescriptor = (value, key) => {
-      const descriptor = original(value, key);
-      if (key === "operationId") reads++;
-      if (descriptor) { descriptors++; estimatedDescriptorBytes += estimateShallowMemoryUsageOf(descriptor); }
-      return descriptor;
-    };
-    try { await run(index); }
-    finally { Object.getOwnPropertyDescriptor = original; }
+    reads = 0; descriptors = 0; estimatedDescriptorBytes = 0;
+    await run(index);
     console.log(JSON.stringify({ count, legacy: index === 0, commandCounterVisits: reads,
       descriptors, estimatedDescriptorBytes }));
   }
+  Object.getOwnPropertyDescriptor = original;
 }
 console.log(JSON.stringify({ count, mode, checksum }));

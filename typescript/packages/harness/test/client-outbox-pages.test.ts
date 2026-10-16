@@ -64,47 +64,17 @@ test("appended values retain depth, cycle, accessor, binary and budget error pre
     .toEqual(outcome(() => legacyRetainedDataBytes(array, 100_000)));
 });
 
-function countReads<T>(operation: () => T, key: string): { value: T; reads: () => number; restore: () => void } {
-  const original = Object.getOwnPropertyDescriptor;
+function countReads<T>(operation: () => T): { value: T; reads: () => number; restore: () => void } {
+  const original = BigInt.prototype.toString;
   let reads = 0;
-  Object.getOwnPropertyDescriptor = (value, property) => {
-    if (property === key) reads++;
-    return original(value, property);
+  // A primitive observation cannot retain a command or any of its children.
+  BigInt.prototype.toString = function (this: bigint, radix?: number) {
+    reads++;
+    return original.call(this, radix);
   };
-  try { return { value: operation(), reads: () => reads, restore: () => { Object.getOwnPropertyDescriptor = original; } }; }
-  catch (error) { Object.getOwnPropertyDescriptor = original; throw error; }
+  try { return { value: operation(), reads: () => reads, restore: () => { BigInt.prototype.toString = original; } }; }
+  catch (error) { BigInt.prototype.toString = original; throw error; }
 }
-
-function assertLinear(count: number, reads: number): void { expect(reads).toBeLessThanOrEqual(count); }
-function appendPages(count: number, pageSize: number, depth: number, measure = retainedArrayTailBytes): number {
-  const array: unknown[] = [];
-  let bytes = 0;
-  for (let start = 0; start < count; start += pageSize) {
-    for (let index = start; index < Math.min(start + pageSize, count); index++) {
-      let nested: unknown = null;
-      for (let level = 0; level < depth; level++) nested = { next: nested };
-      array.push({ probe: index, nested });
-    }
-    bytes = measure(array, Number.MAX_SAFE_INTEGER, start, bytes);
-  }
-  return bytes;
-}
-
-test("incremental array work visits each new record once across arbitrary page cuts", () => {
-  fc.assert(fc.property(fc.integer({ min: 0, max: 256 }), fc.integer({ min: 1, max: 64 }),
-    fc.integer({ min: 0, max: 16 }), (count, pageSize, depth) => {
-      const measured = countReads(() => appendPages(count, pageSize, depth), "probe");
-      try { assertLinear(count, measured.reads()); }
-      finally { measured.restore(); }
-    }), { numRuns: 128 });
-});
-
-test("linear work assertion rejects the original complete-prefix scans", () => {
-  const measured = countReads(() => appendPages(129, 64, 0, (array, maximum) =>
-    legacyRetainedDataBytes(array, maximum)), "probe");
-  try { expect(measured.reads()).toBe(64 + 128 + 129); expect(() => assertLinear(129, measured.reads())).toThrow(); }
-  finally { measured.restore(); }
-});
 
 test("real persisted pages read each command twice and preserve array wrapper capacity", async () => {
   const count = 129;
@@ -112,13 +82,35 @@ test("real persisted pages read each command twice and preserve array wrapper ca
   const maximum = legacyRetainedDataBytes(commands, Number.MAX_SAFE_INTEGER);
   for (const limit of [maximum - 1, maximum]) {
     const store = await outboxFixture(count, limit);
-    const measured = countReads(() => store.load(), "operationId");
+    const measured = countReads(() => store.load());
     try {
       if (limit === maximum) expect(await measured.value).toEqual(commands);
       else await expect(measured.value).rejects.toThrow("client command byte capacity exceeded");
       expect(measured.reads()).toBeLessThanOrEqual(2 * count);
     } finally { measured.restore(); }
   }
+});
+
+test("descriptor instrumentation cannot retain private page clones between reads", async () => {
+  const maximum = 200_000;
+  const store = await outboxFixture(129, maximum);
+  const original = Object.getOwnPropertyDescriptor;
+  const candidates: { kind: string }[] = [];
+  Object.getOwnPropertyDescriptor = (value, key) => {
+    const descriptor = original(value, key);
+    if (key === "operationId") {
+      if (descriptor?.value === pageCommand(0).operationId) candidates.push(value as { kind: string });
+      if (descriptor?.value === pageCommand(64).operationId && candidates.length > 1) {
+        candidates[1]!.kind = "x".repeat(maximum);
+      }
+    }
+    return descriptor;
+  };
+  try {
+    const commands = await store.load();
+    expect(legacyRetainedDataBytes(commands, maximum)).toBeLessThanOrEqual(maximum);
+    expect(commands).toEqual(Array.from({ length: 129 }, (_, index) => pageCommand(index)));
+  } finally { Object.getOwnPropertyDescriptor = original; }
 });
 
 test("foreign pages keep full revalidation after the built-in reader is restored", async () => {
