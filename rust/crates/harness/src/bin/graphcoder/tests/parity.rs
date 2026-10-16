@@ -1,6 +1,6 @@
 //! Each row is executable scenario data for the composed shared prompt.
 use acyclic_harness::tui::{
-    Editor, PromptInput, Screen, Viewport,
+    Editor, InputEffect, PromptInput, Screen, Viewport,
     key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     ratatui::{Terminal, backend::TestBackend},
 };
@@ -44,6 +44,24 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
                 }
                 effects.extend(input.key(key, now, 38));
             }
+            if event["folded"].as_bool() == Some(true) {
+                assert!(!input.editor.collapsed_pastes().is_empty(), "{name}");
+                let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        Screen::default().render(frame, &input, &mut Viewport::default(), 0, now);
+                    })
+                    .unwrap();
+                assert!(super::screen_text(&terminal).contains("Pasted"), "{name}");
+            }
+        }
+        if let Some(submitted) = row["submitted"].as_str() {
+            assert!(
+                effects.iter().any(
+                    |effect| matches!(effect, InputEffect::Submit { text, .. } if text == submitted)
+                ),
+                "{name}"
+            );
         }
         assert_eq!(
             input.editor.text(),
