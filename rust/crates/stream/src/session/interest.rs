@@ -80,23 +80,21 @@ impl<P: StreamProvider> Session<P> {
                     _ => return Err(StreamError::InvalidArgument),
                 };
                 let path = StreamPath::new(follow.path)?;
-                let source = if preceding.is_some() {
-                    // Checked adapters land separately; never downgrade the guard.
-                    stream::once(future::ready((identity, Err(StreamError::Unsupported)))).boxed()
-                } else {
-                    follow_source(
-                        Arc::clone(&self.provider),
-                        path,
-                        resume.next,
-                        identity,
-                        cancelled,
-                        Arc::clone(&enabled),
-                    )
-                };
+                let source = follow_source(
+                    Arc::clone(&self.provider),
+                    path,
+                    resume.next,
+                    preceding,
+                    identity,
+                    cancelled,
+                    Arc::clone(&enabled),
+                );
                 (latest, source)
             }
             Some(Kind::Children(request)) => {
-                if self.limits.pending_bytes < CHILD_FRAME_BYTES { return Err(StreamError::Capacity); }
+                if self.limits.pending_bytes < CHILD_FRAME_BYTES {
+                    return Err(StreamError::Capacity);
+                }
                 let request = wire_codec::children_from_wire(request)?;
                 children::validate_resume(&request, &resume)?;
                 (
@@ -149,6 +147,7 @@ fn follow_source<P: StreamProvider>(
     provider: Arc<P>,
     path: StreamPath,
     from: u64,
+    preceding: Option<crate::CommitId>,
     identity: wire::SessionChannel,
     cancelled: oneshot::Receiver<()>,
     enabled: Arc<gate::Gate>,
@@ -157,6 +156,7 @@ fn follow_source<P: StreamProvider>(
         provider,
         path,
         from,
+        preceding,
         None::<crate::RecordStream>,
         false,
         0_u8,
@@ -164,15 +164,18 @@ fn follow_source<P: StreamProvider>(
     );
     stream::try_unfold(
         state,
-        |(provider, path, mut next, mut records, mut opened, mut ended, enabled)| async move {
+        |(provider, path, mut next, mut preceding, mut records, mut opened, mut ended, enabled)| async move {
             loop {
                 if records.is_none() {
-                    records = Some(provider.follow(path.clone(), next).await?);
+                    records = Some(match preceding {
+                        Some(anchor) => provider.follow_checked(path.clone(), next, anchor).await?,
+                        None => provider.follow(path.clone(), next).await?,
+                    });
                     if !opened {
                         opened = true;
                         return Ok(Some((
-                            Event::Opened,
-                            (provider, path, next, records, opened, ended, enabled),
+                            Event::Opened(preceding),
+                            (provider, path, next, preceding, records, opened, ended, enabled),
                         )));
                     }
                 }
@@ -187,9 +190,10 @@ fn follow_source<P: StreamProvider>(
                         .checked_add(1)
                         .ok_or(StreamError::OutOfRange)?;
                     ended = 0;
+                    preceding = preceding.map(|_| record.commit_id);
                     return Ok(Some((
                         Event::Record(record),
-                        (provider, path, next, records, opened, ended, enabled),
+                        (provider, path, next, preceding, records, opened, ended, enabled),
                     )));
                 } else {
                     // EOF is transport recovery, never an idle record wakeup.
