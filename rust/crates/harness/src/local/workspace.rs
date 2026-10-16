@@ -30,6 +30,21 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    /// Binds the native checkout executor to this owner-selected project volume.
+    pub fn executor(
+        self: &Arc<Self>,
+        project: &VolumeRef,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
+    ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
+        Ok(Arc::new(super::checkout_tools::CheckoutTools::new(
+            Arc::clone(self),
+            project,
+            clock,
+            task_files,
+        )?))
+    }
+
     /// Source-backed filesystem view. No checkout scan occurs during open.
     #[must_use]
     pub(crate) const fn view(

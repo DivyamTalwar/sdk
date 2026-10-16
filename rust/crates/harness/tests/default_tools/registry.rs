@@ -20,15 +20,16 @@ proptest! {
             }
             registry
         };
-        let mut merged = registry(&left);
-        let before = merged.definitions(None).unwrap();
-        let accepted = merged.extend(registry(&right)).is_ok();
+        let original = registry(&left);
+        let before = original.definitions(None).unwrap();
+        let result = original.clone().extend(registry(&right));
+        let accepted = result.is_ok();
         prop_assert_eq!(accepted, left.is_disjoint(&right));
-        if accepted {
+        if let Ok(merged) = result {
             let actual: BTreeSet<_> = merged.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
             prop_assert_eq!(actual, left.union(&right).cloned().collect::<BTreeSet<_>>());
         } else {
-            prop_assert_eq!(merged.definitions(None).unwrap(), before);
+            prop_assert_eq!(original.definitions(None).unwrap(), before);
         }
     }
 }
@@ -50,7 +51,7 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     let enabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
         .content(content())
-        .workspace_tools(Arc::new(Echo))
+        .workspace(Arc::new(Echo))
         .tool(second)
         .tools([example_tool()])
         .build()?;
@@ -132,7 +133,7 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
                 builder = builder.content(content());
             }
             if workspace {
-                builder = builder.workspace_tools(Arc::new(Echo));
+                builder = builder.workspace(Arc::new(Echo));
             }
             let harness = builder.build()?;
             for (name, available) in [
@@ -308,7 +309,7 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
     for workspace in ["checkout", "child-view"] {
         let bundle = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .workspace_tools(Arc::new(Workspace(workspace)))
+            .workspace(Arc::new(Workspace(workspace)))
             .grant("task:spawn:commands@1")
             .task(TaskDefinition::live(
                 "commands",

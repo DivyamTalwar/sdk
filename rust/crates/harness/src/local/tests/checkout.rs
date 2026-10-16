@@ -312,3 +312,192 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
     assert_eq!(provider.requests().len(), 0);
     Ok(())
 }
+
+fn input_call(arguments: Value) -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::ToolCall {
+            call_id: "bash/input:1".into(),
+            name: "bash".into(),
+            arguments,
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({}),
+        }),
+    ])
+}
+
+#[tokio::test]
+async fn bash_cwd_exit_code_and_timeout_publish_their_writes() -> Result<()> {
+    let cases = [
+        (
+            json!({"command":"printf captured > result; printf stdout; printf stderr >&2; exit 7", "cwd":"src", "timeout":5}),
+            Some(7),
+            false,
+        ),
+        (
+            json!({"command":"printf captured > result; while :; do :; done", "cwd":"src", "timeout":1}),
+            None,
+            true,
+        ),
+    ];
+    let outcomes =
+        futures::future::join_all(cases.into_iter().map(|(input, code, timeout)| async move {
+            let directory = tempfile::tempdir().map_err(super::super::storage)?;
+            std::fs::create_dir(directory.path().join("src")).map_err(super::super::storage)?;
+            let provider = scripted([input_call(input), ScriptedTurn::Text("done".into())]);
+            let harness = LocalHarness::open(LocalHarnessConfig::new(
+                directory.path(),
+                (model()?, provider.clone()),
+            ))
+            .await?;
+            harness.run("execute bash").await?;
+            assert_eq!(
+                std::fs::read(directory.path().join("src/result"))
+                    .map_err(super::super::storage)?,
+                b"captured"
+            );
+            let snapshot = harness
+                .task_files()
+                .snapshot(&crate::task_volume::Query::Tasks, 16)
+                .await?;
+            let value = snapshot
+                .files
+                .iter()
+                .find_map(|file| match &file.key {
+                    crate::task_volume::FileKey::Task {
+                        file:
+                            crate::task_volume::TaskFile::Tool {
+                                file: crate::task_volume::ToolFile::Result,
+                                ..
+                            },
+                        ..
+                    } => Some(&file.bytes),
+                    _ => None,
+                })
+                .ok_or_else(|| Error::NotFound("bash terminal file".into()))?;
+            let result: Value =
+                serde_json::from_slice(value.as_ref()).map_err(super::super::storage)?;
+            assert_eq!(result["exit_code"], json!(code));
+            assert_eq!(result["success"], false);
+            if timeout {
+                assert_eq!(
+                    result["stop"]["kind"],
+                    serde_json::to_value(crate::filesystem::NativeProcessStopKind::Timeout)
+                        .map_err(super::super::storage)?
+                );
+            } else {
+                assert_eq!(result["stdout"], "stdout");
+                assert_eq!(result["stderr"], "stderr");
+            }
+            Ok::<_, Error>(())
+        }))
+        .await;
+    for outcome in outcomes {
+        outcome?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn bash_output_is_live_before_exit_and_replays_without_relaunch() -> Result<()> {
+    use crate::task_volume::{Component, FileKey, Query, TaskFile, ToolFile};
+    use futures::StreamExt as _;
+    use std::io::Write as _;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let control = tempfile::tempdir().map_err(super::super::storage)?;
+    let pipe = control.path().join("ack");
+    let command = format!(
+        "mkfifo '{}'; printf visible; IFS= read -r acknowledgement < '{}'; printf final > result",
+        pipe.display(),
+        pipe.display()
+    );
+    let provider = scripted([
+        input_call(json!({"command":command,"timeout":5})),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
+        .submit(OperationId::new(), "stream before exit")
+        .await?
+    else {
+        return Err(Error::Conflict("stock admission rejected".into()));
+    };
+    let query = Query::Task(Component::new(task.to_string())?);
+    let mut observation = harness
+        .task_files()
+        .observe(query.clone(), None, 16)
+        .await?;
+    let acknowledge = async {
+        while let Some(change) = observation.changes.next().await {
+            let Some(file) = change?.file else {
+                continue;
+            };
+            if matches!(
+                &file.key,
+                FileKey::Task {
+                    file: TaskFile::Tool {
+                        file: ToolFile::Stdout(0),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                assert_eq!(file.bytes.as_ref(), b"visible");
+                assert!(!directory.path().join("result").exists());
+                tokio::task::spawn_blocking(move || {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(pipe)?
+                        .write_all(b"continue\n")
+                })
+                .await
+                .map_err(super::super::storage)?
+                .map_err(super::super::storage)?;
+                return Ok::<_, Error>(());
+            }
+        }
+        Err(Error::NotFound("live bash output".into()))
+    };
+    let commands = harness.commands()?;
+    let (advanced, acknowledged) = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        tokio::join!(
+            harness.advance(task, &super::checked_commands::Checked(&commands)),
+            acknowledge
+        )
+    })
+    .await
+    .map_err(super::super::storage)?;
+    advanced?;
+    acknowledged?;
+    harness.resume(task).await?;
+    let snapshot = harness.task_files().snapshot(&query, 16).await?;
+    assert!(snapshot.files.iter().any(|file| matches!(
+        &file.key,
+        FileKey::Task {
+            file: TaskFile::Tool {
+                file: ToolFile::Result,
+                ..
+            },
+            ..
+        }
+    )));
+    assert_eq!(
+        std::fs::read(directory.path().join("result")).map_err(super::super::storage)?,
+        b"final"
+    );
+    let reopened = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    assert_eq!(
+        reopened.task_files().snapshot(&query, 16).await?.files,
+        snapshot.files
+    );
+    assert_eq!(provider.requests().len(), 2);
+    Ok(())
+}

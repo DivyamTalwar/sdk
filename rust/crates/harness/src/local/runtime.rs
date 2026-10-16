@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct Configuration<'a> {
     pub files: Arc<LocalFilesystem>,
+    pub task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     #[cfg(feature = "native-execution")]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
@@ -111,9 +112,11 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     .with_output_volume(config.scratch, None)?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
-        Some(workspace) => runtime.with_workspace_tools(Arc::new(
-            checkout_tools::CheckoutTools::new(workspace, config.project, config.clock)?,
-        ))?,
+        Some(workspace) => runtime.with_workspace_tools(workspace.executor(
+            config.project,
+            config.clock,
+            config.task_files,
+        )?)?,
         None => runtime,
     };
     Ok((Arc::new(runtime), signed))

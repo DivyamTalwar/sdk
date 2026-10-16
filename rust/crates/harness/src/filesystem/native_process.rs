@@ -81,11 +81,11 @@ pub struct NativeProcessAuthority {
 }
 
 pub(crate) mod bash;
-mod capture;
+pub(crate) mod capture;
 mod invocation;
 pub use capture::NativeProcessObserver;
 use capture::capture;
-use invocation::Invocation;
+pub(crate) use invocation::Invocation;
 
 /// Optional provider for one retained task command. Construction launches nothing.
 pub struct NativeProcessProvider<P, A, O> {

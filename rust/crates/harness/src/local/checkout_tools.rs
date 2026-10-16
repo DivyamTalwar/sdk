@@ -4,7 +4,7 @@ use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_fs::{NativeWatch, PublicationPermit};
+use acyclic_fs::NativeWatch;
 use acyclic_stream::BoxProviderFuture;
 use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 
@@ -12,6 +12,8 @@ mod bash;
 mod capture;
 mod git;
 mod lock;
+mod mounts;
+mod output;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -22,6 +24,8 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    mounts: crate::workspace::MountTable<()>,
+    task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -42,21 +46,12 @@ async fn serialized<T, R>(
     command(lock_owned(StateArc::clone(state)).await).await
 }
 
-// A submitted blocking job owns the guard until its body and cleanup finish,
-// even when its awaiting task is cancelled.
-fn guarded<T, R>(
-    mut state: OwnedMutexGuard<T>,
-    operation: impl FnOnce(&mut T) -> R,
-) -> (R, OwnedMutexGuard<T>) {
-    let result = operation(&mut *state);
-    (result, state)
-}
-
 impl CheckoutTools {
     pub(super) fn new(
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     ) -> Result<Self> {
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
@@ -64,8 +59,10 @@ impl CheckoutTools {
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
             capture_policy,
+            mounts: mounts::owner(&workspace.path, project)?,
             workspace,
             clock,
+            task_files,
             state: StateArc::new(AsyncMutex::new(State {
                 active: None,
                 watcher: None,
@@ -116,18 +113,34 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            let command = invocation
-                .arguments
-                .as_object_mut()
-                .and_then(|arguments| arguments.remove("command"));
-            let Some(serde_json::Value::String(command)) = command else {
-                return Err(Error::Invalid("checkout command must be text".into()));
+            let request = serde_json::to_vec(&invocation).map_err(storage)?;
+            let bash = if invocation.name == "bash" {
+                Some(
+                    serde_json::from_value::<crate::tools::BashInput>(std::mem::take(
+                        &mut invocation.arguments,
+                    ))
+                    .map_err(|cause| Error::Invalid(cause.to_string()))?,
+                )
+            } else {
+                None
             };
-            if command.is_empty() || command.contains('\0') {
-                return Err(Error::Invalid(
-                    "checkout command is empty or contains NUL".into(),
-                ));
-            }
+            let command = if bash.is_none() {
+                let command = invocation
+                    .arguments
+                    .as_object_mut()
+                    .and_then(|arguments| arguments.remove("command"));
+                let Some(serde_json::Value::String(command)) = command else {
+                    return Err(Error::Invalid("checkout command must be text".into()));
+                };
+                if command.is_empty() || command.contains('\0') {
+                    return Err(Error::Invalid(
+                        "checkout command is empty or contains NUL".into(),
+                    ));
+                }
+                Some(command)
+            } else {
+                None
+            };
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
@@ -138,7 +151,7 @@ impl ToolExecutor for CheckoutTools {
                 let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                 self.capture(view, watcher, invocation.operation_id, 0)
                     .await?;
-                if invocation.name == "fs" {
+                if let Some(command) = command {
                     let view = state
                         .active
                         .as_ref()
@@ -149,11 +162,20 @@ impl ToolExecutor for CheckoutTools {
                     }
                     Ok(result)
                 } else {
-                    let (result, mut state) = self.bash(command, maximum, state).await?;
+                    let input =
+                        bash.ok_or_else(|| Error::Invalid("bash input is absent".into()))?;
+                    let files =
+                        output::Output::open(context, Arc::clone(&self.task_files), request)
+                            .await?;
+                    let (result, mut state, mut files) =
+                        self.bash(input, maximum, state, files).await?;
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(view, watcher, invocation.operation_id, 1)
                         .await?;
+                    if let Ok(result) = &result {
+                        files.finish(result).await?;
+                    }
                     result
                 }
             })

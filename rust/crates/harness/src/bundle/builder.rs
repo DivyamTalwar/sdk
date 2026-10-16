@@ -111,7 +111,7 @@ impl HarnessBuilder {
 
     /// Binds command execution to the workspace selected by this task's route.
     #[must_use]
-    pub fn workspace_tools(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
+    pub fn workspace(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
         self.bindings.workspace_tools = Some(executor);
         self
     }

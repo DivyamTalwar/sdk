@@ -215,10 +215,9 @@ proptest::proptest! {
                     tool.definition.name.clone_from(name);
                     tool.definition.revision.clone_from(revision);
                     checked(additional.register((tool, None), &mut None, None))?;
-                    let mut combined = registry.clone();
-                    let result = combined.extend(additional);
+                    let result = registry.clone().extend(additional);
                     proptest::prop_assert_eq!(result.is_ok(), !existed);
-                    if result.is_ok() { registry = combined; }
+                    if let Ok(combined) = result { registry = combined; }
                 }
             }
             proptest::prop_assert!(indexed_names(&registry));
