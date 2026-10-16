@@ -16,6 +16,7 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
+    #[cfg(target_os = "macos")]
     work: acyclic_fs::NativeMaterializationWork,
 }
 
@@ -27,9 +28,18 @@ impl Cursor {
         // only push hints on this persistent watcher.
         let mut options = NativeWatchOptions::new(config.limits);
         options.recursive = false;
-        let cancellation = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| storage(cause))?;
+        #[cfg(not(target_os = "macos"))]
+        let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
+            .map_err(storage)?;
+        // FSEvents' held-source adapter requires retained native custody. Linux
+        // and Windows already select their held source for a nonrecursive watch.
+        #[cfg(target_os = "macos")]
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| storage(cause))?;
+        #[cfg(target_os = "macos")]
         let mut watcher = NativeWatch::open_with_profile_with_native_work(
             &workspace.path,
             config.profile,
@@ -43,6 +53,7 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
+            #[cfg(target_os = "macos")]
             work,
         })
     }
@@ -76,7 +87,6 @@ impl CheckoutTools {
             Some(cursor) => cursor,
             None => Cursor::open(&self.workspace, &self.capture_policy)?,
         };
-        let work = &cursor.work;
         let watcher = &mut cursor.watcher;
         if watcher.root_identity() != self.workspace.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
@@ -93,15 +103,27 @@ impl CheckoutTools {
             .value;
         // The producer's native payload guards and its returned vector retain
         // their original ledger through capture, including the await points.
+        #[cfg(target_os = "macos")]
         let mut batch_owner = None;
         let batch = if baseline {
             None
         } else {
-            watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
-            let (batch, owner) = watcher
-                .poll_with_native_work_guarded(MAXIMUM_PATHS, work, |_| Ok(()))
-                .map_err(storage)?;
-            batch_owner = Some(owner);
+            watcher
+                .fence(WATCH_FENCE_TIMEOUT)
+                .map_err(|error| Error::Storage(format!("checkout watch fence: {error:?}")))?;
+            #[cfg(target_os = "macos")]
+            let batch = {
+                let (batch, owner) = watcher
+                    .poll_with_native_work_guarded(MAXIMUM_PATHS, &cursor.work, |_| Ok(()))
+                    .map_err(storage)?;
+                batch_owner = Some(owner);
+                batch
+            };
+            #[cfg(not(target_os = "macos"))]
+            let batch = watcher
+                .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(storage)?
+                .value;
             Some(batch)
         };
         let initial = cursor.initial.take();
@@ -127,13 +149,28 @@ impl CheckoutTools {
             }
         };
         if let Some(initial @ WatchBatch::Changes { .. }) = initial {
-            capture_watch_batch(&mut checkout, initial, options, policy, work, &cancellation)
-                .await
-                .map_err(storage)?;
-        }
-        capture_watch_batch(&mut checkout, batch, options, policy, work, &cancellation)
+            capture_watch_batch(
+                &mut checkout,
+                initial,
+                options,
+                policy,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?;
+        }
+        capture_watch_batch(
+            &mut checkout,
+            batch,
+            options,
+            policy,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?;
+        #[cfg(target_os = "macos")]
         drop(batch_owner);
         if checkout.has_pending_mutations() {
             let operation = capture_operation(operation, phase);
