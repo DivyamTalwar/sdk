@@ -1,6 +1,7 @@
 use acyclic_harness::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,9 +70,24 @@ pub trait HttpTransport: ProviderPlatform {
     }
 }
 
-/// Pooled native HTTP; reqwest uses browser fetch on wasm32.
+#[cfg(target_arch = "wasm32")]
+mod browser;
+#[cfg(target_arch = "wasm32")]
+pub use browser::BrowserTransport;
+
+pub(crate) fn platform() -> Result<std::sync::Arc<dyn HttpTransport>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let transport = ReqwestTransport::new()?;
+    #[cfg(target_arch = "wasm32")]
+    let transport = BrowserTransport::global()?;
+    Ok(std::sync::Arc::new(transport))
+}
+
+/// Pooled native HTTP with redirects disabled.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ReqwestTransport(reqwest::Client);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ReqwestTransport {
     async fn exchange(
         &self,
@@ -117,6 +133,7 @@ impl ReqwestTransport {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn transport_error(native: bool, reason: &'static str) -> acyclic_harness::Error {
     #[cfg(not(target_arch = "wasm32"))]
     if native {
@@ -129,6 +146,7 @@ fn transport_error(native: bool, reason: &'static str) -> acyclic_harness::Error
     acyclic_harness::Error::Storage(reason.into())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HttpTransport for ReqwestTransport {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(self.exchange(

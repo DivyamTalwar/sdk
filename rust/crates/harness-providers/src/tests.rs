@@ -18,8 +18,10 @@ use std::{
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "chat_batch_tests.rs"]
 mod chat_batch_tests;
 #[path = "gemini_tests.rs"]
