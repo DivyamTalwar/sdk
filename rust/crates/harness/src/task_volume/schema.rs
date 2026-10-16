@@ -383,6 +383,10 @@ impl FileKey {
     pub fn owner(&self) -> Owner {
         match self {
             Self::Input(path) if path.0.starts_with("config/") => Owner::Caller,
+            Self::Child {
+                file: ChildFile::Status,
+                ..
+            } => Owner::Harness,
             Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
@@ -402,6 +406,10 @@ impl FileKey {
             Self::Goal
                 | Self::Child {
                     file: ChildFile::Control,
+                    ..
+                }
+                | Self::Child {
+                    file: ChildFile::Status,
                     ..
                 }
                 | Self::Input(_)

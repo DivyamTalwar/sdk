@@ -36,7 +36,7 @@ proptest! {
 #[test]
 fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     let defaults = crate::tools::defaults()?;
-    let names = ["bash", "fs", "read", "write", "edit"];
+    let names = ["bash", "fs", "read", "write", "edit", "agent"];
     for name in names {
         assert_eq!(
             defaults
@@ -103,7 +103,7 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
         .bindings(Bindings::local())
         .agent_loop(Arc::new(DelegatingLoop))
         .build()?;
-    for name in ["bash", "fs", "read", "write", "edit"] {
+    for name in ["bash", "fs", "read", "write", "edit", "agent"] {
         assert_eq!(bound.runtime().tool(name)?.name, name);
         assert!(!bound.capabilities().contains(&format!("tool:call:{name}")));
     }
@@ -139,7 +139,7 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
     assert!(combined.get("example.echo", Some("2"), None)?.is_some());
-    assert_eq!(combined.definitions(None)?.len(), 5);
+    assert_eq!(combined.definitions(None)?.len(), 6);
     combined.select_model_version("example.echo", "2")?;
     assert_eq!(
         combined

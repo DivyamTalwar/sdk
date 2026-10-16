@@ -52,6 +52,13 @@ fn files() -> Vec<(FileKey, bool)> {
             true,
         ),
         (FileKey::Agent(id.clone()), false),
+        (
+            FileKey::Child {
+                reference: id.clone(),
+                file: ChildFile::Status,
+            },
+            false,
+        ),
     ];
     files.extend(
         [

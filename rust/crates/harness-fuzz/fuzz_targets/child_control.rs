@@ -1,6 +1,16 @@
 #![no_main]
 use acyclic_harness::task_volume::{Control, FileKey, Query};
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    if let Ok(command) =
+        serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(bytes)
+    {
+        let encoded = serde_json::to_vec(&command).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(&encoded)
+                .unwrap(),
+            command
+        );
+    }
     if let Ok(control) = Control::parse(bytes) {
         assert_eq!(control.bytes(), bytes);
     }

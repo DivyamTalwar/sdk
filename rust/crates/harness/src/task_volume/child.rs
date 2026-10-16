@@ -11,6 +11,8 @@ pub enum ChildFile {
     Inbox(Component),
     /// Latest lifecycle intent. Publication is fenced by the task-volume cut.
     Control,
+    /// Harness-owned execution status, followed by the parent and UI.
+    Status,
 }
 
 impl ChildFile {
@@ -21,6 +23,7 @@ impl ChildFile {
                 name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
             )?)),
             ["control"] => Ok(Self::Control),
+            ["status.json"] => Ok(Self::Status),
             _ => Err(Error::InvalidPath),
         }
     }
@@ -30,6 +33,7 @@ impl ChildFile {
             Self::Request => "request.md".into(),
             Self::Inbox(id) => format!("inbox/{}.md", id.as_str()),
             Self::Control => "control".into(),
+            Self::Status => "status.json".into(),
         }
     }
 }

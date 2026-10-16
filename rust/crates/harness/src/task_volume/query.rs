@@ -118,12 +118,24 @@ impl Query {
                 Excluded(FileKey::Agent(minimum)),
             ),
             Self::Children => (
-                Included(FileKey::Child { reference: minimum, file: ChildFile::Request }),
-                Included(FileKey::Child { reference: maximum, file: ChildFile::Control }),
+                Included(FileKey::Child {
+                    reference: minimum,
+                    file: ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: maximum,
+                    file: ChildFile::Status,
+                }),
             ),
             Self::Child(reference) => (
-                Included(FileKey::Child { reference: reference.clone(), file: ChildFile::Request }),
-                Included(FileKey::Child { reference: reference.clone(), file: ChildFile::Control }),
+                Included(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Status,
+                }),
             ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),

@@ -25,6 +25,7 @@ pub fn defaults() -> Result<ToolRegistry> {
         crate::tool::files::read()?,
         crate::tool::files::write()?,
         crate::tool::files::edit()?,
+        super::agent::tool(),
     ] {
         registry.register((tool, None), &mut None, None)?;
     }

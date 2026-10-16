@@ -94,3 +94,51 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
     assert!(!directory.path().join(".tasks").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall {
+                call_id: "spawn-worker".into(),
+                name: "agent".into(),
+                arguments: json!({"command":"spawn","reference":"worker","prompt":"inspect files","tools":["read"]}),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            }),
+        ]),
+        ScriptedTurn::Text("request published".into()),
+    ]);
+    let harness = LocalHarness::open(volume_config(directory.path(), project, provider)?).await?;
+    assert_eq!(
+        harness.run("spawn a reader").await?.text,
+        "request published"
+    );
+    let snapshot = harness
+        .task_files()
+        .observe(
+            Query::Child(Component::new("worker").map_err(super::super::storage)?),
+            None,
+            8,
+        )
+        .await
+        .map_err(super::super::storage)?
+        .snapshot
+        .unwrap();
+    assert_eq!(snapshot.files.len(), 1);
+    assert_eq!(snapshot.files[0].key.path(), "agents/worker/request.md");
+    assert!(
+        std::str::from_utf8(&snapshot.files[0].bytes)
+            .unwrap()
+            .contains("inspect files")
+    );
+    assert!(
+        std::str::from_utf8(&snapshot.files[0].bytes)
+            .unwrap()
+            .contains("\"tools\":[\"read\"]")
+    );
+    Ok(())
+}

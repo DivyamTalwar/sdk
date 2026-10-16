@@ -1,4 +1,5 @@
 //! Standard coding tools and shared host executors.
+pub mod agent;
 mod defaults;
 pub use defaults::defaults;
 mod command;

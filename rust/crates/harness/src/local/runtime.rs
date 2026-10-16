@@ -20,7 +20,13 @@ pub(super) struct Configuration<'a> {
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
-pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
+pub(super) async fn open(
+    config: Configuration<'_>,
+) -> Result<(
+    Arc<LocalTaskRuntime>,
+    Scope,
+    Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+)> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let definition = stock.definition()?;
@@ -79,6 +85,17 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         None,
         &mut None,
     )?;
+    let provider: Arc<dyn acyclic_stream::StreamProvider> = config.stream.clone();
+    let task_files = Arc::new(
+        crate::task_volume::TaskFiles::open(
+            provider,
+            config.task_volume,
+            config.verifier,
+            &signed,
+            config.limits.file_bytes,
+        )
+        .await?,
+    );
     let creation = Arc::new(FilesystemResourceCreationProvider::new(
         config.files.clone(),
         config.issuer,
@@ -110,7 +127,8 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         None,
     )
     .await?
-    .with_output_volume(config.project, None)?;
+    .with_output_volume(config.project, None)?
+    .with_task_files(task_files.clone())?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
         Some(workspace) => {
@@ -131,5 +149,5 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         }
         None => runtime,
     };
-    Ok((Arc::new(runtime), signed))
+    Ok((Arc::new(runtime), signed, task_files))
 }
