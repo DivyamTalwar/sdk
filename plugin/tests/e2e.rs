@@ -7,6 +7,9 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[path = "activation/mod.rs"]
+mod activation;
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Deserialize)]

@@ -1,7 +1,7 @@
 use super::{Scenario, request};
 use acyclic_harness::{
     external_executor::{HookBinding, handle},
-    task_volume::{Component, Error, FileKey, FileValue, Owner, Query, TaskVolume},
+    task_volume::{Component, Error, FileKey, FileValue, Owner, Query, TaskFile, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use futures::StreamExt as _;
@@ -174,10 +174,14 @@ proptest! {
         let task = Component::new(task)?;
         let request = request(super::ExternalHost::Codex, "SessionEnd", json!({"session_id":session}))?;
         let file = request.result_file(task.clone(), &json!(answer))?;
-        prop_assert_eq!(FileKey::parse(&file.key.path())?, file.key.clone());
-        prop_assert_eq!(file.key.owner(), Owner::Harness);
-        prop_assert!(Query::Task(task.clone()).matches(&file.key));
-        prop_assert!(Query::Requests(task).matches(&file.key));
+        let started = FileKey::Task {task:task.clone(), file:TaskFile::RequestStarted(
+            Component::new(request.operation_id.to_string())?)};
+        for key in [file.key, started] {
+            prop_assert_eq!(FileKey::parse(&key.path())?, key.clone());
+            prop_assert_eq!(key.owner(), Owner::Harness);
+            prop_assert!(Query::Task(task.clone()).matches(&key));
+            prop_assert!(Query::Requests(task.clone()).matches(&key));
+        }
     }
 
     // Property: platform binding parsing round trips valid paths and rejects a
@@ -193,4 +197,29 @@ proptest! {
         input["results"] = input["requests"].clone();
         prop_assert!(HookBinding::from_bytes(&serde_json::to_vec(&input)?).is_err());
     }
+}
+
+#[tokio::test]
+async fn dispatch_claims_and_answers_reject_changed_contents() -> Result {
+    let (_, results) = volumes().await?;
+    let task = Component::new("task")?;
+    let operation = Component::new("operation")?;
+    for file in [
+        TaskFile::RequestStarted(operation.clone()),
+        TaskFile::RequestResult(operation),
+    ] {
+        let key = FileKey::Task {
+            task: task.clone(),
+            file,
+        };
+        let original = FileValue::new(key.clone(), b"original".to_vec());
+        let before = results.snapshot(&Query::File(key.clone()), 1).await?;
+        let generation = results.append(before.generation, &original).await?;
+        let changed = FileValue::new(key, b"changed".to_vec());
+        assert!(matches!(
+            results.append(generation, &changed).await,
+            Err(Error::ImmutableConflict(_))
+        ));
+    }
+    Ok(())
 }

@@ -47,6 +47,9 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
         [command, rest @ ..] if command == "install" => install_command(rest).map_err(io::Error::other)?,
+        [command, rest @ ..] if matches!(command.as_str(), "__installer-rename" | "__verify-certification") => {
+            install::activation(command, rest)?;
+        }
         [command, host] if command == "uninstall" => uninstall_host(host).map_err(io::Error::other)?,
         [command] if command == "--version" || command == "version" => println!("acyclic {}", env!("CARGO_PKG_VERSION")),
         _ => return Err(io::Error::other("usage: acyclic install HOST [--project] | uninstall HOST | __hook HOST EVENT | login | whoami").into()),

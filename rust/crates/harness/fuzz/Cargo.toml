@@ -84,3 +84,10 @@ path = "fuzz_targets/external_hooks.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "plugin-install"
+path = "fuzz_targets/plugin_install.rs"
+test = false
+doc = false
+bench = false
