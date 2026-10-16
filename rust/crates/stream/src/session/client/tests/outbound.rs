@@ -168,7 +168,6 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         }
         storm.abort();
         assert!(storm.await.is_err_and(|error| error.is_cancelled()));
-        closed.notified().await;
         for sequence in 5..=8 {
             append(&memory, "healthy", 1).await?;
             assert_eq!(next(&mut records).await?.sequence, sequence);
@@ -176,6 +175,9 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         assert_eq!(healthy.counts.connections.load(Ordering::Relaxed), 1);
         assert_eq!(healthy.counts.sessions.load(Ordering::Relaxed), 1);
         assert_eq!(healthy.counts.actors.load(Ordering::Relaxed), 0);
+        drop(records);
+        drop(client);
+        closed.notified().await;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
     .await?
