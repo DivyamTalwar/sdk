@@ -36,13 +36,13 @@ name = "access"
 path = "tests/access.rs"
 
 [[test]]
+name = "path_properties"
+path = "tests/path_properties.rs"
+
+[[test]]
 name = "cloud_contract"
 path = "tests/cloud_contract.rs"
 required-features = ["memory"]
-
-[[test]]
-name = "native_custody_accounting"
-path = "tests/native_custody_accounting.rs"
 
 [[test]]
 name = "native_owner_registry"
@@ -62,6 +62,11 @@ required-features = ["native-mount"]
 [[test]]
 name = "native_binding_model"
 path = "tests/native_binding_model.rs"
+required-features = ["native-mount"]
+
+[[test]]
+name = "native_stage_loom"
+path = "tests/native_stage_loom.rs"
 required-features = ["native-mount"]
 
 [[test]]
@@ -92,6 +97,11 @@ required-features = ["local", "memory", "native-watch"]
 name = "filesystem_alloc"
 harness = false
 required-features = ["local", "memory", "native-watch"]
+
+[[bench]]
+name = "native_capture"
+harness = false
+required-features = ["memory", "native-watch", "native-mount"]
 
 [[test]]
 name = "native_source_watch_custody"
