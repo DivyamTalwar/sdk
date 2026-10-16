@@ -230,6 +230,8 @@ impl Fixture {
             provider: self.provider.clone(),
             context_manifest: Some(context_manifest),
             context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

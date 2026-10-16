@@ -61,10 +61,6 @@ impl<V> Files<V> {
         self.0.insert(key, value)
     }
 
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.0.values().inspect(|_| examined())
     }
