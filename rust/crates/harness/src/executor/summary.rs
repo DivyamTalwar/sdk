@@ -79,7 +79,8 @@ impl StockExecution<'_> {
         executor.validate_turn_input(journal, &input).await?;
         self.verify_execution_owner().await?;
         if let Some(parent) = parent {
-            self.validate_turn_input(journal, parent).await?;
+            // Public in-turn summaries validate at entry; automatic compaction
+            // is already inside the validated parent's execution.
             self.ensure_started(journal, parent).await?;
         } else {
             executor.ensure_started(journal, &input).await?;

@@ -11,6 +11,7 @@ use crate::{
 };
 
 const OPERATION: OperationId = OperationId::from_bytes([13; 16]);
+const ADMISSION: OperationId = OperationId::from_bytes([14; 16]);
 
 pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext> {
     let reader = FilesystemContentVerifier::new(
@@ -153,8 +154,9 @@ pub(super) async fn run(
     history: SelectedModelContext,
 ) -> Result<crate::executor::TurnOutput> {
     let admission = serialized(&harness.admission, async || {
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "manifest:begin");
         let command = crate::filesystem::ModelTaskCommand {
-            context_manifest: harness.context_manifest.clone(),
+            context_manifest: harness.stage_context_manifest(OPERATION).await?,
             input: history
                 .messages
                 .last()
@@ -168,6 +170,7 @@ pub(super) async fn run(
             mailbox_operation: None,
             selected_output_volume: None,
         };
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "manifest:end");
         let bytes = serde_json::to_vec(&command).map_err(storage)?;
         let publisher = FilesystemContentPublisher::new(
             harness.files.clone(),
@@ -188,11 +191,17 @@ pub(super) async fn run(
             )?
             .await?
             .0;
-        let inputs = harness.finish_turn_inputs(OPERATION, payload).await?;
+        let inputs = harness
+            .finish_turn_inputs(OPERATION, payload, publisher.as_ref())
+            .await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "inputs:end");
         harness
-            .publish_turn(OPERATION, inputs, OPERATION, 0, None)
+            .publish_turn(ADMISSION, inputs, ADMISSION, 0, None)
             .await
     })
     .await?;
-    harness.resume(admitted_task(admission)?).await
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "admission:end");
+    let output = harness.resume(admitted_task(admission)?).await;
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "execution:end");
+    output
 }

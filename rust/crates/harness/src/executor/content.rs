@@ -8,12 +8,14 @@ pub(super) async fn verify_model_contents_scoped<'a>(
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "content:begin");
     for content in contents.clone() {
         validate_model_content_scope(content, limits, scope, io)?;
     }
     for content in contents {
         journal.verify_model_content(content, io, context)?.await?;
     }
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "content:end");
     Ok(())
 }
 
@@ -120,16 +122,19 @@ impl StockExecution<'_> {
                 self.original_context(),
             )
             .await?;
+        } else {
+            // Selected history already includes this exact input as its final
+            // message, checked by validate_for_input before any journal I/O.
+            verify_model_contents_scoped(
+                journal,
+                std::iter::once(&input.input),
+                self.stock.limits,
+                scope,
+                self.io,
+                self.original_context(),
+            )
+            .await?;
         }
-        verify_model_contents_scoped(
-            journal,
-            std::iter::once(&input.input),
-            self.stock.limits,
-            scope,
-            self.io,
-            self.original_context(),
-        )
-        .await?;
         Ok(())
     }
 }

@@ -89,6 +89,7 @@ where
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-source:begin");
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             crate::executor::with_history_io(io, |work| limits.validate(work))?;
@@ -266,6 +267,7 @@ where
         }
         .await;
         PreparationIo::release_since(io, Some(before))?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-source:end");
         result
     }
 
@@ -279,6 +281,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         use crate::executor::ModelPurpose;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-summary:begin");
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             let summary = proof
@@ -417,6 +420,7 @@ where
         }
         .await;
         PreparationIo::release_since(io, Some(before))?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-summary:end");
         result
     }
 }

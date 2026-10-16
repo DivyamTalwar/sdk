@@ -262,7 +262,6 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         )
         .await?
         .with_compaction_policy(policy.clone());
-    execution.journal = execution.journal.with_input_verifier(reader.clone());
     let input = TurnInput::from_selected_context(execution.operation_id(), selected, 1)?;
     let mut running = Box::pin(execution.execute(input.clone()));
     for _ in 0..2 {
@@ -325,7 +324,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
     drop(runtime);
     let reopened = open(&fixture, &private).await?;
     for _ in 0..2 {
-        let mut execution = reopened
+        let execution = reopened
             .stock_execution(
                 task,
                 fence.clone(),
@@ -338,7 +337,6 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
             )
             .await?
             .with_compaction_policy(policy.clone());
-        execution.journal = execution.journal.with_input_verifier(reader.clone());
         assert_eq!(execution.execute(input.clone()).await?.text, "done");
         assert_eq!(
             model.requests().len(),
