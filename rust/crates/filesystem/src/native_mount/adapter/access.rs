@@ -184,7 +184,13 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
-            let view = self.access_snapshot(work).await?;
+            let published = self
+                .access_view
+                .as_ref()
+                .ok_or(MountSourceError::AccessDenied)?;
+            let view = published
+                .current()
+                .map_err(|_| MountSourceError::AccessDenied)?;
             let now = access_time()?;
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
@@ -195,6 +201,19 @@ where
                     .pin(&path)
                     .map_err(|_| MountSourceError::AccessDenied)?;
                 require(&permissions, *action, now)?;
+            }
+            // Published denials need no backend or host probe. Potentially
+            // allowing requests must still fence against persisted revocation.
+            let current = self.access_snapshot(work).await?;
+            if !Arc::ptr_eq(&current, &view) {
+                let now = access_time()?;
+                for (action, path) in requests {
+                    let path = self.namespace_inputs(path, &mut inputs)?;
+                    let permissions = current
+                        .pin(&path)
+                        .map_err(|_| MountSourceError::AccessDenied)?;
+                    require(&permissions, *action, now)?;
+                }
             }
             Ok(())
         })

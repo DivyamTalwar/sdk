@@ -1,7 +1,12 @@
+#[cfg(any(test, feature = "test-support"))]
 use super::{AuthorityVerifier, Scope};
-use crate::{Error, Result};
+#[cfg(any(test, feature = "test-support"))]
+use crate::Error;
+use crate::Result;
+#[cfg(any(test, feature = "test-support"))]
 use acyclic_fs::access::Capability;
 
+#[cfg(any(test, feature = "test-support"))]
 impl AuthorityVerifier {
     /// Verify a signed scope and extract its single filesystem grant payload.
     /// Call once when binding a view, then use `acyclic_fs::access::PathTrie` for

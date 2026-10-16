@@ -613,3 +613,42 @@ fn native_access_retarget_preserves_grants_and_checks_identity()
     ));
     Ok(())
 }
+
+fn denial_without_probe(action: Action, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let source = bind_test_access(
+        source(FilesystemProfile::Portable)?,
+        vec![deny("ungranted", &[action], path)],
+        None,
+    )?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let before = work.receipt().backend_read_operations;
+    assert!(
+        source
+            .authorize_with_meter(&[(action, &native_test_path(path))], &work)
+            .is_err()
+    );
+    assert_eq!(work.receipt().backend_read_operations, before);
+    Ok(())
+}
+
+#[test]
+fn native_access_denials_precede_backend_and_host_probes() -> Result<(), Box<dyn std::error::Error>>
+{
+    for action in Action::ALL {
+        denial_without_probe(action, "hidden/file")?;
+    }
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // A published denial never probes storage or the native filesystem, for
+    // every action and arbitrary bounded component spelling.
+    #[test]
+    fn native_access_denials_do_no_backend_io(
+        action in 0..Action::ALL.len(), path in "[a-z]{1,20}(/[a-z]{1,20})?",
+    ) {
+        denial_without_probe(Action::ALL[action], &path)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    }
+}
