@@ -3,17 +3,25 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
+  return qualifyLoom("acyclic-harness", "mcp-loom", features, run);
+}
+
+export function qualifyGuestLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-actors", "guest_loom", [], run);
+}
+
+function qualifyLoom(crate, target, features, run) {
   const build = run("cargo", [
-    "rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom",
-    ...features, "--features", "model-checking",
-  ], { env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+    "rustc", "--locked", "--message-format=json", "-p", crate, "--test", target,
+    ...features, ...(crate === "acyclic-harness" ? ["--features", "model-checking"] : ["--", "--cfg", "loom"]),
+  ], { ...(crate === "acyclic-harness" ? { env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` } } : {}), encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);
   const binaries = [];
   for (const line of build.stdout.split(/\r?\n/).filter(Boolean)) {
     const record = JSON.parse(line);
     if (record.reason === "compiler-message") process.stderr.write(record.message.rendered ?? "");
-    if (record.reason === "compiler-artifact" && record.target.name === "mcp-loom"
+    if (record.reason === "compiler-artifact" && record.target.name === target
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
@@ -29,5 +37,6 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
-  qualifyMcpLoom(features.length ? features : undefined);
+  if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  else qualifyMcpLoom(features.length ? features : undefined);
 }

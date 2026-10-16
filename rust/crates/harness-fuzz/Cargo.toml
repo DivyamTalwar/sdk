@@ -99,3 +99,9 @@ required-features = ["notifications"]
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "input_paths"
+path = "fuzz_targets/input_paths.rs"
+test = false
+doc = false
+bench = false
