@@ -38,7 +38,8 @@ pub(crate) fn count(
 ) -> Result<ModelTokenCount> {
     let request = prepared.request();
     crate::images::encoded_bytes(provider, request)?;
-    let mut fixed = body(provider, request)?;
+    let names = crate::tool_names::Names::new(request);
+    let mut fixed = body_with_images(provider, request, &names, std::iter::empty(), true)?;
     let body_bytes = encoded_len(&fixed)?;
     let field = match provider.config.adapter {
         Adapter::Responses => "input",
@@ -62,7 +63,8 @@ pub(crate) fn count(
         .messages
         .iter()
         .map(|message| {
-            let projected = project_message(provider, message, &mut std::iter::empty(), true)?;
+            let projected =
+                project_message(provider, message, &names, &mut std::iter::empty(), true)?;
             let bytes = encoded_len(&Value::Array(projected))?;
             let image_tokens =
                 crate::images::files(message).try_fold(0u32, |total, (file, policy)| {
@@ -121,13 +123,21 @@ pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
     Ok(count.0)
 }
 
+#[cfg(test)]
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
-    body_with_images(provider, request, std::iter::empty(), true)
+    body_with_images(
+        provider,
+        request,
+        &crate::tool_names::Names::new(request),
+        std::iter::empty(),
+        true,
+    )
 }
 
 pub(crate) fn body_with_images<'a>(
     provider: &ResolvedModel,
     request: &ModelRequest,
+    names: &crate::tool_names::Names<'_>,
     mut images: impl Iterator<Item = &'a [u8]>,
     counting: bool,
 ) -> Result<Value> {
@@ -150,7 +160,7 @@ pub(crate) fn body_with_images<'a>(
                 counting,
             )?);
         } else {
-            for mut projected in project_message(provider, message, &mut images, counting)? {
+            for mut projected in project_message(provider, message, names, &mut images, counting)? {
                 if adapter == Adapter::Chat
                     && message.role == ModelRole::Tool
                     && projected["role"] == "user"
@@ -201,14 +211,14 @@ pub(crate) fn body_with_images<'a>(
     if !counting && images.next().is_some() {
         return Err(invalid("resolved images differ from the model request"));
     }
-    let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {
-        Adapter::Anthropic => json!({"name":tool.name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":tool.name,"description":tool.description,
+    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
             "parameters":tool.input_schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":tool.name,
+        Adapter::Chat => json!({"type":"function","function":{"name":name,
             "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":tool.name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }).collect();
+        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+    }) }).collect::<Result<_>>()?;
     let max = request
         .max_output_tokens
         .unwrap_or(provider.context_output());
@@ -306,6 +316,7 @@ fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
 fn project_message<'a>(
     provider: &ResolvedModel,
     message: &ModelMessage,
+    names: &crate::tool_names::Names<'_>,
     images: &mut impl Iterator<Item = &'a [u8]>,
     counting: bool,
 ) -> Result<Vec<Value>> {
@@ -351,6 +362,7 @@ fn project_message<'a>(
                 arguments,
                 metadata,
             }) => {
+                let name = names.wire(name)?;
                 if adapter == Adapter::Anthropic {
                     if let Some(thinking) = metadata["anthropic_thinking"].as_array() {
                         calls.extend(thinking.iter().cloned());
@@ -387,6 +399,7 @@ fn project_message<'a>(
                 name,
                 content,
             } => {
+                let name = names.wire(name)?;
                 let parts = result_parts(provider, content, images, counting)?;
                 let text = parts
                     .iter()

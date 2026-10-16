@@ -32,6 +32,15 @@ pub fn assert_stream_invariants(input: &[u8]) {
         catalog_round_trip(input);
         return;
     }
+    if kind == b'N' {
+        if let Ok(request) = serde_json::from_slice::<acyclic_harness::model::ModelRequest>(input) {
+            crate::tool_names::Names::assert_round_trip(&request);
+            let encoded = serde_json::to_vec(&request).unwrap();
+            let replay = serde_json::from_slice(&encoded).unwrap();
+            crate::tool_names::Names::assert_round_trip(&replay);
+        }
+        return;
+    }
     let adapter = [
         Adapter::Anthropic,
         Adapter::Responses,
