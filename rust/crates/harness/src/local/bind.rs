@@ -48,6 +48,10 @@ impl LocalHarness {
             config.limits,
         )
         .await?;
+        #[cfg(feature = "hooks")]
+        let hooks = settings::load(&config.project, config.settings)
+            .await?
+            .hooks;
         let (filesystem, stream) = storage;
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
@@ -124,6 +128,8 @@ impl LocalHarness {
             model,
             provider,
             context_manifest: config.context_manifest,
+            #[cfg(feature = "hooks")]
+            hooks,
             #[cfg(test)]
             context_read_observer: None,
             limits: config.limits,

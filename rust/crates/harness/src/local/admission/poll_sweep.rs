@@ -254,6 +254,7 @@ impl Fixture {
                 "text/markdown",
                 "GOAL.md",
                 None,
+                None,
             )?
             .await?;
         }
