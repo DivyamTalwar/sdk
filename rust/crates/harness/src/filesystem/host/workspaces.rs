@@ -192,17 +192,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let workspace = self.open(workspace, None).await?;
         let key = filesystem_key(idempotency_key);
-        let mut transaction = workspace
-            .begin_transaction(key, budget, &cancellation)
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| map_error(failure.error))?;
-        if let Some(reference) = expected_generation {
-            let expected = self.generation(&workspace, reference, None).await?;
-            if !transaction.is_based_on(expected.id()) {
-                return Err(Error::Conflict("workspace generation changed".into()));
+        let mut transaction = match expected_generation {
+            Some(reference) => {
+                let generation = self.generation(&workspace, reference, None).await?;
+                workspace
+                    .begin_transaction_at(&generation, key, budget, &cancellation)
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| map_error(failure.error))?
             }
-        }
+            None => workspace
+                .begin_transaction(key, budget, &cancellation)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| map_error(failure.error))?,
+        };
         for mutation in mutations {
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
@@ -383,21 +387,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let workspace = self.open(reference, Some(io)).await?;
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = io.sdk(
-                workspace
-                    .begin_transaction(operation, io, io.cancellation())
-                    .await,
-            )?;
-            if let Some(reference) = expected {
-                let pinned = self.generation(&workspace, reference, Some(io)).await?;
-                if !transaction.is_based_on(pinned.id()) {
-                    return Err(stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Conflict,
-                        "workspace generation changed",
-                    ));
+            let mut transaction = match expected {
+                Some(reference) => {
+                    let pinned = self.generation(&workspace, reference, Some(io)).await?;
+                    io.sdk(
+                        workspace
+                            .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                            .await,
+                    )?
                 }
-            }
+                None => io.sdk(
+                    workspace
+                        .begin_transaction(operation, io, io.cancellation())
+                        .await,
+                )?,
+            };
             crate::conversation::BoundedContentFuture::new(Some(io), || async {
                 for mutation in mutations {
                     #[cfg(not(target_arch = "wasm32"))]

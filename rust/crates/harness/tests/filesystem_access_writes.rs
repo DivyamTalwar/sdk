@@ -273,3 +273,50 @@ async fn publication_refuses_a_generation_older_than_its_transaction_head()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn publication_retry_verifies_the_original_operation_after_head_advance()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let workspace = workspace_ref(
+        fixture.volume.provider().clone(),
+        &fixture.volume.storage_name(&mut None)?,
+    )?;
+    let base = fixture.generation()?;
+    let key = IdempotencyKey::new("verified-retry")?;
+    let mutations = [WorkspaceMutation::PutFile {
+        path: "/secrets/key".into(),
+        bytes: bytes::Bytes::from_static(b"original operation"),
+    }];
+    let first = fixture
+        .host
+        .apply(&workspace, Some(&base), &mutations, &key)
+        .await?;
+    fixture.policy(false, 2).await?;
+    let head = fixture.host.resolve(&workspace, None).await?.generation;
+    assert_eq!(
+        fixture
+            .host
+            .apply(&workspace, Some(&base), &mutations, &key)
+            .await?,
+        first
+    );
+    let changed = [WorkspaceMutation::PutFile {
+        path: "/secrets/key".into(),
+        bytes: bytes::Bytes::from_static(b"different operation"),
+    }];
+    assert_eq!(
+        fixture
+            .host
+            .apply(&workspace, Some(&base), &changed, &key)
+            .await
+            .unwrap_err()
+            .code(),
+        acyclic_harness::wire::ErrorCode::Conflict
+    );
+    assert_eq!(
+        fixture.host.resolve(&workspace, None).await?.generation,
+        head
+    );
+    Ok(())
+}

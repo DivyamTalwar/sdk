@@ -53,8 +53,7 @@ fn model(check_base: bool) {
             .value;
         let authorized = ready(workspace.head(WorkBudget::UNBOUNDED, &cancel))
             .unwrap()
-            .value
-            .id();
+            .value;
         let mut revocation = ready(workspace.begin_transaction(
             IdempotencyKey::new(),
             WorkBudget::UNBOUNDED,
@@ -70,19 +69,26 @@ fn model(check_base: bool) {
         ))
         .unwrap();
         let revoker = loom::thread::spawn(move || commit(&mut revocation));
-        let mut write = ready(workspace.begin_transaction(
-            IdempotencyKey::new(),
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        ))
-        .unwrap()
-        .value;
-        let published = if check_base && !write.is_based_on(authorized) {
-            false
+        let key = IdempotencyKey::new();
+        let mut write = if check_base {
+            ready(workspace.begin_transaction_at(&authorized, key, WorkBudget::UNBOUNDED, &cancel))
+                .unwrap()
+                .value
         } else {
-            ready(write.write_text("/target", "new")).unwrap();
-            commit(&mut write)
+            // Negative control: the deleted pinned constructor paired Exact's
+            // old root with the newly observed head and skipped the stale flag.
+            let checkout = ready(workspace.checkout(
+                GenerationSelector::Exact(authorized.id()),
+                CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            ))
+            .unwrap()
+            .value;
+            Transaction::from_checkout(&workspace, checkout, key, false)
         };
+        ready(write.write_text("/target", "new")).unwrap();
+        let published = commit(&mut write);
         let revoked = revoker
             .join()
             .expect("revocation completes without deadlock");
@@ -100,6 +106,6 @@ fn access_write_model_fences_revocation_before_and_after_transaction_admission()
 
 #[test]
 #[should_panic(expected = "write crossed its authorization generation")]
-fn access_write_model_detects_missing_generation_check() {
+fn access_write_model_detects_an_exact_root_bound_to_a_newer_head() {
     model(false);
 }

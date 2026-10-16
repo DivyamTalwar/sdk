@@ -97,57 +97,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             if generation.workspace.id != self.id {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let head = self
+            // The root and authority head come from the same writable checkout.
+            // A separate read followed by Exact could pair an old candidate with
+            // a newer head and publish across a policy/data change.
+            let current = self
                 .checkout_accounted(
                     GenerationSelector::Head,
-                    CheckoutMode::read_only_pinned(),
+                    CheckoutMode::tracking_transaction(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let stale = current.generation_id() != generation.id;
+            let checkout = if stale {
+                drop(current);
+                self.checkout_accounted(
+                    GenerationSelector::Exact(generation.id),
+                    CheckoutMode::tracking_transaction(),
                     &mut accounting,
                     cancellation,
                 )
                 .await?
-                .generation_id();
-            let checkout = self
-                .checkout_accounted(
-                    GenerationSelector::Exact(generation.id),
-                    CheckoutMode::tracking_transaction(),
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            Ok(Transaction::from_checkout(
-                self,
-                checkout,
-                key,
-                head != generation.id,
-            ))
-        }
-        .await;
-        work.finish(result, &accounting)
-    }
-
-    /// Opens an exact transaction without consulting the mutable head.
-    pub async fn begin_pinned_transaction<W: crate::facade::FsWork>(
-        &self,
-        generation: &Generation<A, O>,
-        key: IdempotencyKey,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Transaction<A, O>, WorkspaceError> {
-        let mut accounting = work.accounting(cancellation);
-        let result = async {
-            accounting.check()?;
-            if generation.workspace.id != self.id {
-                return Err(WorkspaceError::ForeignGeneration);
-            }
-            let checkout = self
-                .checkout_accounted(
-                    GenerationSelector::Exact(generation.id),
-                    CheckoutMode::tracking_transaction(),
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            Ok(Transaction::from_checkout(self, checkout, key, false))
+            } else {
+                current
+            };
+            Ok(Transaction::from_checkout(self, checkout, key, stale))
         }
         .await;
         work.finish(result, &accounting)
