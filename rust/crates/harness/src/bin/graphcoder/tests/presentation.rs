@@ -92,7 +92,7 @@ async fn followed_presentation_rows_are_declarative_and_live() {
             (
                 "plan",
                 acyclic_harness::task_volume::FileKey::Plan(
-                    acyclic_harness::task_volume::Component::new("layout").unwrap(),
+                    acyclic_harness::task_volume::PlanName::new("layout").unwrap(),
                 ),
             ),
         ] {

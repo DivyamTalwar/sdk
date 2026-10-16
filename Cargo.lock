@@ -328,6 +328,7 @@ dependencies = [
  "loom",
  "proptest",
  "prost",
+ "pulldown-cmark",
  "prost-build",
  "prost-reflect",
  "protoc-bin-vendored",
@@ -431,7 +432,7 @@ dependencies = [
 name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
- "acyclic-terminal-console",
+ "acyclic-native-runtime",
  "alacritty_terminal",
  "allocation-counter",
  "arrayvec",
@@ -771,14 +772,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tonic",
-]
-
-[[package]]
-name = "acyclic-terminal-console"
-version = "0.2.0"
-dependencies = [
- "cxx",
- "cxx-build",
 ]
 
 [[package]]

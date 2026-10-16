@@ -2,7 +2,7 @@
 
 use acyclic_harness::{
     client::DocumentViews,
-    task_volume::{Component, FileKey, Query, TaskVolume, Write},
+    task_volume::{FileKey, PlanName, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use futures::StreamExt;
@@ -12,7 +12,7 @@ fn write(kind: u8, text: &str) -> Write {
     let key = if kind == 0 {
         FileKey::Goal
     } else {
-        FileKey::Plan(Component::new(format!("plan-{kind}")).unwrap())
+        FileKey::Plan(PlanName::new(format!("plan-{kind}")).unwrap())
     };
     Write::new(key, text.as_bytes().to_vec())
 }
@@ -83,7 +83,7 @@ async fn reset_removes_stale_selected_files_and_preserves_other_panels() {
     let mut broken = volume.snapshot(&Query::Root, 4).await.unwrap();
     broken.files = vec![
         write(0, "replacement"),
-        Write::new(FileKey::Plan(Component::new("bad").unwrap()), vec![0xff]),
+        Write::new(FileKey::Plan(PlanName::new("bad").unwrap()), vec![0xff]),
     ];
     let before = views.clone();
     assert!(views.replace(&Query::Root, &broken).is_err());

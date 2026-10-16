@@ -1,4 +1,4 @@
-use super::{Error, Result};
+use super::{Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -168,7 +168,7 @@ pub enum FileKey {
     /// Editable command definitions and workspace files followed by UI queries.
     Input(InputPath),
     /// Ordinary editable Markdown in the private volume's plans folder.
-    Plan(Component),
+    Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
     /// Protected task namespace.
@@ -262,9 +262,9 @@ impl FileKey {
             }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
-                return Ok(Self::Plan(id(name
-                    .strip_suffix(".md")
-                    .ok_or(Error::InvalidPath)?)?));
+                return Ok(Self::Plan(PlanName::new(
+                    name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
+                )?));
             }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}

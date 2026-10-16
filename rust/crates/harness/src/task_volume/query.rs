@@ -1,4 +1,4 @@
-use super::{Component, Error, FileKey, InputPath, Result, TaskFile, ToolFile};
+use super::{Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -82,7 +82,7 @@ pub enum Query {
 
 impl Query {
     pub(crate) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
-        use std::ops::Bound::{Included, Unbounded};
+        use std::ops::Bound::{Excluded, Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
             let bound = |file| {
                 Included(FileKey::Task {
@@ -168,8 +168,8 @@ impl Query {
                 Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
             ),
             Self::Plans => (
-                Included(FileKey::Plan(minimum)),
-                Included(FileKey::Plan(maximum)),
+                Included(FileKey::Plan(PlanName(Arc::from("")))),
+                Excluded(FileKey::Agent(minimum)),
             ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),

@@ -31,6 +31,8 @@ pub enum ViewUpdate {
         /// Authenticated file; non-document files leave document panels unchanged.
         file: crate::task_volume::FileValue,
     },
+    /// A shared file slice or cursor checkpoint from the volume query follow.
+    File(crate::task_volume::Change),
     /// One provider-neutral model event.
     Model {
         /// Conversation owning the event.
@@ -118,6 +120,10 @@ pub struct ClientViews {
     pub diffs: BTreeMap<String, super::DiffView>,
     /// GOAL.md and plans/ folded from private-volume live queries.
     pub documents: BTreeMap<String, super::DocumentViews>,
+    /// Disposable file-query folds, keyed by volume and selection identity.
+    /// Recovery observes fresh files rather than persisting a second payload store.
+    #[serde(skip)]
+    pub queries: BTreeMap<([u8; 32], [u8; 32]), super::FileQueryView>,
     /// Authority-keyed transcripts; keys are `kind:id`.
     pub transcripts: BTreeMap<String, TranscriptView>,
     /// Authority-keyed tool calls, then provider call identity.

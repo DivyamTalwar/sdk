@@ -2,7 +2,7 @@
 
 use crate::{
     Error, Result,
-    task_volume::{Component, FileKey, FileValue, Query, Snapshot},
+    task_volume::{FileKey, FileValue, PlanName, Query, Snapshot},
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ pub struct DocumentViews {
     /// Latest GOAL.md, including its original Markdown/frontmatter.
     pub goal: Option<String>,
     /// Current plans, keyed by their canonical filename component.
-    pub plans: BTreeMap<Component, String>,
+    pub plans: BTreeMap<PlanName, String>,
 }
 
 impl DocumentViews {

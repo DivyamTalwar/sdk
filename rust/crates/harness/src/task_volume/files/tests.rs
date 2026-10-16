@@ -46,7 +46,10 @@ fn files() -> Vec<(FileKey, bool)> {
     let id = Component::new("id").unwrap();
     let mut files = vec![
         (FileKey::Goal, true),
-        (FileKey::Plan(id.clone()), true),
+        (
+            FileKey::Plan(crate::task_volume::PlanName::new(id.as_str()).unwrap()),
+            true,
+        ),
         (
             FileKey::Input(InputPath::try_from("workspace/note.txt".to_owned()).unwrap()),
             true,
@@ -228,14 +231,14 @@ proptest! {
             let cut = cut.min(events.len());
             let mut generation = files.snapshot(&Query::Root, 4).await.unwrap().generation;
             for (kind, text) in &events[..cut] {
-                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::Component::new("layout").unwrap()) };
+                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::PlanName::new("layout").unwrap()) };
                 generation = files.write(generation, &FileValue::new(key, text.as_bytes().to_vec())).await.unwrap();
             }
             let mut source = document_files(&files, &owner, 4).await.unwrap();
             let mut live = new_session();
             for _ in 0..2 { live.apply_update(source.next().await.unwrap().unwrap()).unwrap(); }
             for (kind, text) in &events[cut..] {
-                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::Component::new("layout").unwrap()) };
+                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::PlanName::new("layout").unwrap()) };
                 generation = files.write(generation, &FileValue::new(key, text.as_bytes().to_vec())).await.unwrap();
                 live.apply_update(source.next().await.unwrap().unwrap()).unwrap();
             }

@@ -149,7 +149,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
     use acyclic_harness::{
         client::{DocumentViews, TaskView},
         core::LifecycleState,
-        task_volume::{Component, FileKey, Write},
+        task_volume::{FileKey, PlanName, Write},
     };
     let owner = wire::Authority {
         kind: wire::AggregateKind::Task as i32,
@@ -162,7 +162,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
         .unwrap();
     documents
         .apply(&Write::new(
-            FileKey::Plan(Component::new("layout").unwrap()),
+            FileKey::Plan(PlanName::new("layout").unwrap()),
             b"**Compose widgets**".to_vec(),
         ))
         .unwrap();
