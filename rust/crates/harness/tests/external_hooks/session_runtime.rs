@@ -48,7 +48,7 @@ async fn prepared_command_cannot_change_the_native_tool_arguments() -> Result<()
 }
 
 #[tokio::test]
-async fn prepared_tool_cannot_be_acknowledged_as_a_lifecycle_command() -> Result<()> {
+async fn a_lifecycle_command_cannot_report_a_tool_as_successful() -> Result<()> {
     Box::pin(run_write_session(VolumeBinding::ForgedLifecycle)).await
 }
 
@@ -149,22 +149,25 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
     let guarded = SizeGuard(&commands);
     let attempt = Box::pin(runtime.run_operation(&worker, task, &guarded, 8, None)).await?;
     if !matches!(binding, VolumeBinding::Separate | VolumeBinding::RetainedRevision) {
-        assert!(matches!(
-            attempt,
-            Some(TaskWorkerAttempt::Progress(
-                TaskWorkerOutcome::Reconciling { .. }
-            ))
-        ));
+        if binding == VolumeBinding::ForgedLifecycle {
+            assert!(matches!(attempt, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed {..}))));
+            let result = results.snapshot(&Query::File(original.result_key(task_folder.clone()).map_err(storage)?), 1)
+                .await.map_err(storage)?;
+            assert_eq!(result.files.len(), 1);
+            let outcome: acyclic_harness::Outcome<Value> = serde_json::from_slice(&result.files[0].bytes)
+                .map_err(|error| invalid(&error))?;
+            assert!(matches!(outcome, acyclic_harness::Outcome::Failed {..}));
+        } else {
+            assert!(matches!(attempt, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling {..}))));
+        }
         let actor_files = results
             .snapshot(&Query::Requests(task_folder), 2)
             .await
             .map_err(storage)?
             .files;
-        assert!(
-            actor_files
-                .iter()
-                .all(|file| file.key.owner() == acyclic_harness::task_volume::Owner::Caller)
-        );
+        if binding != VolumeBinding::ForgedLifecycle {
+            assert!(actor_files.iter().all(|file| file.key.owner() == acyclic_harness::task_volume::Owner::Caller));
+        }
         let reader = FilesystemContentVerifier::new(files, &verifier, &signed, 65_536, None)?;
         assert!(
             reader

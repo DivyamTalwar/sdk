@@ -208,10 +208,7 @@ fn validate_command(
         return Err(Error::Conflict("lifecycle command differs from its native request".into()));
     }
     Ok(match &request.action {
-        ExternalAction::RunTool {..} => match request.tool_call(tools) {
-            Ok(_) => return Err(Error::Conflict("valid tool call requires its pinned tool command".into())),
-            Err(_) => Some("native tool or arguments are not supported by the selected tool catalog"),
-        },
+        ExternalAction::RunTool {..} => Some("native tool request has no supported prepared tool command"),
         ExternalAction::Fork {..} | ExternalAction::Join {..} => Some("external child preparation is not bound"),
         _ => None,
     })
