@@ -33,6 +33,8 @@ mod external;
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;
 mod owner;
+#[cfg(feature = "native-execution")]
+pub(crate) use owner::directory as private_directory;
 mod owner_record;
 mod runtime;
 #[cfg(test)]
@@ -78,7 +80,7 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "hooks"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
     }

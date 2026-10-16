@@ -11,11 +11,50 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[path = "native_tools/commands.rs"]
 mod commands;
 
+#[path = "native_tools/parallel.rs"]
+mod parallel;
+
+struct Fixture {
+    _root: tempfile::TempDir,
+    project: std::path::PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Result<Self> {
+        let root = tempfile::tempdir()?;
+        let project = root.path().join("project");
+        std::fs::create_dir(&project)?;
+        Ok(Self {
+            _root: root,
+            project,
+        })
+    }
+    fn path(&self) -> &Path {
+        &self.project
+    }
+    async fn close(&self) -> Result {
+        let output = command(self.path()).arg("__owner-stop").output().await?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+}
+
 fn command(directory: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_acyclic"));
     command
         .current_dir(directory)
         .env_remove("ACYCLIC_HARNESS_BINDING")
+        .env(
+            "ACYCLIC_LOCAL_OWNER_DIR",
+            directory
+                .parent()
+                .expect("workspace parent missing")
+                .join("owner"),
+        )
         .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -76,7 +115,7 @@ async fn result(directory: &Path, arguments: Value) -> Result<Value> {
 async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> Result {
     tokio::time::timeout(std::time::Duration::from_secs(8),async {
         for host in ["codex","claude-code","pi"] {
-            let directory = tempfile::tempdir()?;
+            let directory = Fixture::new()?;
             let session = uuid::Uuid::new_v4().to_string();
             let cwd = directory.path().to_str().ok_or("non-UTF8 test directory")?;
             let pi = host == "pi";
@@ -103,6 +142,7 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
             assert_eq!(hook(directory.path(),host,if pi {"tool_call"} else {"PreToolUse"},request).await?,answer);
             assert_eq!(std::fs::metadata(directory.path().join("native.txt"))?.modified()?,published);
             hook(directory.path(),host,if pi {"session_shutdown"} else {"SessionEnd"},json!({"session_id":session,"cwd":cwd})).await?;
+            directory.close().await?;
         }
         Ok::<_,Box<dyn std::error::Error>>(())
     }).await??;

@@ -37,6 +37,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if input.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Ok(());
     }
+    acyclic_harness::test_support::fuzz_local_owner_input(input);
     let task = Component::new("task")?;
     if let Ok(arguments) = serde_json::from_slice::<serde_json::Value>(input) {
         if let Ok(result) = acyclic_harness::external_executor::tool_result(arguments.clone()) {

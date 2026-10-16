@@ -16,6 +16,8 @@ mod manifest;
 mod mcp;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 mod native;
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+mod local_owner;
 mod normalize;
 #[cfg(feature = "filesystem")]
 mod publication;
@@ -43,6 +45,10 @@ pub use manifest::{claude_hooks, claude_manifest};
 pub use mcp::{native_tool_catalog, serve_native_tools};
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use native::{HookBinding, run_hook};
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+pub use local_owner::{run_local_owner, stop_local_owner};
+#[cfg(all(feature = "test-support", feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use local_owner::fuzz_input as fuzz_local_owner_input;
 pub use normalize::request;
 pub use request::{ExternalAction, ExternalRequest};
 pub use result::tool_result;

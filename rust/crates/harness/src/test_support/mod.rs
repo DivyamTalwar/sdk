@@ -7,6 +7,12 @@ pub use search::{ScriptedSearch, ScriptedSearchProvider};
 
 pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn};
 pub use task_volume_work::measure as measure_task_volume_work;
+
+/// Exercises local owner configuration and credential parsers without I/O.
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+pub fn fuzz_local_owner_input(bytes: &[u8]) {
+    crate::external_executor::fuzz_local_owner_input(bytes);
+}
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,
 };

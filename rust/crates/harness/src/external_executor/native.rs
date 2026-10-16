@@ -106,11 +106,14 @@ pub(super) fn run_request<'a>(
         let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
-                let harness =
-                    crate::LocalHarness::open(crate::LocalHarnessConfig::external(cwd)).await?;
+                let (requests, results) = local_volumes(cwd).await?;
+                let task = Component::new(request.task_id().to_string()).map_err(storage)?;
                 return Ok((
-                    harness.external_request(request).await?,
-                    Component::new(request.task_id().to_string()).map_err(storage)?,
+                    request
+                        .send(&requests, &results, task.clone())
+                        .await
+                        .map_err(storage)?,
+                    task,
                 ));
             }
             #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
@@ -138,9 +141,8 @@ pub(super) fn read_tool_result(
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
                 let cwd = std::env::current_dir().map_err(storage)?;
-                let harness =
-                    crate::LocalHarness::open(crate::LocalHarnessConfig::external(cwd)).await?;
-                return harness.external_tool_result(name, arguments).await;
+                let (requests, results) = local_volumes(&cwd).await?;
+                return super::handoff::read_result(name, arguments, &requests, &results).await;
             }
             #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
             return Err(Error::Unsupported(
@@ -187,7 +189,31 @@ async fn platform_volumes(
     Ok((requests, results, binding.task))
 }
 
-fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+async fn local_volumes(
+    cwd: &std::path::Path,
+) -> Result<(
+    TaskVolume<acyclic_stream::grpc::Client>,
+    TaskVolume<acyclic_stream::grpc::Client>,
+)> {
+    let (client, _) = super::local_owner::binding(cwd).await?;
+    let provider = Arc::new(client);
+    let requests = TaskVolume::open_existing(
+        provider.clone(),
+        StreamPath::new("external/requests").map_err(storage)?,
+    )
+    .await
+    .map_err(storage)?;
+    let results = TaskVolume::open_existing(
+        provider,
+        StreamPath::new("external/results").map_err(storage)?,
+    )
+    .await
+    .map_err(storage)?;
+    Ok((requests, results))
+}
+
+pub(super) fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
         .take(maximum as u64 + 1)

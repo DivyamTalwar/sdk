@@ -37,7 +37,7 @@ impl Volumes {
 }
 
 impl LocalHarness {
-    fn external_volumes(&self) -> (&TaskVolume<LocalStream>, &TaskVolume<LocalStream>) {
+    pub(crate) fn external_volumes(&self) -> (&TaskVolume<LocalStream>, &TaskVolume<LocalStream>) {
         (&self.external_volumes.requests, &self.external_volumes.results)
     }
 

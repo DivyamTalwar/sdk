@@ -320,6 +320,7 @@ dependencies = [
  "bytes",
  "diffy",
  "dirs",
+ "fs2",
  "futures",
  "getrandom 0.3.4",
  "hex",
