@@ -106,6 +106,42 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
     }).await
 }
 
+#[tokio::test]
+async fn a_disconnected_hook_leaves_its_request_for_the_existing_worker() -> Result<()> {
+    Box::pin(async {
+        let fixture = Fixture::new(VolumeBinding::Separate).await?;
+        let task = TaskId::from_bytes([82; 16]);
+        let folder = Component::new(task.to_string()).map_err(storage)?;
+        let start = request(ExternalHost::Pi, "session_start",
+            json!({"sessionId":"session", "cwd":"/project"}))?;
+        deliver(&fixture, &folder, &start, false).await?;
+        let write = request(ExternalHost::Pi, "tool_call", json!({
+            "sessionId":"session", "toolCallId":"disconnected", "toolName":"write",
+            "input":{"path":"detached.txt", "content":"retained after disconnect"}
+        }))?;
+        let mut client = Box::pin(write.send(&fixture.requests, &fixture.results, folder.clone()));
+        assert!(futures::poll!(&mut client).is_pending());
+        drop(client);
+        let file = write.to_file(folder.clone()).map_err(storage)?;
+        let accepted = fixture.requests.snapshot(&Query::File(file.key.clone()), 1).await.map_err(storage)?;
+        assert_eq!(accepted.files, vec![file.clone()]);
+        RequestConsumer::new(&fixture.runtime, &fixture.requests, &fixture.results,
+            fixture.publisher.as_ref(), "/project").accept(&folder, &file).await?;
+        execute(&fixture, task, false).await?;
+        let answer = write.send(&fixture.requests, &fixture.results, folder).await.map_err(storage)?;
+        let outcome: acyclic_harness::Outcome<acyclic_harness::tool::files::FileResult> =
+            serde_json::from_value(answer).map_err(|error| invalid(&error))?;
+        let acyclic_harness::Outcome::Succeeded(written) = outcome else {
+            return Err(Error::Storage("disconnected request did not execute".into()));
+        };
+        let context = fixture.runtime.harness().durable_context(task, OperationId::from_bytes(task.into_bytes()), None).await?;
+        assert_eq!(&*context.read_file(&written.file, None).await?, b"retained after disconnect");
+        let after = fixture.requests.snapshot(&Query::File(file.key), 1).await.map_err(storage)?;
+        assert_eq!(accepted.generation, after.generation);
+        Ok(())
+    }).await
+}
+
 async fn publish(fixture:&Fixture,folder:&Component,request:&ExternalRequest)->Result<acyclic_harness::task_volume::FileValue> {
     let file=request.to_file(folder.clone()).map_err(storage)?;
     let snapshot=fixture.requests.snapshot(&Query::File(file.key.clone()),1).await.map_err(storage)?;
@@ -126,19 +162,24 @@ async fn deliver(fixture:&Fixture,folder:&Component,request:&ExternalRequest,ter
         admission.await?;
         consumer.accept(folder,&delivered).await?;
         let task = TaskId::from_bytes(uuid::Uuid::parse_str(folder.as_str()).map_err(|error|Error::Invalid(error.to_string()))?.into_bytes());
-        let worker = Worker {id:"native-session".into(),available:ResourceRequest::default(),labels:BTreeMap::new()};
-        let commands = RequestCommands::new(&fixture.runtime,&fixture.requests,&fixture.results);
-        match Box::pin(fixture.runtime.run_operation(&worker,task,&commands,8,None)).await? {
-            Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed {task:completed})) if terminal=>assert_eq!(completed,task),
-            Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended {task:suspended,..})) if !terminal=>assert_eq!(suspended,task),
-            Some(TaskWorkerAttempt::Unresolved {error,..})=>return Err(error),
-            _=>return Err(Error::Storage("native request left an unresolved worker attempt".into())),
-        }
+        execute(fixture, task, terminal).await?;
         consumer.accept(folder,&delivered).await?;
         Ok::<_,Error>(())
     };
     let (answer,())=tokio::try_join!(client,actor)?;
     Ok(answer)
+}
+
+async fn execute(fixture: &Fixture, task: TaskId, terminal: bool) -> Result<()> {
+    let worker = Worker {id:"native-session".into(),available:ResourceRequest::default(),labels:BTreeMap::new()};
+    let commands = RequestCommands::new(&fixture.runtime,&fixture.requests,&fixture.results);
+    match Box::pin(fixture.runtime.run_operation(&worker,task,&commands,8,None)).await? {
+        Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed {task:completed})) if terminal=>assert_eq!(completed,task),
+        Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended {task:suspended,..})) if !terminal=>assert_eq!(suspended,task),
+        Some(TaskWorkerAttempt::Unresolved {error,..})=>return Err(error),
+        _=>return Err(Error::Storage("native request left an unresolved worker attempt".into())),
+    }
+    Ok(())
 }
 
 fn identity(host:ExternalHost,mut input:Value)->Value {
