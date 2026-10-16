@@ -1,6 +1,6 @@
 #![no_main]
 use acyclic_harness::{
-    client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt},
+    client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_scroll},
     task_volume::{FileKey, Query, TaskVolume, Write},
     tui::{ClientRenderer, Editor, InputKeymap, PromptInput},
 };
@@ -12,13 +12,14 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {
         return;
     }
-    let mut fields = data.splitn(4, |byte| *byte == 0);
+    let mut fields = data.splitn(5, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();
     let Some(history) = fields.next() else {
         return;
     };
     let keymap = fields.next();
     let notifications = fields.next();
+    let layout = fields.next();
     let expected_keymap = keymap.map_or(Some(InputKeymap::default()), |bytes| {
         std::str::from_utf8(bytes)
             .ok()
@@ -48,6 +49,9 @@ fuzz_target!(|data: &[u8]| {
             if let Some(bytes) = notifications {
                 writes.push((format!(".ui/session-{session}/notifications.json"), bytes));
             }
+            if let Some(bytes) = layout {
+                writes.push((format!(".ui/session-{session}/layout.json"), bytes));
+            }
             for (path, bytes) in writes {
                 let cut = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
                 volume
@@ -63,6 +67,19 @@ fuzz_target!(|data: &[u8]| {
             else {
                 return;
             };
+            if let Some(bytes) = layout {
+                let expected = serde_json::from_slice::<serde_json::Value>(bytes)
+                    .ok()
+                    .and_then(|value| {
+                        if !value.is_object() {
+                            return None;
+                        }
+                        value.get("transcript_back").map_or(Some(0), |value| {
+                            value.as_u64().and_then(|rows| usize::try_from(rows).ok())
+                        })
+                    });
+                assert_eq!(tui_scroll(&files).ok(), expected);
+            }
             let mut renderer = ClientRenderer::default();
             let result = renderer.screen_for(&files);
             let expected: Result<Vec<String>, _> =

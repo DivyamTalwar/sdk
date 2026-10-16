@@ -302,7 +302,21 @@ impl<S: ClientStateStore> HarnessClient<S> {
         &self,
         files: &mut super::CommandSession<P>,
         effect: crate::tui::InputEffect,
+        page_rows: usize,
+        maximum_scroll: usize,
     ) -> Result<()> {
+        if let crate::tui::InputEffect::Host(
+            action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
+        ) = effect
+        {
+            return super::scroll_tui(
+                files,
+                action == crate::tui::Action::TranscriptUp,
+                page_rows,
+                maximum_scroll,
+            )
+            .await;
+        }
         let reader = self.files.as_ref().ok_or_else(|| {
             Error::Unauthorized("command input requires bound file authority".into())
         })?;

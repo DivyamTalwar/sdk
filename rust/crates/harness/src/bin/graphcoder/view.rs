@@ -62,10 +62,12 @@ pub async fn run(
         input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let back = client::tui_scroll(&commands)?;
+        let mut maximum_scroll = 0;
         let screen = renderer.screen_for(&commands)?;
         terminal.draw(|frame| {
-            // TODO(#495): load the user's scroll override from the followed layout file.
-            let scroll = screen.tail_scroll(frame.area(), &input);
+            maximum_scroll = screen.tail_scroll(frame.area(), &input);
+            let scroll = maximum_scroll.saturating_sub(back);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
         })?;
         let Some(event) = client::next_tui_event(
@@ -80,6 +82,7 @@ pub async fn run(
             renderer.update(client.session().views(), &authority);
             continue;
         };
+        let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let effects = match event {
             InputEvent::Key(key) => {
                 input.key(key, now, usize::from(areas.prompt.width.saturating_sub(2)))
@@ -95,7 +98,14 @@ pub async fn run(
             InputEvent::Resize(_, _) | InputEvent::Focus(_) => Vec::new(),
         };
         for effect in effects {
-            client.tui_input(&mut commands, effect).await?;
+            client
+                .tui_input(
+                    &mut commands,
+                    effect,
+                    usize::from(areas.transcript.height),
+                    maximum_scroll,
+                )
+                .await?;
         }
         prompt_files.save(&mut commands, &mut input).await?;
     }

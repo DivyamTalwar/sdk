@@ -115,3 +115,8 @@ pub use input_files::{apply_tui_input, handle_tui_input, restore_tui_prompt, sav
 mod prompt_files;
 #[cfg(feature = "tui")]
 pub use prompt_files::PromptFiles;
+
+#[cfg(feature = "tui")]
+mod scroll_files;
+#[cfg(feature = "tui")]
+pub use scroll_files::{scroll_tui, tui_scroll};

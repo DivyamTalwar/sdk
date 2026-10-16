@@ -638,3 +638,6 @@ mod feedback;
 
 #[path = "tests/help.rs"]
 mod help;
+
+#[path = "tests/scroll.rs"]
+mod scroll;
