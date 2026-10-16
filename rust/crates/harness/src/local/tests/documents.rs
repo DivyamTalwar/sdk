@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    TaskId,
     client::{ClientSession, MemoryClientState, local_documents},
     conversation::ContentPublisher,
     filesystem::FilesystemContentPublisher,
