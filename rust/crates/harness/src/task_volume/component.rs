@@ -41,4 +41,3 @@ impl From<Component> for String {
         value.0.to_string()
     }
 }
-

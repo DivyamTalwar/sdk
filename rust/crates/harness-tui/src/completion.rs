@@ -7,12 +7,17 @@ use files::Entry;
 use unicode_segmentation::UnicodeSegmentation;
 
 fn prefix(value: &str, query: &str) -> bool {
-    value.get(..query.len()).is_some_and(|head| head.eq_ignore_ascii_case(query))
+    value
+        .get(..query.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(query))
 }
 
 fn theme_prefix(value: &str, query: &str) -> bool {
     let mut value = value.chars().flat_map(char::to_lowercase);
-    query.chars().flat_map(char::to_lowercase).all(|c| value.next() == Some(c))
+    query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|c| value.next() == Some(c))
 }
 
 /// Completion namespace derived from command and workspace files.
@@ -85,8 +90,9 @@ fn request_from(editor: &Editor, from: usize, work: &mut usize) -> Option<Comple
             });
         } else if text[1..end].eq_ignore_ascii_case("theme") {
             let start = end + text[end..].len() - text[end..].trim_start_matches([' ', '\t']).len();
-            let line_end = end + scan_until(&text[end..], |c| matches!(c, '\n' | '\r'), work)
-                .unwrap_or(text.len() - end);
+            let line_end = end
+                + scan_until(&text[end..], |c| matches!(c, '\n' | '\r'), work)
+                    .unwrap_or(text.len() - end);
             if cursor >= start && cursor <= line_end {
                 found = Some(CompletionRequest {
                     kind: CompletionKind::Theme,
@@ -283,7 +289,11 @@ impl CompletionMenu {
                     && editor.cursor() >= request.range.start
                     && range.start >= request.range.start
                     && range.end <= request.range.end)
-                    .then_some(if request.kind == CompletionKind::Theme { 0 } else { request.range.start })
+                    .then_some(if request.kind == CompletionKind::Theme {
+                        0
+                    } else {
+                        request.range.start
+                    })
             })
             .unwrap_or(0);
         let request = request_from(editor, from, &mut self.work.prompt_bytes);
@@ -418,8 +428,10 @@ impl CompletionMenu {
             CompletionKind::Command => item.value.strip_prefix('/').unwrap_or(&item.value),
             CompletionKind::Mention | CompletionKind::Theme => item.value.as_str(),
         };
-        if value.is_empty() || value.chars().any(char::is_control)
-            || value.contains('"') && request.kind != CompletionKind::Theme {
+        if value.is_empty()
+            || value.chars().any(char::is_control)
+            || value.contains('"') && request.kind != CompletionKind::Theme
+        {
             return false;
         }
         let mut replacement = match request.kind {

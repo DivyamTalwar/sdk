@@ -1,11 +1,11 @@
 use super::*;
 use acyclic_harness::{
     AgentId, Capabilities, OperationId, TaskId,
+    client::{CommandFileRoot, CommandSession, CommandTool},
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::FilesystemHost,
     resources::ProviderRef,
-    client::{CommandFileRoot, CommandSession, CommandTool},
     task_volume::{Component, FileKey, FileValue, Query, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
@@ -347,26 +347,43 @@ async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() 
 #[cfg(feature = "tui")]
 #[tokio::test]
 async fn dispatch_and_input_follow_the_same_catalog_and_theme_files() -> Result<()> {
-    use acyclic_harness::{tui::{Editor, PromptInput}, tui_files::CompletionFiles};
+    use acyclic_harness::{
+        tui::{Editor, PromptInput},
+        tui_files::CompletionFiles,
+    };
     let volume = volume().await?;
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
     let mut input = PromptInput::new(Editor::new("/SH"));
-    let mut completions = CompletionFiles::observe(&volume, &mut input, None, 128).await
+    let mut completions = CompletionFiles::observe(&volume, &mut input, None, 128)
+        .await
         .map_err(|e| Error::Storage(e.to_string()))?;
     let candidate = input.completion.items().next().unwrap();
     assert_eq!(candidate.value, "sh");
     assert!(candidate.tool);
     assert!(input.completion.accept(&mut input.editor, 0));
     assert_eq!(input.editor.text(), "/sh ");
-    publish(&volume, "commands/themes.json", br#"["Solarized Light"]"#.to_vec()).await?;
+    publish(
+        &volume,
+        "commands/themes.json",
+        br#"["Solarized Light"]"#.to_vec(),
+    )
+    .await?;
     client.observe_change().await?;
-    completions.next(&mut input).await.map_err(|e| Error::Storage(e.to_string()))?;
+    completions
+        .next(&mut input)
+        .await
+        .map_err(|e| Error::Storage(e.to_string()))?;
     input.editor.set_text("/THEME sol", 1);
     input.refresh_completions();
     assert!(input.completion.accept(&mut input.editor, 2));
     assert_eq!(input.editor.text(), "/THEME Solarized Light");
     client.submit(input.editor.text(), &DeniedReader).await?;
-    assert_eq!(client.state(CommandFileRoot::Config, "theme.json")?.unwrap()["name"], "Solarized Light");
+    assert_eq!(
+        client
+            .state(CommandFileRoot::Config, "theme.json")?
+            .unwrap()["name"],
+        "Solarized Light"
+    );
     Ok(())
 }
 

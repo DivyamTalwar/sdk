@@ -21,8 +21,16 @@ pub fn exercise_broken(data: &[u8]) -> Result<(), std::io::Error> {
 }
 
 fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
-    let suffix: String = data.iter().take(24).map(|byte| char::from(b'a' + byte % 26)).collect();
-    catalog_round_trip(&format!("cmd{suffix}"), &format!("alias{suffix}"), &format!("Theme {suffix}"))?;
+    let suffix: String = data
+        .iter()
+        .take(24)
+        .map(|byte| char::from(b'a' + byte % 26))
+        .collect();
+    catalog_round_trip(
+        &format!("cmd{suffix}"),
+        &format!("alias{suffix}"),
+        &format!("Theme {suffix}"),
+    )?;
     // Exercise malformed theme inventories too; replacement must be atomic.
     let mut probe = CompletionMenu::default();
     probe.set_file("commands/themes.json", Some(b"[\"Theme\"]"))?;
@@ -139,8 +147,12 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
 /// Shared by shrinking properties and the instrumented completion fuzz target.
 pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
     let mut menu = CompletionMenu::default();
-    let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}]);
-    menu.set_file("commands/catalog.json", Some(&serde_json::to_vec(&definition)?))?;
+    let definition =
+        serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}]);
+    menu.set_file(
+        "commands/catalog.json",
+        Some(&serde_json::to_vec(&definition)?),
+    )?;
     let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
     menu.refresh(&editor);
     assert_eq!(menu.items().len(), 1);
@@ -150,7 +162,12 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
     editor.set_text("/THEME ", 1);
     menu.refresh(&editor);
-    let initial = theme.chars().next().unwrap().to_lowercase().collect::<String>();
+    let initial = theme
+        .chars()
+        .next()
+        .unwrap()
+        .to_lowercase()
+        .collect::<String>();
     editor.insert(&initial, 2);
     menu.refresh(&editor);
     assert_eq!(menu.items().len(), 1);

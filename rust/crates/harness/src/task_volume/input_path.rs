@@ -30,4 +30,3 @@ impl From<InputPath> for String {
         path.0
     }
 }
-

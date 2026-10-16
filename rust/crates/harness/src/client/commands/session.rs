@@ -35,7 +35,11 @@ fn component(text: impl AsRef<str>) -> Result<files::Component> {
 }
 fn ui(directory: &str, name: &str) -> Result<files::FileKey> {
     if directory == "config" && matches!(name, "commands.json" | "themes.json") {
-        let path = if name == "commands.json" { "commands/catalog.json" } else { "commands/themes.json" };
+        let path = if name == "commands.json" {
+            "commands/catalog.json"
+        } else {
+            "commands/themes.json"
+        };
         return files::FileKey::parse(path).map_err(storage);
     }
     Ok(files::FileKey::Ui {
@@ -340,7 +344,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             self.catalog = catalog;
         }
         if file.key == ui("config", "themes.json")? {
-            self.catalog.set_themes(serde_json::from_slice(&file.bytes).map_err(codec)?)?;
+            self.catalog
+                .set_themes(serde_json::from_slice(&file.bytes).map_err(codec)?)?;
         }
         if matches!(
             file.key,
