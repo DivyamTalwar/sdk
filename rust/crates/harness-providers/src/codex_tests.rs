@@ -217,6 +217,31 @@ proptest! {
         let access = format!("header.{}.signature", URL_SAFE_NO_PAD.encode(payload.to_string()));
         prop_assert_eq!(needs_refresh(&auth(&access), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
     }
+
+    #[test]
+    fn native_auth_reads_preserve_unicode_documents_and_release_all_custody(text in ".{0,128}") {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("auth.json");
+        let mut document = auth("fixture-access");
+        document["agent_identity"] = json!({"unrelated":text});
+        let encoded = serde_json::to_vec(&document).unwrap();
+        std::fs::write(&path, &encoded).unwrap();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        ).unwrap();
+        let baseline = work.live_allocation_bytes();
+        {
+            let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+            let mut io = CredentialIo::new(Some(&mut custody)).unwrap();
+            let (bytes, decoded) = load(&path, &mut io).unwrap();
+            prop_assert_eq!(bytes, encoded);
+            prop_assert_eq!(decoded, document);
+            prop_assert_eq!(work.receipt().source_bytes_read, bytes.len() as u64);
+            prop_assert!(work.live_allocation_bytes() > baseline);
+        }
+        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+    }
 }
 
 #[test]
