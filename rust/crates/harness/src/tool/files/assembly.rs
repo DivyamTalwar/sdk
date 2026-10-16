@@ -13,15 +13,6 @@ impl FileTool {
             projection_schema,
             projection,
         ) = match self {
-            Self::Plan => (
-                "update_plan",
-                "plan-1",
-                "Replace plan.md in the task volume with ordered pending, in_progress or completed steps; at most one step may be in_progress",
-                schema::input::<super::super::plan::UpdatePlanInput>()?,
-                schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
-                FileProjection::Publication(mode),
-            ),
             Self::Read => (
                 "read",
                 "portable-6",
@@ -83,7 +74,7 @@ impl FileTool {
                 Self::Read => &["Read"],
                 Self::Write => &["Write"],
                 Self::Edit | Self::Patch { .. } => &["Edit"],
-                Self::Search { .. } | Self::Plan => &[],
+                Self::Search { .. } => &[],
             },
             definition,
             executor: Arc::new(self),
