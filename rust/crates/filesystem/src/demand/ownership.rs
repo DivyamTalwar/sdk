@@ -348,39 +348,3 @@ mod properties {
         }
     }
 }
-
-#[cfg(all(test, feature = "native-watch", any(target_os = "linux", windows)))]
-mod properties {
-    use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        // Property: both native ownership representations retain their original
-        // ledger and cancellation, independent of the payload size or caller.
-        #[test]
-        fn source_ownership_never_changes_the_original_context(bytes in any::<u16>()) {
-            let stop = crate::CancellationToken::new();
-            let original = NativeMaterializationWork::new(
-                crate::performance::BOUNDARY_BUDGET, &stop,
-            ).unwrap();
-            let incoming = NativeMaterializationWork::new(
-                crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new(),
-            ).unwrap();
-            let mut registration_work = original.clone();
-            let registered = SourcePayloadOwnership::new(&mut registration_work).unwrap();
-            let allocated = SourcePayloadOwnership::from_native_allocation(
-                original.claim(u64::from(bytes), 1, crate::WorkCounters::UNCHARGED).unwrap(),
-            );
-            prop_assert!(SourcePayloadOwnership::Borrowed.original_work().is_none());
-            for owner in [&registered, &allocated] {
-                let retained = owner.original_work().unwrap();
-                prop_assert!(retained.shares_allocation_context(&original));
-                prop_assert!(!retained.shares_allocation_context(&incoming));
-            }
-            stop.cancel();
-            prop_assert!(registered.original_work().unwrap().remaining().is_err());
-            prop_assert!(allocated.original_work().unwrap().remaining().is_err());
-            prop_assert!(incoming.remaining().is_ok());
-        }
-    }
-}
