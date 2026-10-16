@@ -5,7 +5,7 @@
       "query": "shortcuts"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "open_view": "shortcuts",
         "retained": "layout"
       }

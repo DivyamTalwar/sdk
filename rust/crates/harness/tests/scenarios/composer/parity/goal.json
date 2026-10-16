@@ -5,7 +5,7 @@
       "query": "goal"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "open_view": "goal",
         "retained": "layout"
       }

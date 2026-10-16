@@ -2,11 +2,13 @@
 
 use acyclic_harness::{
     Error, OperationId, Result,
-    client::{CommandCatalog, CommandFileChange, CommandPaletteState, CommandResolution},
+    client::{
+        CommandCatalog, CommandFileChange, CommandFileSnapshot, CommandPaletteState,
+        CommandResolution,
+    },
     conversation::ContentResidencyVerifier,
 };
 use libfuzzer_sys::fuzz_target;
-use std::collections::BTreeMap;
 
 #[path = "../../src/client/commands/syntax.rs"]
 mod syntax;
@@ -32,8 +34,7 @@ fuzz_target!(|input: &[u8]| {
             );
         }
     }
-    let snapshot: BTreeMap<String, serde_json::Value> =
-        serde_json::from_slice(input).unwrap_or_default();
+    let snapshot: CommandFileSnapshot = serde_json::from_slice(input).unwrap_or_default();
     if let Ok(resolution) = serde_json::from_slice::<CommandResolution>(input) {
         if let Ok(changes) = resolution.file_changes(&snapshot, OperationId::new()) {
             assert!(changes.len() <= 1);

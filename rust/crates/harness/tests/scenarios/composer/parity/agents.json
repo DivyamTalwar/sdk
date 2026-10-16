@@ -5,7 +5,7 @@
       "query": "tree"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "tree": true,
         "retained": "layout"
       }

@@ -5,7 +5,7 @@
       "query": "model"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "open_view": "model",
         "retained": "layout"
       }

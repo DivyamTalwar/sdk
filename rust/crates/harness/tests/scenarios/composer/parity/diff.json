@@ -6,18 +6,13 @@
     },
     "file_values": {
       "config/settings.json": {
-        "agent_mode": "code",
         "diff_modes": [
           "auto",
           "unified",
           "split"
         ],
         "diff_mode": "unified",
-        "retained": "settings",
-        "agent_modes": [
-          "code",
-          "plan"
-        ]
+        "retained": "settings"
       }
     }
   },

@@ -159,32 +159,41 @@ impl Composer {
         if self.publish_files {
             if let Ok(resolution) = &observed {
                 let mut snapshot = BTreeMap::new();
-                for name in [
-                    "settings.json",
-                    "layout.json",
-                    "theme.json",
-                    "attention.json",
+                for (binding, prefix) in [
+                    (CommandFileRoot::Config, "config"),
+                    (CommandFileRoot::Session, "session"),
+                    (CommandFileRoot::Task, "task"),
                 ] {
-                    match storage
-                        .read_delegated_path(
-                            storage.owner_scope(),
-                            "",
-                            &format!("config/{name}"),
-                            None,
-                        )
-                        .await
-                    {
-                        Ok((_, bytes)) => {
-                            snapshot.insert(name.into(), serde_json::from_slice(&bytes)?);
+                    let mut files = BTreeMap::new();
+                    for name in [
+                        "settings.json",
+                        "layout.json",
+                        "theme.json",
+                        "attention.json",
+                    ] {
+                        match storage
+                            .read_delegated_path(
+                                storage.owner_scope(),
+                                "",
+                                &format!("{prefix}/{name}"),
+                                None,
+                            )
+                            .await
+                        {
+                            Ok((_, bytes)) => {
+                                files.insert(name.into(), serde_json::from_slice(&bytes)?);
+                            }
+                            Err(acyclic_harness::Error::NotFound(_)) => {}
+                            Err(error) => return Err(error.into()),
                         }
-                        Err(acyclic_harness::Error::NotFound(_)) => {}
-                        Err(error) => return Err(error.into()),
                     }
+                    snapshot.insert(binding, files);
                 }
                 let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")?;
                 for change in resolution.file_changes(&snapshot, operation)? {
                     let prefix = match change.root {
                         CommandFileRoot::Config => "config",
+                        CommandFileRoot::Session => "session",
                         CommandFileRoot::Task => "task",
                     };
                     let path = format!("{prefix}/{}", change.path);

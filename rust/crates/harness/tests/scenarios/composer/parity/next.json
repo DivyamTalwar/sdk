@@ -5,7 +5,7 @@
       "query": "attention"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "selected_task": "00000000-0000-0000-0000-000000000003",
         "retained": "layout"
       }

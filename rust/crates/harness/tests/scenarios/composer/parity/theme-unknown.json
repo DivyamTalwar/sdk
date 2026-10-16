@@ -5,7 +5,7 @@
       "query": "theme"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "open_view": "theme",
         "retained": "layout"
       }

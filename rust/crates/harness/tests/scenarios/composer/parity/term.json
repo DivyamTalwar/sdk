@@ -5,7 +5,7 @@
       "query": "terminal"
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "terminal": true,
         "retained": "layout"
       }

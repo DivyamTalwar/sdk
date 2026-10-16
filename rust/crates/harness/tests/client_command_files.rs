@@ -1,27 +1,43 @@
 use super::*;
 use acyclic_harness::{
     OperationId,
-    client::{CommandFileRoot, CommandPaletteState, CommandQuery},
+    client::{CommandFileRoot, CommandFileSnapshot, CommandPaletteState, CommandQuery},
     context::PinnedContextPath,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
-fn snapshot() -> BTreeMap<String, Value> {
+fn snapshot() -> CommandFileSnapshot {
     BTreeMap::from([
         (
-            "settings.json".into(),
-            json!({"agent_mode":"code","agent_modes":["code","plan"],"diff_mode":"auto","diff_modes":["auto","unified","split"],"retained":"settings"}),
+            CommandFileRoot::Config,
+            BTreeMap::from([
+                (
+                    "settings.json".into(),
+                    json!({"diff_mode":"auto","diff_modes":["auto","unified","split"],"retained":"settings"}),
+                ),
+                ("theme.json".into(), json!({"retained":"theme"})),
+            ]),
         ),
-        ("layout.json".into(), json!({"retained":"layout"})),
-        ("theme.json".into(), json!({"retained":"theme"})),
         (
-            "attention.json".into(),
-            json!({"tasks":["00000000-0000-0000-0000-000000000003","00000000-0000-0000-0000-000000000004"]}),
+            CommandFileRoot::Task,
+            BTreeMap::from([(
+                "settings.json".into(),
+                json!({"agent_mode":"code","agent_modes":["code","plan"],"retained":"task"}),
+            )]),
+        ),
+        (
+            CommandFileRoot::Session,
+            BTreeMap::from([
+                ("layout.json".into(), json!({"retained":"layout"})),
+                (
+                    "attention.json".into(),
+                    json!({"tasks":["00000000-0000-0000-0000-000000000003","00000000-0000-0000-0000-000000000004"]}),
+                ),
+            ]),
         ),
     ])
 }
-
 async fn source(fixture: &Fixture, path: &str) -> Result<PinnedContextPath> {
     let page = fixture
         .reader
@@ -97,11 +113,12 @@ async fn each_command_dispatches_through_ordinary_volume_files() -> Result<()> {
         for change in changes {
             let prefix = match change.root {
                 CommandFileRoot::Config => "config",
+                CommandFileRoot::Session => "session",
                 CommandFileRoot::Task => "task",
             };
             let path = format!("{prefix}/{}", change.path);
-            assert_eq!(change.create_only, change.root == CommandFileRoot::Task);
-            if change.root == CommandFileRoot::Task {
+            assert_eq!(change.create_only, change.path.starts_with("requests/"));
+            if change.create_only {
                 assert!(change.path.starts_with("requests/"));
             }
             fixture
@@ -116,7 +133,7 @@ async fn each_command_dispatches_through_ordinary_volume_files() -> Result<()> {
                 change.contents
             );
             if matches!(spec.name.as_str(), "delete" | "clearall") {
-                assert_eq!(change.root, CommandFileRoot::Config);
+                assert_eq!(change.root, CommandFileRoot::Session);
                 assert!(change.contents.get("confirmation").is_some());
             }
         }
@@ -128,8 +145,14 @@ async fn each_command_dispatches_through_ordinary_volume_files() -> Result<()> {
 fn direct_requests_do_not_consult_unrelated_broken_config_files() -> Result<()> {
     let catalog = CommandCatalog::builtins()?;
     let broken = BTreeMap::from([
-        ("layout.json".into(), json!(42)),
-        ("settings.json".into(), Value::Null),
+        (
+            CommandFileRoot::Session,
+            BTreeMap::from([("layout.json".into(), json!(42))]),
+        ),
+        (
+            CommandFileRoot::Config,
+            BTreeMap::from([("settings.json".into(), Value::Null)]),
+        ),
     ]);
     for input in ["/shell echo hi", "/delegate task", "/compact"] {
         let resolution = futures::executor::block_on(catalog.resolve(input, &DeniedReader, 1024))?;
@@ -154,6 +177,24 @@ fn catalog_files_cannot_disable_delete_confirmation_or_add_approval_prompts() {
     }
 }
 
+#[test]
+fn task_settings_and_session_controls_have_distinct_roots() -> Result<()> {
+    let catalog = CommandCatalog::builtins()?;
+    for (input, root) in [
+        ("/model provider/model", CommandFileRoot::Task),
+        ("/mode", CommandFileRoot::Task),
+        ("/quit", CommandFileRoot::Session),
+        ("/tree", CommandFileRoot::Session),
+        ("/reasoning", CommandFileRoot::Config),
+    ] {
+        let resolution = futures::executor::block_on(catalog.resolve(input, &DeniedReader, 1024))?;
+        let changes = resolution.file_changes(&snapshot(), OperationId::new())?;
+        assert_eq!(changes[0].root, root, "{input}");
+        assert!(!changes[0].create_only);
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
@@ -173,15 +214,15 @@ proptest! {
         let choices: Vec<_> = choices.into_iter().collect();
         let selected = selected % choices.len();
         let initial = choices[selected].clone();
-        let mut snapshot = BTreeMap::from([("settings.json".into(), json!({"agent_modes":choices,"agent_mode":initial,"extra":extra}))]);
+        let mut snapshot = BTreeMap::from([(CommandFileRoot::Task, BTreeMap::from([("settings.json".into(), json!({"agent_modes":choices,"agent_mode":initial,"extra":extra}))]))]);
         let resolution = CommandResolution::Submit { request: acyclic_harness::client::CommandRequest::CycleMode };
         for _ in 0..choices.len() {
             let changes = resolution.file_changes(&snapshot, OperationId::new()).unwrap();
-            prop_assert_eq!(&changes[0].contents["extra"], &snapshot["settings.json"]["extra"]);
+            prop_assert_eq!(&changes[0].contents["extra"], &snapshot[&CommandFileRoot::Task]["settings.json"]["extra"]);
             prop_assert!(choices.iter().any(|choice| changes[0].contents["agent_mode"] == json!(choice)));
-            snapshot.insert("settings.json".into(), changes[0].contents.clone());
+            snapshot.get_mut(&CommandFileRoot::Task).unwrap().insert("settings.json".into(), changes[0].contents.clone());
         }
-        prop_assert_eq!(&snapshot["settings.json"]["agent_mode"], &json!(initial));
+        prop_assert_eq!(&snapshot[&CommandFileRoot::Task]["settings.json"]["agent_mode"], &json!(initial));
     }
 
     // Accepted definition files round-trip through the same validated loader;
@@ -211,15 +252,16 @@ proptest! {
             (CommandQuery::Tree, "layout.json", "tree"),
             (CommandQuery::Terminal, "layout.json", "terminal"),
         ][index];
-        let mut state = BTreeMap::from([(file.into(), json!({field:initial,"extra":extra}))]);
+        let root = if file == "settings.json" { CommandFileRoot::Config } else { CommandFileRoot::Session };
+        let mut state = BTreeMap::from([(root, BTreeMap::from([(file.into(), json!({field:initial,"extra":extra}))]))]);
         let resolution = CommandResolution::Select { query };
         for expected in [!initial, initial] {
             let changes = resolution.file_changes(&state, OperationId::new()).unwrap();
             prop_assert_eq!(changes.len(), 1);
             prop_assert_eq!(changes[0].path.as_str(), file);
-            prop_assert_eq!(&changes[0].contents["extra"], &state[file]["extra"]);
+            prop_assert_eq!(&changes[0].contents["extra"], &state[&root][file]["extra"]);
             prop_assert_eq!(&changes[0].contents[field], &json!(expected));
-            state.insert(file.into(), changes[0].contents.clone());
+            state.get_mut(&root).unwrap().insert(file.into(), changes[0].contents.clone());
         }
     }
 

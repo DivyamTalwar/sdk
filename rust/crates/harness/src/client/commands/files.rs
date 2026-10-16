@@ -80,15 +80,20 @@ impl CommandCatalog {
     }
 }
 
-/// Explicit bindings to the caller's authorized config and selected task roots.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Explicit bindings to the caller's authorized file-query roots.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandFileRoot {
-    /// User config volume, or a declared task-specific settings override.
+    /// User config volume for shared presentation preferences.
     Config,
+    /// Current UI session's directory, isolated from other clients.
+    Session,
     /// Selected task's protected namespace in the agent's private volume.
     Task,
 }
+
+/// Read-only projection of files from the three authorized live-query roots.
+pub type CommandFileSnapshot = BTreeMap<CommandFileRoot, BTreeMap<String, Value>>;
 
 /// Ordinary file publication data. The FS client applies its existing generation
 /// precondition and authority checks; this is not a separate submit protocol.
@@ -112,13 +117,13 @@ impl CommandResolution {
     /// query. No UI selection or setting is committed in an in-memory store.
     pub fn file_changes(
         &self,
-        snapshot: &BTreeMap<String, Value>,
+        snapshot: &CommandFileSnapshot,
         operation: OperationId,
     ) -> Result<Vec<CommandFileChange>> {
-        let config = |path: &str, contents| {
+        let config = |root, path: &str, contents| {
             vec![CommandFileChange {
                 operation,
-                root: CommandFileRoot::Config,
+                root,
                 path: path.into(),
                 contents,
                 create_only: false,
@@ -137,30 +142,42 @@ impl CommandResolution {
             Self::Submit {
                 request: CommandRequest::Model { model },
             } => {
-                let mut settings = document(snapshot, "settings.json")?;
+                let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 settings.insert("model".into(), json!(model));
-                return Ok(config("settings.json", settings.into()));
+                return Ok(config(
+                    CommandFileRoot::Task,
+                    "settings.json",
+                    settings.into(),
+                ));
             }
             Self::Submit {
                 request: CommandRequest::Theme { name },
             } => {
-                let mut theme = document(snapshot, "theme.json")?;
+                let mut theme = document(snapshot, CommandFileRoot::Config, "theme.json")?;
                 theme.insert("name".into(), json!(name));
-                return Ok(config("theme.json", theme.into()));
+                return Ok(config(CommandFileRoot::Config, "theme.json", theme.into()));
             }
             Self::Submit {
                 request: CommandRequest::CycleMode,
             } => {
-                let mut settings = document(snapshot, "settings.json")?;
+                let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 cycle(&mut settings, "agent_mode", "agent_modes")?;
-                return Ok(config("settings.json", settings.into()));
+                return Ok(config(
+                    CommandFileRoot::Task,
+                    "settings.json",
+                    settings.into(),
+                ));
             }
             Self::Submit {
                 request: CommandRequest::Quit,
             } => {
-                let mut layout = document(snapshot, "layout.json")?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert("exit_requested".into(), json!(true));
-                return Ok(config("layout.json", layout.into()));
+                return Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ));
             }
             Self::Submit { request } => {
                 return Ok(publish_request(
@@ -171,17 +188,21 @@ impl CommandResolution {
                 return Ok(publish_request(serde_json::to_value(self).map_err(codec)?));
             }
             Self::Confirm { request } => {
-                let mut layout = document(snapshot, "layout.json")?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert(
                     "confirmation".into(),
                     serde_json::to_value(request).map_err(codec)?,
                 );
-                return Ok(config("layout.json", layout.into()));
+                return Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ));
             }
             Self::Select {
                 query: query @ (CommandQuery::Reasoning | CommandQuery::Details),
             } => {
-                let mut settings = document(snapshot, "settings.json")?;
+                let mut settings = document(snapshot, CommandFileRoot::Config, "settings.json")?;
                 toggle(
                     &mut settings,
                     if *query == CommandQuery::Reasoning {
@@ -190,12 +211,16 @@ impl CommandResolution {
                         "tool_details"
                     },
                 )?;
-                return Ok(config("settings.json", settings.into()));
+                return Ok(config(
+                    CommandFileRoot::Config,
+                    "settings.json",
+                    settings.into(),
+                ));
             }
             Self::Select {
                 query: query @ (CommandQuery::Tree | CommandQuery::Terminal),
             } => {
-                let mut layout = document(snapshot, "layout.json")?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 toggle(
                     &mut layout,
                     if *query == CommandQuery::Tree {
@@ -204,21 +229,29 @@ impl CommandResolution {
                         "terminal"
                     },
                 )?;
-                return Ok(config("layout.json", layout.into()));
+                return Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ));
             }
             Self::Select {
                 query: CommandQuery::Diff,
             } => {
-                let mut settings = document(snapshot, "settings.json")?;
+                let mut settings = document(snapshot, CommandFileRoot::Config, "settings.json")?;
                 // The choices are configuration data, shared with the renderer.
                 cycle(&mut settings, "diff_mode", "diff_modes")?;
-                return Ok(config("settings.json", settings.into()));
+                return Ok(config(
+                    CommandFileRoot::Config,
+                    "settings.json",
+                    settings.into(),
+                ));
             }
             Self::Select {
                 query: CommandQuery::Attention,
             } => {
-                let mut layout = document(snapshot, "layout.json")?;
-                let attention = document(snapshot, "attention.json")?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                let attention = document(snapshot, CommandFileRoot::Session, "attention.json")?;
                 let candidates = attention
                     .get("tasks")
                     .and_then(Value::as_array)
@@ -237,15 +270,23 @@ impl CommandResolution {
                     .position(|task| Some(task) == current)
                     .map_or(0, |index| (index + 1) % candidates.len());
                 layout.insert("selected_task".into(), candidates[next].clone());
-                return Ok(config("layout.json", layout.into()));
+                return Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ));
             }
             Self::Select { query } => {
-                let mut layout = document(snapshot, "layout.json")?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert(
                     "open_view".into(),
                     serde_json::to_value(query).map_err(codec)?,
                 );
-                return Ok(config("layout.json", layout.into()));
+                return Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ));
             }
         }
     }
@@ -255,8 +296,12 @@ fn codec(error: serde_json::Error) -> Error {
     Error::Invalid(format!("command file codec: {error}"))
 }
 
-fn document(snapshot: &BTreeMap<String, Value>, path: &str) -> Result<Map<String, Value>> {
-    match snapshot.get(path) {
+fn document(
+    snapshot: &CommandFileSnapshot,
+    root: CommandFileRoot,
+    path: &str,
+) -> Result<Map<String, Value>> {
+    match snapshot.get(&root).and_then(|files| files.get(path)) {
         None => Ok(Map::new()),
         Some(Value::Object(object)) => Ok(object.clone()),
         _ => Err(Error::Invalid(format!("{path} must be a JSON object"))),

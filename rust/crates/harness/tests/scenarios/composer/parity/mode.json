@@ -7,15 +7,9 @@
       }
     },
     "file_values": {
-      "config/settings.json": {
+      "task/settings.json": {
         "agent_mode": "plan",
-        "diff_modes": [
-          "auto",
-          "unified",
-          "split"
-        ],
-        "diff_mode": "auto",
-        "retained": "settings",
+        "retained": "task",
         "agent_modes": [
           "code",
           "plan"

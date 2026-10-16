@@ -10,7 +10,7 @@
       "task/requests/00000000-0000-0000-0000-000000000001.json": null
     },
     "file_values": {
-      "config/layout.json": {
+      "session/layout.json": {
         "confirmation": {
           "kind": "clear_all"
         },
