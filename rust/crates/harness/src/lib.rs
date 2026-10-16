@@ -17,8 +17,8 @@
 )]
 #![doc = include_str!("../README.md")]
 
-mod sync;
 pub mod agent_loop;
+mod sync;
 #[cfg(feature = "tui")]
 pub use acyclic_harness_tui as tui;
 pub mod bundle;
@@ -33,8 +33,8 @@ pub mod durable_tool;
 pub mod effect_host;
 pub mod effects;
 pub mod executor;
-pub mod external_executor;
 pub mod extension;
+pub mod external_executor;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;
@@ -58,13 +58,13 @@ pub mod mcp;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_future;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
 ))]
 pub mod native_settings;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod native_future;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;

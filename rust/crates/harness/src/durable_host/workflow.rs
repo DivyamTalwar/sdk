@@ -164,7 +164,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
-        Ok(self.workflow_slot(task, Some(crate::scheduler::OperationPhase::Suspended), work).await?.map(|(_,slot)|slot))
+        Ok(self
+            .workflow_slot(
+                task,
+                Some(crate::scheduler::OperationPhase::Suspended),
+                work,
+            )
+            .await?
+            .map(|(_, slot)| slot))
     }
 
     /// Reads the existing input slot, including an accepted but unclaimed resume.
@@ -174,7 +181,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         required_phase: Option<crate::scheduler::OperationPhase>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<Option<(crate::scheduler::OperationPhase, crate::scheduler::WorkflowSuspension)>> {
+    ) -> Result<
+        Option<(
+            crate::scheduler::OperationPhase,
+            crate::scheduler::WorkflowSuspension,
+        )>,
+    > {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let operation = coordinator.observe_operation(
@@ -184,13 +196,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             OperationId::from_bytes(task.into_bytes()),
             work,
         )?;
-        if operation.cancellation_requested || required_phase.is_some_and(|phase|operation.phase != phase) {
+        if operation.cancellation_requested
+            || required_phase.is_some_and(|phase| operation.phase != phase)
+        {
             return Ok(None);
         }
         operation
             .workflow
             .as_ref()
-            .map(|slot| slot.clone_with_work(work).map(|slot| (operation.phase, slot)))
+            .map(|slot| {
+                slot.clone_with_work(work)
+                    .map(|slot| (operation.phase, slot))
+            })
             .transpose()
     }
 
