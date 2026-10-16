@@ -1,0 +1,23 @@
+{
+  "driver": "agents",
+  "prompt": "Spawn a worker and wait for its answer",
+  "models": {
+    "parent": [
+      [
+        {"type":"event","kind":"tool_call","call_id":"spawn","name":"agent","arguments":{"command":"spawn","reference":"worker","prompt":"Answer with child finished","model":"worker"}},
+        {"type":"event","kind":"completed","metadata":null}
+      ],
+      [
+        {"type":"event","kind":"tool_call","call_id":"wait","name":"agent","arguments":{"command":"wait","reference":"worker"}},
+        {"type":"event","kind":"completed","metadata":null}
+      ],
+      "parent finished"
+    ],
+    "worker": ["child finished"]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {"parent":3,"worker":1},
+    "task_files": {"agents/worker/status.json":{"state":"Running","settled":true,"inputs":1}}
+  }
+}

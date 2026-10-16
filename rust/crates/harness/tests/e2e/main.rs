@@ -1,4 +1,6 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+mod agents;
 mod composer;
 mod discovery;
 mod drivers;
@@ -220,6 +222,10 @@ async fn scenarios() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    let local_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/local-scenarios");
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    discover(&local_root, &mut paths)?;
     paths.sort();
     if let Ok(filter) = std::env::var("E2E_FILTER") {
         paths.retain(|path| path.to_string_lossy().contains(&filter));
@@ -230,6 +236,12 @@ async fn scenarios() -> TestResult {
     let count = paths.len();
     let mut results = stream::iter(paths.into_iter().map(|path| {
         let root = root.clone();
+        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+        let root = if path.starts_with(&local_root) {
+            local_root.clone()
+        } else {
+            root
+        };
         async move {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
@@ -245,7 +257,9 @@ async fn scenarios() -> TestResult {
     .buffer_unordered(count);
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
-        let name = path.strip_prefix(&root)?.display();
+        let name = path
+            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))?
+            .display();
         match result {
             Ok(()) => println!("PASS {name}"),
             Err(error) => {

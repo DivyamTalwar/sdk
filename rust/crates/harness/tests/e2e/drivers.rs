@@ -56,6 +56,8 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         .ok_or("scenario must be an object")?
         .remove("driver");
     match driver.as_ref().and_then(Value::as_str) {
+        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+        Some("agents") => super::agents::run(value).await,
         None if driver.is_none() => run_execution(scenario::Scenario::from_value(value)?).await,
         Some("executor") => run_execution(scenario::Scenario::from_value(value)?).await,
         Some("composer") => Composer::execute(Composer::parse(value)?).await,

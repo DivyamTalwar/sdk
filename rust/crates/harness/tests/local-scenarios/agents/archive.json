@@ -1,0 +1,120 @@
+{
+  "driver": "agents",
+  "prompt": "Archive the worker and remove it from the active list",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "agent",
+          "arguments": {
+            "command": "spawn",
+            "reference": "worker",
+            "prompt": "original work",
+            "model": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "agent",
+          "arguments": {
+            "command": "wait",
+            "reference": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "agent",
+          "arguments": {
+            "command": "control",
+            "reference": "worker",
+            "action": "archive"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "agent",
+          "arguments": {
+            "command": "wait",
+            "reference": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "list",
+          "name": "agent",
+          "arguments": {
+            "command": "list"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 6,
+      "worker": 1
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Archived",
+        "settled": true,
+        "inputs": 1
+      }
+    },
+    "model_requests": {
+      "parent": [
+        {
+          "messages": [{"role":"tool","content":{"kind":"tool_result","call_id":"list","name":"agent","content":{"kind":"json","value":{"agents":[]}}}}]
+        }
+      ]
+    }
+  }
+}

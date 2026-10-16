@@ -1,0 +1,97 @@
+{
+  "driver": "agents",
+  "prompt": "Interrupt a settled worker and retain its files",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "agent",
+          "arguments": {
+            "command": "spawn",
+            "reference": "worker",
+            "prompt": "original work",
+            "model": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "agent",
+          "arguments": {
+            "command": "wait",
+            "reference": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "agent",
+          "arguments": {
+            "command": "control",
+            "reference": "worker",
+            "action": "interrupt"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "agent",
+          "arguments": {
+            "command": "wait",
+            "reference": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 5,
+      "worker": 1
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Interrupted",
+        "settled": true,
+        "inputs": 1
+      }
+    }
+  }
+}

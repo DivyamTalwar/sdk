@@ -1,0 +1,156 @@
+{
+  "driver": "agents",
+  "prompt": "Merge results from a grandchild",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "agent",
+          "arguments": {
+            "command": "spawn",
+            "reference": "worker",
+            "prompt": "original work",
+            "model": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "agent",
+          "arguments": {
+            "command": "wait",
+            "reference": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "merge",
+          "name": "fs",
+          "arguments": {
+            "command": "merge agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "agent",
+          "arguments": {
+            "command": "spawn",
+            "reference": "grandchild",
+            "prompt": "write nested result",
+            "model": "grandchild"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "agent",
+          "arguments": {
+            "command": "wait",
+            "reference": "grandchild"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "merge",
+          "name": "fs",
+          "arguments": {
+            "command": "merge agents/grandchild"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "worker finished"
+    ],
+    "grandchild": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "write",
+          "name": "write",
+          "arguments": {
+            "path": "deep.txt",
+            "text": "nested result",
+            "media_type": "text/plain",
+            "display_name": "deep.txt"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "grandchild finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 4,
+      "worker": 4,
+      "grandchild": 2
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": true,
+        "inputs": 1
+      }
+    },
+    "files": {
+      "deep.txt": "nested result"
+    }
+  }
+}
