@@ -7,7 +7,7 @@ impl<P: StreamProvider> Session<P> {
             self.limits.pending_bytes,
             self.pending.len(),
             self.pending_bytes,
-            crate::MAX_RECORD_BYTES + 128,
+            DATA_FRAME_BYTES,
             self.credit.frames > 0 && self.credit.bytes > 0,
         );
         let changed = readiness != self.readiness;
