@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-stream",
@@ -87,6 +88,7 @@ dependencies = [
  "acyclic-contract-derive",
  "allocation-counter",
  "ed25519-dalek",
+ "futures",
  "proptest",
  "prost",
  "prost-reflect",
@@ -159,6 +161,7 @@ dependencies = [
 name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -409,6 +412,8 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
+ "proptest",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -443,11 +448,13 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "async-trait",
  "futures",
  "hex",
  "hyper-util",
+ "proptest",
  "prost",
  "rcgen",
  "rustix 1.1.5",
@@ -547,6 +554,7 @@ dependencies = [
 name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -646,6 +654,7 @@ dependencies = [
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "async-trait",
@@ -740,6 +749,7 @@ dependencies = [
  "axum",
  "bytes",
  "hex",
+ "proptest",
  "prost",
  "prost-reflect",
  "serde_json",
