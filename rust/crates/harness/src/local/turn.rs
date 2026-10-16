@@ -5,7 +5,7 @@ const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
-    pub fn commands(
+    pub(crate) fn commands(
         &self,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
@@ -24,89 +24,89 @@ impl LocalHarness {
         )
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
-    pub async fn submit(
-        &self,
+    pub fn submit<'a>(
+        &'a self,
         operation: OperationId,
-        prompt: &str,
-    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
-        if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid(
-                "local prompt is empty or exceeds the file limit".into(),
-            ));
-        }
-        let publisher = FilesystemContentPublisher::new(
-            self.files.clone(),
-            &self.journal,
-            &self.verifier,
-            &self.signed,
-            self.limits.file_bytes,
-            None,
-        )?;
-        let model = crate::filesystem::ModelTaskCommand {
-            input: ModelContent::Text(prompt.into()),
-            selected_context: None,
-            max_steps: u32::try_from(self.limits.model_steps)
-                .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
-            max_output_tokens: None,
-            mailbox_operation: None,
-            selected_output_volume: None,
-        };
-        let bytes = serde_json::to_vec(&model).map_err(storage)?;
-        let payload = publisher
-            .stage_once(
-                operation,
-                &format!("inputs/{operation}.json"),
-                &bytes,
-                "application/json",
-                "model input",
+        prompt: &'a str,
+    ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
+        Box::pin(async move {
+            if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid(
+                    "local prompt is empty or exceeds the file limit".into(),
+                ));
+            }
+            let publisher = FilesystemContentPublisher::new(
+                self.files.clone(),
+                &self.journal,
+                &self.verifier,
+                &self.signed,
+                self.limits.file_bytes,
                 None,
-            )?
-            .await?
-            .0;
-        let model = WorkflowCommand {
-            operation_id: operation,
-            kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
-            payload,
-        };
-        let receive_operation = receive_operation(operation);
-        let payload = publisher
-            .stage_once(
-                receive_operation,
-                &format!("inputs/{operation}.receive.json"),
-                b"{\"after\":0}",
-                "application/json",
-                "mailbox receive",
-                None,
-            )?
-            .await?
-            .0;
-        let receive = WorkflowCommand {
-            operation_id: receive_operation,
-            kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
-            payload,
-        };
-        let definition = self
-            .runtime
-            .harness()
-            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        self.runtime
-            .harness()
-            .admit(
-                operation,
-                &definition,
-                serde_json::json!({"receive":receive,"model":model}),
-                None,
-            )
-            .await
+            )?;
+            let model = crate::filesystem::ModelTaskCommand {
+                input: ModelContent::Text(prompt.into()),
+                selected_context: None,
+                max_steps: u32::try_from(self.limits.model_steps)
+                    .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
+                max_output_tokens: None,
+                mailbox_operation: None,
+                selected_output_volume: None,
+            };
+            let bytes = serde_json::to_vec(&model).map_err(storage)?;
+            let payload = publisher
+                .stage_once(
+                    operation,
+                    &format!("inputs/{operation}.json"),
+                    &bytes,
+                    "application/json",
+                    "model input",
+                    None,
+                )?
+                .await?
+                .0;
+            let model = WorkflowCommand {
+                operation_id: operation,
+                kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
+                payload,
+            };
+            let receive_operation = receive_operation(operation);
+            let payload = publisher
+                .stage_once(
+                    receive_operation,
+                    &format!("inputs/{operation}.receive.json"),
+                    b"{\"after\":0}",
+                    "application/json",
+                    "mailbox receive",
+                    None,
+                )?
+                .await?
+                .0;
+            let receive = WorkflowCommand {
+                operation_id: receive_operation,
+                kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+                payload,
+            };
+            let definition = self
+                .runtime
+                .harness()
+                .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+            self.runtime
+                .harness()
+                .admit(
+                    operation,
+                    &definition,
+                    serde_json::json!({"receive":receive,"model":model}),
+                    None,
+                )
+                .await
+        })
     }
 
     /// Runs a prompt through durable admission, the fenced worker and stock executor.
     pub async fn run(&self, prompt: &str) -> Result<TurnOutput> {
         let operation = OperationId::new();
-        match Box::pin(self.submit(operation, prompt)).await? {
-            Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
-                Box::pin(self.resume(task_id)).await
-            }
+        match self.submit(operation, prompt).await? {
+            Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => self.resume(task_id).await,
             Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Invalid(
                 "local stock turn was not durably admitted".into(),
             )),
@@ -115,40 +115,35 @@ impl LocalHarness {
         }
     }
 
-    async fn advance(&self, task: TaskId) -> Result<()> {
+    pub(super) async fn advance(
+        &self,
+        task: TaskId,
+        commands: &dyn crate::filesystem::TaskCommandHost,
+    ) -> Result<()> {
         let worker = crate::distributed::Worker {
             id: format!("local-{}", uuid::Uuid::new_v4()),
             available: Default::default(),
             labels: Default::default(),
         };
-        let commands = self.commands()?;
-        let mut attempt = match Box::pin(self.runtime.task_host().recover_work(task, &mut None))
-            .await?
-        {
-            crate::distributed::WorkPull::Claimed(lease) => Some(
-                Box::pin(
+        let mut attempt =
+            match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
+                crate::distributed::WorkPull::Claimed(lease) => Some(
                     self.runtime
-                        .resume_task(lease, &commands, TRANSITIONS_PER_SLICE, None),
-                )
-                .await,
-            ),
-            crate::distributed::WorkPull::Unresolved { error, .. } => {
-                if self.runtime.task_host().outcome(task).await?.is_none() {
-                    return Err(error);
+                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                        .await,
+                ),
+                crate::distributed::WorkPull::Unresolved { error, .. } => {
+                    if self.runtime.task_host().outcome(task).await?.is_none() {
+                        return Err(error);
+                    }
+                    None
                 }
-                None
-            }
-            crate::distributed::WorkPull::Idle => {
-                Box::pin(self.runtime.run_operation(
-                    &worker,
-                    task,
-                    &commands,
-                    TRANSITIONS_PER_SLICE,
-                    None,
-                ))
-                .await?
-            }
-        };
+                crate::distributed::WorkPull::Idle => {
+                    self.runtime
+                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                        .await?
+                }
+            };
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -158,26 +153,20 @@ impl LocalHarness {
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
                     attempt = Some(
-                        Box::pin(self.runtime.resume_task(
-                            lease,
-                            &commands,
-                            TRANSITIONS_PER_SLICE,
-                            None,
-                        ))
-                        .await,
+                        self.runtime
+                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                            .await,
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    attempt = Box::pin(self.runtime.run_operation(
-                        &worker,
-                        task,
-                        &commands,
-                        TRANSITIONS_PER_SLICE,
-                        None,
-                    ))
-                    .await?;
+                    // Only an authenticated wake makes a passive command claimable.
+                    // Without one, run_operation returns None and yields control.
+                    attempt = self
+                        .runtime
+                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                        .await?;
                 }
                 _ => break,
             }
@@ -186,37 +175,40 @@ impl LocalHarness {
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
-    pub async fn resume(&self, task: TaskId) -> Result<TurnOutput> {
-        let definition = self
-            .runtime
-            .harness()
-            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = self.runtime.harness().attach(task, &definition).await?;
-        let terminal = matches!(
-            self.runtime.task_host().outcome(task).await?,
-            Some(
-                crate::Outcome::Succeeded(_)
-                    | crate::Outcome::Failed { .. }
-                    | crate::Outcome::Cancelled
-            )
-        );
-        if !terminal {
-            Box::pin(self.advance(task)).await?;
-            if self.runtime.task_host().outcome(task).await?.is_none() {
-                let admission = self.runtime.task_host().observe_admission(task).await?;
-                return Err(Error::Indeterminate(admission.operation_id));
+    pub fn resume(&self, task: TaskId) -> impl Future<Output = Result<TurnOutput>> {
+        Box::pin(async move {
+            let definition = self
+                .runtime
+                .harness()
+                .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+            let handle = self.runtime.harness().attach(task, &definition).await?;
+            let terminal = matches!(
+                self.runtime.task_host().outcome(task).await?,
+                Some(
+                    crate::Outcome::Succeeded(_)
+                        | crate::Outcome::Failed { .. }
+                        | crate::Outcome::Cancelled
+                )
+            );
+            if !terminal {
+                let commands = self.commands()?;
+                Box::pin(self.advance(task, &commands)).await?;
+                if self.runtime.task_host().outcome(task).await?.is_none() {
+                    let admission = self.runtime.task_host().observe_admission(task).await?;
+                    return Err(Error::Indeterminate(admission.operation_id));
+                }
             }
-        }
-        match handle.result().await? {
-            crate::Outcome::Succeeded(output) => Ok(output),
-            crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
-            crate::Outcome::Cancelled => Err(Error::InteractionRejected(
-                crate::InteractionRejection::Cancelled,
-            )),
-            crate::Outcome::Indeterminate { operation_id } => {
-                Err(Error::Indeterminate(operation_id))
+            match handle.result().await? {
+                crate::Outcome::Succeeded(output) => Ok(output),
+                crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
+                crate::Outcome::Cancelled => Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                )),
+                crate::Outcome::Indeterminate { operation_id } => {
+                    Err(Error::Indeterminate(operation_id))
+                }
             }
-        }
+        })
     }
 }
 

@@ -6,6 +6,25 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Binds workspace command execution before sharing the runtime.
+    pub fn with_workspace_tools(
+        mut self,
+        executor: Arc<dyn crate::tool::ToolExecutor>,
+    ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self._native_configuration_custody.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "workspace tool binding requires ordinary runtime construction",
+            });
+        }
+        let harness = Arc::get_mut(&mut self.harness).ok_or_else(|| {
+            Error::Conflict("bind workspace tools before sharing the runtime".into())
+        })?;
+        harness.workspace_tools = Some(executor);
+        Ok(self)
+    }
+
     /// Binds the trusted root's default output volume before sharing the runtime.
     /// Task scopes still require the volume's write grant; created children retain
     /// their independently authenticated output selection.

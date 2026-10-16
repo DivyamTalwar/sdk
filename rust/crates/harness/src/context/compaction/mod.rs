@@ -28,19 +28,20 @@ impl Default for ThresholdCompaction {
 }
 
 impl ThresholdCompaction {
-    /// Selects default budgets that fit the provider's advertised capacity.
-    pub fn for_capacity(capacity: ModelContextCapacity) -> Result<Self> {
+    /// Splits usable input capacity after fixed request overhead between recent
+    /// context and space for mandatory content and a replacement summary.
+    pub(crate) fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
         let mut policy = Self::default();
         policy.response_reserve_tokens = policy
             .response_reserve_tokens
             .min(capacity.output_tokens)
             .min(capacity.context_tokens.saturating_sub(2));
-        policy.recent_tokens = policy.recent_tokens.min(
-            capacity
-                .context_tokens
-                .saturating_sub(policy.response_reserve_tokens + 1),
-        );
+        let usable = capacity
+            .context_tokens
+            .saturating_sub(policy.response_reserve_tokens)
+            .saturating_sub(fixed_tokens);
+        policy.recent_tokens = policy.recent_tokens.min(usable / 2);
         policy.validate(capacity, None)?;
         Ok(policy)
     }
@@ -126,5 +127,7 @@ pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
 pub(crate) use allocation::reserve_vector;
 use allocation::{quota_vector, retire_vector};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod defaults_tests;
 #[cfg(test)]
 mod tests;

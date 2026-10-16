@@ -1,26 +1,9 @@
+pub(super) use super::owner_record::Owner;
 use super::*;
-use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
 };
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Owner {
-    pub key: [u8; 32],
-    pub agent: AgentId,
-    pub task: TaskId,
-    pub project: VolumeRef,
-    workspace: Option<PathBuf>,
-    pub(super) workspace_identity: Option<[u8; 16]>,
-}
-
-impl Drop for Owner {
-    fn drop(&mut self) {
-        self.key.fill(0);
-    }
-}
 
 pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     let (path, volume) = match project {

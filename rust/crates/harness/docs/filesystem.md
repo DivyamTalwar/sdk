@@ -8,7 +8,7 @@ volume grants govern reads and writes, including replay.
 opens a normal checkout lazily with `filesystem-local,native-execution`. Owner
 credentials and durable state live in the per-user local data directory under
 `acyclic/harness/<canonical-path-hash>`; nothing is created in the checkout.
-`LocalProject::Volume { directory, volume }` selects an existing local project
+`LocalHarnessConfig::new(directory, (model, provider)).volume(volume)` selects an existing local project
 volume with `filesystem-local`. Both selections create an owner issuer, signed
 tool grants, durable task host, execution journals and private scratch.
 

@@ -334,11 +334,17 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-stream",
+ "bytes",
  "futures",
  "libfuzzer-sys",
  "prost",
+ "rmcp",
  "serde_json",
+ "serde",
  "tempfile",
+ "tokio-util",
+ "tokio",
+ "which",
 ]
 
 [[package]]

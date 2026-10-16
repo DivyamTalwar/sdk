@@ -1,4 +1,37 @@
 use super::*;
+use proptest::prelude::*;
+use std::collections::BTreeSet;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // Disjoint catalogs compose as set union; any overlap refuses atomically,
+    // preserving every original selected definition.
+    #[test]
+    fn registry_extension_is_disjoint_union_or_unchanged(
+        left in proptest::collection::btree_set("[a-c]{1,4}", 0..8),
+        right in proptest::collection::btree_set("[a-c]{1,4}", 0..8),
+    ) {
+        let registry = |names: &BTreeSet<String>| {
+            let mut registry = ToolRegistry::default();
+            for name in names {
+                let mut tool = example_tool();
+                tool.definition.name = name.clone();
+                registry.register((tool, None), &mut None, None).unwrap();
+            }
+            registry
+        };
+        let mut merged = registry(&left);
+        let before = merged.definitions(None).unwrap();
+        let accepted = merged.extend(registry(&right)).is_ok();
+        prop_assert_eq!(accepted, left.is_disjoint(&right));
+        if accepted {
+            let actual: BTreeSet<_> = merged.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
+            prop_assert_eq!(actual, left.union(&right).cloned().collect::<BTreeSet<_>>());
+        } else {
+            prop_assert_eq!(merged.definitions(None).unwrap(), before);
+        }
+    }
+}
 
 #[test]
 fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {

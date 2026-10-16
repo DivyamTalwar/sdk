@@ -112,7 +112,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     let stdout = temp.path().join("stdout");
     let stderr = temp.path().join("stderr");
     let paths = (stdout.clone(), stderr.clone());
-    let observer = Arc::new(move |chunk| {
+    let observer: Arc<NativeProcessObserver> = Arc::new(move |chunk| {
         let (path, bytes) = match chunk {
             acyclic_native_runtime::ProcessOutput::Stdout(bytes) => (&paths.0, bytes),
             acyclic_native_runtime::ProcessOutput::Stderr(bytes) => (&paths.1, bytes),

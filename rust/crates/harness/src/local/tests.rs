@@ -10,12 +10,12 @@ use crate::{
     context::ModelContextCapacity,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelEvent, ModelProvider},
     resources::ProviderRef,
     runtime::{TaskStateProvider, ToolContext},
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -36,45 +36,6 @@ fn capacity() -> ModelContextCapacity {
     }
 }
 
-struct Interrupted {
-    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    inner: ScriptedModelProvider,
-}
-impl ModelProvider for Interrupted {
-    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
-        self.inner.context_capacity(model)
-    }
-    fn count_tokens(
-        &self,
-        request: &PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        self.inner.count_tokens(request)
-    }
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        dispatch: ModelDispatch,
-    ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        let _stream = self.inner.generate(request, dispatch);
-        if let Ok(mut started) = self.started.lock() {
-            if let Some(started) = started.take() {
-                let _ = started.send(());
-                return Box::pin(futures::stream::pending());
-            }
-        }
-        Box::pin(futures::stream::iter([Err(Error::Conflict(
-            "model dispatched twice".into(),
-        ))]))
-    }
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: ModelDispatch,
-        observed: &'a [ModelEvent],
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        self.inner.reconcile(dispatch, observed)
-    }
-}
-
 fn model() -> Result<Model> {
     Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)
 }
@@ -86,15 +47,22 @@ fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -
         output_tokens: 4096,
     };
     let explicit = acyclic_harness::context::ThresholdCompaction::default();
-    let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity)?;
+    let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity, 24_000)?;
     assert_eq!(automatic.validate(capacity, None)?, capacity.output_tokens);
-    assert_eq!(automatic.recent_tokens, explicit.recent_tokens);
+    assert!(automatic.recent_tokens < explicit.recent_tokens);
+    assert!(
+        24_000 + automatic.response_reserve_tokens + 2 * automatic.recent_tokens
+            <= capacity.context_tokens
+    );
     assert!(explicit.validate(capacity, None).is_err());
     assert!(
-        acyclic_harness::context::ThresholdCompaction::for_capacity(ModelContextCapacity {
-            context_tokens: 2,
-            output_tokens: 1
-        })
+        acyclic_harness::context::ThresholdCompaction::for_capacity(
+            ModelContextCapacity {
+                context_tokens: 2,
+                output_tokens: 1
+            },
+            0
+        )
         .is_err()
     );
     Ok(())
@@ -114,6 +82,24 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     ));
     assert!(!owner_path.exists());
     assert_eq!(provider.requests().len(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_tool_catalog_fails_before_owner_creation_or_model_dispatch() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let mut oversized = tool("test.oversized");
+    oversized.definition.description = "x".repeat(capacity().context_tokens as usize);
+    let config = volume_config(directory.path(), project, provider.clone())?.tool(oversized);
+    let owner = super::owner::state_directory(&config.project)?.join("owner.json");
+    assert!(matches!(
+        LocalHarness::open(config).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(!owner.exists());
+    assert!(provider.requests().is_empty());
     Ok(())
 }
 
@@ -161,13 +147,7 @@ fn volume_config(
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
-    Ok(LocalHarnessConfig::new(
-        super::LocalProject::Volume {
-            directory: directory.join("filesystem"),
-            volume,
-        },
-        (model()?, provider),
-    ))
+    Ok(LocalHarnessConfig::new(directory.join("filesystem"), (model()?, provider)).volume(volume))
 }
 
 async fn volume(directory: &Path) -> Result<VolumeRef> {
@@ -258,32 +238,72 @@ async fn defaults_are_additive_and_opt_out_retains_custom_grants() -> Result<()>
     Ok(())
 }
 
+const MAX_LOCAL_FUTURE_BYTES: usize = 4096;
+
+fn bounded_future<F: std::future::Future>(name: &str, future: F) -> F {
+    let bytes = std::mem::size_of_val(&future);
+    eprintln!("{name} future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_LOCAL_FUTURE_BYTES,
+        "{name} future is {bytes} bytes; API futures must fit {MAX_LOCAL_FUTURE_BYTES} bytes"
+    );
+    future
+}
+
 #[tokio::test]
 async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let project = volume(directory.path()).await?;
+    let directory = tempfile::tempdir().map_err(super::storage)?;
     let provider = text();
-    let config = || {
-        Ok::<_, Error>(volume_config(
-            directory.path(),
-            project.clone(),
-            provider.clone(),
-        )?)
+    #[cfg(feature = "native-execution")]
+    let selection = {
+        let checkout = directory.path().join("checkout");
+        std::fs::create_dir(&checkout).map_err(super::storage)?;
+        checkout
     };
-    let harness = LocalHarness::open(config()?).await?;
+    #[cfg(not(feature = "native-execution"))]
+    let project = volume(directory.path()).await?;
+    let config = || {
+        #[cfg(feature = "native-execution")]
+        {
+            Ok::<_, Error>(LocalHarnessConfig::new(
+                selection.join("."),
+                (model()?, provider.clone()),
+            ))
+        }
+        #[cfg(not(feature = "native-execution"))]
+        {
+            volume_config(directory.path(), project.clone(), provider.clone())
+        }
+    };
+    let harness = bounded_future("open", LocalHarness::open(config()?)).await?;
+    #[cfg(feature = "native-execution")]
+    assert_checkout(&harness, directory.path()).await?;
     let operation = OperationId::new();
     let Admission::Accepted(acyclic_harness::runtime::RuntimeTask::Durable {
         task_id: task, ..
-    }) = harness.submit(operation, "finish this task").await?
+    }) = bounded_future("submit", harness.submit(operation, "finish this task")).await?
     else {
         return Err(Error::Conflict("stock admission rejected".into()));
     };
     let scope = harness.signed.clone();
+    let project = harness.project().clone();
     drop(harness);
-    let reopened = LocalHarness::open(config()?).await?;
+    let reopened = bounded_future("reopen", LocalHarness::open(config()?)).await?;
     assert_eq!(&reopened.signed, &scope);
+    assert_eq!(reopened.project(), &project);
+    assert_eq!(
+        bounded_future("recovery", reopened.resume(task))
+            .await?
+            .text,
+        "done"
+    );
     assert_eq!(reopened.resume(task).await?.text, "done");
-    assert_eq!(reopened.resume(task).await?.text, "done");
+    assert_eq!(provider.requests().len(), 1);
+    drop(bounded_future(
+        "turn",
+        reopened.run("measure without dispatch"),
+    ));
+    assert_pending_command_returns_control(&reopened).await?;
     assert_eq!(provider.requests().len(), 1);
     Ok(())
 }
@@ -293,25 +313,28 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let (started, boundary) = tokio::sync::oneshot::channel();
-    let provider = Arc::new(Interrupted {
-        started: Mutex::new(Some(started)),
-        inner: ScriptedModelProvider::new([ScriptedTurn::Text(
-            "discarded interrupted response".into(),
-        )])
-        .with_context_capacity(capacity())
-        .with_reconciliations([ScriptedReconciliation {
-            orphan: false,
-            observed: vec![],
-            continuation: Some(vec![
-                ModelEvent::Content {
-                    delta: "recovered".into(),
-                },
-                ModelEvent::Completed {
-                    metadata: json!({}),
-                },
-            ]),
-        }]),
-    });
+    let started = Mutex::new(Some(started));
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])])
+            .with_context_capacity(capacity())
+            .with_dispatch_observer(move |_| {
+                if let Some(started) = started.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                }
+            })
+            .with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: Some(vec![
+                    ModelEvent::Content {
+                        delta: "recovered".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: json!({}),
+                    },
+                ]),
+            }]),
+    );
     let config = || {
         Ok::<_, Error>(volume_config(
             directory.path(),
@@ -328,7 +351,12 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     else {
         return Err(Error::Conflict("stock admission rejected".into()));
     };
-    match futures::future::select(Box::pin(harness.resume(task)), boundary).await {
+    match futures::future::select(
+        bounded_future("inflight recovery", harness.resume(task)),
+        boundary,
+    )
+    .await
+    {
         futures::future::Either::Right((Ok(()), execution)) => drop(execution),
         _ => {
             return Err(Error::Conflict(
@@ -359,8 +387,8 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
     assert_eq!(retained.reservation.id, original.reservation.id);
     assert_eq!(reopened.resume(task).await?.text, "recovered");
     assert_eq!(reopened.resume(task).await?.text, "recovered");
-    assert_eq!(provider.inner.requests().len(), 1);
-    assert_eq!(provider.inner.reconciliations().len(), 1);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.reconciliations().len(), 1);
     Ok(())
 }
 
@@ -487,19 +515,43 @@ async fn root_output_requires_task_grants_and_exclusive_configuration() -> Resul
 }
 
 #[cfg(feature = "native-execution")]
-#[tokio::test]
-async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let checkout = directory.path().join("checkout");
-    std::fs::create_dir(&checkout).map_err(|error| Error::Storage(error.to_string()))?;
-    std::fs::write(checkout.join("hello.txt"), "original checkout")
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let config = || Ok::<_, Error>(LocalHarnessConfig::new(&checkout, (model()?, text())));
-    let state = super::owner::state_directory(&config()?.project)?;
-    let harness = LocalHarness::open(config()?).await?;
-    assert!(!state.starts_with(std::fs::canonicalize(&checkout).map_err(super::storage)?));
+async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
+    let checkout = harness
+        .workspace_path()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?;
+    let config = LocalHarnessConfig::new(checkout, (model()?, text()));
+    let state = super::owner::state_directory(&config.project)?;
+    assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
+    assert_eq!(
+        std::fs::read_dir(checkout).map_err(super::storage)?.count(),
+        0
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert!(
+            state.starts_with(
+                dirs::data_local_dir()
+                    .ok_or_else(|| Error::NotFound("user data".into()))?
+                    .join("acyclic/harness")
+            )
+        );
+        assert_eq!(
+            std::fs::metadata(state.join("owner.json"))
+                .map_err(super::storage)?
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&state).map_err(super::storage)?.mode() & 0o777,
+            0o700
+        );
+    }
+    // The view must read a source file created after open without a checkout scan.
+    std::fs::write(checkout.join("hello.txt"), "original checkout").map_err(super::storage)?;
     let workspace = harness
         .workspace()
         .ok_or_else(|| Error::NotFound("checkout view".into()))?;
@@ -517,14 +569,9 @@ async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
         .view()
         .read("/hello.txt", 1024, &mut accounting)
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(super::storage)?;
     assert_eq!(bytes.bytes.as_ref(), b"original checkout");
-    drop(bytes);
-    let project = harness.project().clone();
-    drop(harness);
-    let reopened = LocalHarness::open(config()?).await?;
-    assert_eq!(reopened.project(), &project);
-    let other = LocalHarnessConfig::new(directory.path(), (model()?, text()));
+    let other = LocalHarnessConfig::new(other, (model()?, text()));
     assert!(matches!(
         super::owner::Owner::open(&state, &other.project),
         Err(Error::Unauthorized(_))
@@ -532,49 +579,92 @@ async fn checkout_is_lazy_and_state_cannot_be_repointed() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(unix, feature = "native-execution"))]
-#[tokio::test]
-async fn owner_credentials_are_private_and_never_created_in_the_checkout() -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let checkout = tempfile::tempdir().map_err(super::storage)?;
-    let config = LocalHarnessConfig::new(checkout.path(), (model()?, text()));
-    let directory = super::owner::state_directory(&config.project)?;
-    let harness = LocalHarness::open(config).await?;
-    assert_eq!(
-        std::fs::read_dir(checkout.path())
-            .map_err(super::storage)?
-            .count(),
-        0
+#[cfg(feature = "native-execution")]
+#[test]
+fn checkout_attach_has_a_stable_distinct_operation_identity() {
+    let task = crate::TaskId::from_bytes([7; 16]);
+    let operation = super::workspace::attach_operation(task);
+    assert_eq!(operation, super::workspace::attach_operation(task));
+    assert_ne!(operation.into_bytes(), task.into_bytes());
+    assert_ne!(
+        operation,
+        super::workspace::attach_operation(crate::TaskId::from_bytes([8; 16]))
     );
+}
+
+struct PendingCommand(std::sync::atomic::AtomicUsize);
+
+impl crate::filesystem::TaskCommandHost for PendingCommand {
+    fn execute<'a>(
+        &'a self,
+        _: crate::runtime::TaskContext,
+        _: crate::scheduler::LeaseFence,
+        command: crate::workflow::WorkflowCommand,
+        _: Value,
+    ) -> BoxProviderFuture<'a, Result<crate::filesystem::TaskCommandProgress>> {
+        Box::pin(async move {
+            use crate::filesystem::TaskCommandProgress;
+            assert_eq!(
+                command.kind,
+                crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
+            );
+            let calls = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(calls < 2, "pending command was retried without progress");
+            Ok(TaskCommandProgress::Pending)
+        })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        context: crate::runtime::TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        command: crate::workflow::WorkflowCommand,
+        payload: Value,
+    ) -> BoxProviderFuture<'a, Result<crate::filesystem::TaskCommandProgress>> {
+        self.execute(context, fence, command, payload)
+    }
+}
+
+async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Result<()> {
+    let operation = OperationId::new();
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =
+        harness.submit(operation, "wait for external work").await?
+    else {
+        return Err(Error::Conflict("stock admission rejected".into()));
+    };
+    let commands = PendingCommand(std::sync::atomic::AtomicUsize::new(0));
+    Box::pin(harness.advance(task, &commands)).await?;
+    assert_eq!(commands.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(harness.runtime.task_host().outcome(task).await?.is_none());
+    let suspension = harness
+        .runtime
+        .task_host()
+        .workflow_suspension(task, &mut None)
+        .await?
+        .ok_or_else(|| Error::NotFound("pending command suspension".into()))?;
+    let admission = harness.runtime.task_host().observe_admission(task).await?;
+    let receive = serde_json::from_value::<crate::workflow::WorkflowCommand>(
+        admission.input["receive"].clone(),
+    )
+    .map_err(super::storage)?;
+    assert_eq!(suspension.waiting_command, Some(receive.operation_id));
+    assert!(!harness.runtime.poll_task_wake(task, None).await?);
+    let worker = crate::distributed::Worker {
+        id: "pending-test".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
     assert!(
-        directory.starts_with(
-            dirs::data_local_dir()
-                .ok_or_else(|| Error::NotFound("user data".into()))?
-                .join("acyclic/harness")
+        bounded_future(
+            "worker operation",
+            harness
+                .runtime
+                .run_operation(&worker, task, &commands, 1, None),
         )
+        .await?
+        .is_none()
     );
-    assert_eq!(
-        std::fs::metadata(directory.join("owner.json"))
-            .map_err(super::storage)?
-            .mode()
-            & 0o777,
-        0o600
-    );
-    assert_eq!(
-        std::fs::metadata(&directory)
-            .map_err(super::storage)?
-            .mode()
-            & 0o777,
-        0o700
-    );
-    let original = harness.signed.clone();
-    drop(harness);
-    let reopened = LocalHarness::open(LocalHarnessConfig::new(
-        checkout.path().join("."),
-        (model()?, text()),
-    ))
-    .await?;
-    assert_eq!(original, reopened.signed);
+    assert_eq!(commands.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -626,3 +716,8 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     assert_eq!(provider.requests().len(), 0);
     Ok(())
 }
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checked_commands;
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout;

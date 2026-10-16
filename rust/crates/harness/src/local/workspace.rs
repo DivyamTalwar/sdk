@@ -4,21 +4,35 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 
+pub(super) type View = LazyWorkspace<
+    LocalAuthorityBackend,
+    LocalObjectBackend,
+    NativeDemandSource,
+    LocalCoreStateStore,
+>;
+
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
-    view: LazyWorkspace<
-        LocalAuthorityBackend,
-        LocalObjectBackend,
-        NativeDemandSource,
-        LocalCoreStateStore,
-    >,
+    view: View,
+    pub(super) filesystem: acyclic_fs::LocalFs,
+    pub(super) store: LocalCoreStateStore,
+    pub(super) identity: acyclic_fs::NativeRootIdentity,
+}
+
+pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.local.checkout-attach/v1\0");
+    hash.update(&task.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    acyclic_fs::OperationId::from_bytes(bytes)
 }
 
 impl LocalWorkspace {
     /// Source-backed filesystem view. No checkout scan occurs during open.
     #[must_use]
-    pub const fn view(
+    pub(crate) const fn view(
         &self,
     ) -> &LazyWorkspace<
         LocalAuthorityBackend,
@@ -76,7 +90,7 @@ pub(super) async fn open(
                 .open_workspace(&name, &work, &cancellation)
                 .await
                 .map_err(storage)?;
-            LazyWorkspace::open(workspace, source, store, &mut accounting)
+            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
                 .await
                 .map_err(storage)?
         }
@@ -85,7 +99,7 @@ pub(super) async fn open(
                 filesystem,
                 &name,
                 source,
-                store,
+                store.clone(),
                 acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
                 operation,
                 &mut accounting,
@@ -95,5 +109,17 @@ pub(super) async fn open(
             .0
         }
     };
-    Ok(LocalWorkspace { path, view })
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(view.workspace())
+        .await
+        .map_err(storage)?;
+    Ok(LocalWorkspace {
+        path,
+        view,
+        filesystem: filesystem.clone(),
+        store,
+        identity: acyclic_fs::NativeRootIdentity::from_bytes(
+            identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
+        ),
+    })
 }
