@@ -179,6 +179,10 @@ impl TaskFile {
     }
 }
 
+#[path = "input_path.rs"]
+mod input_path;
+pub use input_path::InputPath;
+
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
@@ -198,6 +202,8 @@ pub enum FileKey {
     },
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
+    /// Editable command definitions and workspace files followed by UI queries.
+    Input(InputPath),
     /// Ordinary editable Markdown in the private volume's plans folder.
     Plan(Component),
     /// Child fork mount declaration with lineage and capability references.
@@ -288,6 +294,9 @@ impl FileKey {
                     name: id(name)?,
                 });
             }
+            ["commands" | "workspace", ..] => {
+                return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
+            }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
                 return Ok(Self::Plan(id(name
@@ -370,6 +379,7 @@ impl FileKey {
                 format!(".sessions/{}/{}", session.as_str(), file.path())
             }
             Self::Ui { directory, name } => format!(".ui/{}/{}", directory.as_str(), name.as_str()),
+            Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
@@ -385,7 +395,7 @@ impl FileKey {
                 file: TaskFile::Request(_),
                 ..
             } => Owner::Caller,
-            Self::Goal | Self::Plan(_) => Owner::Agent,
+            Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
                 ..
@@ -403,6 +413,7 @@ impl FileKey {
             self,
             Self::Ui { .. }
                 | Self::Goal
+                | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {
                     file: TaskFile::Status,
@@ -426,6 +437,8 @@ pub enum Query {
     },
     /// Entire private task volume.
     Root,
+    /// Command definitions and workspace files used by the input UI.
+    Inputs,
     /// Editable Markdown files in the private volume's plans folder.
     Plans,
     /// All task records.
@@ -551,6 +564,10 @@ impl Query {
                     file: TaskFile::ExecutionResult(maximum),
                 }),
             ),
+            Self::Inputs => (
+                Included(FileKey::Input(InputPath(String::new()))),
+                Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
+            ),
             Self::Plans => (
                 Included(FileKey::Plan(minimum)),
                 Included(FileKey::Plan(maximum)),
@@ -643,6 +660,7 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
+            (Self::Inputs, FileKey::Input(_)) => true,
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)

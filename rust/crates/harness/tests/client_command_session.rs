@@ -1,12 +1,17 @@
 use super::*;
 use acyclic_harness::{
-    OperationId, TaskId,
+    AgentId, Capabilities, OperationId, TaskId,
+    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    core::{AggregateKind, Authority, AuthorityIssuer},
+    filesystem::FilesystemHost,
+    resources::ProviderRef,
     client::{CommandFileRoot, CommandSession, CommandTool},
     task_volume::{Component, FileKey, FileValue, Query, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use futures::FutureExt as _;
 use proptest::prelude::*;
+use std::sync::Arc;
 
 fn session_id() -> uuid::Uuid {
     uuid::Uuid::from_bytes([7; 16])
@@ -647,7 +652,8 @@ proptest! {
             prop_assert_eq!(FileKey::parse(&key.path()).unwrap(), key.clone());
             prop_assert_eq!(serde_json::from_slice::<FileKey>(&serde_json::to_vec(&key).unwrap()).unwrap(), key.clone());
             prop_assert_eq!(key.owner(), acyclic_harness::task_volume::Owner::Harness);
-            prop_assert!(Query::folder(&format!(".tasks/{directory}/executions")).unwrap().matches(&key));
+            let folder = format!(".tasks/{directory}/executions");
+            prop_assert!(Query::folder(&folder).unwrap().matches(&key));
         }
         for bad in [format!(".ui/../{name}"), format!(".ui/{directory}//{name}"), format!(".ui/{directory}/{name}/.."), format!(".ui/{directory}/.")] {
             prop_assert!(FileKey::parse(&bad).is_err());
