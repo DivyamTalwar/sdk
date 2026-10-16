@@ -5,6 +5,7 @@ pub(super) struct Configuration<'a> {
     #[cfg(feature = "native-execution")]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
+    pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,
@@ -21,7 +22,13 @@ pub(super) struct Configuration<'a> {
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
-pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
+pub(super) async fn open(
+    config: Configuration<'_>,
+) -> Result<(
+    Arc<LocalTaskRuntime>,
+    Scope,
+    Arc<crate::task_volume::TaskFiles<LocalStream>>,
+)> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let definition = stock.definition()?;
@@ -80,6 +87,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     .with_run_limits(config.run_limits, &mut None)?;
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(config.journal.capability(operation, &mut None)?);
+        grants.push(config.task_volume.capability(operation, &mut None)?);
     }
     let signed = config.issuer.issue(
         "owner",
@@ -88,6 +96,16 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         None,
         &mut None,
     )?;
+    let task_files = Arc::new(
+        crate::task_volume::TaskFiles::open(
+            Arc::clone(&config.stream),
+            config.task_volume,
+            config.verifier,
+            &signed,
+            config.limits.file_bytes,
+        )
+        .await?,
+    );
     let creation = Arc::new(FilesystemResourceCreationProvider::new(
         config.files.clone(),
         config.issuer,
@@ -124,7 +142,13 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     let runtime = match config.workspace {
         Some(workspace) => {
             let tools = Arc::new(
-                checkout_tools::CheckoutTools::new(workspace, config.project, config.clock).await?,
+                checkout_tools::CheckoutTools::new(
+                    workspace,
+                    config.project,
+                    config.clock,
+                    Arc::clone(&task_files),
+                )
+                .await?,
             );
             let publisher = checkout_tools::publisher::CheckoutPublisher::new(
                 tools.clone(),
@@ -140,5 +164,5 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         }
         None => runtime,
     };
-    Ok((Arc::new(runtime), signed))
+    Ok((Arc::new(runtime), signed, task_files))
 }

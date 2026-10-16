@@ -21,6 +21,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.admission
     }
 
+    pub(crate) fn deadline_epoch_ms(&self) -> Option<u64> {
+        self.admission.run_limits.deadline_epoch_ms
+    }
+
     pub(crate) fn input_limits(&self) -> crate::conversation::Limits {
         self.admission.limits
     }
@@ -619,10 +623,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             work,
         )?;
         let (key, held) = crate::distributed::digest_key(&digest, work)?;
-        let mut request = crate::distributed::commit_request(key, held, work);
-        crate::distributed::add_condition(&mut request, owner)?;
-        crate::distributed::add_condition(&mut request, target)?;
-        crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
+        let request = crate::distributed::journal_request::<true>(
+            key,
+            held,
+            owner,
+            target,
+            path.clone(),
+            bytes.clone(),
+            work,
+        )?;
         let (outcome, retained) =
             crate::distributed::commit(request, &self.host.stream, Some(self.operation_id()), None)
                 .await?;

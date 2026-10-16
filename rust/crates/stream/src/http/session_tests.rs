@@ -73,6 +73,37 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
     );
     let result: TestResult = async {
         let client = HttpStream::new(&endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
+        let status_path = StreamPath::new("status")?;
+        let latest_value = wire::SessionLatestValue {
+            key: Bytes::from_static(b"agent"),
+            value: Bytes::from_static(b"running"),
+            attention: true,
+        };
+        provider
+            .append(AppendRequest {
+                path: status_path,
+                records: vec![latest_value.encode_to_vec().into()],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let mut overview = client
+            .follow_data(
+                wire::SessionFollow {
+                    path: "status".into(),
+                    delivery: wire::SessionDelivery::Latest as i32,
+                    ..Default::default()
+                },
+                0,
+            )
+            .await?;
+        let data = overview.next().await.ok_or("latest ended")??;
+        assert_eq!(
+            data.item,
+            Some(wire::session_data::Item::LatestValue(latest_value))
+        );
+        assert_eq!(data.after.as_ref().map(|cursor| cursor.next), Some(1));
+        assert_eq!((data.accepted, data.durable), (1, 0));
         let path = StreamPath::new("events")?;
         assert_eq!(
             client.watermarks(path.clone()).await?,
@@ -85,6 +116,24 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         let mut follows =
             futures::future::try_join_all(clones.iter().map(|clone| clone.follow(path.clone(), 1)))
                 .await?;
+        let anchor = provider
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 0,
+                limit: 1,
+            })
+            .await?
+            .next()
+            .await
+            .ok_or("missing seed")??
+            .commit_id;
+        assert!(matches!(
+            client
+                .follow_checked(path.clone(), 1, CommitId::from_bytes([42; 32]))
+                .await,
+            Err(StreamError::PrefixNotRetained)
+        ));
+        let mut checked = client.follow_checked(path.clone(), 1, anchor).await?;
         let mut children = client
             .children(ChildrenRequest {
                 parent: Some(StreamPath::new("agents")?),
@@ -105,6 +154,14 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             );
         }
         append(&provider, "events").await?;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), checked.next())
+                .await?
+                .ok_or("checked follow ended")??
+                .sequence,
+            1
+        );
+        drop(checked);
         for follow in &mut follows {
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(1), follow.next())
