@@ -1,11 +1,13 @@
 //! Logical task files over single-event appends and immutable segment views.
 
 pub(crate) mod command_query;
+mod files;
 mod follow;
 mod heads;
 mod schema;
 mod segment;
 mod watermarks;
+pub use files::TaskFiles;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use schema::{
@@ -31,6 +33,9 @@ pub enum Error {
     /// Underlying durable storage failure.
     #[error(transparent)]
     Storage(StreamError),
+    /// The authenticated caller cannot write a privileged task record.
+    #[error("task-volume write is not authorized")]
+    Unauthorized,
     /// Noncanonical logical path or identifier.
     #[error("invalid task-volume path")]
     InvalidPath,

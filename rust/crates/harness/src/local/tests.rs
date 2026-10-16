@@ -721,3 +721,6 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+
+#[path = "tests/task_files.rs"]
+mod task_files;
