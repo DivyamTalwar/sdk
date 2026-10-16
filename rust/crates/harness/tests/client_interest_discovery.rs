@@ -3,7 +3,7 @@
 use super::path;
 use acyclic_harness::{
     Error,
-    client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
+    client::{SwarmChange, SwarmClientLimits},
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{AppendRequest, MemoryStream, StreamProvider, wire};
@@ -112,8 +112,7 @@ async fn discover_with_creation(
             Ok::<_, Error>((updates, created, provider))
         },
     ));
-    let client = SwarmClient::new(
-        path("swarm"),
+    let mut client = super::client(
         limits((count + usize::from(new_child.is_some_and(|id| id != usize::MAX))).max(1)),
     )
     .unwrap();
@@ -125,10 +124,10 @@ async fn discover_with_creation(
             futures::stream::pending(),
             |_, _| futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath)),
             |update| {
-                futures::future::ready(match update {
-                    SwarmUpdate::Layout(_) => Err(Error::Unsupported("complete".into())),
+                match update {
+                    SwarmChange::Layout => Err(Error::Unsupported("complete".into())),
                     _ => Ok(()),
-                })
+                }
             },
         )
         .await;
@@ -222,7 +221,8 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
         for channel_id in [0, 1, 2, 3] {
             let (frames, incoming) = mpsc::unbounded();
             let snapshots = RefCell::new(0);
-            let client = SwarmClient::new(path("swarm"), limits(1)).unwrap();
+            let mut client = super::client(limits(1)).unwrap();
+            let views = client.views();
             let result = client
                 .follow(
                     provider.as_ref(),
@@ -235,11 +235,11 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
                     },
                     |update| {
                         match update {
-                            SwarmUpdate::Snapshot { snapshot, .. } => {
-                                assert_eq!(snapshot.files.len(), 1);
+                            SwarmChange::Snapshot { agent, .. } => {
+                                assert_eq!(views.read(|v| v.files(&agent).count()).unwrap(), 1);
                                 *snapshots.borrow_mut() += 1;
                             }
-                            SwarmUpdate::Layout(_) => frames
+                            SwarmChange::Layout => frames
                                 .unbounded_send(Ok(wire::SessionFrame {
                                     channel_id,
                                     generation: 1,
@@ -253,7 +253,7 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
                                 .unwrap(),
                             _ => {}
                         }
-                        futures::future::ready(Ok(()))
+                        Ok(())
                     },
                 )
                 .await;

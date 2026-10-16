@@ -2,7 +2,7 @@
 use super::path;
 use acyclic_harness::{
     Error,
-    client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
+    client::{SwarmClientLimits, SwarmChange},
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, StreamProvider, wire, wire_codec::session::follow_records};
@@ -127,7 +127,7 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
             },
         ));
         let snapshots = RefCell::new(0);
-        let result = SwarmClient::new(path("swarm"), limits())
+        let result = super::client(limits())
             .unwrap()
             .follow(
                 &MemoryStream::default(),
@@ -136,11 +136,11 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
                 futures::stream::pending(),
                 |_, maximum| old.heads(&Query::Root, None, maximum),
                 |update| {
-                    if let SwarmUpdate::Snapshot { snapshot, .. } = update {
-                        assert_eq!(snapshot.cursor, cut);
+                    if let SwarmChange::Snapshot { cursor, .. } = update {
+                        assert_eq!(cursor, cut);
                         *snapshots.borrow_mut() += 1;
                     }
-                    futures::future::ready(Ok(()))
+                    Ok(())
                 },
             )
             .await;
@@ -192,7 +192,7 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
             },
         ));
         let seen = RefCell::new(Vec::new());
-        let result = SwarmClient::new(path("swarm"), limits())
+        let result = super::client(limits())
             .unwrap()
             .follow(
                 provider.as_ref(),
@@ -202,7 +202,7 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
                 |_, maximum| agent.heads(&Query::Root, None, maximum),
                 |update| {
                     let result = match update {
-                        SwarmUpdate::Watermark {
+                        SwarmChange::Watermark {
                             agent,
                             overview,
                             watermark,
@@ -216,10 +216,10 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
                                 Ok(())
                             }
                         }
-                        SwarmUpdate::Data { .. } => panic!("no data frames in this scenario"),
+                        SwarmChange::Data { .. } => panic!("no data frames in this scenario"),
                         _ => Ok(()),
                     };
-                    futures::future::ready(result)
+                    result
                 },
             )
             .await;

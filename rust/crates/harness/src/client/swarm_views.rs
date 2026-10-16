@@ -4,6 +4,7 @@ use crate::{Error, Result, task_volume::{Cursor, FileKey, FileValue, HeadFile}};
 use acyclic_stream::{StreamPath, StreamWatermarks, wire, wire_codec};
 use bytes::Bytes;
 use std::collections::BTreeMap;
+use std::{cell::RefCell, rc::Rc};
 
 /// Bounds depend on selected content and retained latest status, not event history.
 #[derive(Clone, Copy, Debug)]
@@ -56,10 +57,26 @@ struct AgentViews {
 /// Renderer hints contain the actual file delta, never another event schema.
 pub enum SwarmChange {
     Layout,
-    Snapshot { agent: StreamPath },
-    File { agent: StreamPath, file: Option<FileValue> },
-    Status { agent: StreamPath, key: Bytes },
-    Watermark { agent: StreamPath, overview: bool },
+    Snapshot { agent: StreamPath, cursor: Cursor },
+    Data { agent: StreamPath, overview: bool, file: Option<FileValue>, data: wire::SessionData },
+    Watermark { agent: StreamPath, overview: bool, watermark: wire::SessionWatermark },
+}
+
+/// Read-only UI-thread handle, available while the subscription awaits I/O.
+/// The callback cannot return a borrow or keep a RefCell guard across an await.
+#[derive(Clone)]
+pub struct SwarmViewHandle(Rc<RefCell<SwarmViews>>);
+
+impl SwarmViewHandle {
+    pub(crate) fn new(views: SwarmViews) -> Self { Self(Rc::new(RefCell::new(views))) }
+    /// Reads the current fold synchronously, without copying its files or text.
+    pub fn read<T>(&self, render: impl FnOnce(&SwarmViews) -> T) -> Result<T> {
+        let views = self.0.try_borrow().map_err(|error| Error::Conflict(error.to_string()))?;
+        Ok(render(&views))
+    }
+    pub(crate) fn apply(&self, update: SwarmUpdate) -> Result<SwarmChange> {
+        self.0.try_borrow_mut().map_err(|error| Error::Conflict(error.to_string()))?.apply(update)
+    }
 }
 
 /// Cache only. Layout, content and status remain authoritative in followed files.
@@ -125,22 +142,26 @@ impl SwarmViews {
                     return Err(Error::Conflict("content snapshot already installed".into()));
                 }
                 let files = FileViews::snapshot(snapshot, self.limits.query).map_err(query_error)?;
+                let cursor = files.cursor().clone();
                 self.agents.entry(agent.clone()).or_default().files = Some(files);
-                Ok(SwarmChange::Snapshot { agent })
+                Ok(SwarmChange::Snapshot { agent, cursor })
             }
             SwarmUpdate::Data { agent, overview: false, data } => {
                 let files = self.agents.get_mut(&agent).and_then(|a| a.files.as_mut())
                     .ok_or_else(|| Error::Conflict("content arrived before its snapshot".into()))?;
                 let change = files.session_change(&data).map_err(query_error)?;
                 files.prepare(&change).map_err(query_error)?(files).map_err(query_error)?;
-                Ok(SwarmChange::File { agent, file: change.file })
+                Ok(SwarmChange::Data { agent, overview: false, file: change.file, data })
             }
-            SwarmUpdate::Data { agent, overview: true, data } => self.status_data(agent, data),
+            SwarmUpdate::Data { agent, overview: true, data } => {
+                self.status_data(&agent, &data)?;
+                Ok(SwarmChange::Data { agent, overview: true, file: None, data })
+            }
             SwarmUpdate::Watermark { agent, overview: false, watermark } => {
                 let files = self.agents.get_mut(&agent).and_then(|a| a.files.as_mut())
                     .ok_or_else(|| Error::Conflict("content watermark arrived before its snapshot".into()))?;
                 files.session_watermark(watermark).map_err(query_error)?;
-                Ok(SwarmChange::Watermark { agent, overview: false })
+                Ok(SwarmChange::Watermark { agent, overview: false, watermark })
             }
             SwarmUpdate::Watermark { agent, overview: true, watermark } => {
                 self.admit_agent(&agent)?;
@@ -149,30 +170,30 @@ impl SwarmViews {
                     return Err(Error::Invalid("status watermark regressed".into()));
                 }
                 self.agents.entry(agent.clone()).or_default().status.watermarks = StreamWatermarks { accepted: watermark.accepted, durable: watermark.durable };
-                Ok(SwarmChange::Watermark { agent, overview: true })
+                Ok(SwarmChange::Watermark { agent, overview: true, watermark })
             }
         }
     }
 
-    fn status_data(&mut self, agent: StreamPath, data: wire::SessionData) -> Result<SwarmChange> {
-        self.admit_agent(&agent)?;
-        let mut after = data.after.ok_or_else(|| Error::Invalid("status cursor missing".into()))?;
+    fn status_data(&mut self, agent: &StreamPath, data: &wire::SessionData) -> Result<()> {
+        self.admit_agent(agent)?;
+        let mut after = data.after.clone().ok_or_else(|| Error::Invalid("status cursor missing".into()))?;
         if after.next == 0 || data.durable > data.accepted || after.next > data.accepted {
             return Err(Error::Invalid("invalid status watermarks".into()));
         }
-        let mut value = match data.item {
-            Some(wire::session_data::Item::LatestValue(value)) => value,
+        let mut value = match &data.item {
+            Some(wire::session_data::Item::LatestValue(value)) => value.clone(),
             Some(wire::session_data::Item::Record(record)) => {
                 let decoded = wire_codec::record(record.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
                 if decoded.sequence.checked_add(1) != Some(after.next)
                     || wire_codec::session::record_anchor(&after).map_err(|e| Error::Invalid(e.to_string()))? != Some(decoded.commit_id) {
                     return Err(Error::Invalid("status record cursor differs".into()));
                 }
-                wire::SessionLatestValue { key: Bytes::new(), value: record.value, attention: false }
+                wire::SessionLatestValue { key: Bytes::new(), value: record.value.clone(), attention: false }
             }
             _ => return Err(Error::Invalid("status received a non-value frame".into())),
         };
-        let previous = self.agents.get(&agent).map(|a| &a.status);
+        let previous = self.agents.get(agent).map(|a| &a.status);
         let old = previous.and_then(|s| s.values.get(&value.key));
         if old.is_some_and(|old| old.after.next > after.next || (old.after.next == after.next && old.after.opaque != after.opaque)) {
             return Err(Error::Conflict("status key cursor regressed".into()));
@@ -214,6 +235,6 @@ impl SwarmViews {
         status.values.insert(key.clone(), StatusValue { after, value });
         self.overview_bytes = bytes;
         self.overview_values = count;
-        Ok(SwarmChange::Status { agent, key })
+        Ok(())
     }
 }

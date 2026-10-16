@@ -10,6 +10,15 @@ mod continuity;
 #[path = "client_interest_session.rs"]
 mod session;
 
+fn client(limits: acyclic_harness::client::SwarmClientLimits) -> acyclic_harness::Result<acyclic_harness::client::SwarmClient> {
+    use acyclic_harness::client::{QueryViewLimits, SwarmClient, SwarmViewLimits};
+    SwarmClient::new(path("swarm"), limits, SwarmViewLimits {
+        agents: limits.agents, selected: limits.selected,
+        overview_values: limits.agents * 2, overview_bytes: limits.agents as u64 * 256,
+        query: QueryViewLimits { files: limits.snapshot_files, segments: limits.snapshot_files, bytes: 4096 },
+    })
+}
+
 fn path(value: &str) -> StreamPath {
     StreamPath::new(value).unwrap()
 }

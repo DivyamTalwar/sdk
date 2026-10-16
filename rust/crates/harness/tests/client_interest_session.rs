@@ -2,7 +2,7 @@
 
 use acyclic_harness::{
     Error, Result,
-    client::{InterestTier, SwarmClient, SwarmClientLimits, SwarmUpdate},
+    client::{InterestTier, SwarmChange, SwarmClientLimits},
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, wire};
@@ -67,8 +67,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
     chunk.channel = Some(Channel::Text);
     volume.append(initial.generation, &chunk).await.unwrap();
 
-    let client = SwarmClient::new(
-        path("swarm"),
+    let mut client = super::client(
         SwarmClientLimits {
             agents: 10,
             selected: 2,
@@ -77,6 +76,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             snapshot_files: 10,
         },
     )?;
+    let views = client.views();
     let (session, mut sent) = mpsc::channel::<wire::SessionInterest>(4);
     let (mut frames, incoming) = mpsc::channel::<Result<wire::SessionFrame>>(2);
     let (layouts, mut rendered) = mpsc::unbounded();
@@ -92,36 +92,29 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
         |agent, maximum| {
             assert_eq!(agent, path("swarm/a"));
             let volume = volume.clone();
-            async move { volume.heads(&Query::Root, None, maximum).await }
+            async move {
+                let snapshot = volume.heads(&Query::Root, None, maximum).await?;
+                // Publish between acquisition at C and subscription from C.
+                let mut next = Write::new(FileKey::parse(".tasks/t/turns/1/chunks/2").unwrap(), b"after".to_vec());
+                next.channel = Some(Channel::Text);
+                volume.append(volume.head().await?, &next).await?;
+                Ok(snapshot)
+            }
         },
         |update| {
-            let volume = volume.clone();
-            let snapshots = snapshots.clone();
-            let delivered = delivered.clone();
             match update {
-                SwarmUpdate::Layout(layout) => layouts.unbounded_send(layout).unwrap(),
-                SwarmUpdate::Data { overview, data, .. } => {
+                SwarmChange::Layout => layouts.unbounded_send(views.read(|v| v.layout().clone()).unwrap()).unwrap(),
+                SwarmChange::Data { overview, data, .. } => {
                     delivered.borrow_mut().push((overview, data));
                     data_seen.unbounded_send(()).unwrap();
                 }
-                SwarmUpdate::Snapshot { snapshot, .. } => {
-                    snapshots.borrow_mut().push(snapshot);
-                    // Publication between the snapshot and session subscription:
-                    // follow must start at C, not at the now-newer tail.
-                    return futures::future::Either::Left(async move {
-                        let latest = volume.snapshot(&Query::Root, 10).await.unwrap();
-                        let mut next = Write::new(
-                            FileKey::parse(".tasks/t/turns/1/chunks/2").unwrap(),
-                            b"after".to_vec(),
-                        );
-                        next.channel = Some(Channel::Text);
-                        volume.append(latest.generation, &next).await.unwrap();
-                        Ok(())
-                    });
+                SwarmChange::Snapshot { agent, cursor } => {
+                    let body = views.read(|v| v.files(&agent).next().unwrap().segments[0].to_vec()).unwrap();
+                    snapshots.borrow_mut().push((cursor, body));
                 }
-                SwarmUpdate::Watermark { .. } => panic!("unexpected watermark"),
+                SwarmChange::Watermark { .. } => panic!("unexpected watermark"),
             }
-            futures::future::Either::Right(futures::future::ready(Ok(())))
+            Ok(())
         },
     );
     let writer = async {
@@ -179,14 +172,14 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
         assert_eq!(selected.revision, 3);
         let content = selected.upsert.iter().find(|sub| matches!(&sub.kind,
             Some(wire::session_subscription::Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32)).unwrap();
-        let snapshot_cut = snapshots.borrow()[0].cursor.position;
+        let snapshot_cut = snapshots.borrow()[0].0.position;
         assert_eq!(content.resume.as_ref().unwrap().next, snapshot_cut);
         assert_eq!(
             content.resume.as_ref().unwrap().opaque.as_ref(),
-            snapshots.borrow()[0].cursor.commit
+            snapshots.borrow()[0].0.commit
         );
         assert_eq!(
-            snapshots.borrow()[0].files[0].segments[0].as_ref(),
+            snapshots.borrow()[0].1.as_slice(),
             b"before"
         );
         assert_eq!(
@@ -335,8 +328,7 @@ async fn check_snapshot_follow(
     )
     .await
     .unwrap();
-    let client = SwarmClient::new(
-        path("swarm"),
+    let mut client = super::client(
         SwarmClientLimits {
             agents: 4,
             selected: 4,
@@ -346,6 +338,7 @@ async fn check_snapshot_follow(
         },
     )
     .unwrap();
+    let views = client.views();
     let (stop, stopped) = futures::channel::oneshot::channel();
     let incoming = futures::stream::once(async {
         stopped.await.unwrap();
@@ -361,10 +354,10 @@ async fn check_snapshot_follow(
         incoming,
         |agent, maximum| agents[&agent].heads(&Query::Root, None, maximum),
         |update| {
-            if let SwarmUpdate::Layout(layout) = update {
-                layouts.unbounded_send(layout).unwrap();
+            if let SwarmChange::Layout = update {
+                layouts.unbounded_send(views.read(|v| v.layout().clone()).unwrap()).unwrap();
             }
-            futures::future::ready(Ok(()))
+            Ok(())
         },
     );
     let writer = async {

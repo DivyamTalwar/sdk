@@ -1,6 +1,6 @@
 //! File-driven interest orchestration over the platform's multiplexed session.
 
-use super::{ClientInterests, interest_files::InterestFiles};
+use super::{ClientInterests, SwarmChange, SwarmViewHandle, SwarmViewLimits, SwarmViews, interest_files::InterestFiles};
 use crate::{
     Error, Result,
     task_volume::{HeadSnapshot, TaskVolume},
@@ -64,6 +64,7 @@ pub enum SwarmUpdate {
 pub struct SwarmClient {
     root: StreamPath,
     limits: SwarmClientLimits,
+    views: SwarmViewHandle,
 }
 
 struct Agent {
@@ -167,20 +168,26 @@ fn follow(
 
 impl SwarmClient {
     /// Binds authenticated providers; construction opens no connection or task.
-    pub fn new(root: StreamPath, limits: SwarmClientLimits) -> Result<Self> {
+    pub fn new(root: StreamPath, limits: SwarmClientLimits, view_limits: SwarmViewLimits) -> Result<Self> {
         if limits.agents == 0
             || limits.selected > limits.agents
             || limits.layout_bytes == 0
             || limits.config_files == 0
             || limits.snapshot_files == 0
+            || view_limits.agents < limits.agents
+            || view_limits.selected < limits.selected
         {
             return Err(Error::Invalid("invalid swarm client bounds".into()));
         }
         // Validate the namespace before constructing any subscriptions.
         StreamPath::new(format!("{}/agent/files", root.as_str()))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(Self { root, limits })
+        let views = SwarmViewHandle::new(SwarmViews::new(root.clone(), view_limits)?);
+        Ok(Self { root, limits, views })
     }
+
+    /// A read-only renderer handle; source I/O holds no borrow of its views.
+    pub fn views(&self) -> SwarmViewHandle { self.views.clone() }
 
     /// Runs one config-volume query and one multiplexed Streams session. `streams`
     /// enumerates the complete hierarchy cut; the session retains live discovery.
@@ -192,14 +199,14 @@ impl SwarmClient {
     /// it reuses the query owner's materialized index rather than replaying agent
     /// history into a second client index.
     /// Finite sources fail closed rather than returning success with stale views.
-    pub async fn follow<D, P, S, I, Q, QFut, F, Fut>(
-        &self,
+    pub async fn follow<D, P, S, I, Q, QFut, F>(
+        &mut self,
         streams: &D,
         files: &TaskVolume<P>,
         mut session: S,
         incoming: I,
         mut heads: Q,
-        mut publish: F,
+        mut changed: F,
     ) -> Result<()>
     where
         D: StreamProvider + ?Sized,
@@ -208,9 +215,14 @@ impl SwarmClient {
         I: Stream<Item = Result<wire::SessionFrame>>,
         Q: FnMut(StreamPath, usize) -> QFut,
         QFut: Future<Output = crate::task_volume::Result<HeadSnapshot>>,
-        F: FnMut(SwarmUpdate) -> Fut,
-        Fut: Future<Output = Result<()>>,
+        F: FnMut(SwarmChange) -> Result<()>,
     {
+        let views = self.views.clone();
+        let mut publish = |update| {
+            // The exclusive writer borrow ends before renderer callbacks run.
+            let change = views.apply(update)?;
+            changed(change)
+        };
         let mut state = Interests {
             revision: 0,
             next_channel: 2,
@@ -312,7 +324,7 @@ impl SwarmClient {
                     }
                     // Release demoted content before acquiring replacements.
                     // A prefetch promotion keeps its existing cache and follow.
-                    publish(SwarmUpdate::Layout(demand.clone())).await?;
+                    publish(SwarmUpdate::Layout(demand.clone()))?;
                     state.demand = demand;
                     for path in added {
                         state.discover(path.clone(), self.limits.agents, &mut update)?;
@@ -320,7 +332,7 @@ impl SwarmClient {
                             .map_err(|error| Error::Storage(error.to_string()))?;
                         let resume = record_cursor(snapshot.cursor.position, CommitId::from_bytes(snapshot.cursor.commit))
                             .map_err(|error| Error::Storage(error.to_string()))?;
-                        publish(SwarmUpdate::Snapshot { agent: path.clone(), snapshot }).await?;
+                        publish(SwarmUpdate::Snapshot { agent: path.clone(), snapshot })?;
                         let channel = state.channel()?;
                         update.upsert.push(follow(channel, &path, "files", wire::SessionDelivery::All, resume));
                         state.agents.get_mut(&path).expect("discovered agent").content = Some(channel);
@@ -340,7 +352,7 @@ impl SwarmClient {
                     }
                     if let Some(wire::session_frame::Body::Watermark(watermark)) = &frame.body {
                         if let Some((agent, overview)) = state.routes.get(&frame.channel_id) {
-                            publish(SwarmUpdate::Watermark { agent: agent.clone(), overview: *overview, watermark: *watermark }).await?;
+                            publish(SwarmUpdate::Watermark { agent: agent.clone(), overview: *overview, watermark: *watermark })?;
                         }
                     }
                     if let Some(wire::session_frame::Body::Data(data)) = frame.body {
@@ -353,7 +365,7 @@ impl SwarmClient {
                             state.discover(path, self.limits.agents, &mut update)?;
                             state.send(&mut session, update).await?;
                         } else if let Some((agent, overview)) = state.routes.get(&frame.channel_id) {
-                            publish(SwarmUpdate::Data { agent: agent.clone(), overview: *overview, data }).await?;
+                            publish(SwarmUpdate::Data { agent: agent.clone(), overview: *overview, data })?;
                         }
                     }
                 },
