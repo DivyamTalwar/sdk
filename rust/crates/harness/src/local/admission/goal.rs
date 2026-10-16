@@ -19,7 +19,7 @@ impl LocalHarness {
         goal: &GoalView,
         settled: OperationId,
         contents: &str,
-    ) -> Result<()> {
+    ) -> Result<crate::conversation::FileRef> {
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.signed,
@@ -44,7 +44,30 @@ impl LocalHarness {
                 Some(&self.files.file_generation(&goal.source, None)?),
                 None,
             )
-            .await?;
-        Ok(())
+            .await
+    }
+
+    pub(super) async fn record_goal_revision(
+        &self,
+        current: &Turn,
+        generation: &GenerationRef,
+        goal: &crate::conversation::FileRef,
+    ) -> Result<()> {
+        let revision = *goal.descriptor().sha256();
+        if current.goal_revision == Some(revision) {
+            return Ok(());
+        }
+        let mut next = current.clone();
+        next.goal_revision = Some(revision);
+        self.write_turn(
+            &next,
+            generation,
+            &crate::IdempotencyKey::new(format!(
+                "goal-observed:{}:{}",
+                current.operation,
+                goal.version()
+            ))?,
+        )
+        .await
     }
 }

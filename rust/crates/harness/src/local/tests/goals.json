@@ -28,7 +28,7 @@
     "calls": 1,
     "final_goal": "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 0).\"\n---\nFinish the objective",
     "panel": [
-      "Status: blocked | Continuations: pending",
+      "Status: blocked | Continuations: 0",
       "Reason: Maximum goal continuations reached (limit 0).",
       "Finish the objective"
     ],
@@ -44,7 +44,7 @@
     "calls": 1,
     "final_goal": "---\nstatus: blocked\nreason: waiting\n---\nFinish the objective",
     "panel": [
-      "Status: blocked | Continuations: pending",
+      "Status: blocked | Continuations: 0",
       "Reason: waiting",
       "Finish the objective"
     ],
@@ -90,7 +90,7 @@
     "calls": 2,
     "final_goal": "---\nstatus: blocked\nreason: \"GOAL.md is not reachable through the task view.\"\n---\nFinish the objective",
     "panel": [
-      "Status: blocked | Continuations: pending",
+      "Status: blocked | Continuations: 0",
       "Reason: GOAL.md is not reachable through the task view.",
       "Finish the objective"
     ],

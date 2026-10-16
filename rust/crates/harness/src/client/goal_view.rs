@@ -14,6 +14,8 @@ pub struct GoalProgress {
     pub root: OperationId,
     /// Automatic continuations retained by that loop; edits never reset it.
     pub continuations: u32,
+    /// GOAL.md content revision acknowledged by this retained request head.
+    pub goal_revision: Option<[u8; 32]>,
 }
 
 impl GoalProgress {
@@ -23,6 +25,7 @@ impl GoalProgress {
             operation: turn.operation,
             root: turn.root,
             continuations: turn.automatic_turns,
+            goal_revision: turn.goal_revision,
         })
     }
 }
@@ -36,8 +39,8 @@ pub struct GoalQueryView<'a> {
     pub request_cursor: Option<&'a Cursor>,
     /// File-driven status, reason and body.
     pub goal: &'a GoalFileView,
-    /// Retained counter; pending for blocked goals because GOAL.md carries no
-    /// causal request-head generation, or absent for a missing/invalid head.
+    /// Retained counter; pending for blocked goals until the head acknowledges
+    /// their exact content revision, or absent for a missing/invalid head.
     pub progress: Option<&'a GoalProgress>,
     #[serde(skip)]
     pub(super) line_starts: &'a [usize],
@@ -109,16 +112,13 @@ impl ClientViews {
             cursor: file.cursor(),
             request_cursor: request.map(|view| view.cursor()),
             goal: file.goal(),
-            // Independent volume cursors cannot prove that the retained count
-            // has caught up to the head against which a blocked reason was written.
-            progress: match file.goal() {
-                GoalFileView::Present { goal }
-                    if goal.status == crate::goal::GoalStatus::Blocked =>
-                {
-                    None
-                }
-                _ => request.and_then(|view| view.progress()),
-            },
+            progress: request.and_then(|view| view.progress()).filter(|progress| {
+                !matches!(file.goal(), GoalFileView::Present { goal }
+                    if goal.status == crate::goal::GoalStatus::Blocked)
+                    || file
+                        .goal_revision()
+                        .is_some_and(|revision| progress.goal_revision == Some(revision))
+            }),
             line_starts: file.goal_line_starts(),
         })
     }

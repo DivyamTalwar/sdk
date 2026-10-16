@@ -116,6 +116,12 @@ async fn render_case(case: Case) -> Result<()> {
         "{}",
         case.name
     );
+    assert_eq!(
+        view.progress.unwrap().continuations,
+        (case.tasks - 1) as u32,
+        "caught-up combined count: {}",
+        case.name
+    );
     assert_eq!(rows(view), case.panel, "{}", case.name);
     // Negative control: ignoring the real head follow loses the retained count,
     // including when the combined blocked rendering correctly keeps it pending.

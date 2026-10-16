@@ -13,6 +13,7 @@ struct Source {
     fault: Option<u8>,
     pending: bool,
     closed: bool,
+    revision: Option<[u8; 32]>,
 }
 
 impl Source {
@@ -23,6 +24,7 @@ impl Source {
             fault: None,
             pending: false,
             closed: false,
+            revision: None,
         }
     }
     fn head(count: u32) -> Self {
@@ -32,7 +34,13 @@ impl Source {
             fault: None,
             pending: false,
             closed: false,
+            revision: None,
         }
+    }
+    fn acknowledging(mut self, goal: &str) -> Self {
+        use sha2::Digest as _;
+        self.revision = Some(sha2::Sha256::digest(goal.as_bytes()).into());
+        self
     }
     fn snapshot(&self, query: Query) -> Snapshot {
         let volume = [if self.goal.is_some() { 1 } else { 2 }; 32];
@@ -54,6 +62,7 @@ impl Source {
             ))
             .unwrap();
             head["automatic_turns"] = self.count.into();
+            head["goal_revision"] = serde_json::to_value(self.revision).unwrap();
             FileValue::new(FileKey::RequestHead, serde_json::to_vec(&head).unwrap())
         };
         let mut snapshot = Snapshot {
@@ -137,14 +146,14 @@ proptest! {
     ) {
         futures::executor::block_on(async {
             let mut views = ClientViews::default();
-            let head = Source::head(count);
             let statuses = [("active", GoalStatus::Active), ("done", GoalStatus::Done), ("blocked", GoalStatus::Blocked)];
-            let goal = Source::goal(&format!("---\nstatus: {}\nreason: waiting\n---\nold", statuses[status].0));
+            let text = format!("---\nstatus: {}\nreason: waiting\n---\nold", statuses[status].0);
+            let head = Source::head(count).acknowledging(&text);
+            let goal = Source::goal(&text);
             let _follow = views.select_goal_view(&goal, &head, 4096).await.unwrap();
             let identity = views.queries.iter().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
             let selected = views.goal_view(identity.0, identity.1).unwrap();
-            assert_eq!(selected.progress.map(|progress| progress.continuations),
-                (statuses[status].1 != GoalStatus::Blocked).then_some(count));
+            assert_eq!(selected.progress.unwrap().continuations, count);
             assert!(matches!(selected.goal, super::super::GoalFileView::Present { goal }
                 if goal.status == statuses[status].1 && goal.reason.as_deref() == Some("waiting")));
             let before = views.clone();

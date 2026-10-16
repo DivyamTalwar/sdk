@@ -45,7 +45,12 @@ fn rows(view: crate::client::GoalQueryView<'_>) -> Vec<String> {
 }
 
 // Check every prefix of every merge preserving each volume's cursor order.
-fn check_interleavings(views: ClientViews, goal: &[Change], head: &[Change], cap: u32) -> usize {
+fn check_interleavings(
+    views: ClientViews,
+    goal: &[Change],
+    head: &[Change],
+    cap: u32,
+) -> (usize, usize) {
     let (identity, _) = views
         .queries
         .iter()
@@ -62,25 +67,37 @@ fn check_interleavings(views: ClientViews, goal: &[Change], head: &[Change], cap
         .unwrap()
         .progress()
         .unwrap();
-    let mut stale_witnesses = 0;
+    let mut witnesses = (0, 0);
     if blocked {
-        assert_eq!(rendered[0], "Status: blocked | Continuations: pending");
         assert_eq!(
             rendered[1],
             format!("Reason: Maximum goal continuations reached (limit {cap}).")
         );
-        assert!(serde_json::to_value(&view).unwrap()["progress"].is_null());
-        // Negative control: remove the production gate, joining the independently
-        // accepted request cut directly. The same rendering invariant must fail.
-        let mut ungated = view;
-        ungated.progress = Some(retained);
-        let observed = ungated.progress.unwrap().continuations;
-        assert_ne!(
-            rows(ungated)[0],
-            rendered[0],
-            "ungated negative control escaped the invariant"
+        // Only the fixture's fourth head publication acknowledges the blocked
+        // bytes. This oracle does not call or repeat the production hash gate.
+        let linked = view.request_cursor.unwrap().position == 4;
+        let expected = if linked {
+            assert_eq!(retained.continuations, cap);
+            witnesses.1 += 1;
+            format!("Status: blocked | Continuations: {cap}")
+        } else {
+            witnesses.0 += 1;
+            "Status: blocked | Continuations: pending".into()
+        };
+        assert_eq!(rendered[0], expected);
+        assert_eq!(
+            serde_json::to_value(&view).unwrap()["progress"].is_null(),
+            !linked
         );
-        stale_witnesses += usize::from(observed < cap);
+        // Both broken gates must violate this same per-prefix rendering oracle:
+        // no gate exposes a lagging head; always hiding loses a caught-up count.
+        let mut broken = view;
+        broken.progress = if linked { None } else { Some(retained) };
+        assert_ne!(
+            rows(broken)[0],
+            expected,
+            "negative control escaped the rendering oracle"
+        );
     } else {
         assert_eq!(
             rendered[0],
@@ -91,35 +108,51 @@ fn check_interleavings(views: ClientViews, goal: &[Change], head: &[Change], cap
         if let Some((first, rest)) = updates.split_first() {
             let mut next = views.clone();
             next.query_change(copy(first)).unwrap();
-            stale_witnesses += if is_goal {
+            let next_witnesses = if is_goal {
                 check_interleavings(next, rest, other, cap)
             } else {
                 check_interleavings(next, other, rest, cap)
             };
+            witnesses.0 += next_witnesses.0;
+            witnesses.1 += next_witnesses.1;
         }
     }
-    stale_witnesses
+    if goal.is_empty() && head.is_empty() {
+        assert_eq!(
+            rendered[0],
+            format!("Status: blocked | Continuations: {cap}"),
+            "both final cursors must render the exact retained count"
+        );
+    }
+    witnesses
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
-    fn every_rendered_cut_keeps_unlinked_blocked_counts_pending(
+    fn every_rendered_cut_gates_blocked_counts_and_restores_them_at_convergence(
         cap in prop_oneof![Just(2u32), 1u32..=u32::MAX], fraction in any::<u32>(),
     ) {
         futures::executor::block_on(async {
             let mut views = ClientViews::default();
             let _follow = views.select_goal_view(&Source::goal("objective"), &Source::head(0), 4096).await.unwrap();
+            let blocked = format!("---\nstatus: blocked\nreason: Maximum goal continuations reached (limit {cap}).\n---\nobjective");
+            let mut unrelated = publication(&Source::goal(&blocked), Query::File(FileKey::Goal), 4);
+            unrelated.file = None;
             let goal = [
                 publication(&Source::goal("edited objective"), Query::File(FileKey::Goal), 2),
-                publication(&Source::goal(&format!("---\nstatus: blocked\nreason: Maximum goal continuations reached (limit {cap}).\n---\nobjective")), Query::File(FileKey::Goal), 3),
+                publication(&Source::goal(&blocked), Query::File(FileKey::Goal), 3),
+                unrelated,
             ];
             let head = [
-                publication(&Source::head(fraction % cap), Query::File(FileKey::RequestHead), 2),
-                publication(&Source::head(cap), Query::File(FileKey::RequestHead), 3),
+                publication(&Source::head(fraction % cap).acknowledging("edited objective"), Query::File(FileKey::RequestHead), 2),
+                publication(&Source::head(cap).acknowledging("edited objective"), Query::File(FileKey::RequestHead), 3),
+                publication(&Source::head(cap).acknowledging(&blocked), Query::File(FileKey::RequestHead), 4),
             ];
-            assert!(check_interleavings(views, &goal, &head, cap) > 0,
+            let (pending, caught_up) = check_interleavings(views, &goal, &head, cap);
+            assert!(pending > 0,
                 "must exercise a blocked publication while the head follow is stalled below cap");
+            assert!(caught_up > 0, "always-pending negative control needs a caught-up witness");
         });
     }
 }
