@@ -121,7 +121,7 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
     )
     .await
     .unwrap();
-    assert!(painted(&mut renderer, &files).contains("native UI effect file binding"));
+    assert!(painted(&mut renderer, &files).contains("This action is unavailable in this session"));
     assert!(files.take_request().is_none());
     handle_tui_input(&mut files, &NoFiles, submit("ordinary chat"))
         .await

@@ -157,13 +157,12 @@ impl ClientRenderer {
             Span::raw(if self.busy { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
         ]);
-        self.status = Line::raw(format!(
-            "Esc · Ctrl+D quit · {}",
+        self.status = Line::raw(
             views
                 .usage
                 .get(&key)
-                .map_or(String::new(), ToString::to_string)
-        ));
+                .map_or(String::new(), ToString::to_string),
+        );
         self.notices = task
             .and_then(|task| task.reason.as_deref())
             .map(|text| vec![Line::raw(text.to_owned())])

@@ -31,7 +31,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
         // request files to the execution owner; never turn them into chat.
         _ => {
             return Err(Error::Unsupported(
-                "TODO #495: native UI effect file binding".into(),
+                "This action is unavailable in this session".into(),
             ));
         }
     }
