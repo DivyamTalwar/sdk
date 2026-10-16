@@ -99,6 +99,10 @@ name = "client-query"
 path = "tests/client_query.rs"
 
 [[test]]
+name = "client-swarm-views"
+path = "tests/client_swarm_views.rs"
+
+[[test]]
 name = "client-file-submit"
 path = "tests/client_file_submit.rs"
 

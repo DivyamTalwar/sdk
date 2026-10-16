@@ -13,6 +13,7 @@ libfuzzer-sys = "0.4"
 prost.workspace = true
 acyclic-stream = { path = "../stream", default-features = false }
 futures.workspace = true
+bytes.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 tempfile = "3.27.0"
@@ -41,6 +42,13 @@ bench = false
 [[bin]]
 name = "client_queries"
 path = "fuzz_targets/client_queries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_swarm_views"
+path = "fuzz_targets/client_swarm_views.rs"
 test = false
 doc = false
 bench = false

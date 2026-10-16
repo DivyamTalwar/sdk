@@ -103,7 +103,7 @@ impl SwarmViews {
     pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
         match update {
             SwarmUpdate::Layout(layout) => {
-                if layout.root() != self.layout.root() || layout.full_fidelity().count() > self.limits.selected {
+                if layout.root() != self.layout.root() || layout.full_fidelity().nth(self.limits.selected).is_some() {
                     return Err(Error::Invalid("swarm view layout outside its root or bound".into()));
                 }
                 for removed in layout.changes(&self.layout)?.unsubscribe() {
@@ -117,10 +117,10 @@ impl SwarmViews {
                 if self.layout.tier(&agent) == Some(InterestTier::Overview) {
                     return Err(Error::Invalid("unselected agent received content".into()));
                 }
-                let files = FileViews::snapshot(snapshot, self.limits.query).map_err(query_error)?;
                 if self.agents.get(&agent).is_some_and(|a| a.files.is_some()) {
                     return Err(Error::Conflict("content snapshot already installed".into()));
                 }
+                let files = FileViews::snapshot(snapshot, self.limits.query).map_err(query_error)?;
                 self.agents.entry(agent.clone()).or_default().files = Some(files);
                 Ok(SwarmChange::Snapshot { agent })
             }
@@ -169,10 +169,10 @@ impl SwarmViews {
             _ => return Err(Error::Invalid("status received a non-value frame".into())),
         };
         let previous = self.agents.get(&agent).map(|a| &a.status);
-        if previous.and_then(|s| s.after.as_ref()).is_some_and(|old| old.next > after.next || (old.next == after.next && old.opaque != after.opaque)) {
-            return Err(Error::Conflict("status cursor regressed".into()));
-        }
         let old = previous.and_then(|s| s.values.get(&value.key));
+        if old.is_some_and(|old| old.after.next > after.next || (old.after.next == after.next && old.after.opaque != after.opaque)) {
+            return Err(Error::Conflict("status key cursor regressed".into()));
+        }
         if old.is_some_and(|old| old.after == after && old.value != value) {
             return Err(Error::Conflict("one status cut contains conflicting values".into()));
         }
@@ -201,7 +201,9 @@ impl SwarmViews {
         value.value = compact.slice(key_end..value_end);
         after.opaque = compact.slice(value_end..);
         let status = &mut self.agents.entry(agent.clone()).or_default().status;
-        status.after = Some(after.clone());
+        if status.after.as_ref().is_none_or(|old| old.next <= after.next) {
+            status.after = Some(after.clone());
+        }
         status.watermarks.accepted = status.watermarks.accepted.max(data.accepted);
         status.watermarks.durable = status.watermarks.durable.max(data.durable);
         let key = value.key.clone();
