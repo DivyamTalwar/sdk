@@ -280,7 +280,7 @@ impl TaskContext {
     pub(crate) fn ordinary_journal_owner<P: StreamProvider + 'static>(
         &self,
     ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
-        if self.native_custody.is_some() {
+        if self.preparation_io()?.is_some() {
             return Err(Error::Unsupported(
                 "ordinary task files require ordinary ownership".into(),
             ));

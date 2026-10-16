@@ -30,7 +30,7 @@ impl CheckoutTools {
             input,
             &self.mounts,
             invocation,
-            self.clock.now_unix_millis(),
+            self.clock.now_unix_millis() / 1000,
             |(_, files): &mut (OwnedMutexGuard<State>, output::Output), chunk| files.observe(chunk),
             move || {
                 if acyclic_fs::capture_root_identity(&workspace.path)
