@@ -107,6 +107,7 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
             "view",
             "count",
             "requests",
+            "context",
             "tasks",
             "prompt",
             "script",
@@ -125,6 +126,10 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
                     "view" => value["expect"]["view"]["status"] = json!("done"),
                     "count" => value["expect"]["result"]["continuations"] = json!(99),
                     "requests" => value["expect"]["result"]["requests"] = json!(99),
+                    "context" => {
+                        value["expect"]["requests"][1]["messages"][0]["content"] =
+                            json!("wrong continuation prompt")
+                    }
                     "tasks" => value["expect"]["result"]["tasks"] = json!(99),
                     "prompt" => value["prompt"] = json!("wrong prompt"),
                     "script" => value["turns"].as_array_mut().unwrap().push(json!("unused")),
@@ -177,7 +182,7 @@ fn goal_schema_rejects_unknown_fields_and_vacuous_assertions() {
         ("frames", json!([{}])),
         ("frames", json!(true)),
         ("files", json!({})),
-        ("runtime_error", json!("error")),
+        ("runtime_error", json!("")),
         ("unchanged_goal", json!(true)),
     ] {
         let mut value = baseline.clone();

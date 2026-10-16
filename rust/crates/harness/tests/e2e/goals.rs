@@ -28,7 +28,7 @@ fn one_step() -> u32 {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Expectations {
-    pub text: Option<String>,
+    pub text: String,
     pub runtime_error: Option<String>,
     pub request_prompt: String,
     pub result: Value,
@@ -60,9 +60,6 @@ impl GoalCase {
         }
         if !case.expect.files.contains_key("GOAL.md") {
             return Err("assert final GOAL.md bytes or absence".into());
-        }
-        if case.expect.text.is_some() == case.expect.runtime_error.is_some() {
-            return Err("expect exactly one of final text or runtime error".into());
         }
         if case.max_steps == 0
             || case.expect.frames.is_empty()

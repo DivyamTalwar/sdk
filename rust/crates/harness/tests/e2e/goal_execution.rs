@@ -152,9 +152,9 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
             frames.len(),
         )?);
     }
-    match (&case.expect.text, &case.expect.runtime_error, &result) {
-        (Some(text), None, Ok(output)) if &output.text == text => {}
-        (None, Some(expected), Err(error)) if error.to_string().contains(expected) => {}
+    match (&case.expect.runtime_error, &result) {
+        (None, Ok(output)) if output.text == case.expect.text => {}
+        (Some(expected), Err(error)) if error.to_string().contains(expected) => {}
         _ => return Err(format!("unexpected goal runtime result: {result:?}").into()),
     }
     matchers::ordered(&case.expect.frames, &frames, "goal wire frames")?;
@@ -268,10 +268,8 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     });
     config.goal_continuations = None;
     let reopened = LocalHarness::open(config).await?;
-    if case.expect.runtime_error.is_none()
-        && reopened.resume(task_id).await?.text != case.expect.text.as_deref().unwrap_or_default()
-    {
-        return Err("reopened goal task changed its result".into());
+    if reopened.resume(task_id).await?.text != case.expect.text {
+        return Err("reopened goal task changed its settled result".into());
     }
     if provider.requests().len() != count {
         return Err("reopening a goal task redispatched the model".into());
