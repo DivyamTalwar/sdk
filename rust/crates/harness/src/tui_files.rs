@@ -70,14 +70,26 @@ impl CompletionFiles {
 
     /// Publish a selected change atomically before advancing the query cursor.
     pub fn apply_change(&mut self, change: Change, input: &mut PromptInput) -> crate::Result<()> {
-        if let Some(file) = change.file {
+        let files: Vec<_> = change
+            .removed
+            .iter()
+            .map(|key| (key.path(), None))
+            .chain(
+                change
+                    .file
+                    .iter()
+                    .chain(&change.files)
+                    .map(|file| (file.key.path(), Some(file.bytes.as_ref()))),
+            )
+            .collect();
+        if !files.is_empty() {
             input
                 .completion
-                .set_file(&file.key.path(), Some(&file.bytes))
+                .set_files(files.iter().map(|(path, bytes)| (path.as_str(), *bytes)))
                 .map_err(|e| crate::Error::Invalid(e.to_string()))?;
+            input.refresh_completions();
         }
         self.cursor = change.cursor;
-        input.refresh_completions();
         Ok(())
     }
 

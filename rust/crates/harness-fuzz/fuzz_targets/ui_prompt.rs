@@ -15,6 +15,23 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {
         return;
     }
+    // Every batch is all-or-nothing even when a later command file is malformed.
+    let mut menu = acyclic_harness::tui::CompletionMenu::default();
+    let seed = br#"[{"name":"seed"}]"#;
+    menu.set_file("commands/seed.json", Some(seed)).unwrap();
+    let editor = Editor::new("/");
+    menu.refresh(&editor);
+    let before: Vec<_> = menu.items().cloned().collect();
+    if menu
+        .set_files([
+            ("commands/seed.json", None),
+            ("workspace/batch.rs", Some(&b""[..])),
+            ("commands/fuzz.json", Some(data)),
+        ])
+        .is_err()
+    {
+        assert_eq!(menu.items().cloned().collect::<Vec<_>>(), before);
+    }
     let width = u16::from(data.first().copied().unwrap_or(0) % 80) + 1;
     let text = String::from_utf8_lossy(data);
     let source = [Line::raw(text.as_ref())];

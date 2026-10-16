@@ -599,3 +599,6 @@ mod presentation;
 
 #[path = "tests/layout.rs"]
 mod layout;
+
+#[path = "tests/completion_files.rs"]
+mod completion_files;
