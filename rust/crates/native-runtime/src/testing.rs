@@ -1,10 +1,17 @@
 //! Explicit, scoped barriers at real owned-task and native-job boundaries.
 use std::{
     future::Future,
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::{Arc, Mutex},
+    sync::Arc,
+    task::{Poll, Waker},
 };
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
+
+#[cfg(acyclic_native_runtime_loom)]
+use loom::sync::Mutex;
+#[cfg(not(acyclic_native_runtime_loom))]
+use std::sync::Mutex;
+#[cfg(all(test, acyclic_native_runtime_loom))]
+mod model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
 
@@ -26,6 +33,8 @@ impl Boundary {
 
 #[derive(Default)]
 struct State {
+    active: usize,
+    idle: Option<Waker>,
     cancelled: bool,
     trace: Vec<String>,
     ready_reads: usize,
@@ -33,8 +42,6 @@ struct State {
 
 struct Inner {
     events: mpsc::UnboundedSender<Boundary>,
-    active: AtomicUsize,
-    idle: Notify,
     // Sole lock. Never held across an await, user callback, send, or wake.
     state: Mutex<State>,
 }
@@ -55,8 +62,16 @@ pub(crate) struct Context {
 pub(crate) struct Active(pub(crate) Context);
 impl Drop for Active {
     fn drop(&mut self) {
-        if self.0.schedule.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.schedule.0.idle.notify_one();
+        let idle = {
+            let mut state = self.0.schedule.0.state.lock().unwrap();
+            state.active = state
+                .active
+                .checked_sub(1)
+                .expect("unregistered completion");
+            (state.active == 0).then(|| state.idle.take()).flatten()
+        };
+        if let Some(idle) = idle {
+            idle.wake();
         }
     }
 }
@@ -68,8 +83,6 @@ impl Schedule {
         (
             Self(Arc::new(Inner {
                 events,
-                active: AtomicUsize::new(0),
-                idle: Notify::new(),
                 state: Mutex::new(State::default()),
             })),
             receiver,
@@ -99,13 +112,16 @@ impl Schedule {
 
     /// Waits for accepted operations to reach their physical terminal.
     pub async fn drained(&self) {
-        loop {
-            let notified = self.0.idle.notified();
-            if self.0.active.load(Ordering::Acquire) == 0 {
-                return;
+        std::future::poll_fn(|cx| {
+            let mut state = self.0.state.lock().unwrap();
+            if state.active == 0 {
+                Poll::Ready(())
+            } else {
+                state.idle = Some(cx.waker().clone());
+                Poll::Pending
             }
-            notified.await;
-        }
+        })
+        .await
     }
 
     /// Counts the actual ready read calls, without inventing suspension points.
@@ -131,12 +147,14 @@ impl Context {
                 !state.cancelled || self.owned,
                 "new dispatch after cancellation: {kind}"
             );
+            // Cancellation and registration share the same lock. Once cancel
+            // returns, drain cannot miss an already accepted submission.
+            state.active += 1;
             state.trace.push(format!(
                 "{kind}:{}",
                 if self.owned { "completion" } else { "dispatch" }
             ));
         }
-        self.schedule.0.active.fetch_add(1, Ordering::Release);
         Active(Self {
             schedule: self.schedule.clone(),
             owned: true,

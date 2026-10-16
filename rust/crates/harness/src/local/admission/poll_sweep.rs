@@ -16,6 +16,7 @@ mod schedule;
 use model::{Effect, ModelEffects};
 use schedule::{Exit, Schedule, check_cut, drive};
 mod coverage;
+mod invariants;
 mod read_contention;
 mod seed;
 use seed::Seed;
@@ -272,6 +273,7 @@ impl Fixture {
 }
 
 struct Coverage {
+    observations: invariants::Observations,
     points: Vec<&'static str>,
     unadmitted: bool,
     ready_reads: usize,
@@ -372,7 +374,12 @@ async fn case(
         let reopened = fixture.open().await?;
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
+        let observations = invariants::observe(&reopened, &fixture, root).await?;
+        observations
+            .check(scenario)
+            .map_err(|reason| Error::Invalid(reason.into()))?;
         Ok(Coverage {
+            observations,
             points,
             unadmitted,
             ready_reads: schedule.ready_reads(),

@@ -583,6 +583,7 @@ dependencies = [
  "compio-driver",
  "futures-core",
  "libc",
+ "loom",
  "pin-project-lite",
  "proptest",
  "rustix 1.1.5",

@@ -20,6 +20,14 @@ pub(super) struct ModelEffects {
 }
 
 impl ModelEffects {
+    pub fn dispatches(&self) -> Vec<ModelDispatch> {
+        self.responses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(dispatch, _)| *dispatch)
+            .collect()
+    }
     pub fn accepted(&self) -> usize {
         self.responses.lock().unwrap().len()
     }

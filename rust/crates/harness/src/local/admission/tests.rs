@@ -5,22 +5,7 @@ use crate::{
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
 
-async fn fixture() -> Result<(
-    tempfile::TempDir,
-    LocalHarnessConfig,
-    Arc<ScriptedModelProvider>,
-)> {
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let volume = super::super::tests::volume(directory.path()).await?;
-    let provider = Arc::new(ScriptedModelProvider::new([
-        ScriptedTurn::Text("done".into()),
-        ScriptedTurn::Text("done".into()),
-        ScriptedTurn::Text("done".into()),
-    ]));
-    let config = super::super::tests::volume_config(directory.path(), volume, provider.clone())?
-        .compaction(CompactionPolicy::Disabled);
-    Ok((directory, config, provider))
-}
+mod bootstrap;
 
 // Interrupt the actual production publication future at each admission await
 // boundary: HEAD acknowledged before admission, and admission committed before
@@ -97,60 +82,56 @@ fn assert_request(provider: &ScriptedModelProvider, count: usize, input: &str) {
 #[tokio::test]
 async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_once() -> Result<()> {
     let started = std::time::Instant::now();
-    // Bootstrap one public composition. Each interrupted case still drops the
-    // complete host and reopens its durable state; no recovery cache is shared.
-    let (_directory, config, provider) = fixture().await?;
-    let model = config.model.clone();
-    let project = match &config.project {
-        config::LocalProject::Volume { directory, volume } => (directory.clone(), volume.clone()),
-        _ => return Err(Error::Invalid("expected volume fixture".into())),
-    };
-    let mut harness = LocalHarness::open(config).await?;
-    let owner = harness.signed.agent();
-    eprintln!("admission bootstrap: {:?}", started.elapsed());
-    let replacement_started = std::time::Instant::now();
-    unadmitted_request_head_does_not_block_a_new_run(&harness, &provider).await?;
-    eprintln!("orphan replacement: {:?}", replacement_started.elapsed());
-    let mut recovered = Vec::new();
-    for after_admission in [false, true] {
-        let cut_started = std::time::Instant::now();
-        let retained = cancel_at_admission_await(&harness, after_admission).await?;
-        let task = crate::runtime::task_id_for_admission(retained.operation);
-        let definition = harness
-            .runtime
-            .harness()
-            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let old_attach = harness.runtime.harness().attach(task, &definition).await;
-        assert_eq!(
-            old_attach.is_ok(),
-            after_admission,
-            "negative control did not reach the unadmitted-head failure"
-        );
-        drop(old_attach);
-        drop(harness);
-        let mut config = crate::test_support::local_harness_config(&project.0, model.clone())?
-            .volume(project.1.clone())
-            .compaction(CompactionPolicy::Disabled);
-        config.goal_continuations = None;
-        let open_started = std::time::Instant::now();
-        harness = LocalHarness::open(config).await?;
-        assert_eq!(harness.signed.agent(), owner, "fixture was rebuilt");
-        eprintln!(
-            "admission {after_admission} reopen: {:?}",
-            open_started.elapsed()
-        );
-        assert_eq!(harness.resume(task).await?.text, "done");
-        assert_eq!(harness.resume(task).await?.text, "done");
-        assert_eq!(harness.current_turn().await?.0, Some(retained));
-        assert_request(&provider, recovered.len() + 2, "original input");
-        recovered.push(after_admission);
-        eprintln!(
-            "admission {after_admission} cut and recovery: {:?}",
-            cut_started.elapsed()
-        );
+    let bootstrap = bootstrap::Bootstrap::new().await?;
+    let mut cases = Vec::new();
+    // Both orders restore identical immutable bytes into distinct roots; every
+    // case has its own script, owner/provider caches, and model effect ledger.
+    for order in [
+        [None, Some(false), Some(true)],
+        [Some(true), Some(false), None],
+    ] {
+        for after_admission in order {
+            let (root, provider) = bootstrap.restore()?;
+            let directory = root.directory.path().join("root");
+            let harness =
+                LocalHarness::open(bootstrap.config(&directory, provider.clone())?).await?;
+            assert_eq!(harness.signed.agent(), bootstrap.agent);
+            assert!(harness.current_turn().await?.0.is_none());
+            assert!(provider.requests().is_empty());
+            let Some(after_admission) = after_admission else {
+                unadmitted_request_head_does_not_block_a_new_run(&harness, &provider).await?;
+                cases.push(None);
+                continue;
+            };
+            let retained = cancel_at_admission_await(&harness, after_admission).await?;
+            let task = crate::runtime::task_id_for_admission(retained.operation);
+            let definition = harness
+                .runtime
+                .harness()
+                .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+            let old_attach = harness.runtime.harness().attach(task, &definition).await;
+            assert_eq!(
+                old_attach.is_ok(),
+                after_admission,
+                "negative control did not reach the unadmitted-head failure"
+            );
+            drop(old_attach);
+            drop(harness);
+            let harness =
+                LocalHarness::open(bootstrap.config(&directory, provider.clone())?).await?;
+            assert_eq!(harness.signed.agent(), bootstrap.agent);
+            assert_eq!(harness.resume(task).await?.text, "done");
+            assert_eq!(harness.resume(task).await?.text, "done");
+            assert_eq!(harness.current_turn().await?.0, Some(retained));
+            assert_request(&provider, 1, "original input");
+            assert_eq!(provider.remaining(), 0);
+            cases.push(Some(after_admission));
+        }
     }
-    assert_eq!(recovered, [false, true], "a cancellation cut was omitted");
-    assert_eq!(provider.remaining(), 0, "a recovery scenario was omitted");
+    assert_eq!(
+        cases,
+        [None, Some(false), Some(true), Some(true), Some(false), None]
+    );
     eprintln!("admission recovery suite: {:?}", started.elapsed());
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     Ok(())
