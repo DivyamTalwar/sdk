@@ -10,7 +10,7 @@ use acyclic_harness::{
     wire,
 };
 
-fn picture(renderer: &ClientRenderer) -> String {
+fn painted(renderer: &ClientRenderer) -> Terminal<TestBackend> {
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     terminal
         .draw(|frame| {
@@ -24,12 +24,25 @@ fn picture(renderer: &ClientRenderer) -> String {
         })
         .unwrap();
     terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect()
+}
+
+fn picture(renderer: &ClientRenderer) -> String {
+    screen_text(&painted(renderer))
+}
+
+fn screen_text(terminal: &Terminal<TestBackend>) -> String {
+    use acyclic_harness::tui::ratatui::text::Line;
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for row in buffer.content.chunks(usize::from(buffer.area.width).max(1)) {
+        let mut column = 0;
+        while let Some(cell) = row.get(column) {
+            text.push_str(cell.symbol());
+            column += Line::raw(cell.symbol()).width().max(1);
+        }
+        text.push('\n');
+    }
+    text
 }
 
 #[test]
@@ -75,7 +88,9 @@ proptest::proptest! {
         }
         let mut replayed = ClientRenderer::default();
         replayed.update(&views, &owner);
-        proptest::prop_assert_eq!(picture(&live), picture(&replayed));
+        let live = painted(&live);
+        let replayed = painted(&replayed);
+        proptest::prop_assert_eq!(live.backend().buffer(), replayed.backend().buffer());
     }
 }
 
@@ -101,13 +116,7 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
             Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
         })
         .unwrap();
-    let visible: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    let visible: String = screen_text(&terminal);
     assert!(visible.contains("Completions"));
     assert!(visible.contains("/read [tool]"));
     assert!(visible.contains("Read a file"));
@@ -236,13 +245,7 @@ fn follow_tail_keeps_new_output_visible_after_the_screen_fills() {
             screen.render(frame, &input, &mut Viewport::default(), scroll, 0);
         })
         .unwrap();
-    let visible: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    let visible: String = screen_text(&terminal);
     assert!(visible.contains("message 99"));
     assert!(!visible.contains("message 0"));
 }
@@ -264,6 +267,7 @@ fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
         78,
     );
     input.committed_text("日本語", 1);
+    assert_eq!(input.editor.text(), "first 日本語");
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     let mut viewport = Viewport::default();
     terminal
@@ -271,13 +275,7 @@ fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
             Screen::default().render(frame, &input, &mut viewport, 0, 1);
         })
         .unwrap();
-    let visible: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    let visible: String = screen_text(&terminal);
     assert!(visible.contains("first 日本語"));
     input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 2, 78);
     assert_eq!(input.editor.text(), "draft");
@@ -288,13 +286,7 @@ fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
             Screen::default().render(frame, &input, &mut viewport, 0, 3);
         })
         .unwrap();
-    let visible: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    let visible: String = screen_text(&terminal);
     assert!(visible.contains("日本語"));
     assert!(visible.contains("👩‍💻"));
     assert!(!visible.contains("[Pasted"));
@@ -318,13 +310,7 @@ fn composed_message_edit_recording_and_attachment_indicators_survive_layout() {
             Screen::default().render(frame, &input, &mut viewport, 0, 0);
         })
         .unwrap();
-    let visible: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    let visible: String = screen_text(&terminal);
     assert!(visible.contains("Editing message"));
     assert!(visible.contains("message being edited"));
     input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 1, 78);
@@ -333,13 +319,7 @@ fn composed_message_edit_recording_and_attachment_indicators_survive_layout() {
             Screen::default().render(frame, &input, &mut viewport, 0, 1);
         })
         .unwrap();
-    let visible: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    let visible: String = screen_text(&terminal);
     assert!(visible.contains("live draft"));
     assert!(visible.contains("2 images attached"));
     assert!(visible.contains("REC"));
