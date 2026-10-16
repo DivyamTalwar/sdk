@@ -183,16 +183,15 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
 // Replay the production projection from every real Cargo-produced receipt.
 // Compilation is performed once; copies retain the full matrix and source bytes.
 pub(super) fn metadata(fixture: &Fixture) -> cargo_metadata::Metadata {
-    let mut command = cargo_metadata::Metadatasdk_docs::command();
+    let mut command = cargo_metadata::MetadataCommand::new();
     command
         .cargo_path(&*runtime::cargo())
         .env("CARGO_HOME", fixture_cargo_home(fixture))
         .env_remove("CARGO_RESOLVER_LOCKFILE_PATH")
         .no_deps()
         .other_options(vec!["--locked".into()])
-        .manifest_path(fixture.root.join("Cargo.toml"))
-        .exec()
-        .unwrap()
+        .manifest_path(fixture.root.join("Cargo.toml"));
+    sdk_docs::rustdoc_profiles::execute_metadata(&command).unwrap()
 }
 
 pub(super) fn project(
