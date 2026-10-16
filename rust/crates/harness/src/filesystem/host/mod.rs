@@ -4,6 +4,7 @@ use super::*;
 pub struct FilesystemHost<A, O> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
+    workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -41,8 +42,33 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(Arc::new(Self {
             filesystem,
             provider,
+            workspace_binding: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_custody,
+        }))
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn for_workspace(
+        &self,
+        volume: &VolumeRef,
+        workspace: Workspace<A, O>,
+    ) -> Result<Arc<Self>> {
+        if self._native_custody.is_some() || volume.provider() != &self.provider {
+            return Err(Error::Unauthorized(
+                "workspace binding requires ordinary project authority".into(),
+            ));
+        }
+        Ok(Arc::new(Self {
+            filesystem: self.filesystem.clone(),
+            provider: self.provider.clone(),
+            workspace_binding: Some((
+                workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
+                workspace,
+            )),
+            _native_custody: None,
         }))
     }
 }

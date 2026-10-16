@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
   const build = run("cargo", [
     "rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom",
-    ...features, "--", "--cfg", "loom",
-  ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+    ...features, "--features", "model-checking",
+  ], { env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom` }, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);
   const binaries = [];

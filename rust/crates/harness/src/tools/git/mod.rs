@@ -131,3 +131,4 @@ pub use commands::{
     git_apply_patch, git_ignore_policy, git_policy, git_workspace_tree, run_git_command,
 };
 pub use materialize::RootMaterializingGitExecutor;
+pub(crate) use materialize::publish_checkout_transition;

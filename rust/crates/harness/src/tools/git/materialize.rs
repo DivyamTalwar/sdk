@@ -33,54 +33,85 @@ impl RootMaterializingGitExecutor<'_> {
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(display)?;
-        let to = to_generation.id();
-        if from.id() == to {
-            return Ok(());
-        }
-        let operation_directory =
-            root_materialization_directory(self.root, operation_id).map_err(GitError)?;
-        let options = MaterializeOptions {
-            destination: operation_directory.join("target"),
-            expected_root_identity: None,
-            maximum_directory_entries: 4_096,
-            maximum_extent_spans: 65_536,
-            transfer_bytes: 8 * 1024 * 1024,
-        };
-        let cancellation = CancellationToken::new();
-        acyclic_fs::publish_native_generation_transition(
-            &from,
-            &to_generation,
+        publish_checkout_transition(
+            self.root,
+            self.source_root_identity,
             self.inner.store,
-            acyclic_fs::NativeWorkspacePublication {
-                root: self.root,
-                source_root_identity: self.source_root_identity,
-                operation_directory: &operation_directory,
-                operation_id,
-                from: from.id(),
-                to,
-                excluded_names: &[".git"],
-                options: &options,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &cancellation,
-            },
-            acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, _)| display(cause))?,
-            || std::future::ready(Ok(())),
+            operation_id,
+            from,
+            to_generation,
         )
         .await
-        .map_err(|(cause, _)| display(cause))?;
-        self.inner
-            .store
-            .remove_materialization_async(operation_id)
-            .await
-            .map_err(display)?;
-        remove_tree_checked(
-            &root_materialization_root(self.root).map_err(GitError)?,
-            &operation_directory,
-        )
-        .map_err(display)?;
-        Ok(())
     }
+}
+
+pub(crate) async fn publish_checkout_transition(
+    root: &Path,
+    source_root_identity: acyclic_fs::NativeRootIdentity,
+    store: &LocalCoreStateStore,
+    operation_id: OperationId,
+    from: LocalGeneration,
+    to_generation: LocalGeneration,
+) -> Result<(), GitError> {
+    let to = to_generation.id();
+    if from.id() == to {
+        return Ok(());
+    }
+    let operation_directory =
+        root_materialization_directory(root, operation_id).map_err(GitError)?;
+    let parent = operation_directory
+        .parent()
+        .ok_or_else(|| GitError("staging parent is absent".into()))?;
+    std::fs::create_dir_all(parent).map_err(display)?;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| display(cause))?;
+    let actual =
+        acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
+            .map_err(display)?;
+    if actual != source_root_identity {
+        return Err(GitError("checkout root changed before publication".into()));
+    }
+    let options = MaterializeOptions {
+        destination: operation_directory.join("target"),
+        expected_root_identity: None,
+        maximum_directory_entries: 4_096,
+        maximum_extent_spans: 65_536,
+        transfer_bytes: 8 * 1024 * 1024,
+    };
+    let cancellation = CancellationToken::new();
+    acyclic_fs::publish_native_generation_transition(
+        &from,
+        &to_generation,
+        store,
+        acyclic_fs::NativeWorkspacePublication {
+            root,
+            source_root_identity,
+            operation_directory: &operation_directory,
+            operation_id,
+            from: from.id(),
+            to,
+            excluded_names: &[".git", ".system"],
+            options: &options,
+            budget: WorkBudget::UNBOUNDED,
+            cancellation: &cancellation,
+        },
+        acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| display(cause))?,
+        || std::future::ready(Ok(())),
+    )
+    .await
+    .map_err(|(cause, _)| display(cause))?;
+    store
+        .remove_materialization_async(operation_id)
+        .await
+        .map_err(display)?;
+    remove_tree_checked(
+        &root_materialization_root(root).map_err(GitError)?,
+        &operation_directory,
+    )
+    .map_err(display)?;
+    Ok(())
 }
 
 impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {

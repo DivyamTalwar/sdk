@@ -310,6 +310,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if reference.as_resource().provider() != &self.provider {
             return Err(io.invalid("resource belongs to another Filesystem provider"));
         }
+        if let Some((bound, workspace)) = &self.workspace_binding
+            && bound == reference
+        {
+            return Ok(workspace.clone());
+        }
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
         io.sdk(

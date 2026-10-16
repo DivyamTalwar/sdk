@@ -1,18 +1,18 @@
 //! Default commands bound to the selected, identity-fenced checkout.
 use super::*;
+use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
-use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 
 mod bash;
 mod capture;
 mod git;
-mod lock;
-#[cfg(all(test, loom))]
+pub(super) mod publisher;
+#[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
 pub(super) struct CheckoutTools {
@@ -53,11 +53,12 @@ fn guarded<T, R>(
 }
 
 impl CheckoutTools {
-    pub(super) fn new(
+    pub(super) async fn new(
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<Self> {
+        let active = workspace.selected_view().await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
@@ -67,7 +68,7 @@ impl CheckoutTools {
             workspace,
             clock,
             state: StateArc::new(AsyncMutex::new(State {
-                active: None,
+                active,
                 watcher: None,
             })),
         })
