@@ -273,21 +273,31 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         b"resolved\n"
     );
     let requests = provider.requests();
-    let conflict = requests
+    let results: std::collections::BTreeMap<_, _> = requests
         .last()
         .unwrap()
         .messages
         .iter()
         .flat_map(|message| message.content.parts())
-        .find_map(|part| match part {
+        .filter_map(|part| match part {
             crate::model::ModelContentPart::ToolResult {
                 call_id,
                 content: crate::model::ToolResultContent::Json { value },
                 ..
-            } if call_id == "checkout-8" => Some(value),
+            } => Some((call_id.as_str(), value)),
             _ => None,
         })
-        .expect("model-visible merge conflict");
-    assert!(conflict["error"].as_str().unwrap().contains("conflict"));
+        .collect();
+    assert!(
+        results["checkout-8"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("conflict")
+    );
+    assert!(
+        results["checkout-10"].get("result").is_some(),
+        "merge continuation failed: {}",
+        results["checkout-10"]
+    );
     Ok(())
 }
