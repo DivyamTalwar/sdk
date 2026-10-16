@@ -6,6 +6,13 @@ pub(crate) struct FsCommand {
     pub(crate) volume: Option<String>,
 }
 
+pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
+    match args {
+        [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),
+        _ => None,
+    }
+}
+
 pub(crate) fn parse_fs_command(command: &str) -> Result<FsCommand> {
     let mut arguments = parse_command(command)?;
     if arguments.first().is_some_and(|argument| argument == "git") {
@@ -94,6 +101,24 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
+        // Only the exact registered-agent inspection syntax takes this path.
+        #[test]
+        fn agent_diff_selects_only_its_exact_operand(
+            command in prop::sample::select(vec!["diff", "show", "merge"]),
+            agent in any::<bool>(),
+            name in "[a-z0-9_-]{1,32}",
+            extra in prop::collection::vec(".{0,16}", 0..3),
+        ) {
+            let branch = if agent { format!("agents/{name}") } else { name };
+            let mut args = vec![command.to_owned(), branch.clone()];
+            args.extend(extra);
+            let selected = agent_diff(&args);
+            prop_assert_eq!(selected.is_some(), command == "diff" && agent && args.len() == 2);
+            if let Some(selected) = selected {
+                prop_assert_eq!(selected, branch);
+            }
+        }
+
         // Quoting is a lossless codec for every non-NUL Unicode argument,
         // including empty strings, metacharacters and whitespace.
         #[test]

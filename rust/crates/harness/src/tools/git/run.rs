@@ -52,6 +52,9 @@ pub async fn run(mut workspace: Workspace<'_>, args: &[String]) -> crate::Result
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
+    if let Some(branch) = crate::tools::command::agent_diff(args) {
+        return executor.diff_agent(branch, tree).await;
+    }
     let command = if let Some(identity) = workspace.checkout {
         execute(
             &workspace,

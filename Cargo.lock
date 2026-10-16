@@ -383,11 +383,12 @@ dependencies = [
  "libfuzzer-sys",
  "prost",
  "rmcp",
- "serde_json",
  "serde",
+ "serde-saphyr",
+ "serde_json",
  "tempfile",
- "tokio-util",
  "tokio",
+ "tokio-util",
  "which",
 ]
 

@@ -21,7 +21,12 @@ fuzz_target!(|input: &str| {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        assert_eq!(parse_command(&encoded).unwrap(), arguments);
+        let restored = parse_command(&encoded).unwrap();
+        assert_eq!(restored, arguments);
+        assert_eq!(
+            command::agent_diff(&restored),
+            command::agent_diff(&arguments)
+        );
     }
     if let Ok(parsed) = parse_fs_command(input) {
         let mut arguments = parsed.arguments.clone();
