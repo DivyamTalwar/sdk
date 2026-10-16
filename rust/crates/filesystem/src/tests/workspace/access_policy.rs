@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Checkout, CheckoutMode, GenerationSelector, NamedAttributeWriteMode};
+use crate::model::{CheckoutMode, GenerationSelector};
+use crate::{Checkout, NamedAttributeWriteMode};
 use proptest::prelude::*;
 
 type MemoryCheckout = Checkout<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
@@ -26,7 +27,7 @@ async fn recorded(checkout: &mut MemoryCheckout) -> Result<Option<Vec<u8>>, Box<
     Ok(unbounded!(checkout, read_access_policy())?.map(|chunk| chunk.bytes.to_vec()))
 }
 
-async fn publish(checkout: &mut MemoryCheckout) -> Result<(), Box<dyn Error>> {
+async fn publish(checkout: &mut MemoryCheckout) -> Result<bool, Box<dyn Error>> {
     let result = checkout
         .commit(
             crate::OperationId::new(),
@@ -40,12 +41,11 @@ async fn publish(checkout: &mut MemoryCheckout) -> Result<(), Box<dyn Error>> {
         )
         .await?
         .value;
-    assert!(matches!(
-        result,
-        crate::kernel::LivePublicationObservation::Committed { .. }
-            | crate::kernel::LivePublicationObservation::AlreadyCommitted { .. }
-    ));
-    Ok(())
+    match result {
+        crate::kernel::LivePublicationObservation::Committed { .. } => Ok(true),
+        crate::kernel::LivePublicationObservation::AlreadyCommitted { .. } => Ok(false),
+        _ => Err("policy publication failed".into()),
+    }
 }
 
 // Each published root has its own metadata; staging never changes another view,
@@ -57,8 +57,13 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
     assert_eq!(recorded(&mut writer).await?, None);
     let mut snapshots = Vec::new();
     let mut previous = None;
+    let mut head_sequence = 1;
     for (index, revision) in revisions.iter().enumerate() {
-        snapshots.push((current(&workspace, false).await?, previous.clone()));
+        snapshots.push((
+            current(&workspace, false).await?,
+            previous.clone(),
+            head_sequence,
+        ));
         unbounded!(
             writer,
             write_access_policy(
@@ -76,16 +81,41 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         );
         let mut before = current(&workspace, false).await?;
         assert_eq!(recorded(&mut before).await?, previous);
-        publish(&mut writer).await?;
+        head_sequence += u64::from(publish(&mut writer).await?);
         let mut after = current(&workspace, false).await?;
         assert_eq!(
             recorded(&mut after).await?.as_deref(),
             Some(revision.as_slice())
         );
+        let position = after
+            .generation_position(
+                after.generation_id(),
+                WorkBudget {
+                    authority_records_read: 0,
+                    object_bytes_read: 0,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
+        assert_eq!(
+            (position.0.get(), position.1.get()),
+            (head_sequence, head_sequence)
+        );
         previous = Some(revision.clone());
     }
-    for (mut snapshot, expected) in snapshots {
+    let latest = current(&workspace, false).await?;
+    for (mut snapshot, expected, sequence) in snapshots {
         assert_eq!(recorded(&mut snapshot).await?, expected);
+        let position = unbounded!(latest, generation_position(snapshot.generation_id()))?;
+        assert_eq!(
+            (position.0.get(), position.1.get()),
+            (sequence, head_sequence)
+        );
+        if snapshot.generation_id() != latest.generation_id() {
+            assert!(unbounded!(snapshot, generation_position(latest.generation_id())).is_err());
+        }
     }
     let head = unbounded!(workspace, head())?;
     for (name, paths) in [("policy-full", None), ("policy-empty", Some(Vec::new()))] {
