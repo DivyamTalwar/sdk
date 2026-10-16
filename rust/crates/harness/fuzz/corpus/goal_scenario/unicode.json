@@ -1,9 +1,1 @@
-{
-  "driver":"goal-executor",
-  "prompt":"Continue working toward GOAL.md.",
-  "turns":["Settled"],
-  "expect":{"text":"Settled","request_prompt":"Continue working toward GOAL.md.","result":{"continuations":0,"settles":0,"requests":1,
-    "actions":[]},"view":{"status":"blocked","markdown":"Ship \u03bb and \ud83d\ude80\n","reason":"\u03bb"},"files":{"GOAL.md":
-    "---\nstatus: blocked\nreason: \"\\u03bb\"\n---\nShip \u03bb and \ud83d\ude80\n"}},
-  "seed":{"GOAL.md":"---\nstatus: blocked\nreason: \"\\u03bb\"\n---\nShip \u03bb and \ud83d\ude80\n"}
-}
+{"driver":"goal-local","prompt":"Continue working toward GOAL.md.","turns":["Settled"],"expect":{"text":"Settled","request_prompt":"Continue working toward GOAL.md.","result":{"tasks":1,"continuations":0,"requests":1},"frames":[{"canonical_event_json":{"kind":"declared"}},{"canonical_event_json":{"kind":"completed","outcome":{"Succeeded":{}}}}],"view":{"status":"blocked","markdown":"Ship λ and 🚀\n","reason":"λ"},"files":{"GOAL.md":"---\nstatus: blocked\nreason: \"\\u03bb\"\n---\nShip λ and 🚀\n"},"runtime_error":null,"view_error":null},"policy":null,"seed":{"GOAL.md":"---\nstatus: blocked\nreason: \"\\u03bb\"\n---\nShip λ and 🚀\n"}}

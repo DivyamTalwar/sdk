@@ -5,7 +5,7 @@ use acyclic_harness::{
     goal::{GoalContinuation, GoalStatus, GoalView},
 };
 use proptest::prelude::*;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
 
 #[path = "../../fuzz/fuzz_targets/goal_parser_input.rs"]
@@ -101,89 +101,109 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
     let baseline =
         crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
     crate::drivers::run(baseline.clone()).await?;
-    for mutation in [
-        "file",
-        "view",
-        "count",
-        "requests",
-        "actions",
-        "prompt",
-        "script",
-        "policy",
-        "settles",
-        "text",
-        "max_steps",
-    ] {
-        let mut value = baseline.clone();
-        match mutation {
-            "file" => value["expect"]["files"]["GOAL.md"] = json!("wrong"),
-            "view" => value["expect"]["view"]["status"] = json!("done"),
-            "count" => value["expect"]["result"]["continuations"] = json!(99),
-            "requests" => value["expect"]["result"]["requests"] = json!(99),
-            "actions" => value["expect"]["result"]["actions"] = json!(["stop"]),
-            "prompt" => value["prompt"] = json!("wrong prompt"),
-            "script" => value["turns"].as_array_mut().unwrap().push(json!("unused")),
-            "policy" => value["policy"]["max_continuations"] = json!(0),
-            "settles" => value["settles"] = json!(1),
-            "text" => value["expect"]["text"] = json!("wrong"),
-            "max_steps" => value["max_steps"] = json!(0),
-            _ => unreachable!(),
-        }
-        assert!(
-            crate::drivers::run(value).await.is_err(),
-            "accepted changed {mutation}"
-        );
-    }
-    let mut editing =
-        crate::scenario::load_value(&root, &root.join("goals/continuations/agent-done.json"))?;
-    crate::drivers::run(editing.clone()).await?;
-    editing["expect"]["unchanged_goal"] = json!(true);
-    assert!(
-        crate::drivers::run(editing).await.is_err(),
-        "ignored the per-settle goal revision assertion"
-    );
+    futures::future::try_join_all(
+        [
+            "file",
+            "view",
+            "count",
+            "requests",
+            "tasks",
+            "prompt",
+            "script",
+            "policy",
+            "frames",
+            "automatic",
+            "text",
+            "max_steps",
+        ]
+        .into_iter()
+        .map(|mutation| {
+            let mut value = baseline.clone();
+            async move {
+                match mutation {
+                    "file" => value["expect"]["files"]["GOAL.md"] = json!("wrong"),
+                    "view" => value["expect"]["view"]["status"] = json!("done"),
+                    "count" => value["expect"]["result"]["continuations"] = json!(99),
+                    "requests" => value["expect"]["result"]["requests"] = json!(99),
+                    "tasks" => value["expect"]["result"]["tasks"] = json!(99),
+                    "prompt" => value["prompt"] = json!("wrong prompt"),
+                    "script" => value["turns"].as_array_mut().unwrap().push(json!("unused")),
+                    "policy" => value["policy"]["max_continuations"] = json!(0),
+                    "frames" => {
+                        value["expect"]["frames"] =
+                            json!([{ "canonical_event_json": {"kind":"missing_completion"}}])
+                    }
+                    "automatic" => value["policy"] = Value::Null,
+                    "text" => value["expect"]["text"] = json!("wrong"),
+                    "max_steps" => value["max_steps"] = json!(0),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    crate::drivers::run(value).await.is_err(),
+                    "accepted changed {mutation}"
+                );
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            }
+        }),
+    )
+    .await?;
+
     Ok(())
 }
 
 #[test]
 fn goal_schema_rejects_unknown_fields_and_vacuous_assertions() {
     let baseline = json!({"prompt":"Continue", "turns":["Settled"],
-        "expect":{"text":"Settled", "request_prompt":"Continue", "result":{"requests":1}, "view":{"status":"active"}, "files":{"GOAL.md":"Goal"}}});
+        "expect":{"text":"Settled", "request_prompt":"Continue", "result":{"requests":1},
+        "view":{"status":"active"}, "frames":[{"canonical_event_json":{"kind":"completed"}}],
+        "files":{"GOAL.md":"Goal"}}});
     GoalCase::parse(baseline.clone()).unwrap();
-    let mut unseeded = baseline.clone();
-    unseeded["expect"]["unchanged_goal"] = json!(true);
-    assert!(GoalCase::parse(unseeded).is_err());
-    for (field, mut replacement) in [
+    for (field, replacement) in [
         ("typo", json!(true)),
-        ("settles", json!(-1)),
+        ("settles", json!(1)),
+        ("max_steps", json!(0)),
         ("policy", json!({"unlimited":true})),
         ("turns", json!([{"unknown":1}])),
-        (
-            "expect",
-            json!({"text":"Settled","result":{},"view":{"status":"active"},"files":{"GOAL.md":"Goal"}}),
-        ),
-        (
-            "expect",
-            json!({"text":"Settled","result":{"requests":1},"view":{},"files":{"GOAL.md":"Goal"}}),
-        ),
-        (
-            "expect",
-            json!({"text":"Settled","result":{"requests":1},"error":"","files":{"GOAL.md":"Goal"}}),
-        ),
-        (
-            "expect",
-            json!({"text":"Settled","result":{"requests":1},"error":"goal","view":{"status":"active"},"files":{"GOAL.md":"Goal"}}),
-        ),
-        (
-            "expect",
-            json!({"text":"Settled","result":{"requests":1},"view":{"status":"active"},"files":{}}),
-        ),
     ] {
-        if field == "expect" {
-            replacement["request_prompt"] = json!("Continue");
-        }
         let mut value = baseline.clone();
         value[field] = replacement;
         assert!(GoalCase::parse(value).is_err(), "accepted invalid {field}");
+    }
+    for (field, replacement) in [
+        ("result", json!({})),
+        ("view", json!({})),
+        ("view_error", json!("error")),
+        ("frames", json!([])),
+        ("frames", json!([{}])),
+        ("frames", json!(true)),
+        ("files", json!({})),
+        ("runtime_error", json!("error")),
+        ("unchanged_goal", json!(true)),
+    ] {
+        let mut value = baseline.clone();
+        value["expect"][field] = replacement;
+        assert!(
+            GoalCase::parse(value).is_err(),
+            "accepted invalid expectation {field}"
+        );
+    }
+}
+
+proptest! {
+    // The scenario codec preserves Unicode seed/prompt bytes, optional admission
+    // policies and every frame matcher through a complete serde round trip.
+    #[test]
+    fn goal_case_codec_round_trips(
+        body in text(), prompt in text(), cap in any::<u32>(), enabled in any::<bool>(),
+        frames in proptest::collection::vec(text(), 1..5),
+    ) {
+        let value = json!({"seed":{"GOAL.md":body}, "prompt":prompt, "turns":["Settled"],
+            "policy": if enabled { json!({"max_continuations":cap}) } else { Value::Null },
+            "expect":{"text":"Settled", "request_prompt":prompt, "result":{"requests":1},
+            "view":{"status":"active"}, "files":{"GOAL.md":body}, "frames":frames.into_iter().map(|text| json!({"message":text})).collect::<Vec<_>>()}});
+        let case = GoalCase::parse(value).unwrap();
+        let encoded = serde_json::to_value(&case).unwrap();
+        let decoded = GoalCase::parse(serde_json::from_slice(&serde_json::to_vec(&case).unwrap()).unwrap()).unwrap();
+        prop_assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
     }
 }

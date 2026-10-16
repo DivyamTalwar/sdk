@@ -1,9 +1,4 @@
-{
-  "turns":["Settled",[{"type":"event","kind":"tool_call","call_id":"goal-write","name":"acyclic.write_file","arguments":{"path":"GOAL.md",
-    "text":"---\nstatus: blocked\n---\nShip the change\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":
-    "completed","metadata":null}],"Settled"],
-  "settles":2,
-  "expect":{"result":{"continuations":1,"requests":3,"settles":2,"actions":["continue","stop"]},"view":{"status":"blocked"},"files":
-    {"GOAL.md":"---\nstatus: blocked\n---\nShip the change\n"},"unchanged_goal":false},
-  "max_steps":2
-}
+{"turns":["settled-0",[{"type":"event","kind":"tool_call","call_id":"goal-write","name":"write","arguments":{"path":"GOAL.md",
+    "text":"---\nstatus: blocked\n---\nShip the change\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event",
+    "kind":"completed","metadata":null}],"Settled"],"expect":{"result":{"tasks":2,"continuations":1,"requests":3},"view":{"status":
+    "blocked"},"files":{"GOAL.md":"---\nstatus: blocked\n---\nShip the change\n"}},"max_steps":2}

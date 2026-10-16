@@ -1,183 +1,280 @@
-use super::{TestResult, execution, goals::GoalCase, matchers};
+use super::{TestResult, goals::GoalCase, matchers};
 use acyclic_harness::{
-    Harness, OperationId, TaskId,
+    Admission, IdempotencyKey, LocalHarness, LocalHarnessConfig, OperationId,
     context::CompactionPolicy,
-    filesystem::MemoryHarnessStorage,
-    goal::{GoalContinuation, GoalView},
-    model::Model,
-    test_support::ScriptedModelProvider,
-    tool::files,
+    conversation::{FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
+    filesystem::{FilesystemHost, WorkspaceMutation, workspace_ref},
+    goal::GoalView,
+    model::{Model, ModelContent, ModelRole},
+    resources::ProviderRef,
+    runtime::RuntimeTask,
+    test_support::{ScriptedModelProvider, local_task_stream},
 };
+use acyclic_stream::{Record, StreamPath, StreamProvider};
+use futures::TryStreamExt as _;
+use prost::Message as _;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
-async fn read_goal(storage: &MemoryHarnessStorage) -> acyclic_harness::Result<GoalView> {
-    let (source, bytes) = storage
-        .read_delegated_path(storage.owner_scope(), "", "GOAL.md", None)
+fn frame(record: Record, expected: usize) -> TestResult<Value> {
+    let frame = acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
+    if record.sequence != expected as u64 || frame.revision != record.sequence + 1 {
+        return Err("goal frame sequence or revision gap".into());
+    }
+    let event: Value = serde_json::from_slice(&frame.canonical_event_json)?;
+    Ok(Value::Object(
+        [
+            ("revision".into(), Value::from(frame.revision)),
+            ("operation_id".into(), Value::String(frame.operation_id)),
+            ("canonical_event_json".into(), event),
+        ]
+        .into_iter()
+        .collect(),
+    ))
+}
+
+async fn goal(harness: &LocalHarness) -> acyclic_harness::Result<GoalView> {
+    let workspace = workspace_ref(
+        harness.scratch().provider().clone(),
+        &harness.scratch().storage_name(&mut None)?,
+    )?;
+    let generation = harness
+        .filesystem()
+        .resolve(&workspace, None)
+        .await?
+        .generation;
+    let bytes = harness
+        .filesystem()
+        .read(&workspace, Some(&generation), "/GOAL.md", 4096, None)
         .await?;
+    let source = FileRef::new(
+        harness.scratch().clone(),
+        "GOAL.md".into(),
+        hex::encode(generation.as_resource().key()),
+        FileDescriptor::from_bytes(&bytes, "text/markdown", &mut None)?,
+        "GOAL.md".into(),
+        &mut None,
+    )?;
     GoalView::from_file(source, &bytes, 4096)
 }
 
-async fn run_turn(
-    storage: &MemoryHarnessStorage,
-    bundle: &Harness,
-    provider: &ScriptedModelProvider,
-    operation: OperationId,
-    case: &GoalCase,
-) -> TestResult {
-    let input = storage
-        .stage(
-            operation,
-            &format!("turns/{operation}/prompt.txt"),
-            case.prompt.as_bytes(),
-            "text/plain",
-            "prompt.txt",
-        )
-        .await?;
-    let output = storage
-        .run_conversation(bundle, operation, input.clone(), Vec::new(), case.max_steps)
-        .await?;
-    if output.text != case.expect.text {
-        return Err(format!(
-            "goal turn text: expected {:?}, got {:?}",
-            case.expect.text, output.text
-        )
-        .into());
-    }
-    let dispatches = provider.dispatches();
-    let replay = storage
-        .run_conversation(bundle, operation, input, Vec::new(), case.max_steps)
-        .await?;
-    if replay != output || provider.dispatches() != dispatches {
-        return Err("replayed goal admission dispatched again or changed output".into());
-    }
-    Ok(())
-}
-
-// Exercises the real executor, ordinary file tool and continuation policy.
-// Automatic runtime admission belongs to LocalHarness, not this test driver.
 pub(super) async fn run(mut case: GoalCase) -> TestResult {
-    let storage = execution::workspace(&case.seed).await?;
-    let initial = if case.seed.contains_key("GOAL.md") {
-        Some(
-            storage
-                .read_delegated_path(storage.owner_scope(), "", "GOAL.md", None)
-                .await?,
-        )
-    } else {
-        None
-    };
+    let directory = tempfile::tempdir()?;
+    acyclic_native_runtime::initialize_native_io_services().map_err(|error| error.to_string())?;
+    let files = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+    let provider_ref = ProviderRef::new(
+        "e2e-goal".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let project = VolumeRef::new(
+        provider_ref.clone(),
+        "project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("e2e".into()),
+        &mut None,
+    )?;
+    FilesystemHost::new(files, &provider_ref, None)?
+        .create_volume(&project)
+        .await?;
     let provider = Arc::new(ScriptedModelProvider::new(std::mem::take(&mut case.turns)));
-    let bundle = storage
-        .builder()
-        .model(
+    let mut config = LocalHarnessConfig::new(
+        directory.path(),
+        (
             Model::new("scripted".into(), "goal".into(), "1".into(), Value::Null)?,
             provider.clone(),
+        ),
+    )
+    .volume(project.clone())
+    .compaction(CompactionPolicy::Disabled)
+    .limits(Limits {
+        model_steps: case.max_steps as usize,
+        ..Limits::default()
+    });
+    config.goal_continuations = case.policy;
+    let harness = LocalHarness::open(config).await?;
+    let workspace = workspace_ref(
+        harness.scratch().provider().clone(),
+        &harness.scratch().storage_name(&mut None)?,
+    )?;
+    let mutations: Vec<_> = std::mem::take(&mut case.seed)
+        .into_iter()
+        .map(|(path, text)| WorkspaceMutation::PutFile {
+            path: format!("/{path}"),
+            bytes: text.into_bytes().into(),
+        })
+        .collect();
+    let seeded = if mutations.is_empty() {
+        None
+    } else {
+        Some(
+            harness
+                .filesystem()
+                .apply(
+                    &workspace,
+                    None,
+                    &mutations,
+                    &IdempotencyKey::new("goal-seed".into())?,
+                )
+                .await?,
         )
-        .grant("model:generate")
-        .tool(files::write_file()?)?
-        .grant("tool:call:acyclic.write_file")
-        .compaction(CompactionPolicy::Disabled)
-        .build()?;
-    let task = TaskId::new();
-    let mut settled_turn = OperationId::new();
-    run_turn(&storage, &bundle, &provider, settled_turn, &case).await?;
-    let mut admitted = BTreeSet::new();
-    let mut actions = Vec::new();
-    for _ in 0..case.settles {
-        let view = read_goal(&storage).await?;
-        if case.expect.unchanged_goal
-            && Some(view.revision())
-                != initial
-                    .as_ref()
-                    .map(|(source, _)| *source.descriptor().sha256())
-        {
-            return Err("goal changed before the continuation policy settled it".into());
+    };
+    let stream = local_task_stream(&harness);
+    let path = StreamPath::new("harness/v3/coordinator/events")?;
+    let operation = OperationId::new();
+    let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(operation, &case.prompt).await?
+    else {
+        return Err("goal task was not durably admitted".into());
+    };
+    let mut followed = stream.follow(path.clone(), 0).await?;
+    let mut frames = Vec::new();
+    let result = {
+        let execution = harness.resume(task_id);
+        tokio::pin!(execution);
+        loop {
+            tokio::select! {
+                output = &mut execution => break output,
+                record = followed.try_next() => frames.push(frame(record?.ok_or("goal follow ended")?, frames.len())?),
+            }
         }
-        let action = case
-            .policy
-            .on_settle(&view, task, settled_turn, admitted.len() as u32);
-        assert_eq!(
-            action,
-            case.policy
-                .on_settle(&view, task, settled_turn, admitted.len() as u32)
-        );
-        match action {
-            Some(GoalContinuation::Continue(operation)) => {
-                if !admitted.insert(operation) {
-                    return Err("repeated continuation identity".into());
+    };
+    // Settle supplies a finite accepted cut. Drain that exact follow prefix;
+    // never wait for an expected task count (disabled admission must fail fast).
+    let accepted = stream.watermarks(path).await?.accepted;
+    while (frames.len() as u64) < accepted {
+        frames.push(frame(
+            followed
+                .try_next()
+                .await?
+                .ok_or("goal follow ended before its accepted cut")?,
+            frames.len(),
+        )?);
+    }
+    match (&case.expect.text, &case.expect.runtime_error, &result) {
+        (Some(text), None, Ok(output)) if &output.text == text => {}
+        (None, Some(expected), Err(error)) if error.to_string().contains(expected) => {}
+        _ => return Err(format!("unexpected goal runtime result: {result:?}").into()),
+    }
+    matchers::ordered(&case.expect.frames, &frames, "goal wire frames")?;
+    let mut declared = Vec::new();
+    let mut completed = Vec::new();
+    for frame in &frames {
+        let event = &frame["canonical_event_json"];
+        match event["kind"].as_str() {
+            Some("declared") => declared.push(
+                frame["operation_id"]
+                    .as_str()
+                    .ok_or("missing goal operation")?,
+            ),
+            Some("completed") => {
+                if event["outcome"].get("Succeeded").is_none() {
+                    return Err("goal task did not succeed".into());
                 }
-                actions.push("continue");
-                run_turn(&storage, &bundle, &provider, operation, &case).await?;
-                settled_turn = operation;
-            }
-            Some(GoalContinuation::Block(contents)) => {
-                actions.push("block");
-                storage
-                    .stage(
-                        view.continuation_operation(task, settled_turn)
-                            .ok_or("missing cap identity")?,
-                        "GOAL.md",
-                        contents.as_bytes(),
-                        "text/markdown",
-                        "GOAL.md",
-                    )
-                    .await?;
-                let blocked = read_goal(&storage).await?;
-                assert_eq!(blocked.markdown, view.markdown);
-                assert_eq!(
-                    case.policy
-                        .on_settle(&blocked, task, settled_turn, admitted.len() as u32),
-                    None
+                completed.push(
+                    frame["operation_id"]
+                        .as_str()
+                        .ok_or("missing completion operation")?,
                 );
-                break;
             }
-            None => {
-                actions.push("stop");
-                break;
-            }
+            _ => {}
         }
     }
+    if declared != completed
+        || declared.first().copied() != Some(operation.to_string().as_str())
+        || declared.iter().copied().collect::<BTreeSet<_>>().len() != declared.len()
+    {
+        return Err("goal frames lost, duplicated or reordered an admission/completion".into());
+    }
     let requests = provider.requests();
-    let prompt = requests
-        .first()
-        .ok_or("missing goal model request")?
-        .messages
-        .iter()
-        .flat_map(|message| message.content.file_refs())
-        .find(|file| file.display_name() == "prompt.txt")
-        .ok_or("goal request omitted the prompt file")?;
-    if storage.read(prompt).await?.as_ref() != case.expect.request_prompt.as_bytes() {
+    if !requests.first().is_some_and(|request| {
+        request.messages.iter().any(|message| {
+            message.role == ModelRole::User
+                && matches!(&message.content, ModelContent::Text(text) if text == &case.expect.request_prompt)
+        })
+    }) {
         return Err("model saw different goal prompt bytes".into());
     }
     if provider.remaining() != 0 || !provider.reconciliations().is_empty() {
         return Err("unused goal script or unexpected reconciliation".into());
     }
-    let result = json!({"continuations":admitted.len(), "settles":actions.len(),
-        "actions":actions, "requests":requests.len()});
-    if !matchers::subset(&case.expect.result, &result) {
-        return Err(format!("goal result: expected {}, got {result}", case.expect.result).into());
+    let actual = json!({"continuations":declared.len() - 1, "tasks":declared.len(), "requests":requests.len()});
+    if !matchers::subset(&case.expect.result, &actual) {
+        return Err(format!("goal result: expected {}, got {actual}", case.expect.result).into());
     }
     match (
-        case.expect.view,
-        case.expect.error,
-        read_goal(&storage).await,
+        &case.expect.view,
+        &case.expect.view_error,
+        goal(&harness).await,
     ) {
         (Some(expected), None, Ok(actual))
-            if matchers::subset(&expected, &serde_json::to_value(&actual)?) => {}
-        (None, Some(expected), Err(actual)) if actual.to_string().contains(&expected) => {}
+            if matchers::subset(expected, &serde_json::to_value(actual)?) => {}
+        (None, Some(expected), Err(error)) if error.to_string().contains(expected) => {}
         actual => return Err(format!("unexpected goal view: {actual:?}").into()),
     }
-    if let Some(expected) = case.expect.requests {
+    if let Some(expected) = &case.expect.requests {
         let requests = requests
-            .iter()
+            .into_iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
-        matchers::ordered(&expected, &requests, "goal requests")?;
+        matchers::ordered(expected, &requests, "goal model requests")?;
     }
-    execution::check_files(&case.expect.files, &storage).await?;
-    if let Some((source, bytes)) = initial {
-        assert_eq!(storage.read(&source).await?.as_ref(), bytes.as_ref());
+    for (path, expected) in &case.expect.files {
+        let actual = harness
+            .filesystem()
+            .read(&workspace, None, &format!("/{path}"), 4096, None)
+            .await;
+        match (expected, actual) {
+            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
+            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (expected, actual) => {
+                return Err(
+                    format!("goal file {path}: expected {expected:?}, got {actual:?}").into(),
+                );
+            }
+        }
+    }
+    if let Some(generation) = seeded {
+        for mutation in mutations {
+            if let WorkspaceMutation::PutFile { path, bytes } = mutation {
+                let retained = harness
+                    .filesystem()
+                    .read(&workspace, Some(&generation), &path, 4096, None)
+                    .await?;
+                if retained.as_ref() != bytes.as_ref() {
+                    return Err("goal writes changed the immutable seed generation".into());
+                }
+            }
+        }
+    }
+    // Reopening with future admission disabled still replays the ordinary task.
+    let count = provider.requests().len();
+    drop(followed);
+    drop(stream);
+    drop(harness);
+    let mut config = LocalHarnessConfig::new(
+        directory.path(),
+        (
+            Model::new("scripted".into(), "goal".into(), "1".into(), Value::Null)?,
+            provider.clone(),
+        ),
+    )
+    .volume(project.clone())
+    .compaction(CompactionPolicy::Disabled)
+    .limits(Limits {
+        model_steps: case.max_steps as usize,
+        ..Limits::default()
+    });
+    config.goal_continuations = None;
+    let reopened = LocalHarness::open(config).await?;
+    if case.expect.runtime_error.is_none()
+        && reopened.resume(task_id).await?.text != case.expect.text.as_deref().unwrap_or_default()
+    {
+        return Err("reopened goal task changed its result".into());
+    }
+    if provider.requests().len() != count {
+        return Err("reopening a goal task redispatched the model".into());
     }
     Ok(())
 }

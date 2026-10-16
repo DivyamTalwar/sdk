@@ -1,8 +1,6 @@
-{
-  "turns":["Settled","Settled","Settled","Settled","Settled"],
-  "expect":{"result":{"continuations":4,"settles":4,"requests":5,"actions":["continue","continue","continue","continue"]},"view":
-    {"markdown":"Ship the change and its tests\n"},"files":{"GOAL.md":"Ship the change and its tests\n"}},
-  "seed":{"GOAL.md":"Ship the change and its tests\n"},
-  "settles":4,
-  "policy":{}
-}
+{"turns":["settled-0","settled-1","settled-2","settled-3",[{"type":"event","kind":"tool_call","call_id":"finish-before-cap","name":
+    "write","arguments":{"path":"GOAL.md","text":"---\nstatus: done\n---\nShip the change and its tests\n","media_type":
+    "text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"Settled"],"expect":{"result":{
+    "tasks":5,"continuations":4,"requests":6},"view":{"status":"done","markdown":"Ship the change and its tests\n"},"files":{
+    "GOAL.md":"---\nstatus: done\n---\nShip the change and its tests\n"}},"seed":{"GOAL.md":"Ship the change and its tests\n"},
+    "max_steps":2}

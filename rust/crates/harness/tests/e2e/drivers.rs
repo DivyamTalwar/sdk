@@ -25,6 +25,13 @@ impl Driver for Composer {
     }
 }
 
+impl Driver for super::goals::GoalCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::goal_execution::run(case).await
+    }
+}
+
 impl Driver for Notifications {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -45,8 +52,8 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         None if driver.is_none() => run_execution(scenario::Scenario::from_value(value)?).await,
         Some("executor") => run_execution(scenario::Scenario::from_value(value)?).await,
         Some("composer") => Composer::execute(Composer::parse(value)?).await,
-        Some("goal-executor") => {
-            super::goal_execution::run(super::goals::GoalCase::parse(value)?).await
+        Some("goal-local") => {
+            super::goals::GoalCase::execute(super::goals::GoalCase::parse(value)?).await
         }
         Some("notifications") => Notifications::execute(Notifications::parse(value)?).await,
         _ => Err("unknown scenario driver".into()),
