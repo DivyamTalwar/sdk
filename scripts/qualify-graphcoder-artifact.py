@@ -30,5 +30,6 @@ for prefix in prefixes:
     if not any(name.startswith(prefix) for name in tests):
         sys.exit(f"No tests matched qualification filter {prefix}")
 selected = [name for name in tests if name.startswith(tuple(prefixes))]
+print(f"Test executable: {executable}", flush=True)
 for name in selected:
     subprocess.run([executable, name, "--exact"], check=True, timeout=9)
