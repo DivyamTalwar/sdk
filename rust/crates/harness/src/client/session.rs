@@ -296,6 +296,34 @@ impl<S: ClientStateStore> ClientSession<S> {
         }
     }
 
+    /// Replace a captured-volume query fold at its authenticated snapshot cut.
+    pub fn replace_diff(
+        &mut self,
+        authority: &wire::Authority,
+        view: super::DiffView,
+    ) -> Result<()> {
+        self.require_tracked(authority)?;
+        self.views.diffs.insert(authority_key(authority), view);
+        Ok(())
+    }
+
+    /// Fold one exact-path publication before the query adapter advances its cursor.
+    pub async fn diff_publication(
+        &mut self,
+        authority: &wire::Authority,
+        publication: &super::DiffPublication,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+        limits: super::DiffLimits,
+    ) -> Result<Vec<String>> {
+        self.require_tracked(authority)?;
+        self.views
+            .diffs
+            .get_mut(&authority_key(authority))
+            .ok_or_else(|| Error::Invalid("open the diff query snapshot before its follow".into()))?
+            .apply(publication, reader, limits)
+            .await
+    }
+
     fn apply_documents(
         &mut self,
         authority: &wire::Authority,

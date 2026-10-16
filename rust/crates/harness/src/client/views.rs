@@ -114,6 +114,8 @@ pub struct TaskView {
 /// Shared view model for ratatui, browser and WASM consumers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ClientViews {
+    /// Captured-volume query projections, keyed by tracked agent authority.
+    pub diffs: BTreeMap<String, super::DiffView>,
     /// GOAL.md and plans/ folded from private-volume live queries.
     pub documents: BTreeMap<String, super::DocumentViews>,
     /// Authority-keyed transcripts; keys are `kind:id`.

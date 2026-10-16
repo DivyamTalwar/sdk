@@ -272,6 +272,30 @@ impl<S: ClientStateStore> HarnessClient<S> {
         Ok(true)
     }
 
+    /// Replace a captured-volume query fold after opening its authenticated snapshot.
+    pub fn replace_diff(
+        &mut self,
+        authority: &wire::Authority,
+        view: super::DiffView,
+    ) -> Result<()> {
+        self.session.replace_diff(authority, view)
+    }
+
+    /// Fold a pushed exact-path publication using the client's bound file authority.
+    pub async fn diff_publication(
+        &mut self,
+        authority: &wire::Authority,
+        publication: &super::DiffPublication,
+        limits: super::DiffLimits,
+    ) -> Result<Vec<String>> {
+        let files = self.files.as_ref().ok_or_else(|| {
+            Error::Unauthorized("diff query requires bound file authority".into())
+        })?;
+        self.session
+            .diff_publication(authority, publication, files.as_ref(), limits)
+            .await
+    }
+
     /// Shared renderer state and outbox.
     pub fn session(&self) -> &ClientSession<S> {
         &self.session

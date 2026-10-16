@@ -47,6 +47,12 @@ pub struct ClientRenderer {
     header: Line<'static>,
     status: Line<'static>,
     notices: Vec<Line<'static>>,
+    diff_cut: Option<(
+        crate::conversation::VolumeRef,
+        crate::resources::GenerationRef,
+        crate::resources::GenerationRef,
+    )>,
+    diff: Vec<Line<'static>>,
 }
 
 impl ClientRenderer {
@@ -129,6 +135,19 @@ impl ClientRenderer {
             self.plan_source.clear();
             self.plans.clear();
         }
+        let diff = views.diffs.get(&key);
+        let cut = diff.map(|view| (view.volume(), view.base(), view.generation()));
+        if self
+            .diff_cut
+            .as_ref()
+            .map(|(volume, base, generation)| (volume, base, generation))
+            != cut
+        {
+            self.diff = diff.map_or_else(Vec::new, |view| super::diff_lines(view.files()));
+            self.diff_cut = cut.map(|(volume, base, generation)| {
+                (volume.clone(), base.clone(), generation.clone())
+            });
+        }
         let task = views.tasks.get(&key);
         self.busy = task.is_some_and(|task| task.status == crate::core::LifecycleState::Active);
         self.header = Line::from(vec![
@@ -155,10 +174,12 @@ impl ClientRenderer {
 
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
-        // TODO(#562): bind the captured-volume diff widget.
+        // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
+        // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),
             transcript: &self.transcript,
+            diff: &self.diff,
             goal: &self.goal,
             plans: &self.plans,
             notifications: &self.notices,
