@@ -63,6 +63,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             &self.client,
             idempotency_key.as_str(),
             Some(self.revision),
+            event_intent,
             &mut None,
         )
         .await?

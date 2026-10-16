@@ -95,12 +95,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.verify_content(&spec.state, quota.work()).await?;
         }
         self.verify_published_result(&event, quota.work()).await?;
-        if let Some((_, existing, ..)) =
-            read_intent(&self.client, &key, Some(self.revision), quota.work()).await?
+        if read_intent(
+            &self.client,
+            &key,
+            Some(self.revision),
+            replayed_intent_digest,
+            quota.work(),
+        )
+        .await?
+        .is_some()
         {
-            if quota.work().is_some() {
-                quota.adopt(existing.logical_owned_bytes()?)?;
-            }
             return Err(guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Conflict,
@@ -128,20 +132,22 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     async fn intent_matches(
         &self,
         key: &str,
-        event: &SchedulerEvent,
         digest: &[u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<bool>> {
         let mut custody = CodecQuota::new(work, 0)?;
-        let Some(intent) =
-            read_intent(&self.client, key, Some(self.revision), custody.work()).await?
+        let Some(intent) = read_intent(
+            &self.client,
+            key,
+            Some(self.revision),
+            replayed_intent_digest,
+            custody.work(),
+        )
+        .await?
         else {
             return Ok(None);
         };
-        if custody.work().is_some() {
-            custody.adopt(intent.1.logical_owned_bytes()?)?;
-        }
-        Ok(Some(&intent.0 == digest && &intent.1 == event))
+        Ok(Some(&intent == digest))
     }
 
     pub(super) async fn verify_content(
@@ -339,10 +345,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     work.hashed_bytes(canonical.len() as u64)?;
                 }
                 let digest = *blake3::hash(&canonical).as_bytes();
-                if let Some(matches) = self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                {
+                if let Some(matches) = self.intent_matches(key, &digest, custody.work()).await? {
                     return if matches {
                         self.validate_command_wait(&event, waiting_command, true, custody.work())?;
                         self.validate_replay(&event, custody.work()).map(|()| false)
@@ -459,11 +462,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     Err(error) => return Err(error),
                 };
                 self.refresh(custody.work()).await?;
-                if self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                    != Some(true)
-                {
+                if self.intent_matches(key, &digest, custody.work()).await? != Some(true) {
                     return applied.and_then(|_| {
                         Err(guarded_boundary(
                             custody.work(),
