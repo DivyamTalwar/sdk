@@ -35,3 +35,10 @@ path = "fuzz_targets/terminal_stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "terminal_negotiation"
+path = "fuzz_targets/terminal_negotiation.rs"
+test = false
+doc = false
+bench = false

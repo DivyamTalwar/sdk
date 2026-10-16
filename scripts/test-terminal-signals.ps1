@@ -31,6 +31,7 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
     [DllImport("kernel32.dll")] static extern bool ReadFile(IntPtr handle,byte[] bytes,uint size,out uint read,IntPtr overlapped);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool WriteFile(IntPtr handle,byte[] bytes,uint size,out uint written,IntPtr overlapped);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint exit);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int kind);
@@ -64,6 +65,15 @@ public static class TerminalSignalConPty {
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
             var timer=Stopwatch.StartNew();
+            string inputReady=Path.ChangeExtension(report,"input-ready");
+            while(!File.Exists(inputReady)&&timer.ElapsedMilliseconds<1500) {
+                if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before input fixture");
+                Thread.Sleep(1);
+            }
+            Require(File.Exists(inputReady),"native input setup deadline");
+            byte[] fixture=Encoding.ASCII.GetBytes(string.Concat(System.Linq.Enumerable.Repeat("0123456789",10)));
+            uint written;
+            Require(WriteFile(iw,fixture,(uint)fixture.Length,out written,IntPtr.Zero)&&written==fixture.Length,"native input fixture write");
             string ready=Path.ChangeExtension(report,"ready");
             while(!File.Exists(ready)&&timer.ElapsedMilliseconds<1500) {
                 if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before terminal setup");

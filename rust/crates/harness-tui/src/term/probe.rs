@@ -428,10 +428,26 @@ pub fn detect(
         return Ok((decoder.replies().capabilities(env), decoder));
     }
     let deadline = Instant::now() + PROBE_TIMEOUT;
-    io.send(&Probe::batch(env.fallback().multiplexer), deadline)?;
+    let multiplexer = env.transport().multiplexer;
+    if let Err(error) = io.send(&Probe::batch(multiplexer), deadline) {
+        // Even an empty restoration journal can follow a partially sent OSC
+        // or mux envelope. Give cleanup one bounded nonblocking retry window,
+        // including when the original startup deadline has already expired.
+        let mut cancel = vec![0x18];
+        if multiplexer != Multiplexer::None {
+            cancel.extend_from_slice(&multiplexer.wrap(b"\x18"));
+        }
+        let _ = io.send(&cancel, Instant::now() + Duration::from_millis(1));
+        return Err(error);
+    }
     let mut buffer = [0; 1024];
     let mut total = 0;
-    while Instant::now() < deadline && !decoder.replies().sentinel && total < PROBE_LIMIT {
+    // An outer DA1 is not an inner completion marker. Collect mux replies up
+    // to the same absolute deadline, irrespective of their relative ordering.
+    while Instant::now() < deadline
+        && (multiplexer != Multiplexer::None || !decoder.replies().sentinel)
+        && total < PROBE_LIMIT
+    {
         let available = buffer.len().min(PROBE_LIMIT - total);
         let count = match io.receive(
             buffer
@@ -439,13 +455,13 @@ pub fn detect(
                 .ok_or(io::ErrorKind::InvalidInput)?,
             deadline,
         ) {
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                break;
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(
+                    Duration::from_millis(1)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                continue;
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,

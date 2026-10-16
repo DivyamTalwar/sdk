@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -38,10 +39,11 @@ void console_register() {
 void console_break() {
     if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)) failure(GetLastError());
 }
-rust::Vec<std::uint8_t> console_read(std::size_t input, std::uint32_t timeout) {
+rust::Vec<std::uint8_t> console_read(std::size_t input, std::size_t capacity, std::uint32_t timeout) {
     const auto handle = reinterpret_cast<HANDLE>(input);
     const auto deadline = GetTickCount64() + timeout;
     rust::Vec<std::uint8_t> result;
+    if (!capacity) return result;
     for (;;) {
         const auto now = GetTickCount64();
         if (now >= deadline) return result;
@@ -61,7 +63,8 @@ rust::Vec<std::uint8_t> console_read(std::size_t input, std::uint32_t timeout) {
              vk == VK_INSERT || vk == VK_DELETE);
         if (readable) {
             char bytes[1024];
-            if (!ReadFile(handle, bytes, sizeof(bytes), &count, nullptr)) failure(GetLastError());
+            const auto length = static_cast<DWORD>(std::min(capacity, sizeof(bytes)));
+            if (!ReadFile(handle, bytes, length, &count, nullptr)) failure(GetLastError());
             for (DWORD i = 0; i < count; ++i) result.push_back(static_cast<std::uint8_t>(bytes[i]));
             return result;
         }

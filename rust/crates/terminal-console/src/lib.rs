@@ -29,7 +29,7 @@ mod ffi {
         /// Generate a real CTRL_BREAK event in the current console.
         fn console_break() -> Result<()>;
         /// Read available VT bytes before the bounded timeout expires.
-        fn console_read(input: usize, timeout: u32) -> Result<Vec<u8>>;
+        fn console_read(input: usize, capacity: usize, timeout: u32) -> Result<Vec<u8>>;
     }
     extern "Rust" {
         fn console_control(event: u32) -> bool;

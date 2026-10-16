@@ -156,7 +156,7 @@ impl ProbeIo for Tty {
         let handle = lifecycle::active(&self.state, |guard| {
             Ok(guard.writer().input.as_raw_handle() as usize)
         })?;
-        let input = ffi::console_read(handle, timeout).map_err(io::Error::other)?;
+        let input = ffi::console_read(handle, bytes.len(), timeout).map_err(io::Error::other)?;
         let count = input.len();
         bytes
             .get_mut(..count)
@@ -186,6 +186,7 @@ impl Drop for Tty {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     static REPORT: OnceLock<PathBuf> = OnceLock::new();
 
@@ -237,7 +238,7 @@ mod tests {
             output.as_raw_handle() as usize,
             baseline,
         )?;
-        let _tty = Tty::open()?;
+        let mut tty = Tty::open()?;
         let raw = ffi::console_state(
             input.as_raw_handle() as usize,
             output.as_raw_handle() as usize,
@@ -246,6 +247,24 @@ mod tests {
         assert_ne!(raw.input_mode & 512, 0);
         assert_ne!(raw.output_mode & 4, 0);
         assert_eq!((raw.input_page, raw.output_page), (65001, 65001));
+        // The ConPTY host sends one 100-byte input packet. A zero-capacity
+        // receive must consume nothing; the next receive may consume only 24.
+        std::fs::write(path.with_extension("input-ready"), b"input")?;
+        assert_eq!(
+            tty.receive(&mut [], Instant::now() + Duration::from_millis(20))?,
+            0
+        );
+        let mut first = [0; 24];
+        let first_count = tty.receive(&mut first, Instant::now() + Duration::from_millis(500))?;
+        assert!(first_count > 0 && first_count <= first.len());
+        let mut received = first[..first_count].to_vec();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while received.len() < 100 && Instant::now() < deadline {
+            let mut remaining = [0; 24];
+            let count = tty.receive(&mut remaining, deadline)?;
+            received.extend_from_slice(&remaining[..count]);
+        }
+        assert_eq!(received, b"0123456789".repeat(10));
         std::fs::write(path.with_extension("ready"), b"ready")?;
         if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("break") {
             ffi::console_break()?;
