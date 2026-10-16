@@ -50,7 +50,19 @@ fn assert_projection(value: &Value) {
                 }),
             },
         ]);
-        let wire = crate::projection::body(&provider, &request).unwrap();
+        let names = crate::tool_names::Names::new(&request);
+        let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+        let projected =
+            crate::projection::body_named(&provider, &request, &names, &origin).unwrap();
+        let ModelContent::Part(ModelContentPart::ToolCall(source)) = &request.messages[2].content
+        else {
+            unreachable!()
+        };
+        let borrowed = projected.borrowed_arguments();
+        assert_eq!(borrowed.len(), 1);
+        assert_borrowed(&source.arguments, borrowed[0]);
+        let wire = crate::projection::arguments::literal(&serde_json::to_vec(&projected).unwrap())
+            .unwrap();
         let args = match adapter {
             Adapter::Anthropic => wire["messages"][1]["content"][0]["input"].clone(),
             Adapter::Gemini => wire["contents"][1]["parts"][0]["functionCall"]["args"].clone(),
@@ -66,15 +78,13 @@ fn assert_projection(value: &Value) {
             )
             .unwrap(),
         };
-        assert!(args.is_object(), "{adapter:?}: non-object wire arguments");
-        assert_eq!(
-            if value.is_object() {
-                &args
-            } else {
-                &args["_raw"]
-            },
-            value
-        );
+        crate::projection::arguments::assert_value(value, &args);
+        if matches!(adapter, Adapter::Chat | Adapter::Responses) {
+            assert!(
+                crate::validate_input(adapter, &wire).is_empty(),
+                "{adapter:?}: rejected projected arguments"
+            );
+        }
         assert_eq!(
             request.messages[2].content.parts()[0],
             ModelContentPart::ToolCall(ToolCall::new(
@@ -96,6 +106,8 @@ proptest! {
 fn raw_marker_names_and_non_object_fixtures_are_preserved() {
     for value in [
         json!(null),
+        json!([1]),
+        json!({"_raw":[1]}),
         json!(["line\n", 0, false]),
         json!("{}"),
         json!({"_raw":null}),
@@ -131,4 +143,44 @@ fn negative_control_default_value_decode_misinterprets_literal_marker_keys() {
         crate::projection::arguments::literal(&bytes).unwrap(),
         original
     );
+}
+
+#[test]
+#[should_panic(expected = "exactly one _raw entry")]
+fn negative_control_missing_null_is_not_an_empty_object() {
+    crate::projection::arguments::assert_value(&Value::Null, &json!({}));
+}
+
+fn assert_borrowed(source: &Value, projected: &Value) {
+    assert!(
+        std::ptr::eq(source, projected),
+        "wire calls must borrow canonical arguments"
+    );
+}
+
+#[test]
+#[should_panic(expected = "wire calls must borrow canonical arguments")]
+fn negative_control_materialized_arguments_fail_borrow_identity() {
+    let source = json!({"nested":[1,2,3]});
+    let copied = source.clone();
+    assert_borrowed(&source, &copied);
+}
+
+#[test]
+fn object_argument_validation_checks_literals_without_marker_interpretation() {
+    for raw in [
+        r#"{"$serde_json::private::RawValue":"null","nested":[]}"#,
+        r#" {"text":"quote\" newline\n slash\\"} "#,
+    ] {
+        assert!(crate::protocol::strict::object(raw));
+    }
+    for raw in [
+        "null",
+        "[]",
+        r#"{"text":"\ud800"}"#,
+        "{} trailing",
+        r#"{"x":}"#,
+    ] {
+        assert!(!crate::protocol::strict::object(raw), "accepted {raw}");
+    }
 }

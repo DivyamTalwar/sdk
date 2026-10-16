@@ -25,19 +25,60 @@ pub(crate) fn assert_normalization(value: &Value) {
     let normalized = literal(&bytes).unwrap();
     assert_value(value, &normalized);
     assert_eq!(serde_json::to_vec(&Arguments(&normalized)).unwrap(), bytes);
+    for adapter in [
+        crate::Adapter::Anthropic,
+        crate::Adapter::Responses,
+        crate::Adapter::Chat,
+        crate::Adapter::Gemini,
+    ] {
+        let call = super::call::Call {
+            adapter,
+            id: "call_0".into(),
+            name: "echo".into(),
+            arguments: value,
+            signature: None,
+        };
+        let encoded = serde_json::to_vec(&call).unwrap();
+        let wire = literal(&encoded).unwrap();
+        let arguments = match adapter {
+            crate::Adapter::Anthropic => wire["input"].clone(),
+            crate::Adapter::Gemini => wire["functionCall"]["args"].clone(),
+            crate::Adapter::Responses | crate::Adapter::Chat => {
+                let raw = if adapter == crate::Adapter::Responses {
+                    &wire["arguments"]
+                } else {
+                    &wire["function"]["arguments"]
+                };
+                let raw = raw.as_str().unwrap();
+                assert!(
+                    crate::protocol::strict::object(raw),
+                    "argument validator must accept encoded objects"
+                );
+                literal(raw.as_bytes()).unwrap()
+            }
+        };
+        assert_value(value, &arguments);
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn assert_value(value: &Value, normalized: &Value) {
     assert!(normalized.is_object());
-    assert_eq!(
-        if value.is_object() {
-            normalized
-        } else {
-            &normalized["_raw"]
-        },
-        value
-    );
+    if value.is_object() {
+        assert_eq!(normalized, value);
+    } else {
+        let object = normalized.as_object().unwrap();
+        assert_eq!(
+            object.len(),
+            1,
+            "non-object arguments need exactly one _raw entry"
+        );
+        assert_eq!(
+            object.get("_raw"),
+            Some(value),
+            "missing or changed _raw argument"
+        );
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -54,4 +95,17 @@ pub(crate) fn literal(bytes: &[u8]) -> acyclic_harness::Result<Value> {
         None,
         &mut |_| Ok(()),
     )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn wire_wrapping_collision_leaves_distinct_canonical_arguments_unchanged() {
+    // Wire envelopes have no inverse: replay always reads the canonical transcript.
+    let array = serde_json::json!([1]);
+    let object = serde_json::json!({"_raw":[1]});
+    let encode = |value: &Value| serde_json::to_vec(&Arguments(value)).unwrap();
+    assert_eq!(encode(&array), encode(&object));
+    assert_ne!(array, object);
+    assert_normalization(&array);
+    assert_normalization(&object);
 }
