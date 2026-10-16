@@ -21,15 +21,10 @@ fn tools() -> Result<Vec<Tool>> {
         .definitions(None)?
         .into_iter()
         .map(|definition| {
-            let schema = handoff::schema(definition.input_schema);
-            Ok(Tool::new(
-                definition.name,
-                definition.description,
-                schema
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| Error::Invalid("tool schema is not an object".into()))?,
-            ))
+            let Value::Object(schema) = handoff::schema(definition.input_schema) else {
+                return Err(Error::Invalid("tool schema is not an object".into()));
+            };
+            Ok(Tool::new(definition.name, definition.description, schema))
         })
         .collect()
 }
@@ -59,21 +54,16 @@ impl ServerHandler for Tools {
         call: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
-        let result = async {
-            // This reads the immutable result published by PreToolUse. Reopen
-            // and duplicate delivery use exactly the same operation identity.
-            native::read_tool_result(
-                &call.name,
-                Value::Object(call.arguments.unwrap_or_default()),
-            )
-            .await
-        }
-        .await;
+        // This reads the immutable result published by PreToolUse. Reopen
+        // and duplicate delivery use exactly the same operation identity.
+        let result = native::read_tool_result(
+            &call.name,
+            Value::Object(call.arguments.unwrap_or_default()),
+        )
+        .await
+        .and_then(super::result::value);
         let result = match result {
-            Ok(result) => match super::result::value(result) {
-                Ok(value) => CallToolResult::structured(value),
-                Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
-            },
+            Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
         };
         Ok(result.into())
