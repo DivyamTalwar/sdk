@@ -608,3 +608,6 @@ mod hostile_text;
 
 #[path = "tests/terminal_input.rs"]
 mod terminal_input;
+
+#[path = "tests/task_files.rs"]
+mod task_files;
