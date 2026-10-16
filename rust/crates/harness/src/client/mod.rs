@@ -55,9 +55,9 @@ mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod task_files;
 pub use task_files::TaskFileClient;
+mod command_output;
 mod file_query;
 mod task_projection;
-mod command_output;
 pub use file_query::{FileQueryView, GoalFileView};
 mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
@@ -137,7 +137,7 @@ type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, local_documents, local_prompt};
+pub use local::{connect_local, disconnect_local, local_documents, local_prompt};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",

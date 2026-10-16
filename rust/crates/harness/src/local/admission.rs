@@ -448,6 +448,13 @@ impl LocalHarness {
                 "cannot close an unfinished local turn".into(),
             ));
         }
+        self.disconnect().await
+    }
+
+    /// Releases this host's native mounts while preserving every durable task,
+    /// including unfinished admission. Consuming the host excludes live borrows;
+    /// callers must first drop their execution future and client observations.
+    pub async fn disconnect(self) -> Result<()> {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             for (_, mount) in workspace.mounts.mounts() {

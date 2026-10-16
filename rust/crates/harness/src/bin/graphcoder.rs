@@ -35,6 +35,17 @@ fn main() -> ExitCode {
 }
 
 async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
+    let operation = args
+        .operation
+        .as_deref()
+        .map(OperationId::parse)
+        .transpose()?
+        .unwrap_or_else(OperationId::new);
+    let command = args
+        .prompt
+        .as_deref()
+        .map(|prompt| client::prepare_local_prompt(operation, prompt))
+        .transpose()?;
     let credentials = args
         .credentials
         .as_deref()
@@ -54,21 +65,12 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         );
     }
     let local = Arc::new(LocalHarness::open(config).await?);
-    let operation = args
-        .operation
-        .as_deref()
-        .map(OperationId::parse)
-        .transpose()?
-        .unwrap_or_else(OperationId::new);
     if args.prompt.is_none() && args.input_format != InputFormat::Jsonl {
-        view::run(local, operation, args.inline).await?;
+        let result = view::run(local.clone(), operation, args.inline).await;
+        client::disconnect_local(local).await?;
+        result?;
         return Ok(0);
     }
-    let command = args
-        .prompt
-        .as_deref()
-        .map(|prompt| client::prepare_local_prompt(operation, prompt))
-        .transpose()?;
     let (mut connection, target) = client::connect_local(local, operation).await?;
     let outcome = if let Some(command) = command {
         client::run_headless(
@@ -77,7 +79,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
             target,
             &mut std::io::stdout().lock(),
         )
-        .await?
+        .await
     } else {
         client::run_jsonl(
             &mut connection,
@@ -85,7 +87,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
             client::stdin_jsonl(),
             &mut std::io::stdout().lock(),
         )
-        .await?
+        .await
     };
     Ok(connection.finish(outcome).await?.exit_code())
 }

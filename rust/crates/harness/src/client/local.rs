@@ -7,10 +7,22 @@ pub async fn connect_local(
     local: Arc<LocalHarness>,
     operation: OperationId,
 ) -> Result<(super::LocalFileClient, OperationId)> {
-    Ok((
-        super::LocalFileClient::open(local, operation).await?,
-        operation,
-    ))
+    match super::LocalFileClient::open(local.clone(), operation).await {
+        Ok(client) => Ok((client, operation)),
+        Err(error) => {
+            disconnect_local(local).await?;
+            Err(error)
+        }
+    }
+}
+
+/// Releases an exclusively owned local connection without discarding its tasks.
+/// Other clients retain a shared runtime until its final owner disconnects.
+pub async fn disconnect_local(local: Arc<LocalHarness>) -> Result<()> {
+    if let Some(local) = Arc::into_inner(local) {
+        local.disconnect().await?;
+    }
+    Ok(())
 }
 
 /// Stages an immutable request for the client outbox, without admitting it.

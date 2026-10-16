@@ -32,4 +32,16 @@ for prefix in prefixes:
 selected = [name for name in tests if name.startswith(tuple(prefixes))]
 print(f"Test executable: {executable}", flush=True)
 for name in selected:
-    subprocess.run([executable, name, "--exact"], check=True, timeout=9)
+    # Nested native process tests own their stdio pipes; do not pass the remote
+    # build transport's descriptors into their process/runtime fixture.
+    try:
+        result = subprocess.run([executable, name, "--exact"], capture_output=True,
+                                text=True, timeout=9)
+    except subprocess.TimeoutExpired as error:
+        for output, stream in [(error.stdout, sys.stdout), (error.stderr, sys.stderr)]:
+            if output:
+                stream.write(output.decode(errors="replace"))
+        raise
+    print(result.stdout, end="", flush=True)
+    print(result.stderr, end="", file=sys.stderr, flush=True)
+    result.check_returncode()

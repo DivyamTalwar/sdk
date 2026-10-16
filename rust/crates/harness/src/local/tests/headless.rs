@@ -291,3 +291,37 @@ async fn restored_jsonl_validates_a_scheduled_first_line_before_settling() -> Re
     drop(client);
     close(harness).await
 }
+
+#[tokio::test]
+async fn disconnect_preserves_an_unfinished_admission_and_releases_its_mounts() -> Result<()> {
+    let (directory, harness, provider) = local().await?;
+    let operation = OperationId::new();
+    let task = match harness.submit(operation, "hello").await? {
+        Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) => task_id,
+        _ => panic!("expected durable admission"),
+    };
+    assert!(provider.requests().is_empty());
+    // Retain the actual mount owners: disconnect, rather than a fortunate last
+    // Arc drop, must free their destinations before the next process opens.
+    let retained = harness
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.mounts.clone());
+    crate::client::disconnect_local(harness).await?;
+    let reopened = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .without_default_tools(),
+    )
+    .await?;
+    match reopened.submit(operation, "hello").await? {
+        Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) => {
+            assert_eq!(task_id, task)
+        }
+        _ => panic!("expected the same durable admission"),
+    }
+    assert_eq!(reopened.resume(task).await?.text, "done");
+    assert_eq!(provider.requests().len(), 1);
+    reopened.close().await?;
+    drop(retained);
+    Ok(())
+}

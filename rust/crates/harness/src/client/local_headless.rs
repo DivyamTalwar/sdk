@@ -122,23 +122,16 @@ impl LocalFileClient {
         })
     }
 
-    /// Releases this connection and closes an exclusively owned settled runtime.
-    /// Shared runtimes remain owned by their other clients; blocked work stays durable.
-    pub async fn finish(self, outcome: HeadlessOutcome) -> Result<HeadlessOutcome> {
+    /// Releases this client and its exclusively owned host on success or error.
+    /// Disconnect retains unfinished admission for the next runtime to recover.
+    pub async fn finish(self, outcome: Result<HeadlessOutcome>) -> Result<HeadlessOutcome> {
         let Self {
             local, host, query, ..
         } = self;
         drop(host);
         drop(query);
-        if matches!(
-            outcome,
-            HeadlessOutcome::Completed | HeadlessOutcome::Failed | HeadlessOutcome::Cancelled
-        ) {
-            if let Ok(local) = Arc::try_unwrap(local) {
-                local.close().await?;
-            }
-        }
-        Ok(outcome)
+        super::disconnect_local(local).await?;
+        outcome
     }
 
     fn initial(&mut self, output: &mut impl Write) -> Result<()> {
