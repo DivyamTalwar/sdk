@@ -10,6 +10,8 @@ use crate::{
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn},
 };
 
+mod tamper;
+
 #[tokio::test]
 async fn task_bound_canonical_private_summary_recovers_without_journal_read_grants() -> Result<()> {
     let mut fixture = Fixture::new().await?;
@@ -303,6 +305,13 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         execution.journal.load(&summary.output, None)?.await,
         Err(Error::Unauthorized(_))
     ));
+    execution.journal = tamper::check(
+        execution.journal,
+        input.operation_id,
+        &summary.output,
+        reader.clone(),
+    )
+    .await?;
     assert!(
         !runtime
             .task_host()
