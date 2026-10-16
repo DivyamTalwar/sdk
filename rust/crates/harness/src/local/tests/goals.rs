@@ -44,8 +44,11 @@ async fn run(case: Case) -> Result<()> {
     let provider = scripted(script);
     let files = files::Files::default();
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config =
-            volume_config(directory.path(), project.clone(), provider.clone())?.tool(files.tool()?);
+        let mut config = files.configure(volume_config(
+            directory.path(),
+            project.clone(),
+            provider.clone(),
+        )?)?;
         config.goal_continuations = if case.enabled == Some(false) {
             None
         } else {
@@ -167,7 +170,7 @@ fn script(case: &Case) -> Vec<ScriptedTurn> {
             script.push(ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall {
                     call_id: format!("goal-{index}"),
-                    name: "fs_write".into(),
+                    name: "write".into(),
                     arguments: json!({"path":"GOAL.md", "text":text,
                         "media_type":"text/markdown", "display_name":"GOAL.md"}),
                 }),

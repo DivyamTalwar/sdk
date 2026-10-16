@@ -13,11 +13,22 @@ pub(super) struct Files {
 }
 
 impl Files {
-    pub(super) fn tool(&self) -> Result<Tool> {
-        let mut tool = crate::tool::files::write()?;
-        tool.definition.name = "fs_write".into();
-        tool.executor = Arc::new(self.clone());
-        Ok(tool)
+    pub(super) fn configure(&self, config: LocalHarnessConfig) -> Result<LocalHarnessConfig> {
+        let defaults = crate::tools::defaults()?;
+        let mut tools = Vec::new();
+        for definition in defaults.definitions(None)? {
+            let mut tool = defaults
+                .get(&definition.name, Some(&definition.revision), None)?
+                .expect("default definition has an executor")
+                .clone();
+            if definition.name == "write" {
+                tool.executor = Arc::new(self.clone());
+            }
+            tools.push(tool);
+        }
+        // Keep the exact stock catalog and accounting; replace only its writer's
+        // destination rather than adding a second copy of the write schema.
+        Ok(config.without_default_tools().tools(tools))
     }
 
     pub(super) fn bind(&self, harness: &LocalHarness) -> Result<()> {

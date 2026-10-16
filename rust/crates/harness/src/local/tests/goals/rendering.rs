@@ -22,7 +22,7 @@ async fn render_case(case: Case) -> Result<()> {
     let provider = scripted(script(&case));
     let files = files::Files::default();
     let mut config =
-        volume_config(directory.path(), project, provider.clone())?.tool(files.tool()?);
+        files.configure(volume_config(directory.path(), project, provider.clone())?)?;
     config.goal_continuations = if case.enabled == Some(false) {
         None
     } else {
