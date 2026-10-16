@@ -4,14 +4,14 @@ use super::*;
 impl CheckoutTools {
     pub(super) async fn fs(
         &self,
-        view: &workspace::View,
+        state: &mut State,
         command: &str,
         context: &ToolContext,
-    ) -> Result<(ToolResult, Option<workspace::View>)> {
+    ) -> Result<ToolResult> {
         use acyclic_fs::access::Action;
         let parsed = crate::tools::parse_fs_command(command)?;
         let args = &parsed.arguments;
-        let (relative, mount) = self.mounts.named(parsed.volume.as_deref())?;
+        let (relative, mount) = state.mounts.named(parsed.volume.as_deref())?;
         let read_only = matches!(args[0].as_str(), "diff" | "log" | "show" | "status");
         if !relative.is_empty() && !read_only && !matches!(args[0].as_str(), "merge" | "discard") {
             return Err(Error::Unsupported(
@@ -30,19 +30,29 @@ impl CheckoutTools {
                 ));
             }
         }
-        let source = mount.view.source.as_ref();
-        let selected = source.map_or_else(|| view.into(), |source| source.workspace.view());
+        let source = mount
+            .view
+            .source
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("volume view is not bound".into()))?;
+        let primary = relative.is_empty();
+        let selected = source.workspace.view();
         let output = crate::tools::git::run(
             crate::tools::git::Workspace {
                 filesystem: &self.workspace.filesystem,
                 store: &self.workspace.store,
                 view: selected,
-                root: source.map_or(self.workspace.path.as_path(), |source| source.native.path()),
-                repository: source.map_or(self.workspace.repository, |source| {
+                root: source
+                    .native
+                    .as_ref()
+                    .map_or(self.workspace.path.as_path(), |native| native.path()),
+                repository: if primary {
+                    self.workspace.repository
+                } else {
                     source.workspace.workspace().id()
-                }),
+                },
                 lease: None,
-                checkout: source.is_none().then_some(self.workspace.identity),
+                checkout: source.native.is_none().then_some(self.workspace.identity),
                 author: "LocalHarness",
                 authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),
@@ -52,21 +62,27 @@ impl CheckoutTools {
         .await;
         // A merge may publish conflict markers before returning an error.
         // Refresh its actual mounted target before exposing that error.
-        if let Some(source) = source {
-            source.native.advance_to_head().await?;
+        if let Some(native) = &source.native {
+            native.advance_to_head().await?;
         }
         let output = output?;
         let command = output.command.ok_or_else(|| {
             Error::Conflict("recovered a pending fs transition; retry the command".into())
         })?;
-        Ok((
-            ToolResult {
-                value: serde_json::json!({"result":command}),
-            },
-            output
-                .switched
-                .map(crate::tools::git::OwnedView::into_checkout)
-                .transpose()?,
-        ))
+        if let Some(switched) = output.switched {
+            let switched = switched.into_checkout()?;
+            let (_, mount) = state
+                .mounts
+                .mounts_mut()
+                .find(|(path, _)| path.is_empty())
+                .ok_or_else(|| Error::NotFound("primary mount is not bound".into()))?;
+            mount.view.source = Some(Arc::new(workspace::MountedVolume {
+                workspace: crate::tools::git::OwnedView::Checkout(switched),
+                native: None,
+            }));
+        }
+        Ok(ToolResult {
+            value: serde_json::json!({"result":command}),
+        })
     }
 }

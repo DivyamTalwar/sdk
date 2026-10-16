@@ -72,7 +72,7 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     assert_eq!(output?.text, "commands completed");
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
-    let mounts = harness.workspace().unwrap().mounts.context_line();
+    let mounts = harness.workspace().unwrap().context_line().to_owned();
     for request in &requests {
         assert_eq!(
             request
@@ -150,9 +150,11 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     let view = harness
         .workspace()
         .ok_or_else(|| Error::NotFound("checkout view".into()))?
-        .view();
+        .primary()
+        .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let head = view
+        .workspace
         .workspace()
         .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await
@@ -228,7 +230,9 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
     ));
     let cancellation = acyclic_fs::CancellationToken::new();
     let head = workspace
-        .view()
+        .primary()
+        .await?
+        .workspace
         .workspace()
         .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await
@@ -259,7 +263,9 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
     }
     assert_eq!(
         workspace
-            .view()
+            .primary()
+            .await?
+            .workspace
             .workspace()
             .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -406,6 +412,48 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
         b"final"
     );
+    // Independently bound executors must share the selected primary branch
+    // and capture cursor; a new binding must not reopen the original checkout.
+    let previous = workspace.primary().await?.workspace.workspace().id();
+    let first = workspace.executor(
+        harness.project(),
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(harness.task_files()),
+    )?;
+    let second = workspace.executor(
+        harness.project(),
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(harness.task_files()),
+    )?;
+    for (executor, command) in [(first, "checkout -b shared"), (second, "status")] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "shared-view".into(),
+            name: "fs".into(),
+            arguments: json!({"command":command}),
+        };
+        let context = ToolContext::new(
+            Arc::clone(&task_context),
+            invocation.operation_id,
+            &invocation.call_id,
+            None,
+        )?;
+        let result = executor.execute(invocation, Some(context)).await?;
+        if command == "status" {
+            let output: acyclic_fs::GitCommandOutput =
+                serde_json::from_value(result.value["result"].clone())
+                    .map_err(super::super::storage)?;
+            let acyclic_fs::GitCommandOutput::Status(status) = output else {
+                panic!("expected status")
+            };
+            assert_eq!(status.branch, "shared");
+            assert_ne!(status.workspace.workspace_id(), previous);
+            assert_eq!(
+                status.workspace.workspace_id(),
+                workspace.primary().await?.workspace.workspace().id()
+            );
+        }
+    }
     assert_eq!(provider.requests().len(), 0);
     // A retained scope does not retain execution ownership after settlement.
     harness

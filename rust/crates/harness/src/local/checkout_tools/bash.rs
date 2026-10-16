@@ -23,13 +23,16 @@ impl CheckoutTools {
             standard_input: None,
             mcp_stdio: None,
         };
-        let check_owner = Arc::clone(&files.owner);
-        let runtime = tokio::runtime::Handle::current();
-        let (output, (state, files)) = native_process::bash::run_with_custody(
+        let invocation = native_process::bash::prepare(
             input,
-            &self.mounts,
+            &state.mounts,
             invocation,
             self.clock.now_unix_millis() / 1000,
+        )?;
+        let check_owner = Arc::clone(&files.owner);
+        let runtime = tokio::runtime::Handle::current();
+        let (output, (state, files)) = native_process::capture::capture_with_custody(
+            invocation,
             |(_, files): &mut (OwnedMutexGuard<State>, output::Output), chunk| files.observe(chunk),
             move || {
                 if acyclic_fs::capture_root_identity(&workspace.path)

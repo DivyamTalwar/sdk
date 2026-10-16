@@ -9,7 +9,7 @@ pub(super) mod volumes;
 
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
-    pub(super) native: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
+    pub(super) native: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
@@ -23,11 +23,17 @@ pub(super) type View = LazyWorkspace<
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
-    view: View,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
-    pub(super) mounts: Arc<Mounts>,
+    // Lock order: view state -> coordinator, released before task-file index
+    // -> provider visibility -> provider state. Git cache/switch locks are
+    // innermost and never held together. Callbacks never reacquire view state;
+    // the Loom model exercises command and offloaded-cleanup custody.
+    pub(super) state: super::checkout_tools::StateArc<
+        super::checkout_tools::AsyncMutex<super::checkout_tools::State>,
+    >,
+    context_line: String,
     pub(super) repository: acyclic_fs::WorkspaceId,
 }
 
@@ -41,6 +47,9 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) fn context_line(&self) -> &str {
+        &self.context_line
+    }
     pub(super) fn context_stage(&self) -> Arc<dyn crate::context::ContextStage> {
         Arc::new(crate::context::SourceStage::new(
             "workspace_volumes",
@@ -48,7 +57,7 @@ impl LocalWorkspace {
             Arc::new(crate::context::Context {
                 messages: vec![crate::model::ModelMessage {
                     role: crate::model::ModelRole::System,
-                    content: ModelContent::Text(self.mounts.context_line()),
+                    content: ModelContent::Text(self.context_line().to_owned()),
                 }],
                 ..Default::default()
             }),
@@ -71,17 +80,20 @@ impl LocalWorkspace {
         )?))
     }
 
-    /// Source-backed filesystem view. No checkout scan occurs during open.
-    #[must_use]
-    pub(crate) const fn view(
-        &self,
-    ) -> &LazyWorkspace<
-        LocalAuthorityBackend,
-        LocalObjectBackend,
-        NativeDemandSource,
-        LocalCoreStateStore,
-    > {
-        &self.view
+    #[cfg(test)]
+    pub(super) async fn primary(&self) -> Result<Arc<MountedVolume>> {
+        let state =
+            super::checkout_tools::lock_owned(super::checkout_tools::StateArc::clone(&self.state))
+                .await;
+        state
+            .mounts
+            .named(None)?
+            .1
+            .view
+            .source
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::NotFound("primary view is not bound".into()))
     }
 }
 
@@ -178,11 +190,25 @@ pub(super) async fn open(
         .await?;
         view.open_related(selected, &mut accounting).await?
     };
+    let mounts = mounts::owner(
+        &path,
+        volume,
+        Some(Arc::new(MountedVolume {
+            workspace: crate::tools::git::OwnedView::Checkout(view),
+            native: None,
+        })),
+        [],
+    )?;
     Ok(LocalWorkspace {
         repository,
-        mounts: Arc::new(mounts::owner(&path, volume, None, [])?),
+        context_line: mounts.context_line(),
+        state: super::checkout_tools::StateArc::new(super::checkout_tools::AsyncMutex::new(
+            super::checkout_tools::State {
+                mounts,
+                capture: None,
+            },
+        )),
         path,
-        view,
         filesystem: filesystem.clone(),
         store,
         identity: acyclic_fs::NativeRootIdentity::from_bytes(

@@ -4,9 +4,8 @@ use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_fs::NativeWatch;
 use acyclic_stream::BoxProviderFuture;
-use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
+pub(super) use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 
 mod bash;
 mod capture;
@@ -20,21 +19,15 @@ pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
     read_grant: String,
     write_grant: String,
-    capture_options: acyclic_fs::CaptureOptions,
-    capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    mounts: Arc<workspace::Mounts>,
     task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
-    // Lock order: checkout state -> coordinator, released before task-file
-    // index -> provider visibility -> provider state. Command-local git cache
-    // and switched-view locks are innermost and never held together. Worker
-    // callbacks never reacquire checkout state; the Loom model checks custody.
+    // Every binding shares the workspace's mount, branch and capture owner.
     state: StateArc<AsyncMutex<State>>,
 }
 
-struct State {
-    active: Option<workspace::View>,
-    watcher: Option<NativeWatch>,
+pub(super) struct State {
+    pub(super) mounts: workspace::Mounts,
+    pub(super) capture: Option<capture::CheckoutCapture>,
 }
 
 // Keep the whole command, including its publication and cursor replacement,
@@ -64,20 +57,13 @@ impl CheckoutTools {
                 "workspace differs from the bound project volume".into(),
             ));
         }
-        let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
-            capture_options,
-            capture_policy,
-            mounts: Arc::clone(&workspace.mounts),
+            state: StateArc::clone(&workspace.state),
             workspace,
             clock,
             task_files,
-            state: StateArc::new(AsyncMutex::new(State {
-                active: None,
-                watcher: None,
-            })),
         })
     }
 }
@@ -163,19 +149,10 @@ impl ToolExecutor for CheckoutTools {
             let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
             serialized(&self.state, async |mut state| {
                 owner.verify(false, &mut None).await?;
-                let State { active, watcher } = &mut *state;
-                let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                self.capture(view, watcher, invocation.operation_id, 0, &owner)
+                self.capture(&mut state, invocation.operation_id, 0, &owner)
                     .await?;
                 if let Some(command) = command {
-                    let view = state
-                        .active
-                        .as_ref()
-                        .unwrap_or_else(|| self.workspace.view());
-                    let (result, switched) = self.fs(view, &command, context).await?;
-                    if let Some(switched) = switched {
-                        state.active = Some(switched);
-                    }
+                    let result = self.fs(&mut state, &command, context).await?;
                     Ok(result)
                 } else {
                     let input =
@@ -185,9 +162,7 @@ impl ToolExecutor for CheckoutTools {
                             .await?;
                     let (result, mut state, mut files) =
                         self.bash(input, maximum, state, files).await?;
-                    let State { active, watcher } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(view, watcher, invocation.operation_id, 1, &owner)
+                    self.capture(&mut state, invocation.operation_id, 1, &owner)
                         .await?;
                     if let Ok(result) = &result {
                         files.finish(result).await?;

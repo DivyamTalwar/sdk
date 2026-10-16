@@ -1,6 +1,6 @@
+use super::Invocation;
 #[cfg(all(test, unix))]
-use super::NativeProcessObserver;
-use super::{Invocation, NativeProcessResult, capture};
+use super::{NativeProcessObserver, NativeProcessResult, capture};
 use crate::{Error, Result, tools::BashInput, workspace::MountTable};
 use acyclic_fs::access::Action;
 use std::path::Path;
@@ -18,11 +18,9 @@ pub(crate) async fn run<T>(
     observer: Option<Arc<NativeProcessObserver>>,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
 ) -> Result<Option<NativeProcessResult>> {
-    run_with_custody(
-        input,
-        mounts,
+    let invocation = prepare(input, mounts, invocation, now)?;
+    capture::capture_with_custody(
         invocation,
-        now,
         move |_: &mut (), chunk| {
             if let Some(observer) = &observer {
                 observer(chunk)?;
@@ -36,17 +34,12 @@ pub(crate) async fn run<T>(
     .map(|(output, ())| output)
 }
 
-pub(crate) async fn run_with_custody<T, C: Send + 'static>(
+pub(crate) fn prepare<T>(
     input: BashInput,
     mounts: &MountTable<T>,
     mut invocation: Invocation,
     now: u64,
-    observer: impl FnMut(&mut C, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>
-    + Send
-    + 'static,
-    check: impl Fn() -> std::io::Result<()> + Send + 'static,
-    custody: C,
-) -> Result<(Option<NativeProcessResult>, C)> {
+) -> Result<Invocation> {
     input.validate()?;
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
@@ -78,7 +71,7 @@ pub(crate) async fn run_with_custody<T, C: Send + 'static>(
         &invocation.environment,
         &invocation.argv,
     )?;
-    capture::capture_with_custody(invocation, observer, check, custody).await
+    Ok(invocation)
 }
 
 #[cfg(all(test, unix))]

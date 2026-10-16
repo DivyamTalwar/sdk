@@ -27,7 +27,11 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         "inspected"
     );
     let workspace = harness.workspace().unwrap();
-    let scratch = workspace
+    let state = super::super::checkout_tools::lock_owned(
+        super::super::checkout_tools::StateArc::clone(&workspace.state),
+    )
+    .await;
+    let scratch = state
         .mounts
         .named(Some("scratch"))?
         .1
@@ -54,7 +58,20 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
     assert_eq!(results.len(), 6);
     for (call, expected) in [
         ("checkout-1", scratch.workspace.workspace().id()),
-        ("checkout-2", workspace.view().workspace().id()),
+        (
+            "checkout-2",
+            state
+                .mounts
+                .named(None)?
+                .1
+                .view
+                .source
+                .as_ref()
+                .unwrap()
+                .workspace
+                .workspace()
+                .id(),
+        ),
     ] {
         let output: acyclic_fs::GitCommandOutput =
             serde_json::from_value(results[call]["result"].clone())
@@ -80,7 +97,8 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         b"root"
     );
     assert_eq!(
-        std::fs::read(scratch.native.path().join("data-file")).map_err(super::super::storage)?,
+        std::fs::read(scratch.native.as_ref().unwrap().path().join("data-file"))
+            .map_err(super::super::storage)?,
         b"data"
     );
     Ok(())
@@ -122,7 +140,10 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     .await?;
     let workspace = harness.workspace().unwrap();
     assert_eq!(workspace.repository, repository);
-    assert_ne!(workspace.view().workspace().id(), repository);
+    assert_ne!(
+        workspace.primary().await?.workspace.workspace().id(),
+        repository
+    );
     assert_eq!(
         harness.run("continue the selected branch").await?.text,
         "resumed"
@@ -146,7 +167,9 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     assert!(!status.contains("\"error\""), "{status}");
     assert!(status.contains("topic"), "{status}");
     let branch = workspace
-        .view()
+        .primary()
+        .await?
+        .workspace
         .workspace()
         .head(
             acyclic_fs::WorkBudget::UNBOUNDED,
@@ -227,7 +250,9 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
     let primary = workspace
-        .view()
+        .primary()
+        .await?
+        .workspace
         .workspace()
         .head(budget, &cancellation)
         .await

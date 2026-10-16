@@ -13,35 +13,85 @@ const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
+pub(in crate::local) struct CheckoutCapture {
+    options: CaptureOptions,
+    policy: CapturePolicy,
+    watcher: Option<acyclic_fs::NativeWatch>,
+}
+
 impl CheckoutTools {
     pub(super) async fn capture(
         &self,
-        view: &workspace::View,
-        slot: &mut Option<NativeWatch>,
+        state: &mut State,
         operation: OperationId,
         phase: u8,
         owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
     ) -> Result<()> {
-        for (_, mount) in self.mounts.mounts() {
-            if let Some(source) = &mount.view.source {
+        for (_, mount) in state.mounts.mounts() {
+            let source = mount
+                .view
+                .source
+                .as_ref()
+                .ok_or_else(|| Error::NotFound("volume view is not bound".into()))?;
+            if let Some(native) = &source.native {
                 owner.verify(false, &mut None).await?;
-                source.native.sync().await.map_err(Error::from)?;
-                source.native.advance_to_head().await.map_err(Error::from)?;
+                native.sync().await?;
+                native.advance_to_head().await?;
             }
         }
+        let binding = state
+            .mounts
+            .named(None)?
+            .1
+            .view
+            .source
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("primary view is not bound".into()))?;
+        let crate::tools::git::View::Checkout(view) = binding.workspace.view() else {
+            return Ok(());
+        };
+        if state.capture.is_none() {
+            let (options, policy) = configuration(
+                &self.workspace,
+                &state.mounts,
+                view.workspace().volume_config(),
+            )?;
+            state.capture = Some(CheckoutCapture {
+                options,
+                policy,
+                watcher: None,
+            });
+        }
+        state
+            .capture
+            .as_mut()
+            .ok_or_else(|| Error::NotFound("checkout capture is not bound".into()))?
+            .capture(view, operation, phase, owner)
+            .await
+    }
+}
+
+impl CheckoutCapture {
+    async fn capture(
+        &mut self,
+        view: &workspace::View,
+        operation: OperationId,
+        phase: u8,
+        owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
+    ) -> Result<()> {
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
-        let options = &self.capture_options;
-        let policy = &self.capture_policy;
+        let options = &self.options;
+        let policy = &self.policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
-        let baseline = slot.is_none();
-        let mut watcher = if let Some(watcher) = slot.take() {
+        let baseline = self.watcher.is_none();
+        let mut watcher = if let Some(watcher) = self.watcher.take() {
             watcher
         } else {
-            self.open_watcher()?
+            self.open_watcher(view)?
         };
-        if watcher.root_identity() != self.workspace.identity {
+        if watcher.root_identity() != options.expected_root_identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
         let mut checkout = workspace
@@ -130,20 +180,20 @@ impl CheckoutTools {
                 ));
             }
         }
-        *slot = Some(watcher);
+        self.watcher = Some(watcher);
         Ok(())
     }
 
-    fn open_watcher(&self) -> Result<NativeWatch> {
-        let config = self.workspace.view().workspace().volume_config();
-        let mut watcher = NativeWatch::open_with_profile(
-            &self.workspace.path,
+    fn open_watcher(&self, view: &workspace::View) -> Result<acyclic_fs::NativeWatch> {
+        let config = view.workspace().volume_config();
+        let mut watcher = acyclic_fs::NativeWatch::open_with_profile(
+            &self.options.source_root,
             config.profile,
             NativeWatchOptions::new(config.limits),
         )
         .map_err(storage)?;
         watcher
-            .exclude_subtrees(self.capture_policy.excluded_prefixes())
+            .exclude_subtrees(self.policy.excluded_prefixes())
             .map_err(storage)?;
         Ok(watcher)
     }
@@ -159,8 +209,11 @@ fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::Operation
     acyclic_fs::OperationId::from_bytes(bytes)
 }
 
-pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOptions, CapturePolicy)> {
-    let config = workspace.view().workspace().volume_config();
+fn configuration(
+    workspace: &LocalWorkspace,
+    mounts: &workspace::Mounts,
+    config: acyclic_fs::VolumeConfig,
+) -> Result<(CaptureOptions, CapturePolicy)> {
     let options = CaptureOptions {
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
@@ -171,8 +224,7 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
         .iter()
         .copied()
         .chain(
-            workspace
-                .mounts
+            mounts
                 .mounts()
                 .map(|(path, _)| path)
                 .filter(|path| !path.is_empty()),

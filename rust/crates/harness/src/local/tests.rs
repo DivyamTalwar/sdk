@@ -570,8 +570,11 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
         work: &work,
         cancellation: &cancellation,
     };
-    let bytes = workspace
-        .view()
+    let primary = workspace.primary().await?;
+    let crate::tools::git::View::Checkout(view) = primary.workspace.view() else {
+        return Err(Error::Invalid("expected checkout".into()));
+    };
+    let bytes = view
         .read("/hello.txt", 1024, &mut accounting)
         .await
         .map_err(super::storage)?;

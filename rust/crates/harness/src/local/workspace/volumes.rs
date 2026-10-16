@@ -37,10 +37,23 @@ impl LocalWorkspace {
         scratch: &VolumeRef,
     ) -> Result<Self> {
         let cancellation = CancellationToken::new();
+        let mut state = super::super::checkout_tools::lock_owned(
+            super::super::checkout_tools::StateArc::clone(&self.state),
+        )
+        .await;
+        let primary = state
+            .mounts
+            .named(None)?
+            .1
+            .view
+            .source
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::NotFound("primary workspace is not bound".into()))?;
         let mut mounts = mounts::owner(
             &self.path,
             project,
-            None,
+            Some(primary),
             [("scratch".into(), scratch.clone(), None)],
         )?;
         for (relative, mount) in mounts.mounts_mut() {
@@ -73,10 +86,12 @@ impl LocalWorkspace {
                 .map_err(Error::from)?;
             mount.view.source = Some(Arc::new(MountedVolume {
                 workspace: crate::tools::git::OwnedView::Volume(source),
-                native,
+                native: Some(native),
             }));
         }
-        self.mounts = Arc::new(mounts);
+        self.context_line = mounts.context_line();
+        state.mounts = mounts;
+        drop(state);
         Ok(self)
     }
 }
