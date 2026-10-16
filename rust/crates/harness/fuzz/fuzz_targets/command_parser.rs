@@ -51,7 +51,7 @@ fuzz_target!(|bytes: &[u8]| {
     if let Ok(fields) =
         frontmatter::parse_frontmatter::<BTreeMap<String, serde_json::Value>>(template)
     {
-        let rewritten = format!("---\n{}\n---\n", serde_saphyr::to_string(&fields).unwrap());
+        let rewritten = format!("---\n{}---\n", serde_saphyr::to_string(&fields).unwrap());
         assert_eq!(
             frontmatter::parse_frontmatter::<BTreeMap<String, serde_json::Value>>(
                 rewritten.as_bytes()

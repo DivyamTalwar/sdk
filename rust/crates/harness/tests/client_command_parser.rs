@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 fn text() -> impl Strategy<Value = String> {
     prop_oneof![
         Just(String::new()),
+        Just("\n".to_owned()),
         Just("\0".to_owned()),
         Just("$ARGUMENTS".to_owned()),
         "[a-z \n$]{0,32}",
@@ -40,13 +41,13 @@ proptest! {
     ) {
         let newline = if crlf { "\r\n" } else { "\n" };
         let header = serde_saphyr::to_string(&fields).expect("header");
-        let source = format!("---{newline}{header}{newline}---{newline}body $ARGUMENTS");
+        let source = format!("---{newline}{header}---{newline}body $ARGUMENTS");
         prop_assert!(command_parse::has_frontmatter(source.as_bytes()));
         let decoded: BTreeMap<String, String> = frontmatter::parse_frontmatter(source.as_bytes()).expect("parse header");
         prop_assert_eq!(&decoded, &fields);
         let (_, _, body) = frontmatter::frontmatter_end(source.as_bytes()).expect("body offset");
         prop_assert_eq!(&source[body..], "body $ARGUMENTS");
-        let rewritten = format!("---\n{}\n---\n", serde_saphyr::to_string(&decoded).expect("rewrite"));
+        let rewritten = format!("---\n{}---\n", serde_saphyr::to_string(&decoded).expect("rewrite"));
         prop_assert_eq!(frontmatter::parse_frontmatter::<BTreeMap<String, String>>(rewritten.as_bytes()).expect("reparse"), fields);
     }
 
@@ -79,5 +80,28 @@ proptest! {
             let encoded = serde_json::to_vec(&resolved).expect("encode");
             prop_assert_eq!(serde_json::from_slice::<CommandResolution>(&encoded).expect("decode"), resolved);
         }
+    }
+}
+
+#[test]
+fn keep_chomp_newline_is_not_extended_by_frontmatter_framing() {
+    let fields = BTreeMap::from([("a".to_owned(), "\n".to_owned())]);
+    let header = serde_saphyr::to_string(&fields).expect("serialize keep-chomp scalar");
+    for newline in ["\n", "\r\n"] {
+        let source = format!("---{newline}{header}---{newline}body");
+        let decoded: BTreeMap<String, String> =
+            frontmatter::parse_frontmatter(source.as_bytes()).expect("parse keep-chomp scalar");
+        assert_eq!(decoded, fields);
+        let (_, _, body) = frontmatter::frontmatter_end(source.as_bytes()).expect("body offset");
+        assert_eq!(&source[body..], "body");
+        let rewritten = format!(
+            "---\n{}---\n",
+            serde_saphyr::to_string(&decoded).expect("rewrite")
+        );
+        assert_eq!(
+            frontmatter::parse_frontmatter::<BTreeMap<String, String>>(rewritten.as_bytes())
+                .expect("reparse"),
+            fields
+        );
     }
 }
