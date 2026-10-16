@@ -16,6 +16,7 @@ impl WasmStream {
 impl WasmStream {
     #[wasm_bindgen(constructor)]
     #[must_use]
+    /// Creates the canonical in-memory Streams provider.
     pub fn new() -> Self {
         Self {
             provider: Arc::new(MemoryStream::default()),

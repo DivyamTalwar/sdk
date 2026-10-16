@@ -250,13 +250,11 @@ impl WasmClientQuery {
                         JsFuture::from(Promise::resolve(&output))
                             .await
                             .map_err(|e| crate::Error::Storage(format!("{e:?}")))?;
-                        apply(
-                            &mut self
-                                .views
-                                .try_borrow_mut()
-                                .map_err(|e| crate::Error::Conflict(e.to_string()))?,
-                        )
-                        .map_err(query_error)
+                        let mut views = self
+                            .views
+                            .try_borrow_mut()
+                            .map_err(|e| crate::Error::Conflict(e.to_string()))?;
+                        apply(&mut views).map_err(query_error)
                     })
                     .await
                     .map_err(error)?;
