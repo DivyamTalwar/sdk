@@ -441,6 +441,7 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
     let (owner, issuer, scope, fence, time) = historical_source(&client, operation).await?;
     let verifier = issuer.verifier(&mut None)?;
     let mut measurements = Vec::new();
+    let mut history_walk_control = Vec::new();
     for phase in 0..3 {
         if phase == 1 {
             // Grow the canonical history while keeping the replay-key index
@@ -522,19 +523,44 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
             measured.items_examined,
         ));
         drop((proof, custody));
+        // Deliberately restore one old canonical sequence lookup. Its SDK
+        // cursor walks retained history even though the payload stays bounded.
+        let mut control =
+            HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let source = coordinator_stream(&client, &mut Some(&mut control))?;
+        let record =
+            operations::one_record(&client, source.0.path(), 0, &mut Some(&mut control)).await?;
+        assert!(record.is_some());
+        drop((record, source));
+        drop(control.into_custody()?);
+        let measured = native.receipt();
+        let calls = client.io_snapshot();
+        history_walk_control.push((
+            calls.reads + calls.inspections,
+            measured.source_bytes_read,
+            measured.authority_bytes_read,
+            measured.items_examined,
+        ));
     }
-    assert_eq!(
-        measurements[0], measurements[1],
-        "history growth changed indexed lookup work"
-    );
-    assert_eq!(
-        (measurements[1].0, measurements[1].1, measurements[1].2),
-        (measurements[2].0, measurements[2].1, measurements[2].2)
-    );
-    // Three lookups in the SDK's balanced replay tree, at most twice log2(N)
-    // nodes each. This rejects the former 128-segment source history walk.
-    let maximum_probes = 3 * 2 * (131u64.ilog2() as u64 + 1);
-    assert!(measurements[2].3.saturating_sub(measurements[1].3) <= maximum_probes);
+    let bounded =
+        |before: (u64, u64, u64, u64), after: (u64, u64, u64, u64), retained: u64, lookups: u64| {
+            // The SDK's balanced replay tree includes unkeyed retained commits.
+            // Its height is bounded by twice log2(N); payload work must stay exact.
+            (before.0, before.1, before.2) == (after.0, after.1, after.2)
+                && after.3.saturating_sub(before.3) <= lookups * 2 * (retained.ilog2() as u64 + 1)
+        };
+    for (phase, retained) in [(1, 131), (2, 259)] {
+        assert!(bounded(measurements[0], measurements[phase], retained, 3));
+        assert!(
+            !bounded(
+                history_walk_control[0],
+                history_walk_control[phase],
+                retained,
+                4
+            ),
+            "same measurement harness missed the old canonical history walk"
+        );
+    }
     // A deliberate full-source scan is the former algorithm's cost control.
     // The same source observer must expose the additional work.
     client.reset_io();
