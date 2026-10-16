@@ -6,8 +6,6 @@ mod gemini;
 #[cfg(test)]
 mod limits_tests;
 mod reasoning;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod reasoning_tests;
 mod responses;
 pub(crate) use reasoning::family;
 

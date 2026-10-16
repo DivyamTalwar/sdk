@@ -617,3 +617,6 @@ fn parser_dispatch() -> ModelDispatch {
 
 #[path = "protocol_tests.rs"]
 mod protocol;
+
+#[path = "stream/reasoning_tests.rs"]
+mod reasoning;

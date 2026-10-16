@@ -61,6 +61,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
             let replay: acyclic_harness::model::ReasoningBlock =
                 serde_json::from_slice(&encoded).unwrap();
             assert_eq!(block, replay);
+            let event = ModelEvent::ReasoningBlock { block: replay };
+            let encoded = serde_json::to_vec(&event).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ModelEvent>(&encoded).unwrap(),
+                event
+            );
             for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
                 if let Some(raw) =
                     crate::projection::native_reasoning::validated(adapter, &block.continuity)

@@ -49,7 +49,15 @@ impl ModelEventAdmission {
             ));
         }
         if let ModelEvent::ReasoningBlock { block } = event {
-            with_history_io(io, |work| block.validate_limits(limits, work))?;
+            with_history_io(io, |work| {
+                block.validate_limits(limits, work)?;
+                crate::executor::json::json_byte_length(
+                    event,
+                    limits.render_bytes.min(limits.file_bytes),
+                    work,
+                )
+                .map(|_| ())
+            })?;
         }
         let ModelEvent::ToolCall(crate::model::ToolCall { call_id, name, .. }) = event else {
             return Ok(None);
@@ -154,3 +162,7 @@ impl ModelEventAdmission {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "reasoning_admission_tests.rs"]
+mod reasoning_tests;
