@@ -101,11 +101,11 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
     let project = volume(directory.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "spawn-worker".into(),
-                name: "agent".into(),
-                arguments: json!({"command":"spawn","reference":"worker","prompt":"inspect files","tools":["read"]}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "spawn-worker".into(),
+                "agent".into(),
+                json!({"command":"spawn","reference":"worker","prompt":"inspect files","tools":["read"]}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: Value::Null,
             }),
@@ -332,5 +332,83 @@ async fn agent_file_deadline_uses_the_admission_clock_at_commit() -> Result<()> 
         .unwrap();
     assert_eq!(after.generation, snapshot.generation);
     assert!(after.files.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_goal_routing_never_substitutes_project_or_private_authority() -> Result<()> {
+    use crate::{
+        Capabilities,
+        distributed::{WorkPull, Worker},
+        runtime::{RuntimeTask, ToolContext},
+        scheduler::LeaseFence,
+        tool::ToolInvocation,
+    };
+    use proptest::prelude::*;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let harness =
+        LocalHarness::open(volume_config(directory.path(), project, scripted([]))?).await?;
+    let operation = OperationId::new();
+    let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(operation, "parent").await?
+    else {
+        panic!("parent was not admitted");
+    };
+    let host = harness.runtime.task_host();
+    let WorkPull::Claimed(lease) = host
+        .pull_work(
+            &Worker {
+                id: "private-file-authority".into(),
+                available: Default::default(),
+                labels: Default::default(),
+            },
+            Some(operation),
+            &mut None,
+        )
+        .await?
+    else {
+        panic!("parent was not claimed");
+    };
+    host.start_task(&lease, &mut None).await?;
+    let context = harness
+        .runtime
+        .task_context(task_id, LeaseFence::from(&lease.reservation))
+        .await?;
+    let project_write = harness
+        .project()
+        .capability(VolumeOperation::Write, &mut None)?;
+    let private_write = harness
+        .scratch()
+        .capability(VolumeOperation::Write, &mut None)?;
+    let registry = crate::tools::defaults()?;
+    let tool = registry.get("write", None, None)?.unwrap();
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(64));
+    let paths = prop_oneof![
+        Just("GOAL.md".to_owned()),
+        Just("docs/GOAL.md".to_owned()),
+        "[a-z]{1,12}/[a-z]{1,12}\\.md"
+    ];
+    // Every authority subset is checked for each generated path: authority over
+    // the other destination cannot replace the selected destination's WRITE.
+    runner.run(&paths, |path| {
+        for mask in 0..4 {
+            let project = mask & 1 != 0;
+            let private = mask & 2 != 0;
+            let grants = Capabilities::new(context.scope().grants().iter().filter(|grant| {
+                (project || *grant != project_write.as_str()) && (private || *grant != private_write.as_str())
+            }));
+            let narrowed = context.scoped(grants, context.scope().limits()).unwrap();
+            let call = ToolInvocation {
+                operation_id: operation, call_id: "private-authority".into(), name: "write".into(),
+                arguments: json!({"path":path, "text":"work", "media_type":"text/plain", "display_name":"work"}),
+            };
+            let issued = ToolContext::new(Arc::new(narrowed), operation, "private-authority", None).unwrap();
+            let result = tool.executor.authorize(None, Some(&issued), &call, None);
+            prop_assert_eq!(result.is_ok(), if path == "GOAL.md" { private } else { project });
+            if let Err(error) = result { prop_assert!(matches!(error, Error::Unauthorized(_))); }
+        }
+        Ok(())
+    }).map_err(super::super::storage)?;
     Ok(())
 }

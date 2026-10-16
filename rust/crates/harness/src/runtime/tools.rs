@@ -1,5 +1,3 @@
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use super::content_write::bound_content_writer;
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
@@ -422,23 +420,8 @@ impl ToolContext {
         source: Option<&FileRef>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if let Some(source) = source {
-            task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
-        }
-        let writer = bound_content_writer(
-            task.content_binding(source.map(FileRef::volume)),
-            self.effective_scope(),
-            Some(&io),
-        )?;
-        if source.is_some_and(|source| source.volume() != writer.volume()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "source differs from the owner-bound destination",
-            });
-        }
-        Ok(())
+        self.authorize_file_publication("", source, Some(&io))
     }
 }
 
@@ -524,6 +507,48 @@ impl ToolContext {
             .await
     }
 
+    pub(crate) fn authorize_file_publication(
+        &self,
+        path: &str,
+        source: Option<&FileRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let task = self.task();
+        if let Some(source) = source {
+            task.authorize_file_read(source, self.effective_scope(), io)?;
+        }
+        let binding = match source {
+            Some(source) => task.content_binding(Some(source.volume())),
+            None => task.publication_binding(path),
+        };
+        let writer =
+            super::content_write::bound_content_writer(binding, self.effective_scope(), io)?;
+        if source.is_some_and(|source| source.volume() != writer.volume()) {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "source differs from the owner-bound destination",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn observe_file_publication(
+        &self,
+        operation: OperationId,
+        path: &str,
+        source: Option<&FileRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let task = self.task();
+        let binding = match source {
+            Some(source) => task.content_binding(Some(source.volume())),
+            None => task.publication_binding(path),
+        };
+        task.observe_publication_once(operation, io, self.effective_scope(), binding)
+            .await
+    }
+
     /// Publishes once under the effective tool scope and caller IO limits.
     pub async fn stage_file_once(
         &self,
@@ -536,7 +561,7 @@ impl ToolContext {
     ) -> Result<(FileRef, u64)> {
         let task = self.task();
         task.stage_bound_file(
-            task.content_binding(None),
+            task.publication_binding(path),
             operation_id,
             path,
             bytes,

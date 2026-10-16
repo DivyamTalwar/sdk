@@ -139,6 +139,7 @@ pub(super) async fn open(
     )
     .await?
     .with_output_volume(config.project, None)?
+    .with_private_volume(config.scratch)?
     .with_task_files(task_files.clone())?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {

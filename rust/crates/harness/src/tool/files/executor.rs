@@ -318,14 +318,14 @@ impl FileTool {
     }
 }
 
-impl ToolExecutor for FileTool {
-    fn authorize(
+impl FileTool {
+    fn authorize_source(
         &self,
         scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
         work: crate::NativeWork<'_>,
-    ) -> Result<()> {
+    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         let unauthorized = || {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
@@ -346,27 +346,46 @@ impl ToolExecutor for FileTool {
         }) {
             return Err(unauthorized());
         }
-        let (file, _custody) = self.preflight(scope, invocation, work)?;
+        let (file, custody) = self.preflight(scope, invocation, work)?;
         let context = context.ok_or_else(unauthorized)?;
+        let path = file
+            .as_ref()
+            .map(|file| file.path())
+            .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+            .unwrap_or("");
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
-            return if self.is_read() {
+            if self.is_read() {
                 context.authorize_file_read_with_native_work(
                     file.as_ref().ok_or_else(|| Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Storage,
                         reason: "file read source is missing",
                     })?,
                     work,
-                )
+                )?;
             } else {
-                context.authorize_content_publication_with_native_work(file.as_ref(), work)
-            };
+                let io = crate::executor::PreparationIo::from_native_work(work)?;
+                context.authorize_file_publication(path, file.as_ref(), Some(&io))?;
+            }
+            return Ok((file, custody));
         }
-        if self.is_read() {
-            Ok(())
-        } else {
-            context.task().authorize_content_publication(file.as_ref())
+        if !self.is_read() {
+            context.authorize_file_publication(path, file.as_ref(), None)?;
         }
+        Ok((file, custody))
+    }
+}
+
+impl ToolExecutor for FileTool {
+    fn authorize(
+        &self,
+        scope: Option<&RuntimeScope>,
+        context: Option<&ToolContext>,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> Result<()> {
+        self.authorize_source(scope, context, invocation, work)
+            .map(drop)
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
@@ -404,13 +423,14 @@ impl ToolExecutor for FileTool {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
         crate::NativeFutureBundle::new(work, || async move {
-            self.authorize(
+            let authorized = self.authorize_source(
                 Some(context.effective_scope()),
                 Some(context),
                 invocation,
                 Some(work),
             )?;
             if self.is_read() {
+                drop(authorized);
                 let (result, custody) = self.run(context, invocation, Some(work)).await?;
                 return Ok((
                     Some(result),
@@ -422,8 +442,19 @@ impl ToolExecutor for FileTool {
             }
             // Observe uncertain publications without redispatch.
             let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let path = authorized
+                .0
+                .as_ref()
+                .map(|file| file.path())
+                .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+                .unwrap_or("");
             let receipt = context
-                .observe_staged_file_once(invocation.operation_id, Some(&io))
+                .observe_file_publication(
+                    invocation.operation_id,
+                    path,
+                    authorized.0.as_ref(),
+                    Some(&io),
+                )
                 .await?;
             match receipt.0 {
                 Some(file) => {

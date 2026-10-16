@@ -144,6 +144,19 @@ async fn run(case: Case) -> Result<()> {
         Some(expected) => assert_eq!(read?.1.as_ref(), expected.as_bytes(), "{}", case.name),
         None => assert!(matches!(read, Err(Error::NotFound(_)))),
     }
+    let project_workspace = crate::filesystem::workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    let project_goal = harness
+        .files
+        .stat(&project_workspace, None, "/GOAL.md")
+        .await;
+    assert!(
+        matches!(project_goal, Err(Error::NotFound(_))),
+        "{}: expected no project goal, got {project_goal:?}",
+        case.name
+    );
     // Reopen/replay never reissues model work or resets the finite allowance.
     drop(followed);
     drop(stream);

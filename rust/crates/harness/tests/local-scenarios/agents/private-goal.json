@@ -1,0 +1,30 @@
+{
+  "driver": "agents",
+  "prompt": "Store the goal in your private volume",
+  "models": {
+    "parent": [
+      [
+        {"type":"event","kind":"tool_call","call_id":"goal","name":"write","arguments":{"path":"GOAL.md","text":"---\nstatus: done\n---\nFinish the task","media_type":"text/markdown","display_name":"GOAL.md"}},
+        {"type":"event","kind":"completed","metadata":null}
+      ],
+      "goal stored"
+    ]
+  },
+  "expect": {
+    "text": "goal stored",
+    "requests": {"parent":2},
+    "task_files": {},
+    "files": {"GOAL.md":null},
+    "model_requests": {
+      "parent": [{
+        "messages": [{
+          "role":"tool",
+          "content": {
+            "kind":"tool_result","call_id":"goal","name":"write",
+            "content":{"kind":"json","value":{"file":{"path":"GOAL.md","volume":{"class":"agent_private","id":{"$contains":"scratch-"}}}}}
+          }
+        }]
+      }]
+    }
+  }
+}

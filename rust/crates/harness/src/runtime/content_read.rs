@@ -118,7 +118,28 @@ impl TaskContext {
                 })
             })
             .or_else(|| self.scope.created_content(volume))
+            .or_else(|| {
+                self.harness.private_content.as_ref().filter(|binding| {
+                    volume.is_some_and(|volume| {
+                        binding
+                            .writer
+                            .as_ref()
+                            .is_some_and(|writer| writer.volume() == volume)
+                    })
+                })
+            })
             .or(self.harness.content.as_ref())
+    }
+
+    pub(super) fn publication_binding(&self, path: &str) -> Option<&ContentBindings> {
+        if path == "GOAL.md" {
+            self.harness
+                .private_content
+                .as_ref()
+                .or_else(|| self.content_binding(None))
+        } else {
+            self.content_binding(None)
+        }
     }
 
     /// Reads an immutable file under this task's scope and caller IO limits.
@@ -320,8 +341,18 @@ impl TaskContext {
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
-        let writer =
-            super::content_write::bound_content_writer(self.content_binding(None), scope, io)?;
+        self.observe_publication_once(operation_id, io, scope, self.content_binding(None))
+            .await
+    }
+
+    pub(super) async fn observe_publication_once(
+        &self,
+        operation_id: OperationId,
+        io: Option<&ContentIo>,
+        scope: &RuntimeScope,
+        binding: Option<&ContentBindings>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let writer = super::content_write::bound_content_writer(binding, scope, io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }

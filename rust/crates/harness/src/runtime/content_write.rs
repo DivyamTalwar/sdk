@@ -93,21 +93,6 @@ impl TaskContext {
         }
     }
 
-    /// Checks the original content destination without reading or publishing bytes.
-    pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
-        let writer = bound_content_writer(
-            self.content_binding(source.map(FileRef::volume)),
-            &self.scope,
-            None,
-        )?;
-        if source.is_some_and(|source| source.volume() != writer.volume()) {
-            return Err(Error::Unauthorized(
-                "source differs from the owner-bound destination".into(),
-            ));
-        }
-        Ok(())
-    }
-
     #[allow(
         clippy::too_many_arguments,
         reason = "one owner-bound publication path retains its binding, identity, bytes, metadata and receipt mode"
