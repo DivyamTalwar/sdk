@@ -132,6 +132,7 @@ test = false
 doc = false
 bench = false
 
+
 [[bin]]
 name = "external-hooks"
 path = "fuzz_targets/external_hooks.rs"
@@ -145,6 +146,7 @@ path = "fuzz_targets/plugin_install.rs"
 test = false
 doc = false
 bench = false
+
 
 [[bin]]
 name = "input_paths"
@@ -181,6 +183,14 @@ bench = false
 [[bin]]
 name = "plan_markdown"
 path = "fuzz_targets/plan_markdown.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
 required-features = ["runtime"]
 test = false
 doc = false
@@ -232,6 +242,13 @@ proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[[bin]]
+name = "swarm_case"
+path = "fuzz_targets/swarm_case.rs"
+test = false
+doc = false
+bench = false
+
 [[bench]]
 name = "memory_directory_page"
 path = "benches/memory_directory_page.rs"
@@ -261,6 +278,13 @@ bench = false
 [[bin]]
 name = "journal_decode"
 path = "fuzz_targets/journal_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provider_scenario"
+path = "fuzz_targets/provider_scenario.rs"
 test = false
 doc = false
 bench = false

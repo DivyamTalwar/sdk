@@ -2,6 +2,10 @@ use super::{Error, Generation, Result, TaskVolume, apply, item_examined, segment
 use acyclic_stream::{ReadRequest, StreamProvider, StreamWatermarks};
 use futures::StreamExt as _;
 
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "../../tests/task_volume/refresh_model.rs"]
+mod tests;
+
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     // Lock order: index only. Provider calls and stream polls never hold it.
     // Every staged record is applied only to its captured generation.
@@ -11,6 +15,19 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     // RESUME=false is the model's deliberately broken early-success variant.
     pub(super) async fn refresh_to_tail<const RESUME: bool>(&self) -> Result<StreamWatermarks> {
+        Ok(self.refresh_bounded::<RESUME>(u64::MAX).await?.0)
+    }
+
+    // A page spends at most this many suffix records. Provider I/O remains
+    // outside the index lock, including at every replay continuation.
+    pub(super) async fn refresh_bounded<const RESUME: bool>(
+        &self,
+        maximum_records: u64,
+    ) -> Result<(StreamWatermarks, bool)> {
+        if maximum_records == 0 {
+            return Err(Error::LimitExceeded);
+        }
+        let mut remaining = maximum_records;
         let mut expected = {
             let index = self.index.lock().await;
             self.generation(&index)
@@ -27,7 +44,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     path: self.path.clone(),
                     from: expected.position - 1,
                     limit: u32::try_from(
-                        (tail - expected.position + 1).min(acyclic_stream::MAX_ITEMS as u64),
+                        (tail - expected.position)
+                            .min(remaining)
+                            .min(acyclic_stream::MAX_ITEMS as u64 - 1)
+                            + 1,
                     )
                     .map_err(|_| Error::LimitExceeded)?,
                 })
@@ -50,6 +70,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 if record.sequence != expected.position {
                     return Err(Error::ResetRequired);
                 }
+                remaining -= 1;
                 let mut index = self.index.lock().await;
                 let current = self.generation(&index);
                 if current != expected {
@@ -73,9 +94,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 expected = advanced(current, &expected)?;
                 peer_advanced = true;
             }
-            if expected.position >= tail || (!RESUME && peer_advanced) {
+            if complete::<RESUME>(expected.position, tail, peer_advanced) {
                 watermarks.accepted = watermarks.accepted.max(expected.position);
-                return Ok(watermarks);
+                return Ok((watermarks, true));
+            }
+            if remaining == 0 {
+                return Ok((watermarks, false));
             }
             if expected.position == before {
                 return Err(Error::ResetRequired);
@@ -84,7 +108,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
-fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
+fn complete<const RESUME: bool>(position: u64, tail: u64, peer_advanced: bool) -> bool {
+    position >= tail || (!RESUME && peer_advanced)
+}
+
+pub(super) fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
     if current.volume != expected.volume
         || current.epoch != expected.epoch
         || current.position <= expected.position

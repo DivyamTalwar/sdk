@@ -771,6 +771,7 @@ mod mail_tests;
 mod admission;
 mod owner_binding;
 mod future_sizes;
+mod manifest;
 mod model;
 mod settlement;
 mod worker;

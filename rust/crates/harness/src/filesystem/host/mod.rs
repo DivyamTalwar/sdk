@@ -99,6 +99,7 @@ mod family;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod future_sizes;
 mod keys;
+mod ranges;
 mod reads;
 mod uploads;
 mod volumes;
