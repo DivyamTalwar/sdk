@@ -338,7 +338,13 @@ async fn goal_publication<P: StreamProvider + 'static, O: AsyncObjectStore + 'st
     if reference.volume() != volume || reference.path() != "GOAL.md" {
         return Err(task_volume::Error::InvalidSegment);
     }
-    crate::executor::with_history_io(Some(io), |work| reference.descriptor().verify(bytes, work))?;
+    // An unindexed writer may leave an old descriptor. Only its provenance is
+    // unknown; the readable goal remains observable. IO failures still propagate.
+    if !crate::executor::with_history_io(Some(io), |work| {
+        reference.descriptor().matches_bytes(bytes, work)
+    })? {
+        return Ok((None, Some(stat.file_id)));
+    }
     Ok((
         Some(crate::filesystem::file_publication(&reference, Some(io))?),
         Some(stat.file_id),
