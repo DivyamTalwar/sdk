@@ -15,7 +15,7 @@ proptest::proptest! {
         let visible = display_text(&text);
         for character in visible.chars() {
             proptest::prop_assert!(!character.is_control() || character == '\t');
-            proptest::prop_assert!(!matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'));
+            proptest::prop_assert!(!matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'), "hidden character: {:?}", character);
         }
         let again = display_text(&visible);
         proptest::prop_assert_eq!(again.as_ref(), visible.as_ref());
