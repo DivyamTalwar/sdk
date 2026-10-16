@@ -6,6 +6,7 @@ pub(super) struct Configuration<'a> {
     #[cfg(feature = "native-execution")]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
+    pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,

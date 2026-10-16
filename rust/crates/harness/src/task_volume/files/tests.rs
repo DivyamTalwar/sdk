@@ -191,7 +191,7 @@ async fn authorized_queries_bound_snapshot_and_follow_content() {
     let agent = AgentId::from_bytes([4; 16]);
     let volume = volume(agent);
     let (verifier, scope) = authority(
-        agent,
+        Some(agent),
         &volume,
         &[VolumeOperation::Read, VolumeOperation::Write],
     );
@@ -267,7 +267,7 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
     let agent = AgentId::from_bytes([1; 16]);
     let volume = volume(agent);
     let (verifier, scope) = authority(
-        agent,
+        Some(agent),
         &volume,
         &[VolumeOperation::Read, VolumeOperation::Write],
     );

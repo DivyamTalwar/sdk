@@ -49,6 +49,9 @@ fn item_examined() {
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Private task volume access was not granted to this owner.
+    #[error("task-volume access denied")]
+    Unauthorized,
     /// Authorization, work or storage failure accessing volume files.
     #[cfg(feature = "filesystem")]
     #[error(transparent)]
