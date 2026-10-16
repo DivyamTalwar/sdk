@@ -199,7 +199,7 @@ async fn negative_control(text: &str) -> Result<()> {
     let from = generation(&selected).await?;
     let windows =
         acyclic_fs::OperationWindowCoordinator::new(checkout.filesystem.operation_window_store());
-    let lease = windows
+    windows
         .begin(
             selected.workspace().id(),
             from.id(),
@@ -226,14 +226,26 @@ async fn negative_control(text: &str) -> Result<()> {
     )
     .await?;
     windows
-        .finish_workspace(
+        .observe_parent(
+            selected.workspace().id(),
+            generation(checkout.view()).await?.id(),
+        )
+        .await
+        .map_err(super::super::storage)?;
+    // This lease expired at 1. Recover its observed parent advance before
+    // deliberately losing the native-publication acknowledgement below.
+    let recovered = windows
+        .recover_workspace(
             selected.workspace(),
-            &lease,
             2,
             acyclic_fs::OperationReconcileLimits::default(),
         )
         .await
         .map_err(super::super::storage)?;
+    assert!(matches!(
+        recovered,
+        Some(acyclic_fs::WorkspaceRebase::Rebased(_))
+    ));
     let root = checkout.view().workspace().id();
     let mut state = GitCompatStore::load(&checkout.store, root)
         .await
