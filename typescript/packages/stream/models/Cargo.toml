@@ -17,5 +17,9 @@ path = "session_model.rs"
 name = "follow_data"
 path = "follow_data.rs"
 
+[[test]]
+name = "latency"
+path = "latency.rs"
+
 [workspace]
 members = ["."]
