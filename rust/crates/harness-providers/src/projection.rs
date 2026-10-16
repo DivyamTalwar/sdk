@@ -31,62 +31,41 @@ pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
         .map_err(|_| invalid("invalid model endpoint"))
 }
 
-pub(crate) fn count(
+pub(crate) fn plan(
     provider: &ResolvedModel,
     prepared: &PreparedModelRequest,
+    input_tokens: u64,
 ) -> Result<ModelTokenCount> {
-    let request = prepared.request();
-    let names = crate::tool_names::Names::new(request);
-    let mut fixed = body_named(provider, request, &names)?;
-    let body_bytes = encoded_len(&fixed)?;
-    let field = match provider.config.adapter {
-        Adapter::Responses => "input",
-        Adapter::Gemini => "contents",
-        _ => "messages",
-    };
-    fixed[field] = json!([]);
-    if let Some(map) = fixed.as_object_mut() {
-        match provider.config.adapter {
-            Adapter::Anthropic => {
-                map.remove("system");
-            }
-            Adapter::Gemini => {
-                map.remove("systemInstruction");
-            }
-            _ => {}
-        }
-    }
-    // Include protocol escaping/framing and calibrate the selected model from actual usage.
-    let message_bytes = request
-        .messages
-        .iter()
-        .map(|message| {
-            encoded_len(&Value::Array(project_message(
-                provider.config.adapter,
-                message,
-                &names,
-            )?))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let total_messages: usize = message_bytes.iter().sum();
-    let fixed_bytes = encoded_len(&fixed)?.max(body_bytes.saturating_sub(total_messages));
+    // These weights only choose a compaction cut. Admission always uses the
+    // independently verified total, never a usage-calibrated ratio.
     let tokens = |bytes| {
         provider
             .estimator
             .tokens(bytes)
-            .ok_or_else(|| invalid("token count exceeds u32"))
+            .ok_or_else(|| invalid("token planning weight exceeds u32"))
     };
+    let mut message_bytes = 0usize;
+    let message_tokens = prepared
+        .request()
+        .messages
+        .iter()
+        .map(|message| {
+            let bytes = encoded_len(message)?;
+            message_bytes = message_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| invalid("token planning size overflow"))?;
+            tokens(bytes)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(ModelTokenCount {
         request_digest: prepared.request_digest(),
-        fixed_tokens: tokens(fixed_bytes)?,
-        message_tokens: message_bytes
-            .into_iter()
-            .map(tokens)
-            .collect::<Result<_>>()?,
+        input_tokens,
+        fixed_tokens: tokens(prepared.bytes().len().saturating_sub(message_bytes))?,
+        message_tokens,
     })
 }
 
-pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
+pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

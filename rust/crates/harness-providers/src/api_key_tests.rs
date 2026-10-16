@@ -17,6 +17,18 @@ struct Responses {
 }
 impl Responses {
     fn exchange(&self, request: HttpRequest) -> Result<HttpResponse> {
+        if let Some(response) = fixture_count(&request) {
+            assert_eq!(
+                request.url,
+                "https://api.openai.com/v1/responses/input_tokens"
+            );
+            assert_eq!(request.headers["authorization"], "Bearer fixture-api-key");
+            let body = json(&request.body)?;
+            assert_eq!(body["model"], "gpt-6-luna");
+            assert!(body.get("stream").is_none());
+            assert!(body.get("store").is_none());
+            return Ok(response);
+        }
         assert_eq!(request.url, "https://api.openai.com/v1/responses");
         assert_eq!(request.headers["authorization"], "Bearer fixture-api-key");
         let body = json(&request.body)?;
@@ -133,13 +145,14 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 step,
                 request_digest: prepared.request_digest(),
             };
-            let count = provider.count_tokens(&prepared)?;
+            let count = provider.count_tokens(&prepared).await?;
             assert_eq!(count.request_digest, dispatch.request_digest);
             let mut custody = Vec::new();
             let events = if native {
                 assert!(provider.supports_native_model(&work)?);
-                let (native_count, hold) =
-                    provider.count_tokens_with_native_work(&prepared, &work)?;
+                let (native_count, hold) = provider
+                    .count_tokens_with_native_work(&prepared, &work)?
+                    .await?;
                 assert_eq!(native_count, count);
                 drop(hold);
                 let mut stream = provider

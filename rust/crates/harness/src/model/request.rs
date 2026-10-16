@@ -332,11 +332,11 @@ impl PreparedModelRequest {
         }
         let fixed_tokens = u32::try_from(self.bytes.len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
-        let count = crate::context::ModelTokenCount {
-            request_digest: self.request_digest,
+        let count = crate::context::ModelTokenCount::from_upper_bounds(
+            self.request_digest,
             fixed_tokens,
             message_tokens,
-        };
+        );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = observer
             .map(|io| {

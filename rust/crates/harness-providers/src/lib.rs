@@ -3,6 +3,7 @@
 mod accounting;
 mod adapter;
 mod catalog;
+mod counting;
 mod credentials;
 mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -23,6 +24,7 @@ mod tool_names;
 
 pub use adapter::Adapter;
 pub use catalog::default_catalog;
+pub use counting::wire::{TokenCountField, TokenCounterSpec};
 pub use credentials::Credentials;
 #[cfg(target_arch = "wasm32")]
 pub use http::BrowserTransport;

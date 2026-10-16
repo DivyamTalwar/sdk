@@ -1,9 +1,8 @@
 //! Original-ledger admission for the shared wire projections and parsers.
-use crate::{Adapter, ResolvedModel, dispatch, projection, sse, stream};
+use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness::{
     Error, NativeFutureBundle, Result,
-    context::ModelTokenCount,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
@@ -78,7 +77,7 @@ fn invalid(reason: &'static str) -> Error {
     }
 }
 
-fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
+pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
         let (code, message) = match error {
             Error::Invalid(message) => (ErrorCode::Invalid, message),
@@ -102,7 +101,7 @@ fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result
 
 // Count structural tokens without constructing a second JSON graph. Quoted
 // punctuation and escaped quotes are payload, not allocation-bearing nodes.
-fn shape(bytes: &[u8]) -> (u64, u64) {
+pub(crate) fn shape(bytes: &[u8]) -> (u64, u64) {
     let mut nodes = 1;
     let mut quoted = false;
     let mut escape = false;
@@ -123,7 +122,7 @@ fn shape(bytes: &[u8]) -> (u64, u64) {
 // Admission includes the temporary decoded graph, copies retained by the
 // protocol state, geometric buffer growth and SDK event slots. It precedes the
 // producer; only surviving capacity is transferred to the executor afterwards.
-fn reserve(
+pub(crate) fn reserve(
     work: &NativeMaterializationWork,
     bytes: u64,
     nodes: u64,
@@ -154,30 +153,12 @@ fn reserve(
     )?)
 }
 
-fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
+pub(crate) fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
     if bytes > allocation.bytes() {
         return Err(invalid("provider exceeded admitted allocation"));
     }
     allocation.resize(bytes)?;
     Ok(())
-}
-
-pub(crate) fn count(
-    provider: &ResolvedModel,
-    request: &PreparedModelRequest,
-    work: &NativeMaterializationWork,
-) -> Result<(ModelTokenCount, NativeAllocation)> {
-    work.remaining()?;
-    provider.context_capacity_with_native_work(&request.request().model, work)?;
-    let (bytes, nodes) = shape(request.bytes());
-    let mut allocation = reserve(work, bytes, nodes, 0)?;
-    let count = diagnostic(projection::count(provider, request), &mut allocation)?;
-    retain(
-        &mut allocation,
-        (std::mem::size_of::<ModelTokenCount>()
-            + count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64,
-    )?;
-    Ok((count, allocation))
 }
 
 pub(crate) fn generate<'a>(

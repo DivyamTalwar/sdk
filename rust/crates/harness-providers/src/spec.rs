@@ -26,6 +26,10 @@ pub struct ProviderSpec {
     /// Exact model capacities, including local server configurations.
     #[serde(default)]
     pub models: BTreeMap<String, ModelContextCapacity>,
+    /// Verified admission counter. Required for automatic compaction; generic
+    /// compatible endpoints must configure their own tokenizer contract.
+    #[serde(default)]
+    pub token_counter: Option<crate::TokenCounterSpec>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,
 }

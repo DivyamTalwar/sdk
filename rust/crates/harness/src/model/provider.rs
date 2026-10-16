@@ -131,11 +131,16 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             "selected model context capacity is unavailable".into(),
         ))
     }
-    /// Deterministic additive token upper bounds.
-    fn count_tokens(&self, _: &PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
-        Err(Error::Unsupported(
-            "selected model token counting is unavailable".into(),
-        ))
+    /// Verified admission count and per-message compaction planning weights.
+    fn count_tokens<'a>(
+        &'a self,
+        _: &'a PreparedModelRequest,
+    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "selected model token counting is unavailable".into(),
+            ))
+        })
     }
     /// Starts one request and emits ordered events.
     fn generate<'a>(
@@ -169,11 +174,12 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     }
     /// Paid token DTO for the admitted native request.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn count_tokens_with_native_work(
-        &self,
-        _: &PreparedModelRequest,
-        work: &NativeMaterializationWork,
-    ) -> Result<(crate::context::ModelTokenCount, NativeAllocation)> {
+    fn count_tokens_with_native_work<'a>(
+        &'a self,
+        _: &'a PreparedModelRequest,
+        work: &'a NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
+    {
         work.remaining()?;
         Err(unsupported())
     }

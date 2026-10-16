@@ -54,11 +54,11 @@ impl ToolProjection for Echo {
 }
 
 fn counter(request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-    Ok(ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: 128,
-        message_tokens: vec![128; request.request().messages.len()],
-    })
+    Ok(ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        128,
+        vec![128; request.request().messages.len()],
+    ))
 }
 
 fn assert_call(provider: &ScriptedModelProvider, metadata: &Value) {

@@ -39,6 +39,9 @@ impl HttpTransport for Fixture {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
+            if let Some(response) = fixture_count(&request) {
+                return HttpResponse::with_native_body(response.status, response.body, work);
+            }
             self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
                 request.headers.contains_key("authorization")
@@ -95,7 +98,9 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
         let before = work.live_allocation_bytes();
         {
             assert!(provider.supports_native_model(&work)?);
-            let (count, custody) = provider.count_tokens_with_native_work(&request, &work)?;
+            let (count, custody) = provider
+                .count_tokens_with_native_work(&request, &work)?
+                .await?;
             assert!(custody.work().shares_allocation_context(&work));
             assert_eq!(count.request_digest, request.request_digest());
             drop((count, custody));
@@ -218,5 +223,39 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     .await;
     assert!(result.is_err());
     assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Result<()> {
+    let cancel = CancellationToken::new();
+    let work = work(&cancel)?;
+    let (mut provider, _) = provider(Adapter::Responses, 200);
+    Arc::make_mut(&mut provider.config)
+        .token_counter
+        .as_mut()
+        .unwrap()
+        .path = "cancel_count".into();
+    provider.transport = Arc::new(Fixture {
+        response: "",
+        sent: AtomicUsize::new(0),
+        cancel: Some(cancel),
+        pending_body: true,
+        prefix: None,
+    });
+    let (request, _) = request(&provider)?;
+    let baseline = work.live_allocation_bytes();
+    let result = provider
+        .count_tokens_with_native_work(&request, &work)?
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    drop(result);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }

@@ -69,7 +69,27 @@ pub(crate) fn request(
     account: Option<&str>,
 ) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
     let body = projection::body_named(provider, request.request(), names)?;
-    let mut headers = BTreeMap::from([("accept".into(), "text/event-stream".into())]);
+    let headers = headers(provider, key, account, true);
+    let _ = dispatch;
+    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
+    Ok((projection::endpoint(provider)?, headers, encoded))
+}
+
+pub(crate) fn headers(
+    provider: &ResolvedModel,
+    key: Option<&str>,
+    account: Option<&str>,
+    streaming: bool,
+) -> BTreeMap<String, String> {
+    let mut headers = BTreeMap::from([(
+        "accept".into(),
+        if streaming {
+            "text/event-stream"
+        } else {
+            "application/json"
+        }
+        .into(),
+    )]);
     if let Some(key) = key {
         let (name, value) = match provider.config.adapter {
             Adapter::Anthropic => ("x-api-key", key.into()),
@@ -89,7 +109,5 @@ pub(crate) fn request(
     if let Some(account) = account {
         headers.insert("chatgpt-account-id".into(), account.into());
     }
-    let _ = dispatch;
-    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
-    Ok((projection::endpoint(provider)?, headers, encoded))
+    headers
 }

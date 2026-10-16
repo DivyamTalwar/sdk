@@ -28,6 +28,33 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'K' {
+        use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
+        for field in [
+            TokenCountField::InputTokens,
+            TokenCountField::TotalTokens,
+            TokenCountField::Count,
+        ] {
+            let spec = TokenCounterSpec {
+                path: "count".into(),
+                adapter: Adapter::Responses,
+                response_field: field,
+                framing_tokens: 0,
+            };
+            if let Ok(count) = response(input, &spec) {
+                let encoded = match field {
+                    TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
+                    TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
+                    TokenCountField::Count => serde_json::json!({"count":count}),
+                };
+                assert_eq!(
+                    response(&serde_json::to_vec(&encoded).unwrap(), &spec).unwrap(),
+                    count
+                );
+            }
+        }
+        return;
+    }
     if kind == b'R' {
         if let Ok(block) = serde_json::from_slice::<acyclic_harness::model::ReasoningBlock>(input) {
             let encoded = serde_json::to_vec(&block).unwrap();

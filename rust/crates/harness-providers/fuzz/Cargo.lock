@@ -99,6 +99,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-stream",
  "async-stream",
+ "blake3",
  "bytes",
  "futures",
  "keyring",

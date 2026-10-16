@@ -15,6 +15,8 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+#[path = "counting/admission_tests.rs"]
+mod admission_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
@@ -191,6 +193,9 @@ struct Script {
 impl HttpTransport for Script {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
+            if let Some(response) = fixture_count(&request) {
+                return Ok(response);
+            }
             self.sent
                 .lock()
                 .map_err(|_| invalid("poisoned fixture"))?
@@ -206,6 +211,25 @@ impl HttpTransport for Script {
             })
         })
     }
+}
+
+fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
+    if !(request.url.ends_with("count_tokens")
+        || request.url.ends_with("input_tokens")
+        || request.url.ends_with(":countTokens"))
+    {
+        return None;
+    }
+    // The fixture tokenizer counts one token per encoded byte plus framing.
+    let tokens = request.body.len() as u64 + 512;
+    let body = serde_json::to_vec(
+        &json!({"input_tokens": tokens, "totalTokens": tokens, "count": tokens}),
+    )
+    .unwrap();
+    Some(HttpResponse {
+        status: 200,
+        body: Box::pin(futures::stream::iter([Ok(body.into())])),
+    })
 }
 
 fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
@@ -227,6 +251,12 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
             authentication: Authentication::ApiKey,
             base_url: "http://127.0.0.1:1234/v1".into(),
             models: BTreeMap::new(),
+            token_counter: Some(crate::TokenCounterSpec {
+                path: "count_tokens".into(),
+                adapter,
+                response_field: crate::TokenCountField::InputTokens,
+                framing_tokens: 0,
+            }),
             max_event_bytes: 4096,
         }),
         capacity: ModelContextCapacity {
@@ -272,7 +302,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
     for (adapter, _) in fixtures() {
         let (provider, script) = provider(adapter, 200);
         let (request, dispatch) = request(&provider)?;
-        let count = provider.count_tokens(&request)?;
+        let count = provider.count_tokens(&request).await?;
         assert_eq!(count.request_digest, request.request_digest());
         assert_eq!(count.message_tokens.len(), 2);
         assert!(count.fixed_tokens > 0 && count.message_tokens.iter().all(|count| *count > 0));
@@ -366,6 +396,12 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
                 output_tokens: 1024,
             },
         )]),
+        token_counter: Some(crate::TokenCounterSpec {
+            path: "count_tokens".into(),
+            adapter: Adapter::Chat,
+            response_field: crate::TokenCountField::InputTokens,
+            framing_tokens: 0,
+        }),
         max_event_bytes: 4096,
     };
     for base in [
@@ -434,7 +470,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             ],
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-        let count = provider.count_tokens(&prepared)?;
+        let count = provider.count_tokens(&prepared).await?;
         let dispatch = ModelDispatch {
             operation_id: acyclic_harness::OperationId::new(),
             step: 1,

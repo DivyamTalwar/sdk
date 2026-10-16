@@ -90,10 +90,10 @@ proptest! {
                     let ProjectedReasoning::Readable {text: projected_text, ..} = projected else {panic!("readable text must survive")};
                     prop_assert_eq!(projected_text, text);
                 } else {
-                    prop_assert!(matches!(projected, ProjectedReasoning::Dropped {..}));
+                    prop_assert!(matches!(projected, ProjectedReasoning::Dropped {..}), "opaque foreign block must be dropped");
                 }
                 destination.credential_scope = Some(*blake3::hash(b"another-org").as_bytes());
-                prop_assert!(!matches!(project_reasoning(&replay, &destination), ProjectedReasoning::Native {..}));
+                prop_assert!(!matches!(project_reasoning(&replay, &destination), ProjectedReasoning::Native {..}), "credential ownership must match");
             }
         }
     }

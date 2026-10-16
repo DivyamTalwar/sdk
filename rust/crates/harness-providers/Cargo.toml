@@ -20,6 +20,7 @@ acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = 
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
 bytes.workspace = true
+blake3.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
