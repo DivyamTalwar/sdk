@@ -70,6 +70,7 @@ impl<P: StreamProvider> Session<P> {
         let children = matches!(subscription.kind, Some(Kind::Children(_)));
         let (latest, source) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
+                let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
                 if !resume.opaque.is_empty() {
                     return Err(StreamError::InvalidArgument);
                 }
@@ -79,8 +80,10 @@ impl<P: StreamProvider> Session<P> {
                     _ => return Err(StreamError::InvalidArgument),
                 };
                 let path = StreamPath::new(follow.path)?;
-                (
-                    latest,
+                let source = if preceding.is_some() {
+                    // Checked adapters land separately; never downgrade the guard.
+                    stream::once(future::ready((identity, Err(StreamError::Unsupported)))).boxed()
+                } else {
                     follow_source(
                         Arc::clone(&self.provider),
                         path,
@@ -88,8 +91,9 @@ impl<P: StreamProvider> Session<P> {
                         identity,
                         cancelled,
                         Arc::clone(&enabled),
-                    ),
-                )
+                    )
+                };
+                (latest, source)
             }
             Some(Kind::Children(request)) => {
                 if self.limits.pending_bytes < CHILD_FRAME_BYTES { return Err(StreamError::Capacity); }

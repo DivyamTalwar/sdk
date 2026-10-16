@@ -18,6 +18,7 @@ impl<P: StreamProvider> Session<P> {
                     identity.generation,
                     Body::Opened(wire::SessionOpened {
                         resume: Some(channel.applied.clone()),
+                        ..Default::default()
                     }),
                 ));
                 return Ok(());

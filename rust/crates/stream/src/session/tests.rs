@@ -34,6 +34,7 @@ fn subscribe(id: u64, path: &str, from: u64, latest: bool) -> wire::SessionSubsc
             } else {
                 wire::SessionDelivery::All
             } as i32,
+            ..Default::default()
         })),
     }
 }
