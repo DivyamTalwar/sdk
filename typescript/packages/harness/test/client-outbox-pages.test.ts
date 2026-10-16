@@ -113,6 +113,27 @@ test("descriptor instrumentation cannot retain private page clones between reads
   } finally { Object.getOwnPropertyDescriptor = original; }
 });
 
+test("clone instrumentation cannot expose an earlier page while cloning the next", async () => {
+  const maximum = 200_000;
+  const store = await outboxFixture(129, maximum);
+  const original = Object.defineProperty;
+  let escaped: { kind: string } | undefined;
+  Object.defineProperty = (value, key, descriptor) => {
+    const result = original(value, key, descriptor);
+    if (key === "offlineSafe" && descriptor.value === true) {
+      const command = value as { operationId: string; kind: string };
+      if (command.operationId === pageCommand(0).operationId) escaped = command;
+      if (command.operationId === pageCommand(64).operationId && escaped) escaped.kind = "x".repeat(maximum);
+    }
+    return result;
+  };
+  try {
+    const commands = await store.load();
+    expect(legacyRetainedDataBytes(commands, maximum)).toBeLessThanOrEqual(maximum);
+    expect(commands).toEqual(Array.from({ length: 129 }, (_, index) => pageCommand(index)));
+  } finally { Object.defineProperty = original; }
+});
+
 test("foreign pages keep full revalidation after the built-in reader is restored", async () => {
   const store = await outboxFixture(65, 100_000);
   const first = pageCommand(0);
