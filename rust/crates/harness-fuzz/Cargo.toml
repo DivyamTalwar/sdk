@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "grpc", "native-execution", "test-support"] }
+acyclic-fs = { path = "../filesystem", default-features = false, features = ["local"] }
+diffy.workspace = true
 libfuzzer-sys = "0.4"
 prost.workspace = true
 acyclic-stream = { path = "../stream", default-features = false }
@@ -24,7 +26,7 @@ tokio-util = { workspace = true, features = ["codec"] }
 which = "=8.0.6"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
 
 [features]
 notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]

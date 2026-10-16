@@ -69,6 +69,21 @@ pub(super) async fn attach(
     Ok(())
 }
 
+pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
+    for (_, mount) in mounts.mounts() {
+        if let Some(native) = mount
+            .view
+            .source
+            .as_ref()
+            .and_then(|source| source.native.as_ref())
+        {
+            native.sync().await?;
+            native.advance_to_head().await?;
+        }
+    }
+    Ok(())
+}
+
 fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let mut path = root.to_path_buf();
     for part in relative.components() {

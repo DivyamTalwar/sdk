@@ -85,8 +85,7 @@ impl LocalHarness {
                     &mut Vec::new(),
                     None,
                     true,
-                    cfg!(feature = "native-execution")
-                        && matches!(&config.project, LocalProject::Workspace(_)),
+                    cfg!(feature = "native-execution"),
                 )?;
             }
             for tool in config.tools {
@@ -151,10 +150,28 @@ impl LocalHarness {
                         &directory,
                         owner.workspace_identity,
                         workspace::attach_operation(owner.task),
+                        false,
                     )
                     .await?,
                 ),
-                LocalProject::Volume { .. } => None,
+                LocalProject::Volume { .. } => Some(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                ),
+            };
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
             };
             // A configured project is opened, never silently replaced by an empty volume.
             files

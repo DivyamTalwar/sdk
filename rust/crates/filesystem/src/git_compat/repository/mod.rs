@@ -47,8 +47,8 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
-    /// Workspace selected by the durable branch catalog.
-    pub async fn current_workspace_id(&self) -> Result<WorkspaceId, GitCompatError<S::Error>> {
+    /// Returns the workspace selected by the validated durable branch catalog.
+    pub async fn selected_workspace(&self) -> Result<WorkspaceId, GitCompatError<S::Error>> {
         self.load()
             .await?
             .current()

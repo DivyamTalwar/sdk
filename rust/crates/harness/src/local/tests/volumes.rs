@@ -5,16 +5,16 @@ use super::*;
 async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
-        super::checkout::call(
+        super::checked_commands::call(
             0,
             "bash",
             "printf root > root-file; printf data > .volumes/scratch/data-file",
         ),
-        super::checkout::call(1, "fs", "status --volume scratch"),
-        super::checkout::call(2, "fs", "git status --volume project"),
-        super::checkout::call(3, "fs", "diff --volume scratch"),
-        super::checkout::call(4, "fs", "status --volume journal"),
-        super::checkout::call(5, "fs", "status --volume ../scratch"),
+        super::checked_commands::call(1, "fs", "status --volume scratch"),
+        super::checked_commands::call(2, "fs", "git status --volume project"),
+        super::checked_commands::call(3, "fs", "diff --volume scratch"),
+        super::checked_commands::call(4, "fs", "status --volume journal"),
+        super::checked_commands::call(5, "fs", "status --volume ../scratch"),
         ScriptedTurn::Text("inspected".into()),
     ]);
     let harness = LocalHarness::open(LocalHarnessConfig::new(
@@ -58,20 +58,7 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
     assert_eq!(results.len(), 6);
     for (call, expected) in [
         ("checkout-1", scratch.workspace.workspace().id()),
-        (
-            "checkout-2",
-            state
-                .mounts
-                .named(None)?
-                .1
-                .view
-                .source
-                .as_ref()
-                .unwrap()
-                .workspace
-                .workspace()
-                .id(),
-        ),
+        ("checkout-2", workspace.view().workspace().id()),
     ] {
         let output: acyclic_fs::GitCommandOutput =
             serde_json::from_value(results[call]["result"].clone())
@@ -108,11 +95,11 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
 async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let first = scripted([
-        super::checkout::call(0, "bash", "printf base > note"),
-        super::checkout::call(1, "fs", "add note"),
-        super::checkout::call(2, "fs", "commit -m base"),
-        super::checkout::call(3, "fs", "checkout -b topic"),
-        super::checkout::call(4, "bash", "printf child > note"),
+        super::checked_commands::call(0, "bash", "printf base > note"),
+        super::checked_commands::call(1, "fs", "add note"),
+        super::checked_commands::call(2, "fs", "commit -m base"),
+        super::checked_commands::call(3, "fs", "checkout -b topic"),
+        super::checked_commands::call(4, "bash", "printf child > note"),
         ScriptedTurn::Text("branched".into()),
     ]);
     let repository;
@@ -122,15 +109,15 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
                 .await?;
         assert_eq!(harness.run("make a branch").await?.text, "branched");
         let workspace = harness.workspace().unwrap();
-        repository = workspace.repository;
+        repository = workspace.view().workspace().id();
     }
     let second = scripted([
-        super::checkout::call(
+        super::checked_commands::call(
             0,
             "bash",
             "test \"$(cat note)\" = child && printf resumed > after",
         ),
-        super::checkout::call(1, "fs", "status"),
+        super::checked_commands::call(1, "fs", "status"),
         ScriptedTurn::Text("resumed".into()),
     ]);
     let harness = LocalHarness::open(LocalHarnessConfig::new(
@@ -139,11 +126,8 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     ))
     .await?;
     let workspace = harness.workspace().unwrap();
-    assert_eq!(workspace.repository, repository);
-    assert_ne!(
-        workspace.primary().await?.workspace.workspace().id(),
-        repository
-    );
+    assert_eq!(workspace.view().workspace().id(), repository);
+    assert_ne!(workspace.current().await.id(), repository);
     assert_eq!(
         harness.run("continue the selected branch").await?.text,
         "resumed"
@@ -167,10 +151,8 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     assert!(!status.contains("\"error\""), "{status}");
     assert!(status.contains("topic"), "{status}");
     let branch = workspace
-        .primary()
-        .await?
-        .workspace
-        .workspace()
+        .current()
+        .await
         .head(
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
@@ -212,12 +194,12 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
                 metadata: json!({}),
             }),
         ]),
-        super::checkout::call(
+        super::checked_commands::call(
             1,
             "bash",
-            r#"test "$ACYCLIC_VOLUME_SCRATCH_MODE" = rw && IFS= read -r text < .volumes/scratch/seed && printf '%s' "$text" > copied && printf scratch > .volumes/scratch/created && test ! -e .volumes/journal"#,
+            r#"test "$ACYCLIC_VOLUME_SCRATCH_MODE" = rw && cp seed .volumes/scratch/seed && IFS= read -r text < .volumes/scratch/seed && printf '%s' "$text" > copied && printf scratch > .volumes/scratch/created && test ! -e .volumes/journal"#,
         ),
-        super::checkout::call(2, "fs", "status"),
+        super::checked_commands::call(2, "fs", "status"),
         ScriptedTurn::Text("composed".into()),
     ]);
     let harness = LocalHarness::open(LocalHarnessConfig::new(
@@ -250,10 +232,8 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
     let primary = workspace
-        .primary()
-        .await?
-        .workspace
-        .workspace()
+        .current()
+        .await
         .head(budget, &cancellation)
         .await
         .map_err(super::super::storage)?

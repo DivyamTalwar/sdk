@@ -2,96 +2,95 @@
 use super::*;
 use acyclic_fs::{
     CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
-    NativeWatchOptions, PublicationPermit, WatchBatch, WorkBudget, WorkCounters, capture_baseline,
+    NativeWatchOptions, WatchBatch, WorkBudget, WorkCounters, capture_baseline,
     capture_watch_batch,
     kernel::NamespacePath,
     model::{CheckoutMode, GenerationSelector},
 };
 use std::time::Duration;
 
+mod arrivals;
+
 const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub(in crate::local) struct CheckoutCapture {
-    options: CaptureOptions,
-    policy: CapturePolicy,
-    watcher: Option<acyclic_fs::NativeWatch>,
+pub(super) struct Cursor {
+    watcher: NativeWatch,
+    initial: Option<WatchBatch>,
+    #[cfg(target_os = "macos")]
+    work: acyclic_fs::NativeMaterializationWork,
+}
+
+impl Cursor {
+    fn open(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
+        let config = workspace.view().workspace().volume_config();
+        // The held native source fences delivery without writing a cookie into
+        // the checkout. Register directories once; subsequent commands consume
+        // only push hints on this persistent watcher.
+        let mut options = NativeWatchOptions::new(config.limits);
+        options.recursive = false;
+        #[cfg(not(target_os = "macos"))]
+        let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
+            .map_err(storage)?;
+        // FSEvents' held-source adapter requires retained native custody. Linux
+        // and Windows already select their held source for a nonrecursive watch.
+        #[cfg(target_os = "macos")]
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| storage(cause))?;
+        #[cfg(target_os = "macos")]
+        let mut watcher = NativeWatch::open_with_profile_with_native_work(
+            &workspace.path,
+            config.profile,
+            options,
+            &work,
+        )
+        .map_err(storage)?;
+        watcher
+            .exclude_subtrees(policy.excluded_prefixes())
+            .map_err(storage)?;
+        Ok(Self {
+            watcher,
+            initial: None,
+            #[cfg(target_os = "macos")]
+            work,
+        })
+    }
+
+    pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
+        let mut cursor = Self::open(workspace, policy)?;
+        cursor.watcher.begin_rescan().map_err(storage)?;
+        cursor.watcher.watch_tree(EXCLUDED).map_err(storage)?;
+        cursor.initial = Some(cursor.watcher.finish_rescan().map_err(storage)?);
+        Ok(cursor)
+    }
 }
 
 impl CheckoutTools {
     pub(super) async fn capture(
         &self,
-        state: &mut State,
-        operation: OperationId,
-        phase: u8,
-        owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
-    ) -> Result<()> {
-        for (_, mount) in state.mounts.mounts() {
-            let source = mount
-                .view
-                .source
-                .as_ref()
-                .ok_or_else(|| Error::NotFound("volume view is not bound".into()))?;
-            if let Some(native) = &source.native {
-                owner.verify(false, &mut None).await?;
-                native.sync().await?;
-                native.advance_to_head().await?;
-            }
-        }
-        let binding = state
-            .mounts
-            .named(None)?
-            .1
-            .view
-            .source
-            .as_ref()
-            .ok_or_else(|| Error::NotFound("primary view is not bound".into()))?;
-        let crate::tools::git::View::Checkout(view) = binding.workspace.view() else {
-            return Ok(());
-        };
-        if state.capture.is_none() {
-            let (options, policy) = configuration(
-                &self.workspace,
-                &state.mounts,
-                view.workspace().volume_config(),
-            )?;
-            state.capture = Some(CheckoutCapture {
-                options,
-                policy,
-                watcher: None,
-            });
-        }
-        state
-            .capture
-            .as_mut()
-            .ok_or_else(|| Error::NotFound("checkout capture is not bound".into()))?
-            .capture(view, operation, phase, owner)
-            .await
-    }
-}
-
-impl CheckoutCapture {
-    async fn capture(
-        &mut self,
         view: &workspace::View,
+        slot: &mut Option<Cursor>,
         operation: OperationId,
         phase: u8,
-        owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
+        permit: PublicationPermit,
     ) -> Result<()> {
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
-        let options = &self.options;
-        let policy = &self.policy;
+        let options = &self.capture_options;
+        let policy = &self.capture_policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
-        let baseline = self.watcher.is_none();
-        let mut watcher = if let Some(watcher) = self.watcher.take() {
-            watcher
-        } else {
-            self.open_watcher(view)?
+        let baseline = slot.is_none();
+        let mut cursor = match slot.take() {
+            Some(cursor) => cursor,
+            None => Cursor::open(&self.workspace, &self.capture_policy)?,
         };
-        if watcher.root_identity() != options.expected_root_identity {
+        let watcher = &mut cursor.watcher;
+        if watcher.root_identity() != self.workspace.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
         let mut checkout = workspace
@@ -104,20 +103,36 @@ impl CheckoutCapture {
             .await
             .map_err(storage)?
             .value;
+        // The producer's native payload guards and its returned vector retain
+        // their original ledger through capture, including the await points.
+        #[cfg(target_os = "macos")]
+        let mut batch_owner = None;
         let batch = if baseline {
             None
         } else {
-            watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
-            Some(
-                watcher
-                    .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, &cancellation)
-                    .map_err(storage)?
-                    .value,
-            )
+            watcher
+                .fence(WATCH_FENCE_TIMEOUT)
+                .map_err(|error| Error::Storage(format!("checkout watch fence: {error:?}")))?;
+            #[cfg(target_os = "macos")]
+            let batch = {
+                let (batch, owner) = watcher
+                    .poll_with_native_work_guarded(MAXIMUM_PATHS, &cursor.work, |_| Ok(()))
+                    .map_err(storage)?;
+                batch_owner = Some(owner);
+                batch
+            };
+            #[cfg(not(target_os = "macos"))]
+            let batch = watcher
+                .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(storage)?
+                .value;
+            Some(batch)
         };
+        let initial = cursor.initial.take();
+        let reset = matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         let batch = match batch {
-            Some(batch @ WatchBatch::Changes { .. }) => batch,
-            None | Some(WatchBatch::RescanRequired { .. }) => {
+            Some(batch @ WatchBatch::Changes { .. }) if !reset => batch,
+            None | Some(_) => {
                 // A reset is an explicit requirement to replace the baseline.
                 // Register push watches first, then include changes delivered
                 // during the scan before committing the captured generation.
@@ -135,6 +150,20 @@ impl CheckoutCapture {
                 watcher.finish_rescan().map_err(storage)?
             }
         };
+        arrivals::register(watcher, &batch, &self.workspace, policy)?;
+        if let Some(initial @ WatchBatch::Changes { .. }) = initial {
+            arrivals::register(watcher, &initial, &self.workspace, policy)?;
+            capture_watch_batch(
+                &mut checkout,
+                initial,
+                options,
+                policy,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?;
+        }
         capture_watch_batch(
             &mut checkout,
             batch,
@@ -145,6 +174,8 @@ impl CheckoutCapture {
         )
         .await
         .map_err(storage)?;
+        #[cfg(target_os = "macos")]
+        drop(batch_owner);
         if checkout.has_pending_mutations() {
             let operation = capture_operation(operation, phase);
             let committed = checkout
@@ -153,22 +184,22 @@ impl CheckoutCapture {
                     None,
                     None,
                     None,
-                    PublicationPermit::Unrestricted,
+                    permit,
                     WorkBudget::UNBOUNDED,
                     &cancellation,
-                    |_| async {
-                        owner
-                            .verify(false, &mut None)
-                            .await
-                            .map_err(acyclic_fs::OperationFailure::before_work)?;
-                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: WorkCounters::UNCHARGED,
-                        })
+                    |_| {
+                        std::future::ready(
+                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: WorkCounters::UNCHARGED,
+                                },
+                            ),
+                        )
                     },
                 )
                 .await
-                .map_err(|failure| failure.error)?
+                .map_err(storage)?
                 .value;
             if !matches!(
                 committed,
@@ -180,22 +211,8 @@ impl CheckoutCapture {
                 ));
             }
         }
-        self.watcher = Some(watcher);
+        *slot = Some(cursor);
         Ok(())
-    }
-
-    fn open_watcher(&self, view: &workspace::View) -> Result<acyclic_fs::NativeWatch> {
-        let config = view.workspace().volume_config();
-        let mut watcher = acyclic_fs::NativeWatch::open_with_profile(
-            &self.options.source_root,
-            config.profile,
-            NativeWatchOptions::new(config.limits),
-        )
-        .map_err(storage)?;
-        watcher
-            .exclude_subtrees(self.policy.excluded_prefixes())
-            .map_err(storage)?;
-        Ok(watcher)
     }
 }
 
@@ -209,11 +226,8 @@ fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::Operation
     acyclic_fs::OperationId::from_bytes(bytes)
 }
 
-fn configuration(
-    workspace: &LocalWorkspace,
-    mounts: &workspace::Mounts,
-    config: acyclic_fs::VolumeConfig,
-) -> Result<(CaptureOptions, CapturePolicy)> {
+pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOptions, CapturePolicy)> {
+    let config = workspace.view().workspace().volume_config();
     let options = CaptureOptions {
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
@@ -222,13 +236,6 @@ fn configuration(
     };
     let mut excluded = EXCLUDED
         .iter()
-        .copied()
-        .chain(
-            mounts
-                .mounts()
-                .map(|(path, _)| path)
-                .filter(|path| !path.is_empty()),
-        )
         .map(|name| {
             let path = acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
                 .map_err(storage)?;

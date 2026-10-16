@@ -22,9 +22,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[cfg(all(feature = "native-execution", unix))]
-mod volumes;
-
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))
 }
@@ -527,12 +524,10 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
-    let entries: Vec<_> = std::fs::read_dir(checkout)
-        .map_err(super::storage)?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<std::io::Result<_>>()
-        .map_err(super::storage)?;
-    assert_eq!(entries, [std::ffi::OsString::from(".volumes")]);
+    assert_eq!(
+        std::fs::read_dir(checkout).map_err(super::storage)?.count(),
+        0
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -570,11 +565,8 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
         work: &work,
         cancellation: &cancellation,
     };
-    let primary = workspace.primary().await?;
-    let crate::tools::git::View::Checkout(view) = primary.workspace.view() else {
-        return Err(Error::Invalid("expected checkout".into()));
-    };
-    let bytes = view
+    let bytes = workspace
+        .view()
         .read("/hello.txt", 1024, &mut accounting)
         .await
         .map_err(super::storage)?;
@@ -725,7 +717,23 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     Ok(())
 }
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(feature = "native-execution")]
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volumes;
+
+#[cfg(feature = "native-execution")]
+#[path = "tests/checkout_reopen.rs"]
+mod checkout_reopen;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout_reconciliation;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volume_tools;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod reconciliation_interruptions;
