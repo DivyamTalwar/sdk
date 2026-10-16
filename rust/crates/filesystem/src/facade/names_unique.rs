@@ -88,6 +88,12 @@ fn retain_ambiguous_keys(
     mut keys: Owned<Vec<Vec<u8>>>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Owned<Vec<Vec<u8>>>, FsError> {
+    accounting.charge(WorkCounters {
+        items_examined: (keys.value.len() as u64)
+            .checked_mul(2)
+            .ok_or(WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    })?;
     let count = keys
         .value
         .iter()
@@ -98,10 +104,6 @@ fn retain_ambiguous_keys(
                 && (*index == 1 || keys.value[*index - 2] != **key)
         })
         .count();
-    accounting.charge(WorkCounters {
-        items_examined: keys.value.len() as u64,
-        ..WorkCounters::UNCHARGED
-    })?;
     let mut retained = Owned::<Vec<Vec<u8>>>::allocate(count, accounting)?;
     let backing = (keys.value.capacity() * size_of::<Vec<u8>>()) as u64;
     let mut input = keys.value.into_iter().peekable();
