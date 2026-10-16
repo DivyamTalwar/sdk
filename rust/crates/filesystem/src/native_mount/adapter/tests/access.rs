@@ -25,7 +25,10 @@ pub(in crate::native_mount) fn deny(id: &str, actions: &[Action], path: &str) ->
     }
 }
 
-pub(in crate::native_mount) fn compiled<A, O>(
+pub(in crate::native_mount) fn compiled<
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+>(
     source: &CheckoutMountSource<A, O>,
     revision: u64,
     rules: Vec<Rule>,
@@ -62,6 +65,25 @@ pub(in crate::native_mount) fn compiled<A, O>(
         expires_at: None,
     });
     let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let (head, revision) = invoke(&source.runtime, &work, || async {
+        let mut checkout = source
+            .checkout
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                &work,
+                work.cancellation(),
+            )
+            .await?;
+        Ok::<_, MountSourceError>((
+            checkout.generation_id(),
+            checkout
+                .access_policy_revision(&work, work.cancellation())
+                .await?,
+        ))
+    })?;
     Ok(PathTrie::compile(
         &policy,
         &caller,
@@ -78,10 +100,14 @@ pub(in crate::native_mount) fn compiled<A, O>(
             approvals: 0,
         },
         &cap,
-    )?)
+    )?
+    .with_policy_revision(head, revision))
 }
 
-pub(in crate::native_mount) fn bind_test_access<A, O>(
+pub(in crate::native_mount) fn bind_test_access<
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+>(
     source: CheckoutMountSource<A, O>,
     rules: Vec<Rule>,
     capability: Option<Capability>,
@@ -90,7 +116,10 @@ pub(in crate::native_mount) fn bind_test_access<A, O>(
     Ok(source.with_access_view(view)?)
 }
 
-pub(in crate::native_mount) fn publish_test_access<A, O>(
+pub(in crate::native_mount) fn publish_test_access<
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+>(
     source: &CheckoutMountSource<A, O>,
     rules: Vec<Rule>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -269,20 +298,49 @@ fn native_access_refreshes_new_opens_but_keeps_handle_permissions()
     let source = source(FilesystemProfile::Portable)?;
     seed(&source, "file", b"pinned")?;
     let old = source.open_file(&native_test_path("file"))?;
-    let view = source
-        .access_view
-        .as_ref()
-        .ok_or("fixture access missing")?;
-    view.publish(compiled(
-        &source,
-        2,
-        vec![deny("revoked", &[Action::Read], "file")],
-        None,
-    )?)?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    invoke(&source.runtime, &work, || async {
+        let mut editor = source
+            .checkout
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &work,
+                work.cancellation(),
+            )
+            .await?;
+        editor
+            .write_access_policy(
+                br#"{"schema_version":1,"version":2,"layers":[]}"#,
+                crate::NamedAttributeWriteMode::Create,
+                &work,
+                work.cancellation(),
+            )
+            .await?;
+        editor
+            .commit(
+                OperationId::new(),
+                None,
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
+                BOUNDARY_BUDGET,
+                work.cancellation(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<FsError>>(crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await
+            .map_err(|failure| MountSourceError::from(failure.error))?;
+        Ok::<_, MountSourceError>(())
+    })?;
     assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
-    let fresh = source.open_file(&native_test_path("file"))?;
     assert!(matches!(
-        fresh.read_range(0, 6),
+        source.open_file(&native_test_path("file")),
         Err(MountSourceError::AccessDenied)
     ));
     Ok(())

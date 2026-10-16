@@ -47,7 +47,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::Read)?;
+            self.require_access(&path, crate::access::Action::Read, work)
+                .await?;
             let observation = self
                 .checkout
                 .observe(
@@ -96,7 +97,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let namespace = self.namespace_inputs(path, &mut inputs)?;
-            let permissions = self.pin_access(&namespace)?;
+            let permissions = self.pin_access(&namespace, work).await?;
             access::require_open(&permissions, access)?;
 
             let observation = self
@@ -172,7 +173,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            let permissions = self.pin_access(&path)?;
+            let permissions = self.pin_access(&path, work).await?;
             access::require_open(&permissions, None)?;
             let observation = self
                 .checkout

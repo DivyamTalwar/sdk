@@ -73,6 +73,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             root,
             config,
             access_view: None,
+            access_refresh: None,
             folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
                 && matches!(
                     config.profile,

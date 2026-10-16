@@ -150,6 +150,7 @@ pub(crate) use host::map_error;
 use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 pub(crate) mod access;
+pub use access::INITIAL_POLICY as INITIAL_ACCESS_POLICY;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use access::check_access_record;

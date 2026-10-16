@@ -62,7 +62,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<Option<OwnedSourceChunk>, FsError> {
+    ) -> W::Output<
+        (
+            Option<OwnedSourceChunk>,
+            crate::kernel::MetadataField<ObjectId>,
+        ),
+        FsError,
+    > {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let name = policy_name(
@@ -77,7 +83,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         cancellation,
                     )
                     .await?;
-                attributes::read_attribute(
+                let bytes = attributes::read_attribute(
                     &self.volume,
                     metadata,
                     &name.value,
@@ -85,13 +91,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     &mut accounting,
                     cancellation,
                 )
-                .await
+                .await?;
+                Ok((bytes, metadata.named_attributes))
             }
             .await;
             name.retire(&mut accounting)?;
             result
         }
         .await;
+        work.finish(result, &accounting)
+    }
+
+    /// Authenticated policy revision without reading the policy payload.
+    pub async fn access_policy_revision<W: FsWork>(
+        &mut self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::kernel::MetadataField<ObjectId>, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .read_metadata_with_accounting(self.root.root_file_id, &mut accounting, cancellation)
+            .await
+            .map(|metadata| metadata.named_attributes);
         work.finish(result, &accounting)
     }
 

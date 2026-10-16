@@ -35,6 +35,13 @@ pub struct PathTrie {
     volume: String,
     subject: (super::PrincipalKind, String),
     capability_binding: [u8; 32],
+    policy_revision: Option<(
+        crate::GenerationId,
+        crate::kernel::MetadataField<crate::ObjectId>,
+    )>,
+    generation_sensitive: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) native_custody: Option<crate::NativeAllocation>,
 }
 
 /// A path bound to its immutable compiled view. Its private state cannot be
@@ -227,6 +234,28 @@ impl Alphabet {
 }
 
 impl PathTrie {
+    /// Bind the immutable storage revision authenticated by the policy owner.
+    #[must_use]
+    pub fn with_policy_revision(
+        mut self,
+        generation: crate::GenerationId,
+        revision: crate::kernel::MetadataField<crate::ObjectId>,
+    ) -> Self {
+        self.policy_revision = Some((generation, revision));
+        self
+    }
+
+    /// Whether this view still represents the authenticated persisted policy.
+    pub fn matches_policy_revision(
+        &self,
+        generation: crate::GenerationId,
+        revision: crate::kernel::MetadataField<crate::ObjectId>,
+    ) -> bool {
+        self.policy_revision.is_some_and(|(original, policy)| {
+            policy == revision && (!self.generation_sensitive || original == generation)
+        })
+    }
+
     /// Heap bytes retained by the compiled view, excluding its inline header.
     #[must_use]
     pub fn logical_owned_bytes(&self) -> u64 {
@@ -442,6 +471,12 @@ impl PathTrie {
                     + capability.layers.iter().map(Vec::len).sum::<usize>(),
                 &mut available,
             )?;
+            // Moving head turns a pinned current read/list into history, even
+            // when every selector says All. Preserve the same ReadHistory gate.
+            let history_sensitive = states.iter().any(|state| {
+                state.actions & ((1 << Action::Read as u16) | (1 << Action::List as u16)) != 0
+                    && state.actions & (1 << Action::ReadHistory as u16) == 0
+            });
             Ok(Self {
                 alphabet: Alphabet::new(&symbols)?,
                 states,
@@ -454,6 +489,19 @@ impl PathTrie {
                 volume: resource.volume.to_owned(),
                 subject: (principal.kind, principal.id.clone()),
                 capability_binding: super::capability::binding(capability)?,
+                policy_revision: None,
+                generation_sensitive: history_sensitive
+                    || policy.layers.iter().flatten().any(|rule| {
+                        rule.resource.generations != super::Generations::All
+                            || rule.conditions.generations.is_some()
+                    })
+                    || capability
+                        .layers
+                        .iter()
+                        .flatten()
+                        .any(|grant| grant.resource.generations != super::Generations::All),
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: None,
             })
         })();
         *remaining_work -= before - available;

@@ -105,13 +105,13 @@ impl<A, O> CheckoutMountSource<A, O> {
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
-        self.require_access(&path, action)?;
         let work = inputs
             .carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
+        self.require_access(&path, action, &work).await?;
         let mut inspector = checkout.inspector(
             &mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation),
             &cancellation,
@@ -202,7 +202,12 @@ impl<A, O> CheckoutMountSource<A, O> {
         let cancellation = carrier.cancellation();
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
-        self.require_access(&path, crate::access::Action::Read)?;
+        let work = inputs
+            .carrier
+            .original_native_work()
+            .ok_or(MountSourceError::AccessDenied)?;
+        self.require_access(&path, crate::access::Action::Read, &work)
+            .await?;
         let observation = self
             .checkout
             .observe(
@@ -271,7 +276,11 @@ impl<A, O> CheckoutMountSource<A, O> {
         carrier.check(&cancellation, Some(&self.cancellation))?;
         let mut inputs = InputBuffers::new(carrier)?;
         let path = self.namespace_inputs(path, &mut inputs)?;
-        let access = self.pin_access(&path)?;
+        let work = inputs
+            .carrier
+            .original_native_work()
+            .ok_or(MountSourceError::AccessDenied)?;
+        let access = self.pin_access(&path, &work).await?;
         if disclose
             && !access
                 .decide(crate::access::Action::List, access::access_time()?)
@@ -465,6 +474,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             root,
             config,
             access_view: None,
+            access_refresh: None,
             folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
                 && matches!(
                     config.profile,
@@ -637,7 +647,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
-            let view = self.access_snapshot()?;
+            let view = self.access_snapshot(work).await?;
             let now = access::access_time()?;
             let permissions = view
                 .pin(&file)

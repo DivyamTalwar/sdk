@@ -23,16 +23,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
-        let view = self
-            .access_view(
-                &workspace,
-                scope,
-                None,
-                capability_payload(label, VolumeOperation::Write, io)?,
-                ceiling,
-                io,
-            )
-            .await?;
+        let view = crate::filesystem::access::access_view(
+            &workspace,
+            scope,
+            None,
+            capability_payload(label, VolumeOperation::Write, io)?,
+            ceiling,
+            io,
+        )
+        .await?;
         if replay {
             if !view.0.decide(Action::Create, path, access_now()).allowed {
                 require(&view.0, Action::Write, path, io)?;

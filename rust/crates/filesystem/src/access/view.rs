@@ -9,6 +9,8 @@ pub struct AccessView {
     // Terminal lock: callers never receive a guard. Compilation, allocation,
     // destruction and backend operations run outside it; it acquires no locks.
     current: RwLock<Arc<PathTrie>>,
+    #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+    _custody: Option<crate::NativeAllocation>,
 }
 
 impl AccessView {
@@ -17,7 +19,39 @@ impl AccessView {
     pub fn new(view: PathTrie) -> Self {
         Self {
             current: RwLock::new(Arc::new(view)),
+            #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+            _custody: None,
         }
+    }
+
+    /// Retain the original native allocation for the view and its compiled data.
+    #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+    pub fn new_native(
+        view: PathTrie,
+        custody: crate::NativeAllocation,
+    ) -> Result<Self, crate::NativeTreeMaterializationError> {
+        let header = custody.work().claim(
+            (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        let view = native_trie(view, custody)?;
+        Ok(Self {
+            current: RwLock::new(Arc::new(view)),
+            _custody: Some(header),
+        })
+    }
+
+    /// Publish a freshly authenticated revision, retaining every pinned old view.
+    #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+    pub fn publish_native(
+        &self,
+        view: PathTrie,
+        custody: crate::NativeAllocation,
+    ) -> Result<(), crate::NativeTreeMaterializationError> {
+        let view = native_trie(view, custody)?;
+        self.publish(view)
+            .map_err(|_| crate::NativeTreeMaterializationError::InvalidLayout)
     }
 
     /// Load the current view without allocating or consulting storage.
@@ -64,6 +98,24 @@ impl AccessView {
         drop(previous);
         Ok(())
     }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+fn native_trie(
+    mut view: PathTrie,
+    mut custody: crate::NativeAllocation,
+) -> Result<PathTrie, crate::NativeTreeMaterializationError> {
+    if custody.bytes() != view.logical_owned_bytes() || view.native_custody.is_some() {
+        return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+    }
+    let mut header = custody.work().claim(
+        (std::mem::size_of::<PathTrie>() + 2 * std::mem::size_of::<usize>()) as u64,
+        1,
+        crate::WorkCounters::UNCHARGED,
+    )?;
+    custody.absorb(&mut header)?;
+    view.native_custody = Some(custody);
+    Ok(view)
 }
 
 fn can_replace(current: &PathTrie, next: &PathTrie) -> bool {

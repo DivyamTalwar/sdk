@@ -72,24 +72,132 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok(self)
     }
 
+    /// Reload an authenticated policy view after its persisted fence changes.
+    pub fn with_access_refresh(
+        mut self,
+        refresh: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
+    ) -> Self {
+        self.access_refresh = refresh;
+        self
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
+    pub(in crate::native_mount) async fn access_snapshot(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
+        let published = self
+            .access_view
+            .as_ref()
+            .ok_or(MountSourceError::AccessDenied)?;
+        let mut view = published
+            .current()
+            .map_err(|_| MountSourceError::AccessDenied)?;
+        let mut head = self
+            .checkout
+            .volume
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::read_only_pinned(),
+                work,
+                work.cancellation(),
+            )
+            .await?;
+        let mut revision = head
+            .access_policy_revision(work, work.cancellation())
+            .await?;
+        let expired = if let Some(expiry) = view.valid_until() {
+            access_time()? >= expiry
+        } else {
+            false
+        };
+        if !view.matches_policy_revision(head.generation_id(), revision) || expired {
+            let refresh = self
+                .access_refresh
+                .as_ref()
+                .ok_or(MountSourceError::AccessDenied)?;
+            // Authentication and compilation run outside every checkout/view lock.
+            let future = refresh.check(work).map_err(publication_error)?;
+            publication_result(future.await)?;
+            view = published
+                .current()
+                .map_err(|_| MountSourceError::AccessDenied)?;
+            head = self
+                .checkout
+                .volume
+                .checkout(
+                    crate::model::GenerationSelector::Head,
+                    crate::model::CheckoutMode::read_only_pinned(),
+                    work,
+                    work.cancellation(),
+                )
+                .await?;
+            revision = head
+                .access_policy_revision(work, work.cancellation())
+                .await?;
+        }
+        if !view.matches_policy_revision(head.generation_id(), revision) {
+            return Err(MountSourceError::AccessDenied);
+        }
+        Ok(view)
+    }
+
+    pub(in crate::native_mount) async fn pin_access(
+        &self,
+        path: &NamespacePath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<PinnedPath, MountSourceError> {
+        self.access_snapshot(work)
+            .await?
+            .pin(path)
+            .map_err(|_| MountSourceError::AccessDenied)
+    }
+
+    pub(super) async fn require_access(
+        &self,
+        path: &NamespacePath,
+        action: Action,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<PinnedPath, MountSourceError> {
+        let pin = self.pin_access(path, work).await?;
+        require(&pin, action, access_time()?)?;
+        Ok(pin)
+    }
+}
+
+impl<A, O> CheckoutMountSource<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    pub(in crate::native_mount) fn access_snapshot_with_meter(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
+        invoke(&self.runtime, work, || self.access_snapshot(work))
+    }
+
     pub(super) fn require_paths(
         &self,
         requests: &[(Action, &MountPath)],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let view = self.access_snapshot()?;
-        let now = access_time()?;
-        let mut carrier = NativeDemandCarrier::Native(work);
-        let mut inputs = InputBuffers::new(&mut carrier)?;
-        for (action, path) in requests {
-            inputs.items(1)?;
-            let path = self.namespace_inputs(path, &mut inputs)?;
-            let permissions = view
-                .pin(&path)
-                .map_err(|_| MountSourceError::AccessDenied)?;
-            require(&permissions, *action, now)?;
-        }
-        Ok(())
+        invoke(&self.runtime, work, || async {
+            let view = self.access_snapshot(work).await?;
+            let now = access_time()?;
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            for (action, path) in requests {
+                inputs.items(1)?;
+                let path = self.namespace_inputs(path, &mut inputs)?;
+                let permissions = view
+                    .pin(&path)
+                    .map_err(|_| MountSourceError::AccessDenied)?;
+                require(&permissions, *action, now)?;
+            }
+            Ok(())
+        })
     }
 
     pub(in crate::native_mount) fn permissions_for_path(
@@ -97,38 +205,11 @@ impl<A, O> CheckoutMountSource<A, O> {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<PinnedPath, MountSourceError> {
-        let mut carrier = NativeDemandCarrier::Native(work);
-        let mut inputs = InputBuffers::new(&mut carrier)?;
-        let path = self.namespace_inputs(path, &mut inputs)?;
-        self.pin_access(&path)
-    }
-
-    pub(in crate::native_mount) fn access_snapshot(
-        &self,
-    ) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
-        self.access_view
-            .as_ref()
-            .ok_or(MountSourceError::AccessDenied)?
-            .current()
-            .map_err(|_| MountSourceError::AccessDenied)
-    }
-
-    pub(in crate::native_mount) fn pin_access(
-        &self,
-        path: &NamespacePath,
-    ) -> Result<PinnedPath, MountSourceError> {
-        self.access_snapshot()?
-            .pin(path)
-            .map_err(|_| MountSourceError::AccessDenied)
-    }
-
-    pub(super) fn require_access(
-        &self,
-        path: &NamespacePath,
-        action: Action,
-    ) -> Result<PinnedPath, MountSourceError> {
-        let pin = self.pin_access(path)?;
-        require(&pin, action, access_time()?)?;
-        Ok(pin)
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let path = self.namespace_inputs(path, &mut inputs)?;
+            self.pin_access(&path, work).await
+        })
     }
 }

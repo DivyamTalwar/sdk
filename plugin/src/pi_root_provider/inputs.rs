@@ -269,6 +269,7 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
                 maximum(owner),
                 &coordinates.key.0,
                 None,
+                None,
                 Some(&io),
             )
             .await;

@@ -681,3 +681,50 @@ fn full_case_fold_question_preserves_native_scalar_aliases()
     assert!(trie.decide(Action::Read, "fileab.txt", 100).allowed);
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn policy_fence_and_native_custody_preserve_pinned_views(origin in any::<[u8; 32]>()) {
+      // Exhaust every fence/history combination for each shrinking storage identity.
+      for mask in 0u8..16 {
+        let mut next = origin;
+        next[0] ^= u8::from(mask & 1 != 0);
+        let generation_changed = mask & 2 != 0;
+        let restricted = mask & 4 != 0;
+        let history = mask & 8 != 0;
+        let caller = principal();
+        let mut policy = super::policy(vec![rule("read", Effect::Allow, &[Action::Read], "**")]);
+        if history { policy.layers[0][0].actions.insert(Action::ReadHistory); }
+        if restricted { policy.layers[0][0].resource.generations = Generations::Head; }
+        let mut cap = capability();
+        for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
+        let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([byte; 32]));
+        let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs::ObjectId {
+            kind: acyclic_fs::ObjectKind::TreePage, digest: acyclic_fs::Digest::from_bytes(byte),
+        });
+        let compile = || PathTrie::compile(&policy, &caller, Resource { head: 1, ..resource(&caller.lineage, "", 1) }, Context { now: 100, approvals: 0 }, &cap)
+            .map(|view| view.with_policy_revision(generation(1), revision(origin)));
+        let first = compile()?;
+        prop_assert_eq!(first.matches_policy_revision(generation(if generation_changed { 2 } else { 1 }), revision(next)),
+            origin == next && (!(restricted || !history) || !generation_changed));
+        let cancel = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)
+            .map_err(|(cause, _)| proptest::test_runner::TestCaseError::fail(cause.to_string()))?;
+        let bytes = first.logical_owned_bytes();
+        let custody = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let view = AccessView::new_native(first, custody)?;
+        let pinned = view.current()?;
+        let before = work.live_allocation_bytes();
+        let next = compile()?;
+        view.publish_native(next, work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        prop_assert!(work.live_allocation_bytes() > before);
+        drop(view);
+        prop_assert!(work.live_allocation_bytes() >= bytes);
+        prop_assert!(pinned.decide(Action::Read, "file", 100).allowed);
+        drop(pinned);
+        prop_assert_eq!(work.live_allocation_bytes(), 0);
+      }
+    }
+}

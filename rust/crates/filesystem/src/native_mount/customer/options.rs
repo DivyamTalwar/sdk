@@ -33,6 +33,7 @@ where
         options.native_original.as_ref(),
     )?
     .with_access_view(Arc::clone(access))?;
+    let source = source.with_access_refresh(options.access_refresh.clone());
     let source = match options.callback_guard.as_ref() {
         Some(guard) => source.with_native_callback_guard(guard.clone()),
         None => source,
@@ -56,6 +57,7 @@ pub enum MountPublication {
 #[derive(Clone)]
 pub struct MountOptions {
     pub(crate) access_view: Option<Arc<crate::access::AccessView>>,
+    pub(crate) access_refresh: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(crate) writable: bool,
     pub(crate) subdirectory: std::borrow::Cow<'static, str>,
     pub(crate) publication: MountPublication,
@@ -97,6 +99,7 @@ impl MountOptions {
     pub fn read_write() -> Self {
         Self {
             access_view: None,
+            access_refresh: None,
             writable: true,
             subdirectory: std::borrow::Cow::Borrowed("/"),
             publication: MountPublication::CloseAndSync,
@@ -111,6 +114,16 @@ impl MountOptions {
     #[must_use]
     pub fn access_view(mut self, view: Arc<crate::access::AccessView>) -> Self {
         self.access_view = Some(view);
+        self
+    }
+
+    /// Reload the authenticated view when the persisted policy fence changes.
+    #[must_use]
+    pub fn access_refresh(
+        mut self,
+        refresh: Arc<dyn super::super::NativeMountCallbackGuard>,
+    ) -> Self {
+        self.access_refresh = Some(refresh);
         self
     }
 

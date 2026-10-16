@@ -110,16 +110,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
-        let view = self
-            .access_view(
-                &workspace,
-                scope,
-                Some(original.id()),
-                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
-                ceiling,
-                io,
-            )
-            .await?;
+        let view = crate::filesystem::access::access_view(
+            &workspace,
+            scope,
+            Some(original.id()),
+            super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
+            ceiling,
+            io,
+        )
+        .await?;
         super::super::access::require(
             &view.0,
             acyclic_fs::access::Action::List,

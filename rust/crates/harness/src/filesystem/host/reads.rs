@@ -73,16 +73,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
-        let view = self
-            .access_view(
-                &workspace,
-                grant.policy_scope(),
-                Some(generation.id()),
-                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
-                ceiling,
-                io,
-            )
-            .await?;
+        let view = crate::filesystem::access::access_view(
+            &workspace,
+            grant.policy_scope(),
+            Some(generation.id()),
+            super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
+            ceiling,
+            io,
+        )
+        .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         drop(view);
@@ -204,16 +203,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
-        let view = self
-            .access_view(
-                &workspace,
-                grant.policy_scope(),
-                Some(pinned.id()),
-                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
-                ceiling,
-                io,
-            )
-            .await?;
+        let view = crate::filesystem::access::access_view(
+            &workspace,
+            grant.policy_scope(),
+            Some(pinned.id()),
+            super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
+            ceiling,
+            io,
+        )
+        .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         drop(view);
         fork_preparer_io::retain(&pinned, Some(io)).await?;

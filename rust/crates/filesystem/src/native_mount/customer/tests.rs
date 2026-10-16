@@ -12,7 +12,10 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
     let lazy = native_lazy_source(physical.path(), "lifecycle-context", &cancellation).await?;
     let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
     let (source, volume_id, _root) = lazy
-        .prepare_authored_mount_source(&MountOptions::read_write(), &work)
+        .prepare_authored_mount_source(
+            &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
+            &work,
+        )
         .await?;
     let session = Mutex::new(Some(NativeMountSession::new(
         NativeMountRequest {
@@ -63,7 +66,11 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
         ..crate::WorkBudget::UNBOUNDED
     };
     let work = test_work(budget, &cancellation)?;
-    let options = MountOptions::read_write().publication(MountPublication::Manual);
+    let options = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
     let (source, volume_id, _) = lazy.prepare_authored_mount_source(&options, &work).await?;
     let original = source
         .native_original_work()?
@@ -142,9 +149,13 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         materializations: 0,
         ..crate::WorkBudget::UNBOUNDED
     };
-    let options = MountOptions::read_write()
-        .subdirectory("/selected")
-        .publication(MountPublication::Manual);
+    let options = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write()
+            .subdirectory("/selected")
+            .publication(MountPublication::Manual),
+    )
+    .await?;
     let work = test_work(budget, &cancellation)?;
     let (ordinary_source, volume, root) =
         lazy.prepare_authored_mount_source(&options, &work).await?;
@@ -251,7 +262,11 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         .await?;
     let directory = tempfile::tempdir()?;
     let options = crate::MaterializeOptions::native(directory.path());
-    let mount = MountOptions::read_only().subdirectory("/selected-Ã©");
+    let mount = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_only().subdirectory("/selected-Ã©"),
+    )
+    .await?;
     let original = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
     let prepared = generation
         .prepare_native_working_set(
@@ -331,7 +346,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let source_root = tempfile::tempdir()?;
     let source = admitted
         .prepare_native_working_set(
-            &MountOptions::read_only(),
+            &fixture_options(&workspace, MountOptions::read_only()).await?,
             &crate::MaterializeOptions::native(source_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -363,7 +378,11 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     assert_eq!(head(&workspace, &fixture_work).await?, concurrent);
 
     let destination_root = tempfile::tempdir()?;
-    let write = MountOptions::read_write().publication(MountPublication::Manual);
+    let write = fixture_options(
+        &workspace,
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
     let rejected = admitted
         .prepare_native_working_set(
             &write,
@@ -801,4 +820,24 @@ pub(super) fn test_work(
     cancellation: &crate::CancellationToken,
 ) -> Result<NativeMaterializationWork, crate::NativeTreeMaterializationError> {
     NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, _)| cause)
+}
+
+pub(super) async fn fixture_options(
+    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    options: MountOptions,
+) -> Result<MountOptions, Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let config = checkout.volume_config();
+    let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
+    let view = super::super::adapter::tests::access::compiled(&source, 1, vec![], None)?;
+    Ok(options.access_view(Arc::new(crate::access::AccessView::new(view))))
 }

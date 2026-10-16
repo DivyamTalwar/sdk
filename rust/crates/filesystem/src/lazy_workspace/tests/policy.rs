@@ -37,7 +37,7 @@ proptest::proptest! {
                     WorkBudget::UNBOUNDED, &cancel,
                 ).await?.value;
                 let recorded = checkout.read_access_policy(WorkBudget::UNBOUNDED, &cancel)
-                    .await?.value.ok_or("initial policy is absent")?;
+                    .await?.value.0.ok_or("initial policy is absent")?;
                 assert_eq!(recorded.bytes.as_ref(), policy.as_bytes());
                 assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
                 assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);

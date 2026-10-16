@@ -14,7 +14,7 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let view = self.authored.access_snapshot()?;
+        let view = self.authored.access_snapshot_with_meter(work)?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
         let namespace = self.authored.namespace_inputs(path, &mut inputs)?;

@@ -99,7 +99,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::Read)?;
+            self.require_access(&path, crate::access::Action::Read, work)
+                .await?;
             let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
             let observation = self
                 .checkout
@@ -136,7 +137,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::List)?;
+            self.require_access(&path, crate::access::Action::List, work)
+                .await?;
             let cursor = cursor
                 .map(|bytes| inputs.attribute_name(bytes, self.config.profile, self.config.limits))
                 .transpose()?;

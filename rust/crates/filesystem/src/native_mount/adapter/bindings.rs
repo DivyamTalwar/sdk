@@ -13,7 +13,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::Delete)?;
+            self.require_access(&path, crate::access::Action::Delete, work)
+                .await?;
             let candidate = self
                 .checkout
                 .candidate(
@@ -60,7 +61,7 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
-            let view = self.access_snapshot()?;
+            let view = self.access_snapshot(work).await?;
             let now = access::access_time()?;
             access::require(
                 &view
@@ -133,8 +134,10 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
-            self.require_access(&source, crate::access::Action::Admin)?;
-            self.require_access(&destination, crate::access::Action::Admin)?;
+            self.require_access(&source, crate::access::Action::Admin, work)
+                .await?;
+            self.require_access(&destination, crate::access::Action::Admin, work)
+                .await?;
             let candidate = self
                 .checkout
                 .candidate(

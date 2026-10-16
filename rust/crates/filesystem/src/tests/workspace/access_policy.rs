@@ -24,7 +24,9 @@ async fn current(
 }
 
 async fn recorded(checkout: &mut MemoryCheckout) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-    Ok(unbounded!(checkout, read_access_policy())?.map(|chunk| chunk.bytes.to_vec()))
+    Ok(unbounded!(checkout, read_access_policy())?
+        .0
+        .map(|chunk| chunk.bytes.to_vec()))
 }
 
 async fn publish(checkout: &mut MemoryCheckout) -> Result<bool, Box<dyn Error>> {

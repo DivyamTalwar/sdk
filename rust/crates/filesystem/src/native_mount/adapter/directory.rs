@@ -17,7 +17,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            let view = self.access_snapshot()?;
+            let view = self.access_snapshot(work).await?;
             let access = view
                 .prepare_namespace(&path)
                 .map_err(|_| MountSourceError::AccessDenied)?;

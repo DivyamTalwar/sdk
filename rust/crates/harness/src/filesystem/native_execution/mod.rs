@@ -19,6 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+mod access;
 mod allocation;
 mod completion;
 pub(super) mod journal;
