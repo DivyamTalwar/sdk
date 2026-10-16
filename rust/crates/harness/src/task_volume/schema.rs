@@ -383,7 +383,7 @@ impl FileKey {
         }
     }
 
-    pub(super) fn mutable(&self) -> bool {
+    pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
             Self::Goal
