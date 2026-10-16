@@ -21,7 +21,7 @@ mod public_api;
 mod render_cache;
 mod sync;
 pub use child::{command, command_environment, with_command_environment};
-pub use render_cache::{read_rustdoc, with_rustdoc_cache};
+pub use render_cache::{read_rustdoc, read_rustdoc_json, with_rustdoc_cache};
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;
 /// Rust-owned executable examples and generated consumer projections.

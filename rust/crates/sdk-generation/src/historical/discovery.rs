@@ -298,15 +298,16 @@ pub(super) fn registry_owner_source_inner(
     }
     .configure_metadata(&mut discovery)
     .map_err(|e| e.to_string())?;
-    let metadata = discovery
+    discovery
         .cargo_path(cargo)
         .current_dir(&root)
         .manifest_path(root.join("Cargo.toml"))
         .env_remove("CARGO_RESOLVER_LOCKFILE_PATH")
         .other_options(vec!["--locked".into(), "--offline".into()])
-        .no_deps()
-        .exec()
-        .map_err(|e| e.to_string())?;
+        .no_deps();
+    let metadata = owner_metadata(&root, cargo, &source, || {
+        discovery.exec().map_err(|e| e.to_string())
+    })?;
     if metadata
         .workspace_root
         .as_std_path()
@@ -399,3 +400,65 @@ pub(super) fn registry_owner_source_inner(
     }
     Ok(source)
 }
+
+fn owner_metadata(
+    root: &Path,
+    cargo: &Path,
+    source: &RegistryOwnerSource,
+    mut query: impl FnMut() -> Result<Metadata, String>,
+) -> Result<Metadata, String> {
+    if !crate::file_cache::is_resolved_cargo(cargo) {
+        return query();
+    }
+    // The caller checks the complete original inventory and discovery inputs
+    // before AND after this lookup. Never reuse an external input closure.
+    let context = owner_metadata_context(root, source, sdk_docs::command_environment())?;
+    let mut queried = None;
+    let encoded = crate::file_cache::get(cargo, &context, || {
+        let metadata = query().map_err(crate::CliError)?;
+        let encoded =
+            serde_json::to_string(&metadata).map_err(|error| crate::CliError(error.to_string()))?;
+        queried = Some(metadata);
+        Ok(encoded)
+    })
+    .map_err(|error| error.to_string())?;
+    if let Some(metadata) = queried {
+        return Ok(metadata);
+    }
+    let metadata: Metadata = serde_json::from_str(&encoded).map_err(|error| error.to_string())?;
+    let closed =
+        metadata.packages.iter().all(|package| {
+            std::iter::once(package.manifest_path.as_std_path())
+                .chain(
+                    package
+                        .targets
+                        .iter()
+                        .map(|target| target.src_path.as_std_path()),
+                )
+                .chain(package.dependencies.iter().filter_map(|dependency| {
+                    dependency.path.as_ref().map(|path| path.as_std_path())
+                }))
+                .all(|path| path.canonicalize().is_ok_and(|path| path.starts_with(root)))
+        });
+    if closed {
+        Ok(metadata)
+    } else {
+        query()
+    }
+}
+
+fn owner_metadata_context(
+    root: &Path,
+    source: &RegistryOwnerSource,
+    environment: BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+) -> Result<String, String> {
+    let input = serde_json::to_vec(source).map_err(|error| error.to_string())?;
+    Ok(crate::toolchains::cargo_context(
+        root,
+        &format!("owner-metadata:{}", crate::sha256_bytes(&input)),
+        environment,
+    ))
+}
+
+#[cfg(test)]
+mod metadata_tests;

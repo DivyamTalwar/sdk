@@ -192,10 +192,7 @@ pub fn materialize_generated_sources(
     let root = root.as_path();
     let mut filenames = BTreeSet::new();
     for receipt in rustdoc_files {
-        let value: serde_json::Value = serde_json::from_slice(
-            &sdk_docs::read_rustdoc(receipt).map_err(docs_error)?,
-        )
-        .map_err(|e| CliError(format!("invalid Rustdoc JSON {}: {e}", receipt.display())))?;
+        let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
         collect_span_filenames(&value, &mut filenames);
     }
     let mut candidates = BTreeMap::<String, Vec<PathBuf>>::new();

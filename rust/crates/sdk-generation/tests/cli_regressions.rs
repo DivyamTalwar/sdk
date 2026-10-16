@@ -72,7 +72,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn init_git(root: &Path, message: &str) {
-    git(root, &["init", "--quiet"]);
+    git(root, &["init", "--quiet", "--template="]);
     use std::io::Write;
     fs::OpenOptions::new().append(true).open(root.join(".git/config")).unwrap()
         .write_all(b"\n[user]\nname = sdk-generation-test\nemail = sdk-generation-test@example.invalid\n[core]\nautocrlf = false\nexcludesFile =\n[commit]\ngpgSign = false\n[maintenance]\nauto = false\n").unwrap();
@@ -81,6 +81,31 @@ fn init_git(root: &Path, message: &str) {
 }
 
 fn fixture(include_plugin: bool) -> Fixture {
+    copy_fixture(&runtime::fixture(u8::from(include_plugin)))
+}
+
+fn copy_fixture(template: &Fixture) -> Fixture {
+    let suffix = format!("copy-{}", NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed));
+    let root = template.root.with_extension(&suffix);
+    replay::copy_tree(&template.root, &root);
+    let output = template
+        .output
+        .strip_prefix(&template.root)
+        .map(|path| root.join(path))
+        .unwrap_or_else(|_| template.output.with_extension(suffix));
+    let rustdoc = template
+        .rustdoc
+        .strip_prefix(&template.root)
+        .map(|path| root.join(path))
+        .unwrap_or_else(|_| output.join(template.rustdoc.strip_prefix(&template.output).unwrap()));
+    Fixture {
+        rustdoc,
+        output,
+        root,
+    }
+}
+
+fn build_fixture(include_plugin: bool) -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "sdk-generation-cli-regression-{}-{}-{}",
         std::process::id(),
@@ -149,9 +174,7 @@ fn fixture(include_plugin: bool) -> Fixture {
 /// source and receipt identities; silently dropping it would make the sidecar
 /// claim coverage for an item that no catalog row can represent.
 fn feature_profile_fixture() -> Fixture {
-    let fixture = feature_profile_source();
-    init_git(&fixture.root, "feature profile fixture");
-    fixture
+    copy_fixture(&runtime::fixture(2))
 }
 
 fn feature_profile_source() -> Fixture {

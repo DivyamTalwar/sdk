@@ -550,13 +550,7 @@ pub(super) fn retain_profile_generated_sources(
     root: &Path,
     receipt: &Path,
 ) -> Result<(), CliError> {
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(receipt).map_err(io_error)?)
-        .map_err(|error| {
-            CliError(format!(
-                "invalid Rustdoc JSON {}: {error}",
-                receipt.display()
-            ))
-        })?;
+    let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
     let mut filenames = BTreeSet::new();
     collect_span_filenames(&value, &mut filenames);
     let retained_root = root.join("target/sdk-generation-generated-sources/retained");

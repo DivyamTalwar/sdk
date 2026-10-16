@@ -147,7 +147,7 @@ pub(super) fn normalized_rustdoc_digest_bytes(
     bytes: &[u8],
     repository_root: &Path,
 ) -> Result<Vec<u8>, Error> {
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let mut value = (*crate::render_cache::json(bytes)?).clone();
     normalize_rustdoc_filenames(&mut value, repository_root);
     // External-crate load paths describe the physical Cargo output, not API
     // content. Omit only these paths from the digest copy; retain the original

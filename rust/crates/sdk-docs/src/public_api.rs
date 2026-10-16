@@ -49,7 +49,7 @@ fn extract_uncached(
     raw: &[u8],
     krate: &Crate,
 ) -> Result<Vec<PublicItemSignature>, Error> {
-    let value: Value = serde_json::from_slice(raw)?;
+    let value = (*crate::render_cache::json(raw)?).clone();
     let adapted = adapt(value, krate)?;
     let mut temp = tempfile::NamedTempFile::new()?;
     {

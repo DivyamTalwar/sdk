@@ -11,6 +11,7 @@ struct Cache {
     rendered: RefCell<BTreeMap<Vec<u8>, Vec<PublicItemSignature>>>,
     files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
     parsed: RefCell<BTreeMap<Rc<[u8]>, Rc<rustdoc_types::Crate>>>,
+    json: RefCell<BTreeMap<Rc<[u8]>, Rc<serde_json::Value>>>,
 }
 thread_local! {
     // Every entry belongs to one calling operation; nested operations restore it.
@@ -57,6 +58,31 @@ pub fn read_rustdoc(path: &Path) -> Result<Rc<[u8]>, Error> {
         ),
         None => read(),
     })
+}
+
+/// Read the unchanged JSON tree used for source retention and normalization.
+pub fn read_rustdoc_json(path: &Path) -> Result<Rc<serde_json::Value>, Error> {
+    Ok(json(&read_rustdoc(path)?)?)
+}
+
+pub(crate) fn json(raw: &[u8]) -> Result<Rc<serde_json::Value>, serde_json::Error> {
+    if let Some(value) = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .and_then(|cache| cache.json.borrow().get(raw).cloned())
+    }) {
+        return Ok(value);
+    }
+    let value = Rc::new(serde_json::from_slice(raw)?);
+    CACHE.with_borrow(|cache| {
+        if let Some(cache) = cache {
+            cache
+                .json
+                .borrow_mut()
+                .insert(Rc::from(raw), Rc::clone(&value));
+        }
+    });
+    Ok(value)
 }
 
 pub(crate) fn decode(raw: Rc<[u8]>) -> Result<Rc<rustdoc_types::Crate>, serde_json::Error> {
@@ -114,6 +140,20 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn json_reuse_preserves_all_fields_and_round_trips(values in prop::collection::btree_map(".{0,12}", ".{0,24}", 0..12)) {
+            with_rustdoc_cache(|| {
+                let bytes = serde_json::to_vec(&values).unwrap();
+                let first = json(&bytes).unwrap();
+                prop_assert!(Rc::ptr_eq(&first, &json(&bytes).unwrap()));
+                prop_assert_eq!(&*first, &serde_json::to_value(&values).unwrap());
+                prop_assert_eq!(&*json(&serde_json::to_vec(&*first).unwrap()).unwrap(), &*first);
+                let changed = serde_json::to_vec(&(values, "different JSON shape")).unwrap();
+                prop_assert_ne!(&*first, &*json(&changed).unwrap());
+                prop_assert!(json(b"truncated {").is_err());
+                Ok(())
+            })?;
+        }
         #[test]
         fn decoded_receipts_bind_every_input_byte(version in ".{0,20}") {
             let mut value: serde_json::Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/rustdoc_adapter/valid.json")).unwrap();
