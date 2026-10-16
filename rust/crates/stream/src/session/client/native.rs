@@ -21,6 +21,15 @@ struct Grpc {
     credential: Option<grpc::CredentialProvider>,
 }
 
+// A concrete input type avoids tonic's higher-ranked bound on an erased stream.
+struct Input(transport::Requests);
+impl futures::Stream for Input {
+    type Item = wire::SessionFrame;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        self.0.as_mut().poll_next(cx)
+    }
+}
+
 pub(super) fn endpoint(
     channel: TransportChannel,
     authorization: Option<MetadataValue<Ascii>>,
@@ -43,10 +52,7 @@ impl transport::Transport for Grpc {
                 grpc::request_authorization(self.authorization.as_ref(), self.credential.as_ref())
                     .await
                     .map_err(|error| grpc::status(&error))?;
-            let input = stream::unfold(source, |mut source| async move {
-                source.next().await.map(|frame| (frame, source))
-            });
-            let mut request = Request::new(input);
+            let mut request = Request::new(Input(source));
             request
                 .metadata_mut()
                 .insert("authorization", authorization);

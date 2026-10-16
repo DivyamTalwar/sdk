@@ -1,16 +1,21 @@
 //! Multiplexed Streams follows shared by client and node-to-node sessions.
 
-use crate::{StreamError, StreamPath, StreamProvider, wire, wire_codec};
+use crate::{StreamError, StreamPath, wire, wire_codec};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::StreamProvider;
 use bytes::Bytes;
 use futures::{
     StreamExt, future,
-    stream::{self, BoxStream, SelectAll},
+    stream,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use futures::stream::{BoxStream, SelectAll};
 use prost::Message as _;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 

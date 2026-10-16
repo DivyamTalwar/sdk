@@ -80,7 +80,7 @@ impl Drop for Socket {
 impl Transport for Endpoint {
     fn session(
         &self,
-        mut source: Requests,
+        source: Requests,
     ) -> crate::BoxProviderFuture<'_, Result<Responses, StreamError>> {
         Box::pin(async move {
             use base64::Engine as _;
@@ -94,7 +94,7 @@ impl Transport for Endpoint {
             let socket = web_sys::WebSocket::new_with_str_sequence(&url, &protocols)
                 .map_err(|_| StreamError::Unavailable)?;
             socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
-            let (sender, mut receiver) = mpsc::channel(crate::MAX_ITEMS);
+            let (sender, receiver) = mpsc::channel(crate::MAX_ITEMS);
             let incoming = Rc::new(RefCell::new(Incoming {
                 sender: Some(sender),
                 terminal: None,

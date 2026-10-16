@@ -23,7 +23,7 @@ impl Remote {
             self.endpoint.url.clone(),
             FetchOptions::new()
                 .redirect(Redirect::Error)
-                .response_limits(UnaryResponseLimits::new(MAX_COMMAND_BYTES)),
+                .response_limits(UnaryResponseLimits::new(MAX_COMMAND_BYTES).expect("fixed positive command bound")),
         ))
         .max_decoding_message_size(MAX_COMMAND_BYTES)
         .max_encoding_message_size(MAX_COMMAND_BYTES)
