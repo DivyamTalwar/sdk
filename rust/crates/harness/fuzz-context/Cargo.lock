@@ -183,6 +183,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "libfuzzer-sys",
+ "serde",
  "serde_json",
 ]
 

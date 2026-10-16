@@ -9,12 +9,47 @@ pub(super) async fn verify_model_contents_scoped<'a>(
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
     for content in contents.clone() {
-        validate_model_content_scope(content, limits, scope, io)?;
+        validate_model_content_bindings(content, limits, scope, io)?;
     }
-    for content in contents {
-        journal.verify_model_content(content, io, context)?.await?;
+    let mut summaries = Vec::new();
+    let result = async {
+        for content in contents.clone() {
+            for (file, binding) in content.file_bindings() {
+                let granted = match scope {
+                    Some(scope) => with_history_io(io, |work| {
+                        crate::runtime::read_granted_with_work(scope.grants(), file, work)
+                    })?,
+                    None => true,
+                };
+                if (!granted
+                    || (scope.is_none() && crate::conversation::is_internal_path(file.path())))
+                    && binding.is_none()
+                    && journal.authenticate_summary(file, io)?.await?
+                {
+                    stock_vec_push(&mut summaries, file, io)?;
+                } else if !granted {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "attenuated task cannot read model content",
+                    ));
+                }
+            }
+        }
+        for content in contents {
+            journal
+                .verify_model_content(content, io, context, &summaries)?
+                .await?;
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+    let owned = (summaries.capacity() * std::mem::size_of::<&FileRef>()) as u64;
+    drop(summaries);
+    if let Some(io) = io {
+        io.release(owned)?;
+    }
+    result
 }
 
 pub(super) fn validate_model_content_scope(
@@ -23,13 +58,8 @@ pub(super) fn validate_model_content_scope(
     scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    with_history_io(io, |work| content.validate_limits(limits, work))?;
-    if let Some(scope) = scope {
-        with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
-    }
-    let schemas = scope.and_then(RuntimeScope::extension_schema_registry);
-    let runtime = scope.and_then(RuntimeScope::extension_runtime);
-    for (file, binding) in content.file_bindings() {
+    validate_model_content_bindings(content, limits, scope, io)?;
+    for file in content.file_refs() {
         if let Some(scope) = scope
             && !with_history_io(io, |work| {
                 crate::runtime::read_granted_with_work(scope.grants(), file, work)
@@ -41,6 +71,23 @@ pub(super) fn validate_model_content_scope(
                 "attenuated task cannot read model content",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_model_content_bindings(
+    content: &ModelContent,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    with_history_io(io, |work| content.validate_limits(limits, work))?;
+    if let Some(scope) = scope {
+        with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
+    }
+    let schemas = scope.and_then(RuntimeScope::extension_schema_registry);
+    let runtime = scope.and_then(RuntimeScope::extension_runtime);
+    for (_, binding) in content.file_bindings() {
         if let Some(binding) = binding {
             let scope = scope.ok_or_else(|| {
                 stock_boundary(

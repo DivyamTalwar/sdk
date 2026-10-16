@@ -362,6 +362,7 @@ where
         content: &ModelContent,
         io: Option<&PreparationIo>,
         context: Option<&crate::runtime::TaskContext>,
+        summary_files: &[&FileRef],
     ) -> Result<()> {
         let mut count = 0_usize;
         for _ in content.file_refs() {
@@ -399,7 +400,13 @@ where
         let mut references = Vec::with_capacity(count);
         for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
-                owner.validate_input_file(file, io)?;
+                if binding.is_none() && summary_files.contains(&file) {
+                    crate::executor::with_history_io(io, |work| {
+                        owner.input_limits().validate_file(file, work)
+                    })?;
+                } else {
+                    owner.validate_input_file(file, io)?;
+                }
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(stock_boundary(
@@ -457,7 +464,11 @@ where
                 }
             }
             if !configuration {
-                self.verify_input_file_with_io(file, io).await?;
+                if summary_files.contains(file) {
+                    drop(self.load_content(file, io).await?);
+                } else {
+                    self.verify_input_file_with_io(file, io).await?;
+                }
             }
         }
         drop(references);

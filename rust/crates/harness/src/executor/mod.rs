@@ -50,6 +50,7 @@ mod records;
 mod request;
 mod response;
 mod summary;
+pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;
 use content::*;

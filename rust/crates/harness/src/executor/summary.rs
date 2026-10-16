@@ -165,9 +165,7 @@ impl StockExecution<'_> {
             source_digest,
             output,
         };
-        let provenance_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:provenance"), work)
-        })?;
+        let provenance_key = with_history_io(self.io, |work| summary.output.read_capability(work))?;
         stage_json(journal, operation_id, &provenance_key, &summary, self.io).await?;
         Ok(summary)
     }
