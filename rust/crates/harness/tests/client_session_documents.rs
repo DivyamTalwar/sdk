@@ -5,7 +5,7 @@ use acyclic_harness::{
     task_volume::{FileKey, PlanName, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use std::sync::Arc;
 
 fn write(kind: u8, text: &str) -> Write {
@@ -131,12 +131,23 @@ async fn snapshot_plus_follow(events: &[(u8, String)], cut: usize) {
     live.replace(&Query::Root, &snapshot).unwrap();
     let mut follow = volume.follow(Query::Root, snapshot.cursor).await.unwrap();
     for (kind, text) in &events[cut..] {
-        generation = volume
-            .append(generation, &write(*kind, text))
-            .await
-            .unwrap();
-        let change = follow.next().await.unwrap().unwrap();
-        live.apply(&change.file.unwrap()).unwrap();
+        for _ in 0..2 {
+            let before = generation;
+            generation = volume
+                .append(generation, &write(*kind, text))
+                .await
+                .unwrap();
+            let next = tokio::task::unconstrained(follow.next()).now_or_never();
+            if generation == before {
+                assert!(next.is_none(), "identical files must not publish a change");
+            } else {
+                let change = next
+                    .expect("accepted cut must be immediately followed")
+                    .unwrap()
+                    .unwrap();
+                live.apply(&change.file.unwrap()).unwrap();
+            }
+        }
     }
     let final_snapshot = volume.snapshot(&Query::Root, 4).await.unwrap();
     let mut replay = DocumentViews::default();
