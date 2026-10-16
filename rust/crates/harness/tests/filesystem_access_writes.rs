@@ -257,7 +257,7 @@ async fn publication_refuses_a_generation_older_than_its_transaction_head()
                 Some(&prior),
                 &[WorkspaceMutation::PutFile {
                     path: "/secrets/key".into(),
-                    bytes: bytes::Bytes::from_static(b"stale"),
+                    bytes: bytes::Bytes::from_static(b"stale").into(),
                 }],
                 &IdempotencyKey::new("stale-direct")?,
             )
@@ -286,7 +286,7 @@ async fn publication_retry_verifies_the_original_operation_after_head_advance()
     let key = IdempotencyKey::new("verified-retry")?;
     let mutations = [WorkspaceMutation::PutFile {
         path: "/secrets/key".into(),
-        bytes: bytes::Bytes::from_static(b"original operation"),
+        bytes: bytes::Bytes::from_static(b"original operation").into(),
     }];
     let first = fixture
         .host
@@ -303,7 +303,7 @@ async fn publication_retry_verifies_the_original_operation_after_head_advance()
     );
     let changed = [WorkspaceMutation::PutFile {
         path: "/secrets/key".into(),
-        bytes: bytes::Bytes::from_static(b"different operation"),
+        bytes: bytes::Bytes::from_static(b"different operation").into(),
     }];
     assert_eq!(
         fixture

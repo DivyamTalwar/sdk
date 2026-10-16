@@ -125,7 +125,7 @@ impl Fixture {
                         },
                         acyclic_harness::filesystem::WorkspaceMutation::PutFile {
                             path: "/secrets/key".into(),
-                            bytes: bytes::Bytes::from_static(b"private"),
+                            bytes: bytes::Bytes::from_static(b"private").into(),
                         },
                     ],
                     &IdempotencyKey::new("raw-seed")?,
