@@ -141,7 +141,7 @@ struct ImageCase {
     name: String,
     supports_images: bool,
     replace_after_yield: bool,
-    expected_images: usize,
+    expected_copies: usize,
     expected_image_reads: usize,
     expected_fallbacks: usize,
 }
@@ -298,11 +298,20 @@ async fn stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
             let ClipboardContent::Image { jpeg, .. } = &clipboard else {
                 unreachable!()
             };
+            let selected_clipboard =
+                prepare_image(2, 2, [255, 0, 0, 255].repeat(4)).expect("selected image");
+            let ClipboardContent::Image {
+                jpeg: selected_jpeg,
+                ..
+            } = &selected_clipboard
+            else {
+                unreachable!()
+            };
             let (selected, hold) = ContentPublisher::stage_once(
                 payloads.as_ref(),
                 OperationId::new(),
                 "attachments/selected.jpg",
-                jpeg,
+                selected_jpeg,
                 "image/jpeg",
                 "selected.jpg",
                 None,
@@ -345,12 +354,14 @@ async fn stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
                 .expected_images
                 .lock()
                 .expect("fixture image expectations")
-                .push((
-                    base64::engine::general_purpose::STANDARD
-                        .encode(jpeg)
-                        .into_bytes(),
-                    case.expected_images,
-                ));
+                .extend([selected_jpeg, jpeg].into_iter().map(|bytes| {
+                    (
+                        base64::engine::general_purpose::STANDARD
+                            .encode(bytes)
+                            .into_bytes(),
+                        case.expected_copies,
+                    )
+                }));
             transport
                 .expected_images
                 .lock()
@@ -499,6 +510,12 @@ async fn stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
                 panic!("image task must yield at its transition boundary");
             };
             assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+            let (reads, _, _, _) = images.as_ref().expect("image input fixture");
+            assert_eq!(
+                reads.calls.load(Ordering::SeqCst),
+                0,
+                "yielding before dispatch must not materialize images"
+            );
             if let Some(case) = image_case.filter(|case| case.replace_after_yield) {
                 use acyclic_harness::{
                     client::paste_image,

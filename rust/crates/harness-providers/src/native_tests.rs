@@ -52,6 +52,7 @@ impl HttpTransport for Fixture {
                     .expected_images
                     .lock()
                     .expect("fixture image expectations");
+                let mut previous = None;
                 for (bytes, count) in expected.iter() {
                     assert_eq!(
                         request
@@ -61,6 +62,18 @@ impl HttpTransport for Fixture {
                             .count(),
                         *count
                     );
+                    if *count == 1 {
+                        let position = request
+                            .body
+                            .windows(bytes.len())
+                            .position(|part| part == bytes.as_slice())
+                            .expect("expected image part");
+                        assert!(
+                            previous.is_none_or(|previous| previous < position),
+                            "image parts changed source order"
+                        );
+                        previous = Some(position);
+                    }
                 }
             }
             drop(request);
