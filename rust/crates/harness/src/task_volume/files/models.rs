@@ -40,6 +40,22 @@ fn files() -> Arc<TaskFiles<MemoryStream>> {
     })
 }
 
+// Independent live file views must arbitrate through the durable provider even
+// when they cannot see one another's cache updates. Each index is still the
+// production mutex; the shared provider's real locks linearize both writers.
+fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
+    let inner = loom::future::block_on(Box::pin(TaskVolume::open(
+        files.inner.provider.clone(),
+        files.inner.path.clone(),
+    )))
+    .unwrap();
+    Arc::new(TaskFiles {
+        inner,
+        volume: files.volume.clone(),
+        maximum_bytes: files.maximum_bytes,
+    })
+}
+
 fn request() -> FileValue {
     FileValue::new(
         FileKey::Task {
@@ -178,7 +194,7 @@ fn child_control_race(broken: bool) {
         b"work".to_vec(),
     );
     let cut = loom::future::block_on(Box::pin(files.write(snapshot.generation, &request))).unwrap();
-    let writer = files.clone();
+    let writer = reopen(&files);
     let key = control_key.clone();
     let cancel = loom::thread::spawn(move || {
         let expected = if broken {
@@ -197,15 +213,14 @@ fn child_control_race(broken: bool) {
             &FileValue::new(key, Control::Cancel.bytes().to_vec()),
         )))
     });
-    let writer = files.clone();
-    let key = control_key.clone();
-    let pause = loom::thread::spawn(move || {
-        loom::future::block_on(Box::pin(
-            writer.write(cut, &FileValue::new(key, Control::Pause.bytes().to_vec())),
-        ))
-    });
+    // The model thread is the second actor: a third thread that only joins
+    // adds scheduler states without adding a publication interleaving.
+    let paused = loom::future::block_on(Box::pin(files.write(
+        cut,
+        &FileValue::new(control_key.clone(), Control::Pause.bytes().to_vec()),
+    )))
+    .is_ok();
     let cancelled = cancel.join().unwrap().is_ok();
-    let paused = pause.join().unwrap().is_ok();
     assert_ne!(
         cancelled, paused,
         "conflicting child controls both committed"
@@ -259,21 +274,17 @@ fn child_completion_race(broken: bool) {
         |status| FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap());
     let cut = loom::future::block_on(Box::pin(files.inner.append(cut, &status(running)))).unwrap();
     let cancelled = FileValue::new(key(ChildFile::Control), Control::Cancel.bytes().to_vec());
-    let writer = files.clone();
+    let writer = reopen(&files);
     let write = cancelled.clone();
     let controller = loom::thread::spawn(move || {
         loom::future::block_on(Box::pin(writer.write(cut, &write))).is_ok()
     });
-    let writer = files.clone();
     let completion = status(ChildStatus {
         settled: true,
         ..running
     });
-    let write = completion.clone();
-    let worker = loom::thread::spawn(move || {
-        loom::future::block_on(Box::pin(writer.inner.append(cut, &write))).is_ok()
-    });
-    assert_ne!(controller.join().unwrap(), worker.join().unwrap());
+    let completed = loom::future::block_on(Box::pin(files.inner.append(cut, &completion))).is_ok();
+    assert_ne!(controller.join().unwrap(), completed);
     let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
         .unwrap()
         .snapshot

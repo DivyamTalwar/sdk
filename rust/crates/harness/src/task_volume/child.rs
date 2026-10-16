@@ -396,7 +396,8 @@ mod tests {
                 prop_assert_eq!(FileKey::parse(&key.path()).unwrap(), key.clone());
                 prop_assert!(Query::Children.matches(&key));
                 prop_assert!(Query::Child(id.clone()).matches(&key));
-                prop_assert!(!Query::Child(Component::new(format!("other-{reference}")).unwrap()).matches(&key));
+                let other = Query::Child(Component::new(format!("other-{reference}")).unwrap());
+                prop_assert!(!other.matches(&key));
             }
         }
     }

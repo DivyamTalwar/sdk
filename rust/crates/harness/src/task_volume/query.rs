@@ -1,5 +1,5 @@
 use super::{
-    Channel, ChildFile, Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile,
+    ChildFile, Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

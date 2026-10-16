@@ -1,5 +1,8 @@
 use super::*;
-use crate::{executor::TurnOutput, runtime::TaskStateProvider};
+use crate::{
+    executor::TurnOutput,
+    runtime::{TaskSpawner, TaskStateProvider},
+};
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
@@ -29,8 +32,18 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &'a str,
     ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
+        self.submit_turn(operation, prompt, None)
+    }
+
+    pub(super) async fn submit_turn(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        parent: Option<(TaskId, &RuntimeScope, &crate::scheduler::LeaseFence)>,
+    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
         Box::pin(async move {
-            if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+            let limits = parent.map_or(self.limits, |(_, scope, _)| scope.limits());
+            if prompt.is_empty() || prompt.len() as u64 > limits.file_bytes {
                 return Err(Error::Invalid(
                     "local prompt is empty or exceeds the file limit".into(),
                 ));
@@ -40,13 +53,13 @@ impl LocalHarness {
                 &self.journal,
                 &self.verifier,
                 &self.signed,
-                self.limits.file_bytes,
+                limits.file_bytes,
                 None,
             )?;
             let model = crate::filesystem::ModelTaskCommand {
                 input: ModelContent::Text(prompt.into()),
                 selected_context: None,
-                max_steps: u32::try_from(self.limits.model_steps)
+                max_steps: u32::try_from(limits.model_steps)
                     .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                 max_output_tokens: None,
                 mailbox_operation: None,
@@ -90,16 +103,43 @@ impl LocalHarness {
                 .runtime
                 .harness()
                 .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-            self.runtime
+            let input = serde_json::json!({"receive":receive,"model":model});
+            let Some((parent, scope, fence)) = parent else {
+                return self
+                    .runtime
+                    .harness()
+                    .admit(operation, &definition, input, None)
+                    .await;
+            };
+            let record = self
+                .runtime
                 .harness()
-                .admit(
+                .registered_admission(
                     operation,
-                    &definition,
-                    serde_json::json!({"receive":receive,"model":model}),
+                    &definition.identity().name,
+                    &definition.identity().version,
+                    input,
+                    Some((parent, scope)),
                     None,
-                )
-                .await
+                    None,
+                )?
+                .0;
+            match self
+                .runtime
+                .task_host()
+                .admit_owned(record, fence.clone())
+                .await?
+            {
+                Admission::Accepted(task) => Ok(Admission::Accepted(
+                    self.runtime.harness().attach(task, &definition).await?,
+                )),
+                Admission::Rejected { reason } => Ok(Admission::Rejected { reason }),
+                Admission::Indeterminate { operation_id } => {
+                    Ok(Admission::Indeterminate { operation_id })
+                }
+            }
         })
+        .await
     }
 
     /// Runs a prompt through durable admission, the fenced worker and stock executor.

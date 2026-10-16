@@ -262,10 +262,17 @@ impl HarnessBuilder {
             return Err(Error::Invalid("harness name is empty".into()));
         }
         let mut grants = self.capabilities;
-        if !self.disable_default_tools && self.bound_scope.is_none() {
-            grants.extend(
-                ["bash", "fs", "read", "write", "edit"].map(crate::contract::capability::tool_call),
-            );
+        let defaults = if self.disable_default_tools {
+            None
+        } else {
+            Some(crate::tools::defaults()?)
+        };
+        if self.bound_scope.is_none()
+            && let Some(defaults) = &defaults
+        {
+            for definition in defaults.definitions(None)? {
+                grants.push(crate::contract::capability::tool_call(&definition.name));
+            }
         }
         let capabilities = Capabilities::new(grants);
         let mut scope = if let Some(bound) = self.bound_scope {
@@ -282,8 +289,8 @@ impl HarnessBuilder {
             scope = scope.with_extension_runtime(runtime)?;
         }
         let mut bindings = self.bindings;
-        if !self.disable_default_tools {
-            bindings.tools.extend(crate::tools::defaults()?)?;
+        if let Some(defaults) = defaults {
+            bindings.tools.extend(defaults)?;
         }
         bindings.scope = scope.clone();
         let agent_loop = self.agent_loop;
