@@ -25,6 +25,8 @@ mod prompt_files;
 mod prompt_input;
 #[cfg(feature = "tui")]
 mod widget;
+#[cfg(feature = "tui")]
+mod screen;
 
 pub use editor::{Editor, Motion};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
@@ -50,3 +52,6 @@ pub use prompt_input::{InputEffect, PromptInput};
 pub use ratatui;
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
+
+#[cfg(feature = "tui")]
+pub use screen::{Screen, ScreenAreas};
