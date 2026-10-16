@@ -545,6 +545,9 @@ async fn bash_output_is_live_before_exit_and_replays_without_relaunch() -> Resul
         std::fs::read(directory.path().join("result")).map_err(super::super::storage)?,
         b"final"
     );
+    // Reopening models a host restart; release the existing checkout owner first.
+    drop(commands);
+    drop(harness);
     let reopened = LocalHarness::open(LocalHarnessConfig::new(
         directory.path(),
         (model()?, provider.clone()),
