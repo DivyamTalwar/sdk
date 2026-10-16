@@ -28,6 +28,8 @@ mod catalog_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "chat_batch_tests.rs"]
 mod chat_batch_tests;
+#[path = "gemini_replay_tests.rs"]
+mod gemini_replay_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -92,10 +94,9 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
     for (adapter, fixture) in fixtures() {
         let dispatch = parser_dispatch();
         for width in [1, 7, 1024] {
-            let events: Vec<_> =
-                stream::events(adapter, chunks(fixture, width), 4096, dispatch)
-                    .try_collect()
-                    .await?;
+            let events: Vec<_> = stream::events(adapter, chunks(fixture, width), 4096, dispatch)
+                .try_collect()
+                .await?;
             let visible: Vec<_> = events
                 .iter()
                 .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
@@ -133,7 +134,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
                 let canonical = events
                     .iter()
                     .find_map(|event| match event {
-                        ModelEvent::ReasoningBlock { block } => Some(block),
+                        ModelEvent::ReasoningBlock { block } if block.text.is_some() => Some(block),
                         _ => None,
                     })
                     .expect("readable reasoning is durably retained");

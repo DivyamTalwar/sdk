@@ -92,7 +92,7 @@ pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<V
         Adapter::Chat => chat::parse(state, &value),
         Adapter::Anthropic => anthropic::parse(state, &value, data),
         Adapter::Responses => responses::parse(state, &value, data),
-        Adapter::Gemini => gemini::parse(state, &value),
+        Adapter::Gemini => gemini::parse(state, &value, data),
     }
 }
 

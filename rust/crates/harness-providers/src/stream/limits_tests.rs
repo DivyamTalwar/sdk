@@ -2,6 +2,50 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn unsigned_gemini_fragments_coalesce_without_crossing_signature_boundaries() -> Result<()> {
+    let mut state = State::new(4096);
+    for _ in 0..512 {
+        state.visible_text("x")?;
+    }
+    assert_eq!(state.thinking.len(), 1);
+    state.raw_part(
+        1,
+        &json!({"text":"y","thoughtSignature":"opaque"}),
+        None,
+        true,
+    )?;
+    for _ in 0..512 {
+        state.visible_text("z")?;
+    }
+    assert_eq!(state.thinking.len(), 3);
+    state.terminal = true;
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+        step: 0,
+        request_digest: [0; 32],
+    };
+    let events = finish(state, Adapter::Gemini, dispatch)?;
+    let parts: Vec<_> = events
+        .into_iter()
+        .filter_map(|event| match event {
+            ModelEvent::ReasoningBlock { block } => {
+                Some(serde_json::from_slice::<Value>(&block.continuity).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        parts,
+        vec![
+            json!({"text":"x".repeat(512)}),
+            json!({"text":"y","thoughtSignature":"opaque"}),
+            json!({"text":"z".repeat(512)})
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn small_events_cannot_accumulate_unbounded_calls_or_thinking() -> Result<()> {
     let mut state = State::new(256);
     let mut rejected = false;
