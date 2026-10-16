@@ -47,13 +47,13 @@ type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelRoleWire,
 type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
   "system" | "user" | "assistant" | "tool", ModelRoleWire>>;
 type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelContentPartWire["kind"],
-  "text" | "file" | "tool_call" | "tool_result">>;
+  "text" | "file" | "reasoning" | "tool_call" | "tool_result">>;
 type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "text" | "file" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
+  "text" | "file" | "reasoning" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
 type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelEventWire["kind"],
-  "content" | "reasoning" | "tool_call" | "completed">>;
+  "content" | "reasoning" | "reasoning_block" | "tool_call" | "completed">>;
 type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "content" | "reasoning" | "tool_call" | "completed", ModelEventWire["kind"]>>;
+  "content" | "reasoning" | "reasoning_block" | "tool_call" | "completed", ModelEventWire["kind"]>>;
 
 const generatedModelContent: ModelContentWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
