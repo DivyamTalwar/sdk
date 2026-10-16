@@ -21,16 +21,19 @@ async fn execute(
     settings: &Path,
     operation: OperationId,
     jsonl: bool,
+    keep_open: bool,
 ) -> Vec<u8> {
     let mut input = tempfile::NamedTempFile::new().unwrap();
-    if jsonl {
-        writeln!(
-            input,
-            "{}",
+    let request = if jsonl {
+        format!(
+            "{}\n",
             serde_json::to_string(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
         )
-        .unwrap();
-    }
+        .into_bytes()
+    } else {
+        Vec::new()
+    };
+    input.write_all(&request).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
         .current_dir(workspace)
@@ -46,7 +49,11 @@ async fn execute(
             "--operation",
             &operation.to_string(),
         ])
-        .stdin(Stdio::from(input.reopen().unwrap()))
+        .stdin(if keep_open {
+            Stdio::piped()
+        } else {
+            Stdio::from(input.reopen().unwrap())
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if jsonl {
@@ -61,13 +68,23 @@ async fn execute(
             .wait_with_output(
                 Duration::from_secs(6),
                 65_536,
-                None,
+                keep_open.then_some(acyclic_native_runtime::CaptureInput::Exchange {
+                    initial: &request,
+                    maximum: request.len(),
+                }),
                 || Ok(()),
                 |_| Ok(acyclic_native_runtime::ProcessInput::default()),
                 None,
                 None,
             )
-            .unwrap_or_else(|failure| panic!("GraphCoder process failed: {}", failure.error))
+            .unwrap_or_else(|failure| {
+                panic!(
+                    "GraphCoder process failed: {}\nstdout: {}\nstderr: {}",
+                    failure.error,
+                    String::from_utf8_lossy(&failure.stdout),
+                    String::from_utf8_lossy(&failure.stderr)
+                )
+            })
     })
     .await
     .unwrap();
@@ -81,7 +98,7 @@ async fn execute(
     output.stdout
 }
 
-async fn scenario(jsonl: bool) {
+async fn scenario(jsonl: bool, keep_open: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -129,7 +146,7 @@ async fn scenario(jsonl: bool) {
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
     let operation = OperationId::new();
-    let output = execute(&workspace, &catalog, &settings, operation, jsonl).await;
+    let output = execute(&workspace, &catalog, &settings, operation, jsonl, keep_open).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
     let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
@@ -153,7 +170,7 @@ async fn scenario(jsonl: bool) {
     assert_eq!(answers[0]["ok"]["text"], "fixture answer");
     assert_eq!(answers[0]["completion"], "completed");
     // A second real process restores the same request/result instead of generating again.
-    execute(&workspace, &catalog, &settings, operation, jsonl).await;
+    execute(&workspace, &catalog, &settings, operation, jsonl, keep_open).await;
     let mut generated = 0;
     let mut counted = 0;
     while let Ok(kind) = observed.try_recv() {
@@ -171,10 +188,15 @@ async fn scenario(jsonl: bool) {
 
 #[tokio::test]
 async fn prompt_argv_uses_the_real_registry_and_file_client() {
-    scenario(false).await;
+    scenario(false, false).await;
 }
 
 #[tokio::test]
 async fn jsonl_stdin_eof_preserves_the_real_client_operation() {
-    scenario(true).await;
+    scenario(true, false).await;
+}
+
+#[tokio::test]
+async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
+    scenario(true, true).await;
 }

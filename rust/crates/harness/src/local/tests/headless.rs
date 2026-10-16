@@ -264,3 +264,30 @@ async fn task_files_share_the_snapshot_follow_and_reopen_cut() -> Result<()> {
     drop(client);
     close(harness).await
 }
+
+#[tokio::test]
+async fn restored_jsonl_validates_a_scheduled_first_line_before_settling() -> Result<()> {
+    let (_directory, harness, provider) = local().await?;
+    let operation = OperationId::new();
+    let (mut client, target) = connect_local(harness.clone(), operation).await?;
+    run_headless(
+        &mut client,
+        local_prompt(&harness, operation, "hello").await?,
+        target,
+        &mut Vec::new(),
+    )
+    .await?;
+    drop(client);
+    let (mut client, target) = connect_local(harness.clone(), operation).await?;
+    let input = Box::pin(futures::stream::once(async {
+        tokio::task::yield_now().await;
+        Ok("not JSON".to_owned())
+    }));
+    assert!(matches!(
+        run_jsonl(&mut client, target, input, &mut Vec::new()).await,
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(provider.requests().len(), 1);
+    drop(client);
+    close(harness).await
+}

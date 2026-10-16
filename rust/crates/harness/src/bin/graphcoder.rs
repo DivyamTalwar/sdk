@@ -20,7 +20,11 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
-        .and_then(|runtime| runtime.block_on(run(args)));
+        .and_then(|runtime| {
+            let result = runtime.block_on(run(args));
+            runtime.shutdown_background();
+            result
+        });
     match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {

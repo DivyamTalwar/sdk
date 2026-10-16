@@ -14,7 +14,7 @@ async function run(args, input = "") {
   child.stdout.on("data", bytes => { stdout += bytes; });
   child.stderr.on("data", bytes => { stderr += bytes; });
   child.stdin.end(input);
-  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`CLI terminated by ${signal}`)) : resolve(code)); });
+  const code = await new Promise((resolve, reject) => { child.on("error", error => reject(new Error(`${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`, { cause: error }))); child.on("exit", (code, signal) => signal ? reject(new Error(`CLI terminated by ${signal}\nstdout: ${stdout}\nstderr: ${stderr}`)) : resolve(code)); });
   return { code, stdout, stderr };
 }
 try {

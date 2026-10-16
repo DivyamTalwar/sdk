@@ -214,6 +214,28 @@ impl LocalFileClient {
             return Err(Error::Unauthorized("headless operation differs".into()));
         }
         self.initial(output)?;
+        // JSONL explicitly supplies input: accept its first frame or EOF before
+        // reporting a restored outcome. A scheduled stdin reader is not proof
+        // that the input is empty, even when its first poll is pending.
+        if input_open {
+            match input.next().await {
+                Some(line) => {
+                    self.submit(&parse_local_request(&line?, operation)?)
+                        .await?
+                }
+                None => {
+                    input_open = false;
+                    if !self.submitted
+                        && self
+                            .query
+                            .file(&key(operation, TaskFile::Request)?)
+                            .is_none()
+                    {
+                        return Err(Error::NotFound("operation was not submitted".into()));
+                    }
+                }
+            }
+        }
         loop {
             let settled = self.outcome()?;
             if settled.is_none()
