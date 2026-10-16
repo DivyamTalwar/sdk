@@ -124,6 +124,8 @@ impl Tokens {
         let end = position + character.len_utf8();
         match std::mem::take(&mut self.pending) {
             Pending::Escape(start) => {
+                // Inside code the backslash is literal, so the physical run
+                // can still be a closing delimiter extended by another chunk.
                 if matches!(character, '*' | '_' | '~' | '`') {
                     self.pending = Pending::Run {
                         start,

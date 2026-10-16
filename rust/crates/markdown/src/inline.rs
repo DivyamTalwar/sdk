@@ -90,6 +90,11 @@ impl Markdown {
             .scanner
             .frontier(&self.source, base, &source, &events, sentinel);
         let boundary = boundary(&source, &events, sentinel, frontier);
+        let boundary = inline
+            .scanner
+            .checkpoint(base + boundary.saturating_sub(sentinel))
+            .saturating_sub(base)
+            + sentinel;
         let (cost, valid) = references::extend_expansion(
             cost,
             &checkpoint.valid,

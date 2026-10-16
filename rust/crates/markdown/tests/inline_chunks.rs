@@ -82,6 +82,8 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/escape-pair").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/escaped-image").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/code-escaped-run").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/escape-newline").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/opaque-precedence").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/escaped-stars").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/bangs").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/mixed").as_slice(),
