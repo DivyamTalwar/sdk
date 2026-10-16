@@ -20,6 +20,21 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
         } => {
             files.submit(&text, reader).await?;
         }
+        InputEffect::Host(crate::tui::Action::Escape) => {
+            let mut layout = files
+                .state(CommandFileRoot::Session, "layout.json")?
+                .unwrap_or_else(|| serde_json::json!({}));
+            let object = layout
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("layout must be an object".into()))?;
+            if object.remove("open_view").is_some() {
+                object.remove("view_request");
+                files
+                    .write_state(CommandFileRoot::Session, "layout.json", &layout)
+                    .await?;
+            }
+            // TODO(#495): route the remaining empty-input escape ladder to the owner.
+        }
         InputEffect::Quit => {
             files
                 .publish_resolution(CommandResolution::Submit {

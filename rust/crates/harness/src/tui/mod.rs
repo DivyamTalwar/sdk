@@ -9,3 +9,6 @@ pub use render::ClientRenderer;
 mod diff;
 #[cfg(feature = "terminal")]
 pub use diff::diff_lines;
+
+#[cfg(feature = "terminal")]
+mod help;

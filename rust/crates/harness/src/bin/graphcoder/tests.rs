@@ -635,3 +635,6 @@ mod prompt_files;
 
 #[path = "tests/feedback.rs"]
 mod feedback;
+
+#[path = "tests/help.rs"]
+mod help;

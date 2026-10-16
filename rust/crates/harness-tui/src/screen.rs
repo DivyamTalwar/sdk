@@ -24,6 +24,10 @@ pub struct Screen<'a> {
     pub plans: &'a [Line<'a>],
     /// Notification/feedback rows from the followed attention files.
     pub notifications: &'a [Line<'a>],
+    /// Optional modal view, rendered over the transcript while preserving it.
+    pub overlay: &'a [Line<'a>],
+    /// Catalog-owned title of the selected modal view.
+    pub overlay_title: &'a str,
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -155,7 +159,15 @@ impl Screen<'_> {
     ) -> ScreenAreas {
         let areas = self.areas(frame.area(), input);
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
-        rows(frame, self.transcript, areas.transcript, transcript_scroll);
+        if self.overlay.is_empty() {
+            rows(frame, self.transcript, areas.transcript, transcript_scroll);
+        } else {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(self.overlay_title);
+            rows(frame, self.overlay, block.inner(areas.transcript), 0);
+            frame.render_widget(block, areas.transcript);
+        }
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);
         frame.render_widget(Paragraph::new(self.status.clone()), areas.status);

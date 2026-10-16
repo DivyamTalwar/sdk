@@ -34,6 +34,7 @@ impl StreamText {
 #[derive(Default)]
 pub struct ClientRenderer {
     key: String,
+    help: super::help::Help,
     busy: bool,
     seen: usize,
     stable: usize,
@@ -202,12 +203,19 @@ impl ClientRenderer {
             self.notice_file = feedback.cloned();
             self.compose_notices();
         }
-        let mut screen = self.screen();
-        match layout
+        let view = layout
             .as_ref()
             .and_then(|value| value.get("open_view"))
-            .and_then(serde_json::Value::as_str)
-        {
+            .and_then(serde_json::Value::as_str);
+        if view == Some("shortcuts") {
+            self.help.refresh(files)?;
+        }
+        let mut screen = self.screen();
+        match view {
+            Some("shortcuts") => {
+                screen.overlay = &self.help.lines;
+                screen.overlay_title = "Shortcuts";
+            }
             Some("goal") => {
                 screen.diff = &[];
                 screen.plans = &[];
