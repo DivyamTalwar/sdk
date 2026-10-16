@@ -19,19 +19,22 @@ where
         Arc<super::super::FilesystemExecutionJournal<P, A, O>>,
         OperationId,
     )> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            return self
-                .runtime
-                .execution_journal_with_native_work(task, fence, turn, work)
-                .await;
-        }
-        Ok((
-            self.runtime
-                .execution_journal(task, fence.clone(), turn)
-                .await?,
-            super::super::task_runtime::execution_operation(task, turn, io)?,
-        ))
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                return self
+                    .runtime
+                    .execution_journal_with_native_work(task, fence, turn, work)
+                    .await;
+            }
+            Ok((
+                self.runtime
+                    .execution_journal(task, fence.clone(), turn)
+                    .await?,
+                super::super::task_runtime::execution_operation(task, turn, io)?,
+            ))
+        })?
+        .await
     }
 
     pub(super) async fn tool_command(

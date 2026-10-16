@@ -94,31 +94,34 @@ where
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         invocation: CommandInvocation<'_>,
     ) -> Result<()> {
-        let CommandInvocation {
-            admission,
-            fence,
-            reconciliation_only,
-            io,
-            ..
-        } = invocation;
-        match owner {
-            Some(owner) => {
-                owner
-                    .verify(
-                        reconciliation_only,
-                        &mut io
-                            .map(|io| io.history_io())
-                            .as_mut()
-                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                    )
-                    .await
+        BoundedContentFuture::new(invocation.io, || async move {
+            let CommandInvocation {
+                admission,
+                fence,
+                reconciliation_only,
+                io,
+                ..
+            } = invocation;
+            match owner {
+                Some(owner) => {
+                    owner
+                        .verify(
+                            reconciliation_only,
+                            &mut io
+                                .map(|io| io.history_io())
+                                .as_mut()
+                                .map(|work| work as &mut dyn crate::store::HistoryIo),
+                        )
+                        .await
+                }
+                None => {
+                    self.runtime
+                        .owner_observed(admission.task_id(), fence, reconciliation_only, io)
+                        .await
+                }
             }
-            None => {
-                self.runtime
-                    .owner_observed(admission.task_id(), fence, reconciliation_only, io)
-                    .await
-            }
-        }
+        })?
+        .await
     }
 
     fn dispatch_command<'a>(

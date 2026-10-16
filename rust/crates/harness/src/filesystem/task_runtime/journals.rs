@@ -98,33 +98,36 @@ where
         turn: OperationId,
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, &(fence), None).await?,
-            execution_operation(task, turn, None)?,
-            turn,
-            self.filesystem.clone(),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &self.volume,
-                verifier: &self.verifier,
-                scope: &self.signed,
-                maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                io: None,
-            },
-        )?;
-        if admission
-            .grants
-            .contains(crate::contract::capability::INTERACTION_ROUTE)
-            && let Some(owner) = &self.interaction_owner
-        {
-            return journal.with_interaction_owner(
-                &owner.verifier,
-                &owner.schemas,
-                &owner.scope,
-                &owner.volume,
-                None,
-            );
-        }
-        Ok(journal)
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let journal = FilesystemExecutionJournal::for_task(
+                self.host.journal_owner(task, &(fence), None).await?,
+                execution_operation(task, turn, None)?,
+                turn,
+                self.filesystem.clone(),
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &self.volume,
+                    verifier: &self.verifier,
+                    scope: &self.signed,
+                    maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                    io: None,
+                },
+            )?;
+            if admission
+                .grants
+                .contains(crate::contract::capability::INTERACTION_ROUTE)
+                && let Some(owner) = &self.interaction_owner
+            {
+                return journal.with_interaction_owner(
+                    &owner.verifier,
+                    &owner.schemas,
+                    &owner.scope,
+                    &owner.volume,
+                    None,
+                );
+            }
+            Ok(journal)
+        })?
+        .await
     }
 
     /// Opens the canonical tool-effect workflow under the original caller reservation.
