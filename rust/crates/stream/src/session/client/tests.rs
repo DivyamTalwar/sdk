@@ -612,3 +612,28 @@ async fn child_replay_and_records_share_the_native_node_session() -> TestResult 
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn largest_child_path_fits_its_channel_credit() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let path = "a".repeat(crate::MAX_PATH_BYTES);
+    append(&provider, &path, 1).await?;
+    let fixture = Fixture::open(Arc::clone(&provider), "large-child").await?;
+    let client = fixture.client()?;
+    let mut children = client
+        .children(crate::ChildrenRequest {
+            parent: None,
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("maximum child stalled")??
+            .path
+            .as_str(),
+        path
+    );
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
