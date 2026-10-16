@@ -157,3 +157,44 @@ fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
         waiter.join().unwrap();
     });
 }
+
+fn binding_failure_model(broken: bool) {
+    loom::model(move || {
+        let state = Arc::new(refresh::Refresh::<u16>::new());
+        let ticket = refresh::ticket(&state);
+        let old = state.clone();
+        // Both bindings are queued in the same generation. Constrain the old
+        // binding to run first, reproducing the poisoned-result interleaving.
+        loom::thread::spawn(move || {
+            let result = complete(refresh::joined(&old, ticket, async {
+                (Err::<(), _>(401u16), broken.then_some(401u16))
+            }));
+            assert_eq!(result, Ok(Err(401)));
+        })
+        .join()
+        .unwrap();
+        let valid = loom::thread::spawn(move || {
+            complete(refresh::joined(&state, ticket, async {
+                (Ok::<(), u16>(()), None)
+            }))
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            valid,
+            Ok(Ok(())),
+            "model-local account error leaked to another binding"
+        );
+    });
+}
+
+#[test]
+fn model_local_account_errors_do_not_poison_other_bindings() {
+    binding_failure_model(false);
+}
+
+#[test]
+#[should_panic(expected = "model-local account error leaked to another binding")]
+fn negative_control_sharing_model_local_errors_rejects_valid_bindings() {
+    binding_failure_model(true);
+}
