@@ -170,7 +170,6 @@ fn history() -> impl Strategy<Value = Vec<(String, bool, u8)>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn task_query_codec_preserves_unicode_channels_and_exact_expectations(
         records in history(),
