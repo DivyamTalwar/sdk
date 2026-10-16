@@ -16,6 +16,23 @@ pub(in crate::filesystem) fn access_now() -> u64 {
     acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000
 }
 
+pub(in crate::filesystem) fn require(
+    view: &PathTrie,
+    action: Action,
+    path: &str,
+    io: &PreparationIo,
+) -> Result<()> {
+    if view.decide(action, path, access_now()).allowed {
+        Ok(())
+    } else {
+        Err(stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Unauthorized,
+            "filesystem access decision denied request",
+        ))
+    }
+}
+
 fn record<'a, T: PreparationRecord>(
     io: &'a PreparationIo,
     bytes: &[u8],
@@ -75,18 +92,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let compiled = self
             .access_view(&workspace, scope, generation, label, io)
             .await?;
-        let allowed = compiled
-            .0
-            .decide(Action::Read, reference.path(), access_now())
-            .allowed;
+        require(&compiled.0, Action::Read, reference.path(), io)?;
         drop(compiled);
-        if !allowed {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "filesystem access decision denied read",
-            ));
-        }
         let pinned = io.sdk(
             workspace
                 .generation(generation, io, io.cancellation())

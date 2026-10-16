@@ -298,6 +298,23 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
         if !denied {
             assert_eq!(prefix?.as_ref(), b"pri");
         }
+        let full = fixture
+            .host
+            .read_private_path(
+                &fixture.volume,
+                &directory,
+                fixture.file.path(),
+                Some(&generation),
+                4096,
+                None,
+            )
+            .await;
+        assert_eq!(full.is_ok(), !denied);
+        if !denied {
+            let (reference, bytes) = full?;
+            assert_eq!(reference, fixture.file);
+            assert_eq!(bytes.as_ref(), b"private");
+        }
     }
     let write = ContentGrant::verify(
         &verifier,
@@ -429,6 +446,10 @@ proptest! {
             )?;
             let allowed = fixture.host.read_private_prefix(
                 &fixture.volume, &grant, fixture.file.path(), &fixture.generation()?, 3, None,
+            ).await.is_ok();
+            assert_eq!(allowed, !deny && grants_path && !expired);
+            let allowed = fixture.host.read_private_path(
+                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), 4096, None,
             ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             Ok::<_, Box<dyn Error>>(())

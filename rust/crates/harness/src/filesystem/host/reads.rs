@@ -242,62 +242,108 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "file or volume label is invalid",
             ));
         }
-        let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let observation = self.resolve(&workspace, None).await?;
-        let generation = expected_generation.unwrap_or(&observation.generation);
-        self.retain_generation(&workspace, generation).await?;
-        let bytes = self
-            .read(
-                &workspace,
-                Some(generation),
-                &format!("/{path}"),
-                maximum_bytes,
-                None,
-            )
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        let workspace_ref = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
+        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace_ref = (workspace_ref, workspace_hold);
+        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
+        let generation = match expected_generation {
+            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
+            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+        };
+        let label = crate::core::filesystem_scope_label(
+            grant.policy_scope(),
+            &mut Some(&mut io.history_io()),
+        )?;
+        let view = self
+            .access_view(&workspace, grant.policy_scope(), generation.id(), label, io)
             .await?;
-        let metadata = self
-            .read(
-                &workspace,
-                Some(generation),
-                &content_metadata_path_io(path, true, None)?,
-                u64::MAX,
-                None,
-            )
-            .await;
-        let (descriptor, display_name) = match metadata {
+        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        drop(view);
+        fork_preparer_io::retain(&generation, Some(io)).await?;
+        let requested = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
+        let requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        let requested = (requested, requested_hold);
+        let bytes = read_generation(&generation, &requested.0, maximum_bytes, Some(io)).await?;
+        let bytes_hold = io.guard_bytes(&bytes)?;
+        let bytes = (bytes, bytes_hold);
+        let metadata_path = content_metadata_path_io(path, true, Some(io))?;
+        let metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
+        let metadata_path = (metadata_path, metadata_path_hold);
+        let metadata = read_generation(
+            &generation,
+            &metadata_path.0,
+            io.remaining()?.source_bytes_read,
+            Some(io),
+        )
+        .await;
+        let staged = match metadata {
             Ok(metadata) => {
-                let staged: FileRef = crate::contract::json_from_slice(&metadata)
-                    .map_err(|_| Error::Storage("private file metadata is corrupt".into()))?;
-                if staged.volume() != volume
-                    || staged.path() != path
-                    || staged.version() != "pending"
-                {
-                    return Err(Error::Storage(
-                        "private file metadata does not match the file".into(),
-                    ));
-                }
-                staged.descriptor().verify(&bytes, &mut None)?;
-                (
-                    staged.descriptor().clone(),
-                    staged.display_name().to_owned(),
-                )
+                let metadata_hold = io.guard_bytes(&metadata)?;
+                let metadata = (metadata, metadata_hold);
+                Some(io.decode(
+                    std::marker::PhantomData::<FileRef>,
+                    &metadata.0,
+                    crate::wire::ErrorCode::Storage,
+                )?)
             }
-            Err(Error::NotFound(_)) => (
-                FileDescriptor::from_bytes(&bytes, "application/octet-stream", &mut None)?,
-                name.to_owned(),
-            ),
+            Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
-        let reference = FileRef::new(
-            volume.clone(),
-            path.to_owned(),
-            hex::encode(generation.as_resource().key()),
-            descriptor,
-            display_name,
-            &mut None,
-        )?;
-        grant.require_file_read(&reference, io)?;
-        Ok((reference, bytes))
+        let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
+        let version_hold = io.guard_owned(version.capacity() as u64)?;
+        let reference = if let Some(mut staged) = staged {
+            if staged.0.volume() != volume
+                || staged.0.path() != path
+                || staged.0.version() != "pending"
+            {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "private file metadata does not match the file",
+                ));
+            }
+            staged
+                .0
+                .descriptor()
+                .verify(&bytes.0, &mut Some(&mut io.history_io()))?;
+            staged
+                .0
+                .pin_version(version, &mut Some(&mut io.history_io()))?;
+            let version_bytes = version_hold.bytes();
+            version_hold.into_retained()?;
+            staged.1.adopt(version_bytes)?;
+            staged.1.substitute(staged.0.logical_owned_bytes()?)?;
+            staged
+        } else {
+            let reference = crate::executor::with_history_io(Some(io), |work| {
+                FileRef::new(
+                    volume.copy(work)?,
+                    stock_string_copy(path, Some(io))?,
+                    version,
+                    FileDescriptor::from_bytes(&bytes.0, "application/octet-stream", work)?,
+                    stock_string_copy(name, Some(io))?,
+                    work,
+                )
+            })?;
+            version_hold.into_retained()?;
+            let hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+            (reference, hold)
+        };
+        grant.require_file_read(&reference.0, Some(io))?;
+        reference.1.into_retained()?;
+        if let Some(hold) = bytes.1 {
+            hold.into_retained()?;
+        }
+        Ok((reference.0, bytes.0))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.
@@ -339,22 +385,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let view = self
             .access_view(&workspace, grant.policy_scope(), pinned.id(), label, io)
             .await?;
-        let allowed = view
-            .0
-            .decide(
-                acyclic_fs::access::Action::Read,
-                path,
-                super::super::access::access_now(),
-            )
-            .allowed;
+        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         drop(view);
-        if !allowed {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "filesystem access decision denied read",
-            ));
-        }
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
