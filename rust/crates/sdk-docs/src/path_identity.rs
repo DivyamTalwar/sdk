@@ -73,18 +73,9 @@ pub fn stable_filename(filename: &str, root: &str) -> String {
     if matches!(parts[0].as_str(), "relative" | "drive-relative") {
         return filename.to_owned();
     }
-    if let Some(prefix) = components(root, windows) {
-        if parts.len() >= prefix.len()
-            && parts.iter().zip(&prefix).all(|(a, b)| {
-                if windows {
-                    a.eq_ignore_ascii_case(b)
-                } else {
-                    a == b
-                }
-            })
-        {
-            return format!("<root>/{}", parts[prefix.len()..].join("/"));
-        }
+    if let Some(rebased) = rebase(filename, root, "/<root>", windows) {
+        let suffix = rebased.strip_prefix("/<root>").unwrap();
+        return format!("<root>/{}", suffix.strip_prefix('/').unwrap_or(suffix));
     }
     format!(
         "<external>/{}",

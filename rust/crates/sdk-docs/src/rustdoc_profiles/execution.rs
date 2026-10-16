@@ -105,7 +105,7 @@ const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 pub(crate) struct RustdocProducer {
     cargo: PathBuf,
     targets: BTreeSet<String>,
-    compiler: crate::sync::Arc<Compiler>,
+    compiler: std::sync::Arc<Compiler>,
 }
 
 struct Compiler {
@@ -119,21 +119,21 @@ struct Compiler {
 static COMPILERS: crate::concrete_versions::Versions<
     PathBuf,
     sdk_file_identity::Stamp,
-    crate::sync::Arc<Compiler>,
+    std::sync::Arc<Compiler>,
 > = crate::concrete_versions::Mutex::new(std::collections::BTreeMap::new());
 #[cfg(test)]
 static PROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
-static LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! { static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[cfg(test)]
 pub(super) fn rustup_lookup_count() -> usize {
-    LOOKUPS.load(std::sync::atomic::Ordering::Relaxed)
+    LOOKUPS.get()
 }
 
 fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
     #[cfg(test)]
-    LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    LOOKUPS.set(LOOKUPS.get() + 1);
     crate::command("rustup")
         .env("RUSTUP_AUTO_INSTALL", "0")
         .args(args)
@@ -221,7 +221,7 @@ fn resolve_producer() -> Result<RustdocProducer, ProfileError> {
                     &["--print", "cfg", "--target", "wasm32-unknown-unknown"],
                 )?,
             );
-            Ok::<_, ProfileError>(crate::sync::Arc::new(Compiler {
+            Ok::<_, ProfileError>(std::sync::Arc::new(Compiler {
                 rustc: rustc.clone(),
                 host,
                 cfgs,
@@ -277,8 +277,13 @@ fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
             ProfileError::InvalidRustdoc("pinned Cargo has no toolchain directory".into())
         })?;
         let mut command = crate::command(&producer.cargo);
+        // Cargo fingerprints RUSTUP_HOME/toolchains/RUSTUP_TOOLCHAIN/bin/rustc.
+        // An abbreviated nightly name disables its compiler-info cache.
         command
-            .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
+            .env(
+                "RUSTUP_TOOLCHAIN",
+                format!("{RUSTDOC_TOOLCHAIN}-{}", producer.compiler.host),
+            )
             .env("RUSTC", &producer.compiler.rustc)
             .env(
                 "RUSTDOC",
