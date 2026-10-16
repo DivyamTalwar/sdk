@@ -149,6 +149,7 @@ pub(crate) async fn discover_skills(
                     &generation,
                     u64::from(work.limits.header_bytes),
                     None,
+                    None,
                 )?
                 .await?;
             if prefix.len() > work.limits.header_bytes as usize {

@@ -48,6 +48,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'io acyclic_harness::conversation::ContentIo>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -69,6 +70,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             path,
             expected_generation,
             maximum_bytes,
+            ceiling,
             io,
         )
     }
@@ -801,6 +803,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
                 &source.path,
                 &source.generation,
                 256,
+                None,
                 None,
             )?
             .await

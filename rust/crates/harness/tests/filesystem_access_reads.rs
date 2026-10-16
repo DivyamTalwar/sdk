@@ -305,6 +305,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
                 &generation,
                 3,
                 None,
+                None,
             )
             .await;
         assert_eq!(prefix.is_ok(), !denied);
@@ -319,6 +320,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
                 fixture.file.path(),
                 Some(&generation),
                 4096,
+                None,
                 None,
             )
             .await;
@@ -426,6 +428,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
                     fixture.file.path(),
                     &generation,
                     3,
+                    None,
                     None
                 )
                 .await?
@@ -441,6 +444,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
                     fixture.file.path(),
                     Some(&generation),
                     4096,
+                    None,
                     None
                 )
                 .await,
@@ -493,6 +497,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
             "raw",
             Some(&generation),
             4096,
+            None,
             Some(&io),
         )
         .await?;
@@ -512,6 +517,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
                 "raw",
                 Some(&generation),
                 3,
+                None,
                 Some(&io),
             )
             .await
@@ -598,7 +604,7 @@ proptest! {
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
             )?;
             let allowed = fixture.host.read_private_prefix(
-                &fixture.volume, &grant, fixture.file.path(), &fixture.generation()?, 3, None,
+                &fixture.volume, &grant, fixture.file.path(), &fixture.generation()?, 3, None, None,
             ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             let scope = fixture.narrowed_for(&[Action::List, Action::Read, Action::ReadHistory], grants_path, expired)?;
@@ -606,7 +612,7 @@ proptest! {
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
             )?;
             let allowed = fixture.host.read_private_path(
-                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), 4096, None,
+                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), 4096, None, None,
             ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             Ok::<_, Box<dyn Error>>(())

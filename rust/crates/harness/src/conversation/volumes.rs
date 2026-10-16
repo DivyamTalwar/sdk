@@ -487,24 +487,15 @@ impl ContentGrant {
                 "internal storage paths cannot be delegated",
             ));
         }
-        if scope.agent().is_none()
-            || !(contains_content_label(
+        let structured = volume.provider().family() == "filesystem"
+            && crate::core::filesystem_scope_label(scope.capabilities(), work)?.is_some();
+        if (!structured && scope.agent().is_none())
+            || !crate::core::directory_read_granted_with_work(
                 scope.capabilities(),
-                acyclic_fs::access::DIRECTORY_READ_PREFIX,
-                crate::executor::json::canonical_json_digest(
-                    &(volume, prefix),
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work,
-                )?,
-            ) || contains_content_label(
-                scope.capabilities(),
-                VolumeOperation::Read.capability_prefix(),
-                crate::executor::json::canonical_json_digest(
-                    volume,
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work,
-                )?,
-            ))
+                volume,
+                prefix,
+                work,
+            )?
         {
             return Err(conversation_error(
                 work,

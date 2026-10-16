@@ -4,6 +4,7 @@ use acyclic_fs::access::{Action, PreparedPath};
 pub(in crate::filesystem) struct DirectoryListing<'a> {
     pub volume: &'a VolumeRef,
     pub grant: &'a ContentGrant,
+    pub ceiling: Option<&'a crate::Capabilities>,
     pub path: &'a str,
     pub generation: Option<&'a GenerationRef>,
     pub after: Option<&'a LogicalName>,
@@ -48,6 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
+        ceiling: Option<&crate::Capabilities>,
     ) -> Result<(GenerationRef, DirectoryPage)> {
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
         let (page, hold) = self
@@ -55,6 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 DirectoryListing {
                     volume,
                     grant,
+                    ceiling,
                     path,
                     generation: expected_generation,
                     after,
@@ -97,6 +100,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         self.require_private_directory(request.volume, request.grant, request.path, Some(io))?;
+        super::super::access::require_directory_ceiling(
+            request.ceiling,
+            request.volume,
+            request.path,
+            Some(io),
+        )?;
         if request.maximum_entries == 0
             || request.maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE
         {
@@ -120,7 +129,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &mut Some(&mut io.history_io()),
         )?;
         let view = self
-            .access_view(&workspace, scope, generation.id(), label, None, io)
+            .access_view(
+                &workspace,
+                scope,
+                generation.id(),
+                label,
+                request.ceiling,
+                io,
+            )
             .await?;
         guard().await?;
         super::super::access::require(&view.0, Action::List, request.path, io)?;

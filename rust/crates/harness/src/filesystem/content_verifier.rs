@@ -151,6 +151,7 @@ where
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -176,7 +177,7 @@ where
                 .transpose()?;
             let bytes = self
                 .host
-                .read_private_prefix(volume, &grant, path, generation, maximum_bytes, io)
+                .read_private_prefix(volume, &grant, path, generation, maximum_bytes, ceiling, io)
                 .await?;
             drop(grant);
             drop(grant_hold);
@@ -192,6 +193,7 @@ where
         expected_generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
         maximum_entries: u32,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, PrivateDirectoryPage>> {
         if io.is_some() {
@@ -217,6 +219,7 @@ where
                 expected_generation,
                 after.as_ref(),
                 maximum_entries,
+                ceiling,
             )
             .await?;
             let entries = page
@@ -261,6 +264,7 @@ where
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
@@ -298,6 +302,7 @@ where
                     path,
                     expected_generation,
                     maximum_bytes.min(self.maximum_bytes),
+                    ceiling,
                     io,
                 )
                 .await?;
@@ -403,6 +408,7 @@ where
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
+        ceiling: Option<&crate::Capabilities>,
     ) -> Result<(GenerationRef, DirectoryPage)> {
         self.verify_creation(volume, None, None).await?;
         let grant = ContentGrant::verify_directory_read(
@@ -420,6 +426,7 @@ where
                 expected_generation,
                 after,
                 maximum_entries,
+                ceiling,
             )
             .await
     }
@@ -452,7 +459,7 @@ where
     )]
     pub fn list_private_directory_with_native_work<'a>(
         &'a self,
-        context: &'a crate::runtime::TaskContext,
+        context: &'a crate::runtime::ToolContext,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
         path: &'a str,
@@ -470,7 +477,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             self.verify_creation(volume, None, Some(&PreparationIo::from_native_work(work)?))
                 .await?;
-            context.verify_original_execution_owner(work).await?;
+            context.task().verify_original_execution_owner(work).await?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
             );
@@ -482,8 +489,9 @@ where
                 &mut Some(&mut observer),
             )?;
             let grant_custody = observer.into_custody()?;
-            if path.len() > context.scope().limits().path_bytes
-                || after.is_some_and(|name| name.len() > context.scope().limits().path_bytes)
+            if path.len() > context.effective_scope().limits().path_bytes
+                || after
+                    .is_some_and(|name| name.len() > context.effective_scope().limits().path_bytes)
                 || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {
@@ -533,28 +541,24 @@ where
                         generation: expected_generation,
                         after: cursor.as_ref(),
                         maximum_entries,
+                        ceiling: Some(context.effective_scope().grants()),
                     },
                     work,
                     || async {
                         self.supports_native_directory_list(volume, work)?;
                         let io = PreparationIo::from_native_work(work)?;
-                        let directory = io.contains_capability(
-                            context.scope().grants(),
-                            &(volume, granted_prefix),
-                            acyclic_fs::access::DIRECTORY_READ_PREFIX,
-                        )?;
-                        let whole_volume = io.contains_capability(
-                            context.scope().grants(),
+                        if !crate::core::directory_read_granted_with_work(
+                            context.effective_scope().grants(),
                             volume,
-                            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
-                        )?;
-                        if !directory && !whole_volume {
+                            granted_prefix,
+                            &mut Some(&mut io.history_io()),
+                        )? {
                             return Err(Error::NativeBoundary {
                                 code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "issued task scope does not retain this directory read",
                             });
                         }
-                        context.verify_original_execution_owner(work).await
+                        context.task().verify_original_execution_owner(work).await
                     },
                 )
                 .await;

@@ -191,6 +191,7 @@ impl TaskContext {
                 expected_generation,
                 after,
                 maximum_entries,
+                Some(self.scope.grants()),
                 None,
             )?
             .await?;
@@ -238,6 +239,7 @@ impl TaskContext {
                 path,
                 expected_generation,
                 self.scope.limits.file_bytes,
+                Some(self.scope.grants()),
                 None,
             )?
             .await?;
@@ -268,9 +270,12 @@ impl TaskContext {
                 "private directory path or volume is invalid".into(),
             ));
         }
-        let exact = volume.directory_read_capability(granted_prefix, &mut None)?;
-        let full = volume.capability(VolumeOperation::Read, &mut None)?;
-        if !self.scope.grants().contains(&exact) && !self.scope.grants().contains(&full) {
+        if !crate::core::directory_read_granted_with_work(
+            self.scope.grants(),
+            volume,
+            granted_prefix,
+            &mut None,
+        )? {
             return Err(Error::Unauthorized(
                 "task scope cannot discover this directory".into(),
             ));

@@ -103,6 +103,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 generation.as_ref(),
                 cursor.as_ref(),
                 page_size,
+                None,
             )
             .await?;
         if let Some(generation) = &generation {
@@ -148,7 +149,8 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 "secrets",
                 generation.as_ref(),
                 cursor.as_ref(),
-                page_size
+                page_size,
+                None
             )
             .await,
         Err(acyclic_harness::Error::Unauthorized(_))
@@ -180,7 +182,7 @@ async fn read_without_list_cannot_enumerate_or_disclose_directory_metadata()
     assert!(matches!(
         fixture
             .host
-            .list_private_directory(&fixture.volume, &grant, "secrets", None, None, 1)
+            .list_private_directory(&fixture.volume, &grant, "secrets", None, None, 1, None)
             .await,
         Err(acyclic_harness::Error::Unauthorized(_))
     ));

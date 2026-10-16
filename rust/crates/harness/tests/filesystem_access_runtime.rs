@@ -1,6 +1,48 @@
 use super::*;
 use acyclic_harness::runtime::RuntimeScope;
 
+fn query_scope(
+    fixture: &Fixture,
+    list: bool,
+    read: bool,
+    expired: bool,
+) -> Result<Scope, Box<dyn Error>> {
+    let resource = |path: &str| ResourcePattern {
+        lineage_root: None,
+        volume: None,
+        generations: Generations::All,
+        path: path.into(),
+    };
+    let capability = Capability {
+        layers: vec![vec![
+            Grant {
+                actions: [Action::List, Action::ReadHistory].into_iter().collect(),
+                resource: resource("secrets"),
+            },
+            Grant {
+                actions: std::iter::once(Action::ReadHistory)
+                    .chain(list.then_some(Action::List))
+                    .chain(read.then_some(Action::Read))
+                    .collect(),
+                resource: resource("secrets/key"),
+            },
+        ]],
+        expires_at: expired.then_some(1),
+    };
+    Ok(fixture.issuer.issue(
+        "query",
+        &Capabilities::new([
+            fixture
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+            capability.to_scope_label()?,
+        ]),
+        fixture.scope.agent(),
+        None,
+        &mut None,
+    )?)
+}
+
 #[tokio::test]
 async fn runtime_scope_cannot_drop_a_ceiling_and_keep_legacy_authority()
 -> Result<(), Box<dyn Error>> {
@@ -125,13 +167,44 @@ async fn caller_ceiling_and_its_storage_use_the_original_native_ledger()
     let _ = work.receipt();
     let baseline = work.live_allocation_bytes();
     for allowed in [true, false] {
-        let caller = fixture.narrowed(allowed, false)?;
+        let caller = fixture.narrowed_for(
+            &[Action::List, Action::Read, Action::ReadHistory],
+            allowed,
+            false,
+        )?;
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
         let result = reader
             .read(&fixture.file, 4096, Some(caller.capabilities()), Some(&io))?
             .await;
         assert_eq!(result.is_ok(), allowed);
         drop(result);
+        let selected = fixture.generation()?;
+        let prefix = reader
+            .read_private_prefix(
+                &fixture.volume,
+                "secrets",
+                "secrets/key",
+                &selected,
+                2,
+                Some(caller.capabilities()),
+                Some(&io),
+            )?
+            .await;
+        assert_eq!(prefix.is_ok(), allowed);
+        drop(prefix);
+        let resolved = reader
+            .read_private_path(
+                &fixture.volume,
+                "secrets",
+                "secrets/key",
+                Some(&selected),
+                4096,
+                Some(caller.capabilities()),
+                Some(&io),
+            )?
+            .await;
+        assert_eq!(resolved.is_ok(), allowed);
+        drop(resolved);
         drop(io);
         let _ = work.receipt();
         assert_eq!(work.live_allocation_bytes(), baseline);
@@ -141,6 +214,66 @@ async fn caller_ceiling_and_its_storage_use_the_original_native_ledger()
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn queries_intersect_policy_and_both_caller_ceilings(
+        signed_list in any::<bool>(), caller_list in any::<bool>(),
+        signed_read in any::<bool>(), caller_read in any::<bool>(),
+        signed_expired in any::<bool>(), caller_expired in any::<bool>(),
+        denied in any::<bool>(), structured_only in any::<bool>(),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        runtime.block_on(async {
+            let fixture = Fixture::new().await?;
+            fixture.policy(denied, 2).await?;
+            let signed = query_scope(&fixture, signed_list, signed_read, signed_expired)?;
+            let caller = query_scope(&fixture, caller_list, caller_read, caller_expired)?;
+            let reader = fixture.reader(&signed)?;
+            let grants = Capabilities::new(caller.capabilities().iter().filter(|label|
+                !structured_only || label.starts_with(SCOPE_PREFIX)));
+            let task = context::content_context(reader.clone(), None, grants.clone()).await?;
+            let live = !signed_expired && !caller_expired;
+            let page = task.list_private_directory(&fixture.volume, "secrets", "secrets", None, None, 8).await;
+            assert_eq!(page.is_ok(), live);
+            if let Ok(page) = page {
+                assert_eq!(page.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
+                    if signed_list && caller_list { vec!["key"] } else { vec![] });
+            }
+            let selected = fixture.generation()?;
+            let resolved = task.read_private_path(&fixture.volume, "secrets", "secrets/key", Some(&selected)).await;
+            let readable = signed_read && caller_read && !denied && live;
+            assert_eq!(resolved.is_ok(), readable && signed_list && caller_list);
+            let prefix = reader.read_private_prefix(&fixture.volume, "secrets", "secrets/key", &selected, 2, Some(&grants), None)?.await;
+            assert_eq!(prefix.is_ok(), readable);
+            if let Ok(prefix) = prefix { assert_eq!(prefix.as_ref(), b"pr"); }
+            Ok::<_, Box<dyn Error>>(())
+        }).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    }
+
+    #[test]
+    fn direct_reader_checks_the_presented_legacy_grant(kind in 0usize..6, denied in any::<bool>()) {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        runtime.block_on(async {
+            let fixture = Fixture::new().await?;
+            fixture.policy(denied, 2).await?;
+            let grants = match kind {
+                0 => Capabilities::default(),
+                1 => Capabilities::new([fixture.volume.capability(VolumeOperation::Write, &mut None)?]),
+                2 => Capabilities::new([fixture.volume.directory_read_capability("public", &mut None)?]),
+                3 => Capabilities::new([fixture.volume.capability(VolumeOperation::Read, &mut None)?]),
+                4 => Capabilities::new([fixture.file.read_capability(&mut None)?]),
+                _ => Capabilities::new([fixture.volume.directory_read_capability("secrets", &mut None)?]),
+            };
+            let reader = fixture.reader(&fixture.scope)?;
+            assert_eq!(reader.read(&fixture.file, 4096, Some(&grants), None)?.await.is_ok(), kind >= 3 && !denied);
+            let directory = kind == 3 || kind == 5;
+            let generation = fixture.generation()?;
+            assert_eq!(reader.read_private_prefix(&fixture.volume, "secrets", "secrets/key", &generation, 2, Some(&grants), None)?.await.is_ok(), directory && !denied);
+            assert_eq!(reader.read_private_path(&fixture.volume, "secrets", "secrets/key", Some(&generation), 4096, Some(&grants), None)?.await.is_ok(), directory && !denied);
+            assert_eq!(ContentResidencyVerifier::list_private_directory(reader.as_ref(), &fixture.volume, "secrets", "secrets", None, None, 8, Some(&grants), None)?.await.is_ok(), directory);
+            Ok::<_, Box<dyn Error>>(())
+        }).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    }
+
     #[test]
     fn runtime_read_is_bound_policy_and_both_capability_ceilings(
         signed_path in any::<bool>(), caller_path in any::<bool>(),

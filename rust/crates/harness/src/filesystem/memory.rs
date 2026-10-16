@@ -414,6 +414,7 @@ impl MemoryHarnessStorage {
                 expected_generation,
                 after,
                 maximum_entries,
+                None,
             )
             .await
     }
@@ -470,6 +471,7 @@ impl MemoryHarnessStorage {
                 expected_generation,
                 after,
                 maximum_entries,
+                None,
             )
             .await
     }
@@ -490,6 +492,7 @@ impl MemoryHarnessStorage {
                 path,
                 expected_generation,
                 u64::MAX,
+                None,
                 None,
             )?
             .await

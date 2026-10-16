@@ -107,11 +107,22 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
     fn native_directory_pages_release_custody_and_honor_each_guard(
-        mask in any::<[bool; 8]>(), page_size in 1u32..5,
+        mask in any::<[bool; 8]>(), caller_mask in any::<[bool; 8]>(), page_size in 1u32..5,
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(async {
             let (host, volume, grant) = fixture(mask).await?;
+            let caller = crate::Capabilities::new([Capability {
+                layers: vec![std::iter::once("rows".into())
+                    .chain(caller_mask.into_iter().enumerate().filter_map(|(index, keep)|
+                        keep.then(|| format!("rows/{index:02}"))))
+                    .map(|path| Grant {
+                        actions: [Action::List, Action::ReadHistory].into_iter().collect(),
+                        resource: ResourcePattern { lineage_root: None, volume: None,
+                            generations: Generations::All, path },
+                    }).collect()],
+                expires_at: None,
+            }.to_scope_label().map_err(|error| Error::Invalid(error.to_string()))?]);
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation,
@@ -124,7 +135,7 @@ proptest! {
             loop {
                 let mut calls = 0;
                 let result = host.list_private_directory_guarded_with_native_work(DirectoryListing {
-                    volume: &volume, grant: &grant, path: "rows", generation: None,
+                    volume: &volume, grant: &grant, ceiling: Some(&caller), path: "rows", generation: None,
                     after: None, maximum_entries: page_size,
                 }, &work, || {
                     calls += 1;
@@ -141,7 +152,7 @@ proptest! {
                     for entry in &page.entries {
                         let name = std::str::from_utf8(entry.name.as_bytes()).unwrap();
                         let index: usize = name.parse().unwrap();
-                        assert!(mask[index]);
+                        assert!(mask[index] && caller_mask[index]);
                     }
                     drop(generation);
                     drop(page);

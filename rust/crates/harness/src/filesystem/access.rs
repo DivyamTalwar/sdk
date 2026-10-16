@@ -33,6 +33,26 @@ pub(in crate::filesystem) fn require(
     }
 }
 
+pub(in crate::filesystem) fn require_directory_ceiling(
+    ceiling: Option<&crate::Capabilities>,
+    volume: &VolumeRef,
+    path: &str,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    if let Some(grants) = ceiling {
+        if !crate::executor::with_history_io(io, |work| {
+            crate::core::directory_read_granted_with_work(grants, volume, path, work)
+        })? {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "content caller lacks a filesystem directory grant",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn record<'a, T: PreparationRecord>(
     io: &'a PreparationIo,
     bytes: &[u8],
@@ -69,6 +89,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             || reference.descriptor().byte_length() > maximum_bytes
         {
             return Err(io.invalid("content provider or size limit mismatch"));
+        }
+        if let Some(grants) = ceiling {
+            if !crate::runtime::read_granted_with_work(
+                grants,
+                reference,
+                &mut Some(&mut io.history_io()),
+            )? {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "content caller lacks a filesystem read grant",
+                ));
+            }
         }
         let label = crate::core::filesystem_scope_label(
             scope.capabilities(),

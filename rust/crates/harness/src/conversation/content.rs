@@ -96,6 +96,8 @@ pub(crate) fn content_error(
 }
 
 /// Authenticated, bounded immutable-content operations.
+/// Filesystem readers intersect caller ceilings with their verified binding;
+/// a caller ceiling supplies no authority of its own.
 pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     /// Capability availability; conveys no read authority.
     fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
@@ -159,6 +161,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _path: &'a str,
         _generation: &'a GenerationRef,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(content_error(
@@ -181,6 +184,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _expected_generation: Option<&'a GenerationRef>,
         _after: Option<&'a str>,
         _maximum_entries: u32,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         Err(content_error(
@@ -198,6 +202,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _path: &'a str,
         _expected_generation: Option<&'a GenerationRef>,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
     ) -> Result<
         BoundedContentFuture<
@@ -403,6 +408,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.bound_reader(volume, io)?.read_private_prefix(
@@ -411,6 +417,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             path,
             generation,
             maximum_bytes,
+            ceiling,
             io,
         )
     }
@@ -422,6 +429,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         expected_generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
         maximum_entries: u32,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         self.bound_reader(volume, io)?.list_private_directory(
@@ -431,6 +439,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             expected_generation,
             after,
             maximum_entries,
+            ceiling,
             io,
         )
     }
@@ -441,6 +450,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
     ) -> Result<
         BoundedContentFuture<
@@ -461,6 +471,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             path,
             expected_generation,
             maximum_bytes,
+            ceiling,
             io,
         )
     }

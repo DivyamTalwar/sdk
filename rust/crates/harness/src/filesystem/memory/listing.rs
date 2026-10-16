@@ -210,7 +210,7 @@ impl LocalListFilesTool {
         let ((generation, page), custody) = self
             .verifier
             .list_private_directory_with_native_work(
-                context.task(),
+                context,
                 &self.volume,
                 "",
                 &input.path,
@@ -374,6 +374,9 @@ impl ToolExecutor for LocalListFilesTool {
                     input.expected_generation.as_ref(),
                     after.as_ref(),
                     input.maximum_entries,
+                    _context
+                        .as_ref()
+                        .map(|context| context.effective_scope().grants()),
                 )
                 .await?;
             let wire = list_files_page_wire(&generation, &page)?;

@@ -38,9 +38,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         expected_generation: Option<&GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.require_private_directory(volume, grant, path, io)?;
+        super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
@@ -77,7 +79,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant.policy_scope(),
                 generation.id(),
                 label,
-                None,
+                ceiling,
                 io,
             )
             .await?;
@@ -172,9 +174,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         generation: &GenerationRef,
         maximum_bytes: u64,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.require_private_directory(volume, grant, path, io)?;
+        super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
         })?;
@@ -206,7 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant.policy_scope(),
                 pinned.id(),
                 label,
-                None,
+                ceiling,
                 io,
             )
             .await?;
