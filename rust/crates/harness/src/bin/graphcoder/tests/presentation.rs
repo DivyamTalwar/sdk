@@ -63,6 +63,28 @@ async fn followed_presentation_rows_are_declarative_and_live() {
     renderer.update(&views, &owner);
     for row in rows {
         views.tasks.clear();
+        views.tools.clear();
+        if let Some(count) = row["tool_lines"].as_u64() {
+            views
+                .model_event(
+                    &owner,
+                    turn,
+                    ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                        "call".into(),
+                        "read".into(),
+                        Default::default(),
+                    )),
+                )
+                .unwrap();
+            views.tool_output(
+                &owner,
+                "call",
+                &(0..count)
+                    .map(|index| format!("detail {index:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
         views.documents.clear();
         let mut documents = acyclic_harness::client::DocumentViews::default();
         for (field, key) in [
@@ -106,16 +128,18 @@ async fn followed_presentation_rows_are_declarative_and_live() {
             .write_state(
                 CommandFileRoot::Config,
                 "settings.json",
-                &serde_json::json!({"reasoning":row["reasoning"]}),
+                &serde_json::json!({"reasoning":row["reasoning"], "tool_details":row["details"].as_bool().unwrap_or(false)}),
             )
             .await
             .unwrap();
         let width = row["width"].as_u64().unwrap_or(80) as u16;
+        let height = row["height"].as_u64().unwrap_or(20) as u16;
+        renderer.configure(&views, &owner, &files).unwrap();
         renderer
-            .layout(&files, &PromptInput::default(), width, 20)
+            .layout(&files, &PromptInput::default(), width, height)
             .unwrap();
         let screen = renderer.screen_for(&files).unwrap();
-        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
                 screen.render(
@@ -163,6 +187,17 @@ async fn followed_presentation_rows_are_declarative_and_live() {
         .await
         .unwrap();
     assert!(renderer.screen_for(&files).is_err());
+    let before = renderer.screen().transcript.to_vec();
+    files
+        .write_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"reasoning":false,"tool_details":"invalid"}),
+        )
+        .await
+        .unwrap();
+    assert!(renderer.configure(&views, &owner, &files).is_err());
+    assert_eq!(renderer.screen().transcript, before.as_slice());
 }
 
 #[tokio::test]
@@ -255,15 +290,18 @@ proptest::proptest! {
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
             let turn = OperationId::from_bytes([13;16]);
             let mut views = ClientViews::default();
+            views.model_event(&owner, turn, ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new("call".into(), "read".into(), Default::default()))).unwrap();
             let mut live = ClientRenderer::default();
             for (chunk, visible) in chunks {
+                views.tool_output(&owner, "call", &chunk);
                 views.model_event(&owner, turn, ModelEvent::Reasoning { delta: chunk }).unwrap();
-                files.write_state(CommandFileRoot::Config, "settings.json", &serde_json::json!({"reasoning":visible})).await.unwrap();
+                files.write_state(CommandFileRoot::Config, "settings.json", &serde_json::json!({"reasoning":visible,"tool_details":visible})).await.unwrap();
                 live.update(&views, &owner);
                 let mut replay = ClientRenderer::default();
                 replay.update(&views, &owner);
                 let mut pictures = Vec::new();
                 for renderer in [&mut live, &mut replay] {
+                    renderer.configure(&views, &owner, &files).unwrap();
                     renderer.layout(&files, &PromptInput::default(), 40, 20).unwrap();
                     let screen = renderer.screen_for(&files).unwrap();
                     if !visible { proptest::prop_assert!(screen.reasoning.is_empty()); }

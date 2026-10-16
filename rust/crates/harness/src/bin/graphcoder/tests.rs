@@ -197,8 +197,8 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
     }
 }
 
-#[test]
-fn tool_output_deltas_repaint_without_a_new_committed_message() {
+#[tokio::test]
+async fn tool_output_deltas_repaint_without_a_new_committed_message() {
     use acyclic_harness::model::ToolCall;
     let owner = wire::Authority {
         kind: wire::AggregateKind::Task as i32,
@@ -217,8 +217,35 @@ fn tool_output_deltas_repaint_without_a_new_committed_message() {
         )
         .unwrap();
     views.tool_output(&owner, "call", "first chunk");
+    let volume = std::sync::Arc::new(
+        acyclic_harness::task_volume::TaskVolume::open(
+            std::sync::Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_stream::StreamPath::new("tool-details").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut files = acyclic_harness::client::CommandSession::open(
+        volume,
+        OperationId::from_bytes([1; 16])
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        64,
+    )
+    .await
+    .unwrap();
+    files
+        .write_state(
+            acyclic_harness::client::CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"tool_details":true}),
+        )
+        .await
+        .unwrap();
     let mut renderer = ClientRenderer::default();
-    renderer.update(&views, &owner);
+    renderer.configure(&views, &owner, &files).unwrap();
     assert!(picture(&renderer).contains("first chunk"));
     views.tool_output(&owner, "call", " second chunk");
     renderer.update(&views, &owner);

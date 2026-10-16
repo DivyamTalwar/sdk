@@ -104,5 +104,23 @@
     "width": 100,
     "expected": ["Visible answer"],
     "absent": ["GOAL.md", "plans/", "BBB", "ZZZ"]
+  },
+  {
+    "row": "Tool details are collapsed by the followed setting",
+    "reasoning": false, "details": false, "height": 30, "tool_lines": 21,
+    "expected": ["read", "Visible answer"],
+    "absent": ["detail 00", "detail 20"]
+  },
+  {
+    "row": "Expanded tool output keeps the 20-line cap",
+    "reasoning": false, "details": true, "height": 30, "tool_lines": 21,
+    "expected": ["read", "detail 00", "detail 19"],
+    "absent": ["detail 20"]
+  },
+  {
+    "row": "Collapsing tool details removes cached output immediately",
+    "reasoning": false, "details": false, "height": 30, "tool_lines": 21,
+    "expected": ["read", "Visible answer"],
+    "absent": ["detail 00", "detail 19", "detail 20"]
   }
 ]

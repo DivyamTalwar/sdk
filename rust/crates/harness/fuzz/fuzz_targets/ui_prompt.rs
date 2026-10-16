@@ -196,10 +196,24 @@ fuzz_target!(|data: &[u8]| {
                 .write_state(
                     CommandFileRoot::Config,
                     "settings.json",
-                    &serde_json::json!({"reasoning":reasoning}),
+                    &serde_json::json!({"reasoning":reasoning.clone(),"tool_details":reasoning}),
                 )
                 .await
                 .unwrap();
+            let owner = acyclic_harness::wire::Authority {
+                kind: acyclic_harness::wire::AggregateKind::Task as i32,
+                id: "task".into(),
+            };
+            assert_eq!(
+                renderer
+                    .configure(
+                        &acyclic_harness::client::ClientViews::default(),
+                        &owner,
+                        &files
+                    )
+                    .is_ok(),
+                selected != 2
+            );
             assert_eq!(renderer.screen_for(&files).is_ok(), selected != 2);
         });
 });

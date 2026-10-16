@@ -65,6 +65,7 @@ pub async fn run(
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let back = client::tui_scroll(&commands)?;
         let mut maximum_scroll = 0;
+        renderer.configure(client.session().views(), &authority, &commands)?;
         let size = terminal.size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;

@@ -36,6 +36,7 @@ pub struct ClientRenderer {
     key: String,
     help: super::help::Help,
     busy: bool,
+    tool_details: bool,
     seen: usize,
     stable: usize,
     turn: Option<crate::OperationId>,
@@ -79,6 +80,7 @@ impl ClientRenderer {
         if self.key != key {
             *self = Self {
                 key: key.clone(),
+                tool_details: self.tool_details,
                 ..Self::default()
             };
         }
@@ -103,7 +105,11 @@ impl ClientRenderer {
                         .as_ref()
                         .and_then(|id| views.tools.get(&key)?.get(id))
                     {
-                        self.transcript.extend(tool_rows(&call.name, &call.output));
+                        self.transcript.extend(tool_rows(
+                            &call.name,
+                            &call.output,
+                            self.tool_details,
+                        ));
                     }
                 }
                 self.seen = transcript.messages.len();
@@ -146,7 +152,8 @@ impl ClientRenderer {
         }
         if let Some(tools) = views.tools.get(&key) {
             for tool in tools.values().filter(|tool| tool.result.is_none()) {
-                self.transcript.extend(tool_rows(&tool.name, &tool.output));
+                self.transcript
+                    .extend(tool_rows(&tool.name, &tool.output, self.tool_details));
             }
         }
         if let Some(documents) = views.documents.get(&key) {
@@ -212,6 +219,37 @@ impl ClientRenderer {
             .map(|text| vec![Line::raw(text.escape_debug().to_string())])
             .unwrap_or_default();
         self.compose_notices();
+    }
+
+    /// Apply followed tool visibility, rebuilding the disposable transcript only
+    /// when this preference changes. The file remains the authoritative setting.
+    pub fn configure<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        views: &ClientViews,
+        authority: &wire::Authority,
+        files: &crate::client::CommandSession<P>,
+    ) -> crate::Result<()> {
+        let settings = files.state(crate::client::CommandFileRoot::Config, "settings.json")?;
+        let details = settings
+            .as_ref()
+            .and_then(|value| value.get("tool_details"))
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| crate::Error::Invalid("tool_details must be a boolean".into()))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if self.tool_details != details {
+            self.tool_details = details;
+            self.seen = 0;
+            self.stable = 0;
+            self.transcript.clear();
+            self.transcript_changed = 0;
+            self.stream = StreamText::default();
+            self.update(views, authority);
+        }
+        Ok(())
     }
 
     /// Project changed transcript/reasoning rows at the composed viewport width.
@@ -385,8 +423,15 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
     )
 }
 
-fn tool_rows(name: &str, output: &ToolResultContent) -> Vec<Line<'static>> {
+fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<'static>> {
     // TODO(#548): use specialized per-tool renderers when their API lands.
+    let mut rows = vec![Line::styled(
+        name.escape_debug().to_string(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if !details {
+        return rows;
+    }
     let text = match output {
         ToolResultContent::Json { value } => value
             .as_str()
@@ -402,13 +447,9 @@ fn tool_rows(name: &str, output: &ToolResultContent) -> Vec<Line<'static>> {
             .join("\n"),
     };
     if text.is_empty() {
-        return Vec::new();
+        return rows;
     }
     let bounded = text.lines().take(20).collect::<Vec<_>>().join("\n");
-    let mut rows = vec![Line::styled(
-        name.to_owned(),
-        Style::default().add_modifier(Modifier::BOLD),
-    )];
     rows.extend(markdown(&bounded).into_iter().take(20));
     rows
 }
