@@ -2,7 +2,7 @@ use acyclic_harness::{
     AgentId, Result,
     client::{ClientViews, GoalFileView},
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    goal::{GoalState, GoalStatus, GoalView},
+    goal::{GOAL_METADATA_HEADROOM, GoalState, GoalStatus, GoalView},
     resources::ProviderRef,
     task_volume::{Cursor, FileKey, FileValue, Generation, Query, SCHEMA, Snapshot},
 };
@@ -44,7 +44,14 @@ pub fn check(data: &[u8]) -> Result<()> {
     }
     let state = GoalState::from_bytes(data, LIMIT);
     let view = GoalView::from_file(file(data)?, data, LIMIT);
-    assert_eq!(state.is_ok(), view.is_ok());
+    if let Ok(state) = &state {
+        assert_eq!(
+            view.is_ok(),
+            state.markdown.len() + GOAL_METADATA_HEADROOM <= LIMIT as usize
+        );
+    } else {
+        assert!(view.is_err());
+    }
     let query = Query::File(FileKey::Goal);
     let cursor = Cursor {
         volume: [1; 32],

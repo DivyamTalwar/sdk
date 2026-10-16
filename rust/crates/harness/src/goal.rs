@@ -44,13 +44,6 @@ impl GoalState {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| Error::Invalid("GOAL.md requires UTF-8".into()))?;
         let (frontmatter, markdown) = parse(text)?;
-        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
-            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
-        {
-            return Err(Error::Invalid(
-                "goal body leaves no status metadata headroom".into(),
-            ));
-        }
         encoded_reason(frontmatter.reason.as_deref())?;
         Ok(Self {
             status: frontmatter.status,
@@ -160,6 +153,13 @@ impl GoalView {
             reason,
             markdown,
         } = GoalState::from_bytes(bytes, maximum_bytes)?;
+        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
+            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
+        {
+            return Err(Error::Invalid(
+                "goal body leaves no status metadata headroom".into(),
+            ));
+        }
         Ok(Self {
             source,
             status,

@@ -227,3 +227,22 @@ fn goals_remain_scoped_to_the_observed_volume_and_query() -> Result<()> {
     assert_eq!(bodies, ["first", "second", "third"]);
     Ok(())
 }
+
+#[test]
+fn goal_read_bounds_do_not_reserve_a_future_write() -> Result<()> {
+    let query = Query::File(FileKey::Goal);
+    let cursor = cut(&query, [3; 32], 1);
+    let body = "Read only";
+    let mut views = ClientViews::default();
+    views.query_snapshot(
+        query,
+        snapshot(cursor.clone(), &Some(body.as_bytes().to_vec())),
+        1,
+        body.len(),
+    )?;
+    assert!(
+        matches!(views.goal(cursor.volume, cursor.query), Some(GoalFileView::Present { goal }) if goal.markdown == body)
+    );
+    assert!(GoalState::from_bytes(body.as_bytes(), (body.len() - 1) as u64).is_err());
+    Ok(())
+}
