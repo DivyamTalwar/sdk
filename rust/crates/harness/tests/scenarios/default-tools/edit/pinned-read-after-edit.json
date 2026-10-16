@@ -1,0 +1,6 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"edit","name":"edit","arguments":{"file":"plans/a.md",
+  "old_text":"before","new_text":"after"}},{"type":"event","kind":"completed","metadata":null}],
+  [{"type":"event","kind":"tool_call","call_id":"read","name":"read","arguments":{"file":"plans/a.md"}},
+  {"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"files":{"plans/a.md":"after\n"},
+  "results":{"edit":{"name":"edit","content":{"kind":"json","value":{"file":{"path":"plans/a.md",
+  "descriptor":{"byte_length":6}}}}},"read":{"name":"read","content":{"kind":"json","value":"before\n"}}}}}

@@ -54,10 +54,10 @@ impl Driver for TaskQueryCase {
     }
 }
 
-impl Driver for super::diff_case::DiffCase {
+impl Driver for super::local_case::LocalCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        super::diffs::run(case).await
+        super::local_execution::run(case).await
     }
 }
 
@@ -93,7 +93,9 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("provider") => {
             super::provider_case::ProviderCase::execute(serde_json::from_value(value)?).await
         }
-        Some("diff") => super::diff_case::DiffCase::execute(serde_json::from_value(value)?).await,
+        Some("local") => {
+            super::local_case::LocalCase::execute(serde_json::from_value(value)?).await
+        }
         Some("swarm") => {
             super::swarm_case::SwarmCase::execute(serde_json::from_value(value)?).await
         }

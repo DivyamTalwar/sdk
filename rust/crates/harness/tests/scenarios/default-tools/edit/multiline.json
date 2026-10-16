@@ -1,0 +1,5 @@
+{"seed":{"plans/a.md":"a\nb\nc\n"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call",
+  "name":"edit","arguments":{"file":"plans/a.md","old_text":"a\nb","new_text":"x\ny"}},{"type":"event",
+  "kind":"completed","metadata":null}],"done"],"expect":{"files":{"plans/a.md":"x\ny\nc\n"},
+  "results":{"call":{"name":"edit","content":{"kind":"json","value":{"file":{"path":"plans/a.md",
+  "descriptor":{"byte_length":6}}}}}}}}

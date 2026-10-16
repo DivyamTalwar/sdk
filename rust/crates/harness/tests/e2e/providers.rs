@@ -1,10 +1,10 @@
 use super::{
-    TestResult, diff_workspace, matchers,
+    TestResult, local_workspace, matchers,
     provider_case::ProviderCase,
     provider_http::{Recorded, resolve},
 };
 use acyclic_harness::{
-    Admission, LocalHarness, OperationId, Outcome,
+    Admission, LocalHarness, OperationId,
     context::CompactionPolicy,
     conversation::Limits,
     model::{
@@ -134,39 +134,15 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     Ok(())
 }
 
-fn wire_success(expected: &[Value], wire: &[Value], operation: OperationId) -> TestResult {
-    let operation = serde_json::to_value(operation)?;
-    let terminal: Vec<_> = wire
-        .iter()
-        .filter(|event| event["kind"] == "completed" && event["operation_id"] == operation)
-        .collect();
-    if terminal.len() != 1 {
-        return Err("provider task lacks exactly one root completion frame".into());
-    }
-    let event: acyclic_harness::scheduler::SchedulerEvent =
-        serde_json::from_value(terminal[0].clone())?;
-    if !matches!(
-        event,
-        acyclic_harness::scheduler::SchedulerEvent::Completed {
-            outcome: Outcome::Succeeded(_),
-            ..
-        }
-    ) {
-        return Err("provider task wire did not succeed".into());
-    }
-    matchers::ordered(expected, wire, "provider task wire")?;
-    Ok(())
-}
-
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
     let transport = Recorded::new(&case);
     parsed(&case, transport.clone()).await?;
     transport.restart()?;
-    let temporary = diff_workspace::temporary()?;
+    let temporary = local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
-    let (host, volume, workspace, reader) = diff_workspace::seed(&directory, &case.seed).await?;
+    let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
     let provider = Arc::new(resolve(&case, transport.clone())?);
     let config = local_harness_config(&directory, (provider.model().clone(), provider))?
         .state_directory(temporary.path().join("state"))
@@ -198,15 +174,15 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
             acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
         wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
     }
-    wire_success(&case.expect.frames, &wire, operation)?;
+    super::local_execution::check_frames(&case.expect.frames, &wire, operation)?;
     // Keep other child completions: only the root publication is dropped.
     let root = serde_json::to_value(operation)?;
-    let broken: Vec<_> = wire
+    let terminal = wire
         .iter()
-        .filter(|event| !(event["kind"] == "completed" && event["operation_id"] == root))
-        .cloned()
-        .collect();
-    if wire_success(&case.expect.frames, &broken, operation).is_ok() {
+        .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
+        .ok_or("missing terminal")?;
+    wire.remove(terminal);
+    if super::local_execution::check_frames(&case.expect.frames, &wire, operation).is_ok() {
         return Err("wire oracle accepted a dropped root completion".into());
     }
     let (requests, remaining) = transport.take_requests();

@@ -1,0 +1,5 @@
+{"seed":{"plans/a.md":"abc def ghi"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call",
+  "name":"edit","arguments":{"file":"plans/a.md","old_text":"def","new_text":"DEF"}},{"type":"event",
+  "kind":"completed","metadata":null}],"done"],"expect":{"files":{"plans/a.md":"abc DEF ghi"},
+  "results":{"call":{"name":"edit","content":{"kind":"json","value":{"file":{"path":"plans/a.md",
+  "descriptor":{"byte_length":11}}}}}}}}
