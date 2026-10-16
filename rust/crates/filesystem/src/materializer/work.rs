@@ -34,11 +34,13 @@ macro_rules! demand_calls {
 impl NativeMaterializationWork {
     /// Complete Arc allocation retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
-        match arc_layout::allocation_bytes(std::alloc::Layout::new::<
-            crate::demand::NativeDemandReadMeter,
-        >()) {
-            Ok(bytes) => bytes as u64,
-            Err(_) => panic!("original ledger Arc layout overflow"),
+        const {
+            match arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                crate::demand::NativeDemandReadMeter,
+            >()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("original ledger Arc layout overflow"),
+            }
         }
     }
     /// Admits the original ledger before sharing it.
