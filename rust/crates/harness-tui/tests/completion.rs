@@ -17,6 +17,12 @@ mod sequences;
 #[test]
 fn unicode_theme_completion_preserves_the_configured_name() {
     sequences::catalog_round_trip("shell", "sh", "Éclair Light").unwrap();
+    sequences::catalog_round_trip("shell", "sh", "ΟΣ").unwrap();
+}
+
+#[test]
+fn completion_fuzz_empty_input_is_valid() {
+    sequences::exercise(&[]).unwrap();
 }
 
 proptest! {
@@ -42,6 +48,7 @@ fn completion_regression_corpus() {
         include_bytes!("../fuzz/corpus/completion_events/unicode").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/catalog-alias").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/themes").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/greek-theme").as_slice(),
     ] {
         assert!(sequences::exercise(seed).is_ok());
     }

@@ -607,21 +607,17 @@ impl CommandCatalog {
                 tool: *tool,
                 input: tool.input(arguments),
             }),
-            CommandAction::Theme => Ok(
-                match self
-                    .themes
-                    .iter()
-                    .find(|theme| theme.chars().flat_map(char::to_lowercase)
-                        .eq(arguments.chars().flat_map(char::to_lowercase)))
-                {
+            CommandAction::Theme => {
+                let normalized = arguments.to_lowercase();
+                Ok(match self.themes.iter().find(|theme| theme.to_lowercase() == normalized) {
                     Some(name) => CommandResolution::Submit {
                         request: CommandRequest::Theme { name: name.clone() },
                     },
                     None => CommandResolution::Select {
                         query: CommandQuery::Theme,
                     },
-                },
-            ),
+                })
+            }
             CommandAction::Builtin { command } => Ok(resolve_builtin(*command, arguments)),
             CommandAction::Prompt { source, .. } => {
                 let (_, bytes) = source.read(reader, maximum_bytes).await?;

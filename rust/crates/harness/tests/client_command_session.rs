@@ -358,10 +358,10 @@ async fn dispatch_and_input_follow_the_same_catalog_and_theme_files() -> Result<
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
     let candidate = input.completion.items().next().unwrap();
-    assert_eq!(candidate.value, "sh");
+    assert_eq!(candidate.value, "shell");
     assert!(candidate.tool);
     assert!(input.completion.accept(&mut input.editor, 0));
-    assert_eq!(input.editor.text(), "/sh ");
+    assert_eq!(input.editor.text(), "/shell ");
     publish(
         &volume,
         "commands/themes.json",

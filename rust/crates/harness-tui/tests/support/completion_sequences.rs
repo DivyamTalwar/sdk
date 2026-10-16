@@ -26,10 +26,11 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
         .take(24)
         .map(|byte| char::from(b'a' + byte % 26))
         .collect();
+    let theme: String = String::from_utf8_lossy(data).chars().filter(|c| !c.is_control()).take(48).collect();
     catalog_round_trip(
         &format!("cmd{suffix}"),
         &format!("alias{suffix}"),
-        &format!("Theme {suffix}"),
+        &format!("É{theme} X"),
     )?;
     // Exercise malformed theme inventories too; replacement must be atomic.
     let mut probe = CompletionMenu::default();
@@ -155,8 +156,9 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     )?;
     let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
     menu.refresh(&editor);
-    assert_eq!(menu.items().len(), 1);
-    assert!(menu.items().next().unwrap().tool);
+    assert_eq!(menu.items().filter(|item| item.value == alias).count(), 1);
+    menu.selected = menu.items().position(|item| item.value == alias).unwrap();
+    assert!(menu.items().nth(menu.selected).unwrap().tool);
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), format!("/{alias} "));
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;

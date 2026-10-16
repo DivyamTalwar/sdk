@@ -13,11 +13,7 @@ fn prefix(value: &str, query: &str) -> bool {
 }
 
 fn theme_prefix(value: &str, query: &str) -> bool {
-    let mut value = value.chars().flat_map(char::to_lowercase);
-    query
-        .chars()
-        .flat_map(char::to_lowercase)
-        .all(|c| value.next() == Some(c))
+    value.to_lowercase().starts_with(&query.to_lowercase())
 }
 
 /// Completion namespace derived from command and workspace files.
