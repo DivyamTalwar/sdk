@@ -2,7 +2,6 @@
 
 use crate::{
     Admission, AgentId, Capabilities, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
     conversation::{
         ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -63,7 +62,7 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
+    context_manifest: crate::conversation::FileRef,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -91,7 +90,6 @@ impl LocalHarness {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
             let (model, provider) = config.model;
-            let context = config.context;
             model.validate()?;
             let mut tools = ToolRegistry::default();
             if config.default_tools {
@@ -219,11 +217,6 @@ impl LocalHarness {
                 .await?;
             #[cfg(feature = "native-execution")]
             let workspace = workspace.map(Arc::new);
-            #[cfg(feature = "native-execution")]
-            let context = match &workspace {
-                Some(workspace) => context.with(workspace.context_stage()),
-                None => context,
-            };
             let stream = Arc::new(
                 LocalStream::open(directory.join("stream"), Default::default())
                     .await
@@ -260,6 +253,20 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
+            let context_manifest = match config.context_manifest {
+                Some(reference) => reference,
+                None => {
+                    let publisher = FilesystemContentPublisher::new(
+                        files.clone(),
+                        &journal,
+                        &verifier,
+                        &signed,
+                        config.limits.file_bytes,
+                        None,
+                    )?;
+                    turn::default_manifest(publisher.as_ref(), &tools, config.limits).await?
+                }
+            };
             Ok(Self {
                 files,
                 runtime,
@@ -271,7 +278,7 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context,
+                context_manifest,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
