@@ -208,15 +208,11 @@ fn normalized_receipt_identity_ignores_source_existence() {
 
 #[cfg(unix)]
 fn wrapper_probe(broken: bool) {
-    use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
-    let wrapper = directory.path().join("cargo");
-    fs::write(
-        &wrapper,
-        "#!/bin/sh\nread version < selected\nprintf '%s\\n' \"$version\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    // Use an immutable executable: concurrent fork can inherit a freshly
+    // written fixture's writable descriptor until exec, causing ETXTBSY.
+    let wrapper = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/toolchain-wrapper.sh");
     fs::write(directory.path().join("selected"), "version A\n").unwrap();
     begin_run();
     if broken {
