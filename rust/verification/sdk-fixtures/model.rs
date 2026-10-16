@@ -79,7 +79,7 @@ fn joined_workers(broken: bool) {
             // Record the erroneous early publication, but join before asserting
             // so a failing model never leaves an outstanding worker behind.
             let observed = completed.load(Ordering::SeqCst);
-            remaining.join().unwrap();
+            assert_eq!(remaining.join().unwrap(), Ok(1));
             observed
         } else {
             assert_eq!(parallel::map(vec![0, 1], operation), vec![Err(0), Ok(1)]);
@@ -241,8 +241,7 @@ fn failed_concrete_probe_releases_the_lock_for_another_reader() {
     });
 }
 
-#[path = "../../crates/sdk-generation/src/shared_cache.rs"]
-mod shared_cache;
+use probe_fence::storage as shared_cache;
 
 fn model(broken: bool) {
     let mut builder = loom::model::Builder::new();

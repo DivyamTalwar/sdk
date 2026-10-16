@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 type Values<S> = RefCell<BTreeMap<(PathBuf, String), (S, String)>>;
 thread_local! {
-    // Calling-thread ownership; every public command starts with empty state.
+    // Calling-thread ownership; selection and ordinary values reset per command.
     static VALUES: Values<Stamp> = const { RefCell::new(BTreeMap::new()) };
     static CONCRETE: RefCell<BTreeSet<PathBuf>> = const { RefCell::new(BTreeSet::new()) };
     // Only complete, closed owner inventories reach this cache. Both concrete
