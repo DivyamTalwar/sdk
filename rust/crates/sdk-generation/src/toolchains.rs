@@ -1,5 +1,8 @@
 use super::*;
 
+static VERSIONS: crate::concrete_versions::Versions<PathBuf, sdk_file_identity::Stamp> =
+    crate::concrete_versions::Mutex::new(BTreeMap::new());
+
 pub(super) fn rustc_host() -> Result<String, CliError> {
     sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)
 }
@@ -83,7 +86,15 @@ pub(super) fn cargo_version(cargo: &Path, root: &Path) -> Result<String, CliErro
         String::from_utf8(output.stdout).map_err(|error| CliError(error.to_string()))
     };
     if crate::file_cache::is_resolved_cargo(cargo) {
-        crate::file_cache::get(cargo, "cargo-vV", probe)
+        crate::file_cache::get(cargo, "cargo-vV", || {
+            crate::concrete_versions::query(
+                &VERSIONS,
+                cargo.to_owned(),
+                || sdk_file_identity::stamp(cargo).map_err(io_error),
+                probe,
+                || CliError("concrete Cargo changed during its version query".into()),
+            )
+        })
     } else {
         // A proxy's own stamp does not identify the toolchain it dispatches to.
         probe()

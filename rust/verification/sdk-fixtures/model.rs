@@ -8,6 +8,59 @@ use loom::sync::{
 };
 use sdk_fixture_verification::get_or_try_init;
 
+#[path = "../../crates/sdk-generation/src/concrete_versions.rs"]
+mod concrete_versions;
+
+fn concrete_version_model(broken: bool) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(move || {
+        let versions = Arc::new(concrete_versions::Mutex::new(
+            std::collections::BTreeMap::new(),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let jobs = [0, 1].map(|_| {
+            let versions = Arc::clone(&versions);
+            let calls = Arc::clone(&calls);
+            loom::thread::spawn(move || {
+                let probe = || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>("version".to_owned())
+                };
+                if broken {
+                    let cached = versions.lock().unwrap().get(&0).cloned();
+                    if let Some((_, value)) = cached {
+                        return value;
+                    }
+                    let value = probe().unwrap();
+                    versions.lock().unwrap().insert(0, (0, value.clone()));
+                    value
+                } else {
+                    concrete_versions::query(&versions, 0, || Ok(0), probe, || ()).unwrap()
+                }
+            })
+        });
+        let results = jobs.map(|job| job.join().unwrap());
+        assert_eq!(results, ["version", "version"]);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "concrete executable probed twice"
+        );
+    });
+}
+
+#[test]
+fn concrete_executable_is_probed_once_across_readers() {
+    concrete_version_model(false);
+}
+
+#[test]
+#[should_panic(expected = "concrete executable probed twice")]
+fn negative_control_detects_split_concrete_version_lookup() {
+    concrete_version_model(true);
+}
+
 #[path = "../../crates/sdk-generation/src/shared_cache.rs"]
 mod shared_cache;
 
