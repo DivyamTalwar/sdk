@@ -25,7 +25,10 @@ struct Grpc {
 struct Input(transport::Requests);
 impl futures::Stream for Input {
     type Item = wire::SessionFrame;
-    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         self.0.as_mut().poll_next(cx)
     }
 }

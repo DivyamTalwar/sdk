@@ -2,6 +2,16 @@
 #![cfg(all(acyclic_stream_loom, feature = "grpc"))]
 
 #[test]
+fn connection_wakes_are_atomic_with_waiter_registration() {
+    acyclic_stream::session::verify_connections(false);
+}
+#[test]
+#[should_panic(expected = "connection publication lost its wakeup")]
+fn negative_control_drops_the_connection_wake() {
+    acyclic_stream::session::verify_connections(true);
+}
+
+#[test]
 fn cancelled_reconnect_cannot_capture_a_new_interest() {
     acyclic_stream::session::verify_abandoned_reconnect(false);
 }

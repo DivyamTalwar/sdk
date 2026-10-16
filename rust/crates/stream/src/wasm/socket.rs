@@ -218,7 +218,7 @@ fn decode_frame(data: JsValue) -> Result<wire::SessionFrame, StreamError> {
     if bytes.length() as usize > MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    wire::SessionFrame::decode(bytes.to_vec().as_slice()).map_err(|_| StreamError::InvalidArgument)
+    wire_codec::session::decode_frame(&bytes.to_vec())
 }
 
 pub(super) fn sessions(endpoint: Endpoint) -> crate::session::Client {

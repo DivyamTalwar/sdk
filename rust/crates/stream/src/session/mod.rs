@@ -24,6 +24,10 @@ mod admission;
 #[cfg(not(target_arch = "wasm32"))]
 mod children;
 mod client;
+mod connection;
+pub use connection::Connections;
+#[cfg(acyclic_stream_loom)]
+pub use connection::verify_connections;
 mod gate;
 #[cfg(not(target_arch = "wasm32"))]
 mod interest;
@@ -204,6 +208,7 @@ fn frame(channel_id: u64, generation: u64, body: Body) -> wire::SessionFrame {
         body: Some(body),
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn cursor(next: u64) -> wire::SessionCursor {
     wire::SessionCursor {
         next,

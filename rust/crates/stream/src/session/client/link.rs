@@ -12,6 +12,7 @@ impl Pool {
         self.next_link = self.next_link.checked_add(1).ok_or(StreamError::Capacity)?;
         self.links.insert(node.clone(), link);
         self.read(node.clone(), response);
+        self.connections.advance()?;
         Ok(node)
     }
     pub(super) fn dial(&mut self, node: wire::SessionNode, channel: Option<Endpoint>) {

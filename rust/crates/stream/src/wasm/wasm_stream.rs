@@ -2,14 +2,17 @@
 #[wasm_bindgen]
 pub struct WasmStream {
     provider: std::sync::Arc<dyn StreamProvider>,
+    connections: Option<crate::session::Connections>,
 }
 
 #[wasm_bindgen]
 impl WasmStream {
     #[wasm_bindgen(constructor)]
     #[must_use]
+    /// Creates an in-process provider.
     pub fn new() -> Self {
         Self {
+            connections: None,
             provider: std::sync::Arc::new(MemoryStream::default()),
         }
     }
@@ -27,6 +30,7 @@ impl WasmStream {
             ..Default::default()
         };
         Ok(Self {
+            connections: None,
             provider: std::sync::Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
@@ -38,7 +42,22 @@ impl WasmStream {
     /// Connects canonical platform RPCs and shared push follows. Credentials stay live.
     #[wasm_bindgen(js_name = connect)]
     pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
-        Ok(Self { provider: std::sync::Arc::new(remote::Remote::new(endpoint, credential).map_err(js_error)?) })
+        let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
+        Ok(Self {
+            connections: Some(remote.connections()),
+            provider: std::sync::Arc::new(remote),
+        })
+    }
+
+    /// Pushes the next successful handshake, including reconnects without further records.
+    #[wasm_bindgen(js_name = nextConnection)]
+    pub async fn next_connection(&self, after: u64) -> Result<u64, JsValue> {
+        self.connections
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .changed(after)
+            .await
+            .map_err(js_error)
     }
 
     /// Executes one finite unary operation over canonical protobuf bytes.
@@ -205,7 +224,14 @@ impl WasmStream {
 }
 
 impl WasmStream {
+    /// Physical connection generations used by Rust client recovery drivers.
+    #[must_use]
+    pub fn connections(&self) -> Option<crate::session::Connections> {
+        self.connections.clone()
+    }
     /// Shares the exact provider with higher-level Rust WASM clients.
     #[must_use]
-    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> { self.provider.clone() }
+    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> {
+        self.provider.clone()
+    }
 }

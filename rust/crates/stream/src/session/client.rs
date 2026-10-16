@@ -55,6 +55,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 /// Shared pool owning one bidirectional Streams session per authenticated node.
 #[derive(Clone)]
 pub struct Client {
+    connections: super::Connections,
     executor: std::sync::Arc<dyn super::runtime::Executor>,
     commands: mpsc::Sender<Command>,
     removed: Arc<signal::Signal<u64>>,
@@ -114,6 +115,7 @@ struct Link {
     released: wire::SessionWindow,
 }
 struct Pool {
+    connections: super::Connections,
     executor: std::sync::Arc<dyn super::runtime::Executor>,
     identity: Bytes,
     connect: std::sync::Arc<transport::Connect>,
@@ -151,6 +153,7 @@ impl Client {
         executor: std::sync::Arc<dyn super::runtime::Executor>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
+        let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
@@ -158,6 +161,7 @@ impl Client {
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
+            connections: connections.clone(),
             executor: executor.clone(),
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             connect,
@@ -186,6 +190,7 @@ impl Client {
             }
         })));
         Self {
+            connections,
             executor,
             commands,
             removed,
@@ -195,7 +200,14 @@ impl Client {
             abandoned,
         }
     }
-    pub(crate) fn abandon_pending(&self) -> Result<(), StreamError> {
+    /// Observes successful handshakes without depending on further task records.
+    #[must_use]
+    pub fn connections(&self) -> super::Connections {
+        self.connections.clone()
+    }
+
+    /// Cancels pending handshakes when their credential scope ends.
+    pub fn abandon_pending(&self) -> Result<(), StreamError> {
         self.attempt_epoch
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)

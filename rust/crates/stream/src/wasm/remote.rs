@@ -9,6 +9,9 @@ pub(super) struct Remote {
     sessions: crate::session::Client,
 }
 impl Remote {
+    pub(super) fn connections(&self) -> crate::session::Connections {
+        self.sessions.connections()
+    }
     pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
         let endpoint = socket::Endpoint::new(url, credential)?;
         let sessions = socket::sessions(endpoint.clone());
@@ -23,7 +26,10 @@ impl Remote {
             self.endpoint.url.clone(),
             FetchOptions::new()
                 .redirect(Redirect::Error)
-                .response_limits(UnaryResponseLimits::new(MAX_COMMAND_BYTES).expect("fixed positive command bound")),
+                .response_limits(
+                    UnaryResponseLimits::new(MAX_COMMAND_BYTES)
+                        .expect("fixed positive command bound"),
+                ),
         ))
         .max_decoding_message_size(MAX_COMMAND_BYTES)
         .max_encoding_message_size(MAX_COMMAND_BYTES)

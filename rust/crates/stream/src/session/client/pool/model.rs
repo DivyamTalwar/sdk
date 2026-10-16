@@ -4,6 +4,7 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
+        connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
@@ -117,6 +118,8 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let mut links = std::mem::take(&mut pool.links);
             let (commands, _) = mpsc::channel(2);
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -220,6 +223,8 @@ pub fn verify_pool_lifetime(fault: u8) {
         let links = std::mem::take(&mut pool.links);
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -317,6 +322,8 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands,
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -487,6 +494,8 @@ pub fn verify_registration_deadline(broken: bool) {
         loom::model(move || {
             let (commands, _commands) = mpsc::channel(1);
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
