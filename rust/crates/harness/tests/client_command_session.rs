@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_harness::{
-    AgentId, Capabilities, OperationId, TaskId,
+    AgentId, Capabilities, IdempotencyKey, OperationId, TaskId,
     client::{CommandFileRoot, CommandSession, CommandTool},
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
