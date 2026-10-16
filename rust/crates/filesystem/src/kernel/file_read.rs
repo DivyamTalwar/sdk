@@ -620,6 +620,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         (self.allocation, self.owned_bytes)
     }
 
+    #[inline]
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), FsError> {
         self.accounting.admit(delta)
     }
