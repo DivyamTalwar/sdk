@@ -43,6 +43,13 @@ proptest! {
         for path in ["../escape","/outside",".system/secret","a/../outside","a\0b"] {
             prop_assert!(native_request(ExternalHost::Pi,"write",json!({"path":path,"content":text}))?.tool_call(&tools).is_err(), "unsafe native path was admitted");
         }
+        let canonical = json!({"path":"file.txt", "text":text,
+            "media_type":"text/plain", "display_name":"file.txt"});
+        for missing in ["path", "text", "media_type", "display_name"] {
+            let mut arguments = canonical.clone();
+            arguments.as_object_mut().unwrap().remove(missing);
+            prop_assert!(native_request(ExternalHost::Codex,"write",arguments)?.tool_call(&tools).is_err());
+        }
     }
 }
 

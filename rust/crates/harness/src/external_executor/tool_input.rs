@@ -45,6 +45,9 @@ impl ExternalRequest {
             _ => (name.as_str(),arguments.clone()),
         };
         let tool = tools.get(name,None,None)?.ok_or_else(||Error::Unsupported("native tool is not registered".into()))?;
+        crate::executor::validate_json_schema_value(
+            &tool.definition.input_schema, &arguments, "native tool input", &mut None,
+        )?;
         Ok(ToolTaskCommand {name:tool.definition.name.clone(),revision:tool.definition.revision.clone(),arguments})
     }
 }

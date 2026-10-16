@@ -87,6 +87,8 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
             ("PreToolUse", json!({"tool_use_id":"unknown", "tool_name":"unknown", "tool_input":{}})),
             ("PreToolUse", json!({"tool_use_id":"escape", "tool_name":"Write",
                 "tool_input":{"file_path":"../escape", "content":"rejected"}})),
+            ("PreToolUse", json!({"tool_use_id":"schema", "tool_name":"write",
+                "tool_input":{"path":"incomplete.txt"}})),
             ("PostToolUse", json!({"tool_use_id":"missing", "tool_response":{"ok":true}})),
             ("SubagentStart", json!({"agent_id":"child", "agent_type":"worker"})),
             ("SubagentStop", json!({"agent_id":"child"})),
