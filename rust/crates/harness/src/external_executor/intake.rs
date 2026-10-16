@@ -212,6 +212,7 @@ where
             }
             ExternalAction::Attach { .. }
             | ExternalAction::Detach
+            | ExternalAction::CancelTool { .. }
             | ExternalAction::HostTool { .. }
             | ExternalAction::ToolFinished { .. }
             | ExternalAction::Fork { .. }

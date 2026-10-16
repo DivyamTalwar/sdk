@@ -71,7 +71,8 @@ where
                 .journal_owner(task, &fence, None)
                 .await?;
             let provider = owner.stream();
-            if !self.requests.shares_provider(&provider) || !self.results.shares_provider(&provider) {
+            if !self.requests.shares_provider(&provider) || !self.results.shares_provider(&provider)
+            {
                 return Err(Error::Unauthorized(
                     "request volumes use another task provider".into(),
                 ));
@@ -150,25 +151,15 @@ where
                 ));
             }
             drop(cached);
+            let mut cancelled = None;
             let progress = if command.kind == LIFECYCLE {
                 if let ExternalAction::ToolFinished { call_id, .. } = &request.action {
-                    let call = ExternalAction::RunTool {
-                        call_id: call_id.clone(),
-                        name: String::new(),
-                        arguments: Value::Null,
-                    };
-                    let operation = super::normalize::operation(
-                        request.host,
-                        &request.session_id,
-                        &request.caller,
-                        &call,
-                    );
-                    let result_key = FileKey::Task {
-                        task: Component::new(owner.task_id().to_string()).map_err(storage)?,
-                        file: TaskFile::RequestResult(
-                            Component::new(operation.to_string()).map_err(storage)?,
-                        ),
-                    };
+                    let result_key = request
+                        .original_tool_result_key(
+                            Component::new(owner.task_id().to_string()).map_err(storage)?,
+                            call_id,
+                        )
+                        .map_err(storage)?;
                     if self
                         .results
                         .snapshot(&Query::File(result_key), 1)
@@ -177,7 +168,7 @@ where
                         .files
                         .is_empty()
                     {
-                        failure = Some("native completion has no original harness tool result");
+                        failure = Some("native completion has no original settled tool result");
                     }
                 }
                 let value = match failure {
@@ -191,13 +182,34 @@ where
                 };
                 TaskCommandProgress::Ready(value)
             } else {
+                // Establish the cancellation cut before polling any execution.
+                let follow = super::cancellation::prepare(
+                    self.requests,
+                    &request,
+                    Component::new(owner.task_id().to_string()).map_err(storage)?,
+                )
+                .await?;
                 drop(request);
-                let commands = self.runtime.commands();
-                if reconcile {
-                    commands.reconcile(context, fence, command, payload).await?
-                } else {
-                    commands.execute(context, fence, command, payload).await?
-                }
+                let token = acyclic_fs::CancellationToken::new();
+                let commands = self.runtime.commands().with_execution_cancellation(&token);
+                let execution = async {
+                    if token.is_cancelled() && !reconcile {
+                        Ok(TaskCommandProgress::Ready(
+                            serde_json::to_value(crate::Outcome::<Value>::Failed {
+                                message: "native tool cancelled before execution".into(),
+                            })
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        ))
+                    } else if reconcile {
+                        commands.reconcile(context, fence, command, payload).await
+                    } else {
+                        commands.execute(context, fence, command, payload).await
+                    }
+                };
+                let (progress, cancel) =
+                    super::cancellation::settle(execution, follow, || token.cancel()).await?;
+                cancelled = cancel;
+                progress
             };
             if let TaskCommandProgress::Ready(value) = &progress {
                 let result = FileValue::new(result_key, volume::encode(value).map_err(storage)?);
@@ -208,6 +220,26 @@ where
                     None,
                 )
                 .await?;
+            }
+            if let Some(cancel) = cancelled {
+                if matches!(progress, TaskCommandProgress::Ready(_)) {
+                    let task = Component::new(owner.task_id().to_string()).map_err(storage)?;
+                    let acknowledgement = cancel
+                        .result_file(
+                            task,
+                            &serde_json::json!({
+                                "task":owner.task_id(),"operation_id":cancel.operation_id,
+                            }),
+                        )
+                        .map_err(storage)?;
+                    publish(
+                        self.results,
+                        &acknowledgement,
+                        owner.condition(JournalWrite::Settlement, &mut None).await?,
+                        None,
+                    )
+                    .await?;
+                }
             }
             Ok(progress)
         })

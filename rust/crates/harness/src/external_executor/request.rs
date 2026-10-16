@@ -47,7 +47,8 @@ impl ExternalRequest {
             | ExternalAction::HostTool { call_id, name, .. } => {
                 valid_text(call_id) && valid_text(name)
             }
-            ExternalAction::ToolFinished { call_id, .. } => valid_text(call_id),
+            ExternalAction::ToolFinished { call_id, .. }
+            | ExternalAction::CancelTool { call_id } => valid_text(call_id),
             ExternalAction::Fork { child_id, kind } => {
                 valid_text(child_id) && kind.as_deref().is_none_or(valid_text)
             }
@@ -94,6 +95,11 @@ pub enum ExternalAction {
         name: String,
         /// Original host-executed arguments retained for authenticated history.
         arguments: Value,
+    },
+    /// Stop one tool and await its original result and physical cleanup.
+    CancelTool {
+        /// Original native invocation identity; cancellation has its own retry ID.
+        call_id: String,
     },
     /// Record the native tool completion.
     ToolFinished {

@@ -360,3 +360,74 @@ fn identity(host: ExternalHost, mut input: Value) -> Value {
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
+
+#[tokio::test]
+async fn retained_abort_prevents_dispatch_in_an_explicitly_bound_task() -> Result<()> {
+    Box::pin(async {
+        let fixture = Fixture::new(VolumeBinding::Separate).await?;
+        let task = TaskId::from_bytes([92; 16]);
+        let folder = Component::new(task.to_string()).map_err(storage)?;
+        let start = request(
+            ExternalHost::Pi,
+            "session_start",
+            json!({"sessionId":"session","cwd":"/project"}),
+        )?;
+        assert_ne!(
+            start.task_id(),
+            task,
+            "exercise a platform-selected task binding"
+        );
+        deliver(&fixture, &folder, &start).await?;
+        let abort = request(
+            ExternalHost::Pi,
+            "tool_cancel",
+            json!({"sessionId":"session","toolCallId":"cancelled"}),
+        )?;
+        let acknowledgement = deliver(&fixture, &folder, &abort).await?;
+        assert_eq!(
+            acknowledgement["operation_id"],
+            abort.operation_id.to_string()
+        );
+        let write = request(
+            ExternalHost::Pi,
+            "tool_call",
+            json!({"sessionId":"session","toolCallId":"cancelled",
+            "toolName":"write","input":{"path":"cancelled.txt","content":"must not publish"}}),
+        )?;
+        let answer = deliver(&fixture, &folder, &write).await?;
+        assert!(answer.get("Failed").is_some(), "{answer}");
+        let grant = acyclic_harness::conversation::ContentGrant::verify_directory_read(
+            &fixture.verifier,
+            &fixture.signed,
+            &fixture.volume,
+            "",
+            &mut None,
+        )?;
+        assert!(matches!(
+            fixture
+                .files
+                .read_private_path(&fixture.volume, &grant, "cancelled.txt", None, 1024, None)
+                .await,
+            Err(Error::NotFound(_))
+        ));
+        let next = request(
+            ExternalHost::Pi,
+            "tool_call",
+            json!({"sessionId":"session","toolCallId":"after-cancel",
+            "toolName":"write","input":{"path":"after.txt","content":"still admitted"}}),
+        )?;
+        let answer = deliver(&fixture, &folder, &next).await?;
+        assert!(answer.get("Succeeded").is_some(), "{answer}");
+        assert_eq!(
+            fixture
+                .files
+                .read_private_path(&fixture.volume, &grant, "after.txt", None, 1024, None)
+                .await?
+                .1
+                .as_ref(),
+            b"still admitted"
+        );
+        Ok(())
+    })
+    .await
+}

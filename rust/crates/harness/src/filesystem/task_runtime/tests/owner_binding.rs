@@ -31,6 +31,19 @@ proptest! {
                 assert!(bound.original_task_binding_matches(task, &fence));
                 bound.owned_mailbox.as_ref().unwrap().verify_owner(None)?.await?;
 
+                let token = acyclic_fs::CancellationToken::new();
+                let cancellable = runtime.bind_task_owner_cancellable(
+                    context.as_ref().clone(), task, fence.clone(), Some(&token),
+                ).await?;
+                let cancellable = runtime.bind_task_owner(cancellable, task, fence.clone()).await?;
+                let owner = cancellable.owned_mailbox.as_ref().unwrap();
+                assert!(!owner.execution_cancellation().unwrap().is_cancelled());
+                token.cancel();
+                assert!(owner.execution_cancellation().unwrap().is_cancelled());
+                // Stopping an invocation preserves its fence for cleanup and
+                // result settlement; it does not invent permanent task loss.
+                owner.verify_owner(None)?.await?;
+
                 let other = TaskId::from_bytes([103; 16]);
                 assert!(runtime.bind_task_owner(context.as_ref().clone(), other, fence.clone()).await.is_err());
                 let reopened = fixture.runtime(None).await?;

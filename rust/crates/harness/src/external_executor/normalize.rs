@@ -26,6 +26,9 @@ pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<External
             workspace: text(&mut input, &["cwd"])?,
         },
         HookAction::RunTool => tool(&mut input)?,
+        HookAction::CancelTool => ExternalAction::CancelTool {
+            call_id: text(&mut input, &["tool_use_id", "toolCallId"])?,
+        },
         HookAction::ToolFinished => {
             let failed = failed(&mut input, host == ExternalHost::Pi)?;
             let result = match (host, event) {
@@ -128,6 +131,7 @@ pub(super) fn operation(
         ExternalAction::RunTool { call_id, .. } | ExternalAction::HostTool { call_id, .. } => {
             ("tool", call_id.as_str())
         }
+        ExternalAction::CancelTool { call_id } => ("tool-cancel", call_id.as_str()),
         ExternalAction::ToolFinished { call_id, .. } => ("tool-finished", call_id.as_str()),
         ExternalAction::Fork { child_id, .. } => ("fork", child_id.as_str()),
         ExternalAction::Join { child_id } => ("join", child_id.as_str()),

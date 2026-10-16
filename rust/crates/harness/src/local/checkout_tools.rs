@@ -168,7 +168,14 @@ impl ToolExecutor for CheckoutTools {
                         PublicationPermit::Unrestricted,
                     )
                     .await?;
-                    let (result, mut state) = self.bash(command, maximum, state).await?;
+                    let (result, mut state) = self
+                        .bash(
+                            command,
+                            maximum,
+                            state,
+                            owner.execution_cancellation().cloned().unwrap_or_default(),
+                        )
+                        .await?;
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(

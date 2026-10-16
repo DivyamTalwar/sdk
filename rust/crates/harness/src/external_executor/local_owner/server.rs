@@ -114,24 +114,16 @@ fn stop_key(instance: uuid::Uuid) -> Result<FileKey> {
     })
 }
 
-async fn stopped(control: &TaskVolume<LocalStream>, instance: uuid::Uuid) -> Result<()> {
-    let mut observation = control
-        .observe(Query::File(stop_key(instance)?), None, 1)
+async fn stopped<P: acyclic_stream::StreamProvider + ?Sized>(
+    control: &TaskVolume<P>,
+    instance: uuid::Uuid,
+) -> Result<()> {
+    super::super::client::follow_file(control, stop_key(instance)?)
         .await
-        .map_err(storage)?;
-    if observation
-        .snapshot
-        .is_some_and(|snapshot| !snapshot.files.is_empty())
-    {
-        return Ok(());
-    }
-    observation
-        .changes
-        .next()
+        .map_err(storage)?
         .await
-        .ok_or_else(|| Error::Storage("owner stop follow ended".into()))?
-        .map_err(storage)?;
-    Ok(())
+        .map_err(storage)
+        .map(|_| ())
 }
 
 /// Runs the existing local ownership boundary until an authenticated stop file.
@@ -289,3 +281,6 @@ pub(super) async fn drive(
         harness.external_request(&request).await?;
     }
 }
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;

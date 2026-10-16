@@ -52,6 +52,8 @@ pub enum HookAction {
     Attach,
     /// Run a tool through the harness.
     RunTool,
+    /// Request cancellation of one native tool invocation.
+    CancelTool,
     /// Record the native tool completion.
     ToolFinished,
     /// Fork a child task.
@@ -100,6 +102,10 @@ const PI_HOOKS: &[HookSpec] = &[
     HookSpec {
         event: "tool_call",
         action: HookAction::RunTool,
+    },
+    HookSpec {
+        event: "tool_cancel",
+        action: HookAction::CancelTool,
     },
     HookSpec {
         event: "tool_result",

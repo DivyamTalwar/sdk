@@ -87,17 +87,16 @@ where
                     work,
                 )?;
             }
-            let task_context = Box::pin(self.runtime.bind_task_owner(
+            let task_context = Box::pin(self.runtime.bind_task_owner_cancellable(
                 context.task().clone(),
                 task,
                 fence.clone(),
+                self.execution_cancellation,
             ))
             .await?;
-            let task_context = self.runtime.bind_context_interactions(
-                task_context,
-                task,
-                Arc::clone(&journal),
-            )?;
+            let task_context =
+                self.runtime
+                    .bind_context_interactions(task_context, task, Arc::clone(&journal))?;
             ToolContext::new(Arc::new(task_context), operation, &invocation.call_id, None)?
         };
         if !reconciliation_only || io.is_none() {

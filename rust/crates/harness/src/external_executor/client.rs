@@ -30,22 +30,8 @@ impl ExternalRequest {
     ) -> impl Future<Output = Result<Value>> + 'a {
         Box::pin(async move {
             let key = self.result_key(task)?;
-            let mut observation = results.observe(Query::File(key.clone()), None, 1).await?;
-            if let Some(file) = observation
-                .snapshot
-                .and_then(|snapshot| snapshot.files.into_iter().next())
-            {
-                return volume::decode(&file.bytes);
-            }
-            while let Some(change) = observation.changes.next().await {
-                if let Some(file) = change?.file {
-                    if file.key != key || file.channel.is_some() {
-                        return Err(Error::InvalidSegment);
-                    }
-                    return volume::decode(&file.bytes);
-                }
-            }
-            Err(Error::ResetRequired)
+            let file = follow_file(results, key).await?.await?;
+            volume::decode(&file.bytes)
         })
     }
 
@@ -61,6 +47,27 @@ impl ExternalRequest {
         })
     }
 
+    pub(crate) fn original_tool_result_key(
+        &self,
+        task: Component,
+        call_id: &str,
+    ) -> Result<FileKey> {
+        let operation = super::normalize::operation(
+            self.host,
+            &self.session_id,
+            &self.caller,
+            &super::ExternalAction::RunTool {
+                call_id: call_id.to_owned(),
+                name: String::new(),
+                arguments: Value::Null,
+            },
+        );
+        Ok(FileKey::Task {
+            task,
+            file: TaskFile::RequestResult(Component::new(operation.to_string())?),
+        })
+    }
+
     /// Encodes one native hook answer for publication with the actor checkpoint.
     pub fn result_file(&self, task: Component, answer: &Value) -> Result<FileValue> {
         if !self.valid() {
@@ -71,4 +78,35 @@ impl ExternalRequest {
             volume::encode(answer)?,
         ))
     }
+}
+
+/// Establishes the atomic snapshot/follow cut before returning a file waiter.
+pub(super) async fn follow_file<P: StreamProvider + ?Sized>(
+    files: &TaskVolume<P>,
+    key: FileKey,
+) -> Result<acyclic_stream::BoxProviderFuture<'static, Result<FileValue>>> {
+    let mut observation = files.observe(Query::File(key.clone()), None, 1).await?;
+    Ok(Box::pin(async move {
+        let file = if let Some(file) = observation
+            .snapshot
+            .and_then(|snapshot| snapshot.files.into_iter().next())
+        {
+            file
+        } else {
+            loop {
+                let change = observation
+                    .changes
+                    .next()
+                    .await
+                    .ok_or(Error::ResetRequired)??;
+                if let Some(file) = change.file {
+                    break file;
+                }
+            }
+        };
+        if file.key != key || file.channel.is_some() {
+            return Err(Error::InvalidSegment);
+        }
+        Ok(file)
+    }))
 }

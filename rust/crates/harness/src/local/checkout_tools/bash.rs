@@ -10,10 +10,15 @@ impl CheckoutTools {
         command: String,
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
+        cancellation: acyclic_fs::CancellationToken,
     ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>)> {
         let workspace = Arc::clone(&self.workspace);
         acyclic_native_runtime::run_blocking_io(
-            move || guarded(state, |_| run(&workspace, &command, maximum_output)),
+            move || {
+                guarded(state, |_| {
+                    run(&workspace, &command, maximum_output, &cancellation)
+                })
+            },
             None,
         )
         .map_err(Error::process_io)?
@@ -22,7 +27,15 @@ impl CheckoutTools {
     }
 }
 
-fn run(workspace: &LocalWorkspace, command: &str, maximum_output: usize) -> Result<ToolResult> {
+fn run(
+    workspace: &LocalWorkspace,
+    command: &str,
+    maximum_output: usize,
+    cancellation: &acyclic_fs::CancellationToken,
+) -> Result<ToolResult> {
+    cancellation
+        .check()
+        .map_err(|_| Error::Invalid("native tool cancelled".into()))?;
     if acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)? != workspace.identity {
         return Err(Error::Unauthorized("checkout root was replaced".into()));
     }
@@ -38,7 +51,11 @@ fn run(workspace: &LocalWorkspace, command: &str, maximum_output: usize) -> Resu
         COMMAND_TIMEOUT,
         maximum_output,
         None,
-        || Ok(()),
+        || {
+            cancellation
+                .check()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Interrupted, error))
+        },
         |_| Ok(Default::default()),
         None,
         None,

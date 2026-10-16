@@ -201,6 +201,7 @@ struct ModelBinding {
 /// Stock command adapters over the runtime's existing executors and journal.
 pub struct FilesystemTaskCommands<'a, P, A, O> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
+    execution_cancellation: Option<&'a acyclic_fs::CancellationToken>,
     model: Option<ModelBinding>,
     effects: Option<Arc<crate::effect_host::ConversationEffectHost<P>>>,
     fork_preparer: Option<Arc<super::FilesystemForkPreparer<A, O>>>,
@@ -209,11 +210,20 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     pub(super) const fn new(runtime: &'a FilesystemTaskRuntime<P, A, O>) -> Self {
         Self {
             runtime,
+            execution_cancellation: None,
             model: None,
             effects: None,
             fork_preparer: None,
         }
     }
+    pub(crate) fn with_execution_cancellation(
+        mut self,
+        token: &'a acyclic_fs::CancellationToken,
+    ) -> Self {
+        self.execution_cancellation = Some(token);
+        self
+    }
+
     /// Copies the selected bounded model configuration.
     pub fn with_model(
         mut self,

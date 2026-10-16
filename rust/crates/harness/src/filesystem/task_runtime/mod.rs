@@ -273,6 +273,7 @@ struct TaskJournalMailbox<P: StreamProvider> {
     owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
+    execution_cancellation: Option<acyclic_fs::CancellationToken>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -328,6 +329,9 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     #[cfg(not(target_arch = "wasm32"))]
     fn admission(&self) -> (&TaskAdmissionRecord, &crate::workflow::WorkflowAdmission) {
         (self.owner.admission(), self.owner.workflow_admission())
+    }
+    fn execution_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.execution_cancellation.as_ref()
     }
     fn verify_owner<'a>(
         &'a self,
@@ -400,8 +404,8 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
 }
 
-mod context;
 mod content;
+mod context;
 mod dispatch;
 mod execution;
 mod interactions;
@@ -519,17 +523,35 @@ where
 
     pub(in crate::filesystem) async fn bind_task_owner(
         &self,
-        mut context: TaskContext,
+        context: TaskContext,
         task: TaskId,
         fence: LeaseFence,
     ) -> Result<TaskContext> {
-        if context.durable_task_id() != Some(task) || !Arc::ptr_eq(&context.harness, &self.harness) {
+        let cancellation = context
+            .owned_mailbox
+            .as_ref()
+            .and_then(|owner| owner.execution_cancellation())
+            .cloned();
+        self.bind_task_owner_cancellable(context, task, fence, cancellation.as_ref())
+            .await
+    }
+
+    pub(in crate::filesystem) async fn bind_task_owner_cancellable(
+        &self,
+        mut context: TaskContext,
+        task: TaskId,
+        fence: LeaseFence,
+        cancellation: Option<&acyclic_fs::CancellationToken>,
+    ) -> Result<TaskContext> {
+        if context.durable_task_id() != Some(task) || !Arc::ptr_eq(&context.harness, &self.harness)
+        {
             return Err(Error::Unauthorized(
                 "execution owner differs from task context".into(),
             ));
         }
         let owner = self.host.journal_owner(task, &fence, None).await?;
         let mailbox = Arc::new(TaskJournalMailbox {
+            execution_cancellation: cancellation.cloned(),
             host: Arc::clone(&self.host),
             owner: Arc::new(owner),
             #[cfg(not(target_arch = "wasm32"))]

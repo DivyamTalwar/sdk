@@ -17,5 +17,7 @@
   {"host":"pi","event":"subagent_stop","input":{"sessionId":"session","agentId":"child"},"action":{"action":"join","child_id":"child"}},
   {"host":"codex","event":"SessionEnd","input":{"session_id":"session"},"action":{"action":"detach"}},
   {"host":"claude-code","event":"SessionEnd","input":{"session_id":"session"},"action":{"action":"detach"}},
-  {"host":"pi","event":"session_shutdown","input":{"sessionId":"session"},"action":{"action":"detach"}}
+  {"host":"pi","event":"session_shutdown","input":{"sessionId":"session"},"action":{"action":"detach"}},
+  {"host":"pi","event":"tool_cancel","input":{"sessionId":"session","toolCallId":"call"},
+    "action":{"action":"cancel_tool","call_id":"call"}}
 ]

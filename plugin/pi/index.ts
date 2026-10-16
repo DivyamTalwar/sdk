@@ -8,10 +8,10 @@ const maximum = 64 * 1024;
 // Canonical value once, its escaped text (at most twice), plus native fields.
 const maximumAnswer = 3 * maximum + 1024;
 type Answer = Record<string, unknown>;
-export type Invoke = (event: string, input: Answer) => Promise<Answer>;
+export type Invoke = (event: string, input: Answer, signal?: AbortSignal) => Promise<Answer>;
 
 /** The common Rust client owns normalization, authentication, append and follow. */
-export const invoke: Invoke = (event, input) => new Promise((resolve, reject) => {
+const invokeProcess: Invoke = (event, input) => new Promise((resolve, reject) => {
   const child = spawn(executable, event === "catalog" ? ["__catalog"] : ["__hook", "pi", event], { windowsHide: true, stdio: "pipe" });
   const output: Buffer[] = [];
   let bytes = 0;
@@ -38,6 +38,30 @@ export const invoke: Invoke = (event, input) => new Promise((resolve, reject) =>
   else child.stdin.end(payload);
 });
 
+/** Abort writes a cancellation file; the original process stays until settlement. */
+export const invoke: Invoke = async (event, input, signal) => {
+  if (signal?.aborted) throw new DOMException("Harness tool aborted before execution", "AbortError");
+  type Reply = { answer: Answer } | { error: unknown };
+  const observe = (pending: Promise<Answer>): Promise<Reply> => pending.then(
+    answer => ({ answer }), error => ({ error }),
+  );
+  let cancellation: Promise<Reply> | undefined;
+  const abort = () => {
+    const { sessionId, cwd, toolCallId, agentId, threadId, turnId } = input;
+    cancellation ??= observe(invokeProcess("tool_cancel", { sessionId, cwd, toolCallId, agentId, threadId, turnId }));
+  };
+  const original = observe(invokeProcess(event, input));
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  const reply = await original;
+  signal?.removeEventListener("abort", abort);
+  const cancelled = await cancellation;
+  if (cancelled && "error" in cancelled) throw cancelled.error;
+  if ("error" in reply) throw reply.error;
+  if (signal?.aborted) throw new DOMException("Harness tool aborted after settlement", "AbortError");
+  return reply.answer;
+};
+
 function identity(ctx: ExtensionContext) {
   return { sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
@@ -57,8 +81,8 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
         parameters: tool.input_schema as ToolDefinition["parameters"],
         renderCall: args => new Text(tool.name + " " + JSON.stringify(args), 0, 0),
         renderResult: result => new Text(result.content.map(block => block.type === "text" ? block.text : "").join("\n"), 0, 0),
-        async execute(toolCallId, input, _signal, _onUpdate, context) {
-          const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) });
+        async execute(toolCallId, input, signal, _onUpdate, context) {
+          const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) }, signal);
           if (!Array.isArray(result.content) || result.isError !== false) throw new Error("Invalid harness tool result");
           return { content: result.content, details: result.details };
         },

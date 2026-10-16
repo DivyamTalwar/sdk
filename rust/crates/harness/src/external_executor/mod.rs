@@ -2,6 +2,8 @@
 
 mod answer;
 mod append;
+#[cfg(feature = "filesystem")]
+mod cancellation;
 mod catalog;
 mod client;
 #[cfg(feature = "filesystem")]
@@ -11,13 +13,17 @@ mod failure;
 mod handoff;
 #[cfg(feature = "filesystem")]
 mod intake;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod local_owner;
 mod manifest;
 #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
 mod mcp;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 mod native;
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
-mod local_owner;
 mod normalize;
 #[cfg(feature = "filesystem")]
 mod publication;
@@ -40,15 +46,24 @@ pub use handoff::native_tool_request;
 pub(crate) use handoff::read_result as read_native_result;
 #[cfg(feature = "filesystem")]
 pub use intake::RequestConsumer;
+#[cfg(all(
+    feature = "test-support",
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use local_owner::fuzz_input as fuzz_local_owner_input;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use local_owner::{run_local_owner, stop_local_owner};
 pub use manifest::{claude_hooks, claude_manifest};
 #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
 pub use mcp::{native_tool_catalog, serve_native_tools};
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use native::{HookBinding, run_hook};
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
-pub use local_owner::{run_local_owner, stop_local_owner};
-#[cfg(all(feature = "test-support", feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use local_owner::fuzz_input as fuzz_local_owner_input;
 pub use normalize::request;
 pub use request::{ExternalAction, ExternalRequest};
 pub use result::tool_result;

@@ -12,6 +12,10 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn admission(&self) -> (&TaskAdmissionRecord, &WorkflowAdmission);
+    #[cfg(feature = "filesystem")]
+    fn execution_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        None
+    }
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
