@@ -39,7 +39,7 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(input.editor.text(), "draft");
                 let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
                 terminal.draw(|frame| { screen.render(frame, &input, &mut Viewport::default(), maximum - expected, 0); }).unwrap();
-                proptest::prop_assert!(super::screen_text(&terminal).contains(&format!("Transcript row {:03}", maximum - expected)));
+                proptest::prop_assert!(super::screen_text(&terminal).contains(&format!("Transcript row {:03}", maximum - expected)), "selected transcript row is visible");
                 let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
                 scroll_tui(&mut files, up, 0, maximum).await.unwrap();
                 proptest::prop_assert_eq!(volume.snapshot(&Query::Root, 64).await.unwrap().generation, before);
