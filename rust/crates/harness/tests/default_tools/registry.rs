@@ -93,6 +93,21 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
 
 #[test]
 fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<()> {
+    let artifacts = HarnessBuilder::new()
+        .agent_loop(Arc::new(DelegatingLoop))
+        .artifacts(content())
+        .build()?;
+    for name in ["read", "write", "edit"] {
+        assert!(matches!(
+            artifacts.runtime().tool(name),
+            Err(Error::NotFound(_))
+        ));
+        assert!(
+            !artifacts
+                .capabilities()
+                .contains(&format!("tool:call:{name}"))
+        );
+    }
     assert!(matches!(
         HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
