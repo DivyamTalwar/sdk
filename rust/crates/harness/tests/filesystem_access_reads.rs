@@ -666,6 +666,7 @@ proptest! {
         expiry in prop::option::of(any::<u64>()),
         name in "[a-zΣß]{1,12}",
         malformed in prop::collection::vec(any::<u8>(), 0..4096),
+        generation_key in any::<[u8; 32]>(),
     ) {
         for legacy in [
             include_bytes!("../src/filesystem/access/legacy-read.json").as_slice(),
@@ -687,6 +688,9 @@ proptest! {
         file["path"] = format!("notes/{name}").into();
         let file: FileRef = serde_json::from_value(file)?;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&file)?)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let generation = GenerationRef::new(file.volume().provider(), &generation_key, None, None)?.0;
+        acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&generation)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         let receipt = (file, None::<GenerationRef>);
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&receipt)?)

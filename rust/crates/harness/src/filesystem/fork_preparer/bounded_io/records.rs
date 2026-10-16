@@ -182,3 +182,9 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
             .ok_or_else(|| Error::Invalid("upload generation ownership overflow".into()))
     }
 }
+
+impl PreparationRecord for crate::resources::GenerationRef {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
+    }
+}
