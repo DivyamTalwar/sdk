@@ -82,7 +82,7 @@ proptest! {
             &acyclic_fs::CancellationToken::new(),
         ).expect("fixture ledger");
         let before = work.live_allocation_bytes();
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
+        let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
         let native = record.invocation.validate_recorded(&record.metadata, limits, Some(&io));
         prop_assert_eq!(admitted, native.is_ok());
         drop(native);
