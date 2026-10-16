@@ -395,6 +395,14 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         &output.join(".rustdoc"),
         &[("demo-a", 4), ("demo-b", 4), ("demo-c", 4)],
     );
+    let executions: Value = serde_json::from_slice(&fs::read(output.join("sdk-docs-scenario-executions.v1.json")).unwrap()).unwrap();
+    let executions = executions.as_array().unwrap();
+    assert_eq!(executions.len(), 3);
+    for (row, owner) in executions.iter().zip(["demo-a", "demo-b", "demo-c"]) {
+        assert_eq!(row["example"]["package"], owner);
+        assert_eq!(row["stdoutSha256"], hash_bytes(b"archive-example-executed\n"));
+        assert_eq!(row["stderrSha256"], hash_bytes(b""));
+    }
     let data: Value =
         serde_json::from_slice(&fs::read(output.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
     assert_eq!(

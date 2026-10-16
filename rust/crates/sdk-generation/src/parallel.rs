@@ -16,7 +16,11 @@ where
     let mut jobs = Vec::new();
     for input in inputs {
         let operation = Arc::clone(&operation);
-        match thread::Builder::new().spawn(move || operation(input)) {
+        // Keep unwinds as values until every worker has joined. This gives the
+        // modeled thread path the same join-error semantics as native threads.
+        match thread::Builder::new().spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(input)))
+        }) {
             Ok(job) => jobs.push(job),
             Err(error) => {
                 drop(join_all(jobs));
@@ -27,8 +31,11 @@ where
     join_all(jobs)
 }
 
-fn join_all<R>(jobs: Vec<thread::JoinHandle<R>>) -> Vec<R> {
-    let joined = jobs.into_iter().map(|job| job.join()).collect::<Vec<_>>();
+fn join_all<R>(jobs: Vec<thread::JoinHandle<std::thread::Result<R>>>) -> Vec<R> {
+    let joined = jobs
+        .into_iter()
+        .map(|job| job.join().and_then(|result| result))
+        .collect::<Vec<_>>();
     joined
         .into_iter()
         .map(|result| result.unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
