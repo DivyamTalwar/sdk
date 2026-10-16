@@ -26,7 +26,7 @@ pub(super) async fn publish<P: StreamProvider + ?Sized>(
         };
     }
     volume
-        .append_if(snapshot.generation, file, vec![condition], deadline)
+        .append_if(snapshot.generation, file, vec![condition], deadline, None)
         .await
         .map_err(storage)?;
     Ok(())
