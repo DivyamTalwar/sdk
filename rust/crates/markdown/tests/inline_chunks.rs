@@ -80,6 +80,7 @@ proptest! {
 fn checked_in_chunk_corpus_matches_full_render() {
     for data in [
         include_bytes!("../fuzz/corpus/chunk_splits/control-flanking").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/code-literal-nul").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/restored-scope-frontier").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/escape-pair").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/escaped-image").as_slice(),
@@ -103,5 +104,18 @@ fn checked_in_chunk_corpus_matches_full_render() {
         let source =
             std::str::from_utf8(data.get(8 + flags..).expect("corpus body")).expect("UTF-8 corpus");
         replay(source, &(1..source.len()).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn every_punctuation_escape_preserves_terminal_source_coverage() {
+    for byte in 0u8..=127 {
+        if !byte.is_ascii_punctuation() {
+            continue;
+        }
+        for ending in ["", "\n", "\r\n", "\nnext"] {
+            let source = format!("x \\{}{ending}", char::from(byte));
+            replay(&source, &(1..source.len()).collect::<Vec<_>>());
+        }
     }
 }

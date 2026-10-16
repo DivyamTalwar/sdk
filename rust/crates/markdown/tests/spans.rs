@@ -1,4 +1,30 @@
 use super::*;
+
+#[test]
+fn frozen_suffix_views_preserve_prefixes_and_mutations() {
+    let mut all = Spans::default();
+    let mut cursors = vec![all.clone()];
+    for text in ["a", "界", "❤️", "z"] {
+        all.push(crate::Span {
+            text: text.into(),
+            ..crate::Span::default()
+        });
+        all.freeze();
+        cursors.push(all.clone());
+    }
+    let owned = all.to_vec();
+    for (at, cursor) in cursors.iter().enumerate() {
+        let mut suffix = all.suffix_after(cursor);
+        assert_eq!(suffix.to_vec(), owned[at..]);
+        if let Some(last) = suffix.last_mut() {
+            last.text.push_str("!");
+        }
+        assert_eq!(all.to_vec(), owned);
+        suffix.truncate(1);
+        assert!(suffix.len() <= 1);
+        assert_eq!(cursor.to_vec(), owned[..at]);
+    }
+}
 use crate::Line;
 use proptest::prelude::*;
 

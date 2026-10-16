@@ -9,6 +9,7 @@ pub use view::{SpanRef, TextRef};
 #[derive(Default)]
 pub struct Spans {
     prefix: Option<Arc<Node>>,
+    stop: Option<Arc<Node>>,
     tail: Option<Box<Span>>,
     forced: bool,
 }
@@ -36,6 +37,9 @@ impl Spans {
     }
 
     fn known_len(&self) -> Option<usize> {
+        if self.stop.is_some() {
+            return None;
+        }
         Some(
             self.prefix.as_ref().map_or(Some(0), |node| node.count)?
                 + usize::from(self.tail.is_some()),
@@ -44,7 +48,13 @@ impl Spans {
 
     /// Whether the sequence has no runs.
     pub fn is_empty(&self) -> bool {
-        self.prefix.is_none() && self.tail.is_none()
+        self.tail.is_none()
+            && (self.prefix.is_none()
+                || self
+                    .prefix
+                    .as_ref()
+                    .zip(self.stop.as_ref())
+                    .is_some_and(|(end, start)| Arc::ptr_eq(end, start)))
     }
 
     /// The first canonical run.
@@ -62,6 +72,9 @@ impl Spans {
 
     /// Mutate the final run; shared prefixes remain unchanged.
     pub fn last_mut(&mut self) -> Option<&mut Span> {
+        if self.is_empty() {
+            return None;
+        }
         if self.tail.is_none()
             && let Some(node) = &self.prefix
         {
@@ -111,6 +124,24 @@ impl Spans {
 
     pub(crate) fn freeze(&mut self) {
         self.flush_tail();
+    }
+
+    // Both values are frozen cursors in the same immutable sibling list.
+    // The inline forest owns and validates their ancestry before constructing
+    // the view; no traversal or copying of the enclosed children is needed.
+    pub(crate) fn suffix_after(&self, start: &Self) -> Self {
+        debug_assert!(self.tail.is_none() && start.tail.is_none());
+        let result = Self {
+            prefix: self.prefix.clone(),
+            stop: start.prefix.clone().or_else(|| self.stop.clone()),
+            tail: None,
+            forced: false,
+        };
+        if result.is_empty() {
+            Self::default()
+        } else {
+            result
+        }
     }
 
     /// Remove every run from this snapshot.
@@ -267,6 +298,7 @@ impl Clone for Spans {
         }
         Self {
             prefix: self.prefix.clone(),
+            stop: self.stop.clone(),
             tail: self.tail.clone(),
             forced: self.forced,
         }
@@ -276,7 +308,7 @@ impl Clone for Spans {
 impl Drop for Spans {
     fn drop(&mut self) {
         let mut current = self.prefix.take();
-        let mut pending = Vec::new();
+        let mut pending: Vec<_> = self.stop.take().into_iter().collect();
         while let Some(node) = current.take().or_else(|| pending.pop()) {
             let Some(mut node) = Arc::into_inner(node) else {
                 continue;
@@ -286,6 +318,7 @@ impl Drop for Spans {
             current = node.previous.take();
             if let Part::Group(child, _, _) = &mut node.part {
                 pending.extend(child.prefix.take());
+                pending.extend(child.stop.take());
             }
         }
     }

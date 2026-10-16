@@ -155,7 +155,7 @@ impl<'a> SpanRef<'a> {
 
 enum Task<'a> {
     Sequence(&'a Spans, Style),
-    Prefix(Option<&'a Node>, Style),
+    Prefix(Option<&'a Node>, Option<&'a Node>, Style),
     Part(&'a Part, Style),
     Tail(&'a Span, bool, Style),
     Boundary,
@@ -192,13 +192,20 @@ impl<'a> Iter<'a> {
                     if let Some(tail) = &spans.tail {
                         self.push(Task::Tail(tail, spans.forced, style));
                     }
-                    self.push(Task::Prefix(spans.prefix.as_deref(), style));
+                    self.push(Task::Prefix(
+                        spans.prefix.as_deref(),
+                        spans.stop.as_deref(),
+                        style,
+                    ));
                 }
-                Task::Prefix(Some(node), style) => {
+                Task::Prefix(Some(node), stop, style) => {
+                    if stop.is_some_and(|stop| std::ptr::eq(node, stop)) {
+                        continue;
+                    }
                     self.push(Task::Part(&node.part, style));
-                    self.push(Task::Prefix(node.previous.as_deref(), style));
+                    self.push(Task::Prefix(node.previous.as_deref(), stop, style));
                 }
-                Task::Prefix(None, _) => {}
+                Task::Prefix(None, _, _) => {}
                 Task::Part(Part::Span(span, forced), style) => {
                     self.push(Task::Tail(span, *forced, style))
                 }

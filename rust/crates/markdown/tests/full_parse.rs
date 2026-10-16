@@ -19,7 +19,7 @@ mod reference_updates;
 #[path = "whitespace.rs"]
 mod whitespace;
 
-fn full_parse(source: &str) -> Vec<Line> {
+pub(super) fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
     let source = if source.contains('\r') {
         std::borrow::Cow::Owned(source.replace("\r\n", "\n").replace('\r', "\n"))

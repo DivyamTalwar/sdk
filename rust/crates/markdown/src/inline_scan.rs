@@ -188,6 +188,21 @@ impl Scanner {
         self.atomic.clear();
     }
 
+    pub(super) fn glyphs(&mut self, source: &str, start: usize, end: usize) -> Option<Spans> {
+        let root = self.state.projection(self.tokens.preview().as_ref());
+        self.state.forest.glyphs(root, source, start, end)
+    }
+
+    #[cfg(test)]
+    pub(super) fn glyph_retained(
+        &self,
+        nodes: &mut HashSet<usize>,
+        texts: &mut HashSet<usize>,
+        links: &mut HashSet<*const u8>,
+    ) -> (usize, usize) {
+        self.state.forest.glyph_retained(nodes, texts, links)
+    }
+
     pub(super) fn checkpoint(&self, position: usize) -> usize {
         let (mut low, mut high) = (0, self.atomic.len());
         while low < high {

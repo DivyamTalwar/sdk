@@ -185,6 +185,21 @@ impl Text {
         })
     }
 
+    // The caller retains the exact source of this append-only value. Validate
+    // UTF-8 against that contiguous source instead of walking old chunk nodes.
+    pub(crate) fn source_range(&self, range: Range<usize>, source: &str) -> Option<Self> {
+        if self.len() != source.len() || source.get(range.clone()).is_none() {
+            return None;
+        }
+        if range.is_empty() {
+            return Some(Self::default());
+        }
+        Some(Self {
+            root: self.root.clone(),
+            range: self.range.start + range.start..self.range.start + range.end,
+        })
+    }
+
     /// Whether any of the given characters occurs.
     pub fn contains<const N: usize>(&self, characters: [char; N]) -> bool {
         self.reverse_chunks().any(|chunk| {

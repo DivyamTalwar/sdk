@@ -1,5 +1,7 @@
 use super::delimiters::Matched;
 use std::ops::Range;
+#[path = "inline_glyphs.rs"]
+mod glyphs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -18,6 +20,7 @@ struct Node {
     children: usize,
     stop: usize,
     kind: Kind,
+    view: Option<Box<glyphs::View>>,
 }
 
 const PAGE: usize = 8;
@@ -27,6 +30,7 @@ pub(super) struct Forest {
     nodes: Vec<Vec<Node>>,
     length: usize,
     root: usize,
+    input: glyphs::Input,
     #[cfg(test)]
     scan: bool,
     #[cfg(test)]
@@ -90,6 +94,7 @@ impl Forest {
                 children,
                 stop,
                 kind,
+                view: None,
             });
         self.length += 1;
         self.root = self.length;
@@ -176,10 +181,12 @@ impl Forest {
         Some((left, right))
     }
 
+    #[cfg(test)]
     pub(super) fn scopes(&self) -> Vec<Range<usize>> {
         self.scopes_at(self.root)
     }
 
+    #[cfg(test)]
     pub(super) fn scopes_at(&self, cursor: usize) -> Vec<Range<usize>> {
         self.scopes_since(cursor, 0)
     }

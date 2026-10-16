@@ -132,6 +132,8 @@ impl Renderer {
     }
 
     fn text(&mut self, text: &str) {
+        #[cfg(test)]
+        crate::work::render_feed(text.len());
         for part in text.split_inclusive(['\r', '\n']) {
             if self.line.spans.is_empty() {
                 self.line.push(&self.prefix(), MUTED, None);

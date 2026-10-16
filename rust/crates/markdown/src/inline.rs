@@ -31,7 +31,11 @@ impl Inline {
         links: &mut HashSet<*const u8>,
     ) -> (usize, usize) {
         let (payload, metadata) = self.checkpoint.mark.spans.retained(nodes, texts, links);
-        (payload, metadata + self.scanner.retained())
+        let (glyph_payload, glyph_metadata) = self.scanner.glyph_retained(nodes, texts, links);
+        (
+            payload + glyph_payload,
+            metadata + glyph_metadata + self.scanner.retained(),
+        )
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         let mark = &self.checkpoint.mark;
@@ -69,9 +73,15 @@ impl Markdown {
         };
         let prefix = context;
         let sentinel = prefix.len();
-        let source = format!("{prefix}{tail}");
+        let source = if prefix.is_empty() {
+            std::borrow::Cow::Borrowed(tail)
+        } else {
+            #[cfg(test)]
+            work::copy(prefix.len() + tail.len());
+            std::borrow::Cow::Owned(format!("{prefix}{tail}"))
+        };
         #[cfg(test)]
-        work::copy(source.len() + prefix.len());
+        work::copy(prefix.len());
         let (events, calls) = events::scoped(
             &source,
             &self.references,
@@ -94,6 +104,22 @@ impl Markdown {
         let frontier = inline
             .scanner
             .frontier(&self.source, base, &source, &events, sentinel);
+        if base == inline.start
+            && let Some(end) = glyph_events(&source, &events)
+            && let Some(spans) = inline.scanner.glyphs(
+                &self.source,
+                inline.start,
+                base + end.saturating_sub(sentinel),
+            )
+        {
+            let first = self.stable_lines + mark.line;
+            self.lines.truncate(first);
+            self.lines.push(Line { spans });
+            self.visible_lines = self.visible_end(first, self.lines.len(), self.visibility.end);
+            self.plain = false;
+            self.inline = Some(inline);
+            return Some(first);
+        }
         let boundary = boundary(&source, &events, sentinel, frontier);
         let boundary = inline
             .scanner
@@ -231,6 +257,48 @@ impl Markdown {
         let _ = self.advance_inline(self.source.len());
         self.plain = plain;
     }
+}
+
+// These event variants are represented directly by the retained inline forest.
+// Other parser-resolved atoms still use the event renderer until their scopes
+// have retained glyph representations too. This does not affect checkpoint
+// eligibility, which remains the scanner's neutral-state predicate.
+pub(super) fn glyph_events(source: &str, events: &[(Event<'_>, Range<usize>)]) -> Option<usize> {
+    fn same(left: &str, right: &str) -> bool {
+        if left.len() != right.len() {
+            return false;
+        }
+        if std::ptr::eq(left.as_ptr(), right.as_ptr()) {
+            return true;
+        }
+        #[cfg(test)]
+        work::scan(left.len());
+        left == right
+    }
+    let mut end = 0;
+    for (event, range) in events {
+        let supported = match event {
+            Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
+            | Event::End(
+                TagEnd::Paragraph | TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough,
+            )
+            | Event::Code(_) => true,
+            Event::Text(text) => source.get(range.clone()).is_some_and(|raw| {
+                same(raw, text) || raw.strip_prefix('\\').is_some_and(|raw| same(raw, text))
+            }),
+            _ => false,
+        };
+        if !supported {
+            return None;
+        }
+        if !matches!(
+            event,
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph)
+        ) {
+            end = end.max(range.end);
+        }
+    }
+    Some(end)
 }
 
 fn left_context(source: &str) -> String {
