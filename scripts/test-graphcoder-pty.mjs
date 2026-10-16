@@ -310,9 +310,9 @@ try {
   const before = await active.commandJson(`/read ${input("diff-before", { caller: root, lease: leases.root, file: manifest.files.root_project_before })}`, "file");
   const after = await active.commandJson(`/read ${input("diff-after", { caller: root, lease: leases.root, file: manifest.files.root_project_after })}`, "file");
   assert.notEqual(before.text, after.text);
-  const diff = await active.command(`/diff-files ${input("real-diff", { caller: root, lease: leases.root, before: before.file, after: after.file })}`, /diff-files exact before=[^\n]+\n--- before\n[\s\S]*?\n\+\+\+ after\n/);
+  const diff = await active.command(`/diff-files ${input("real-diff", { caller: root, lease: leases.root, before: before.file, after: after.file })}`, /diff exact before=[^\n]+\n--- before\n[\s\S]*?\n\+\+\+ after\n/);
   assert.ok(diff[0].includes(before.text.trimEnd()));
-  await active.command("/back 0", /diff-files exact before=/);
+  await active.command("/back 0", /diff exact before=/);
   const publicationRequest = bind(manifest.native_publication_request);
   const pending = await active.commandJson(`/publication-open ${publicationRequest}`, "publication");
   assert.equal(pending.status, "pending"); assert.equal(pending.caller, root);

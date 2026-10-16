@@ -106,6 +106,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
+        let files = if let Query::CommandSession { session, recent } = query {
+            super::command_query::snapshot(&index, session, *recent, maximum_files)?
+        } else {
         let mut files = Vec::new();
         for range in query.ranges() {
             for (_, file) in index
@@ -119,6 +122,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 files.push(file.clone());
             }
         }
+        files
+        };
         Ok(Snapshot {
             files,
             cursor: self.cursor(

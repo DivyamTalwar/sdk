@@ -18,6 +18,10 @@ struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
 fuzz_target!(|input: &[u8]| {
+    if let Ok(query) = serde_json::from_slice::<acyclic_harness::task_volume::Query>(input) {
+        let encoded = serde_json::to_vec(&query).unwrap();
+        assert_eq!(serde_json::from_slice::<acyclic_harness::task_volume::Query>(&encoded).unwrap(), query);
+    }
     if let Ok(catalog) = CommandCatalog::from_bytes(input, 8192) {
         let specs: Vec<_> = catalog.commands().collect();
         let encoded = serde_json::to_vec(&specs).unwrap();
@@ -61,6 +65,9 @@ fuzz_target!(|input: &[u8]| {
     let Ok(input) = std::str::from_utf8(input) else {
         return;
     };
+    if let Ok(query) = acyclic_harness::task_volume::Query::folder(input) {
+        assert_eq!(serde_json::from_slice::<acyclic_harness::task_volume::Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), query);
+    }
     if let Ok(key) = acyclic_harness::task_volume::FileKey::parse(input) {
         assert_eq!(
             acyclic_harness::task_volume::FileKey::parse(&key.path()).unwrap(),

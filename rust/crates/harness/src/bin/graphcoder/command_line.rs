@@ -49,9 +49,11 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         }
     };
     let digest = blake3::hash(&identity);
-    let mut id = <[u8; 16]>::try_from(&digest.as_bytes()[..16]).map_err(invalid)?;
-    id[6] |= 0x40;
-    let session = uuid::Uuid::from_bytes(id);
+    let session = match &backend {
+        #[cfg(feature = "filesystem-local")]
+        Backend::Native(native) => native.config.ui_session.unwrap_or_else(uuid::Uuid::new_v4),
+        _ => uuid::Uuid::new_v4(),
+    };
     let path = StreamPath::new(format!("graphcoder-files/{}", digest.to_hex())).map_err(invalid)?;
     let volume = Arc::new(TaskVolume::open(provider, path).await.map_err(invalid)?);
     let mut client =
@@ -140,7 +142,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 cursor = acyclic_harness::wire::ReplayCursor::decode(bytes.as_slice())
                     .map_err(invalid)?;
             }
-            let settings = client.request_settings(&request)?;
+            let settings = client.request_settings(&request).await?;
             let selected = client.selected_task()?;
             let mut parent = selected;
             let result = client

@@ -5,6 +5,9 @@ use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
+use crate::task_volume::command_query::related;
+#[path = "session_archive.rs"]
+mod archive;
 
 /// Disposable command/UI fold. All authoritative contents and execution markers
 /// are ordinary files in the supplied, already-authorized private/config volume.
@@ -17,7 +20,6 @@ pub struct CommandSession<P: ?Sized> {
     pending: VecDeque<files::FileValue>,
     outputs: BTreeMap<u64, files::FileKey>,
     activity_cursor: Option<(u64, String)>,
-    global_output_sequence: u64,
     catalog: CommandCatalog,
     session: uuid::Uuid,
     maximum_bytes: u64,
@@ -61,7 +63,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Err(Error::Invalid("zero command-session bound".into()));
         }
         let observed = volume
-            .observe(files::Query::Root, None, maximum_files)
+            .observe(files::Query::CommandSession { session: component(session.to_string())?, recent: u32::try_from((maximum_files / 4).max(1)).map_err(|error| Error::Invalid(error.to_string()))? }, None, maximum_files)
             .await
             .map_err(storage)?;
         let snapshot = observed
@@ -76,7 +78,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             pending: VecDeque::new(),
             outputs: BTreeMap::new(),
             activity_cursor: None,
-            global_output_sequence: 0,
             catalog: CommandCatalog::builtins()?,
             session,
             maximum_bytes,
@@ -85,6 +86,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         for file in snapshot.files {
             client.fold(file)?;
         }
+        client.load_task_settings().await?;
         for (key, bytes) in [
             (
                 ui("config", "commands.json")?,
@@ -175,26 +177,29 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Settings bound to the request's immutable target, independently of any
     /// subsequent navigation in the consuming UI.
-    pub fn request_settings(&self, request: &files::FileValue) -> Result<Value> {
+    pub async fn request_settings(&mut self, request: &files::FileValue) -> Result<Value> {
+        let mut value = self.state(CommandFileRoot::Config, "settings.json")?.unwrap_or_else(|| json!({}));
         let key = match &request.key {
             files::FileKey::Task { task, .. } => {
                 ui(&format!("task-{}", task.as_str()), "settings.json")?
             }
-            files::FileKey::Session { .. } => ui("config", "settings.json")?,
+            files::FileKey::Session { .. } => return Ok(value),
             _ => return Err(Error::Invalid("not a command request".into())),
         };
-        let value: Value = self
-            .files
-            .get(&key)
+        let task: Value = self
+            .read_file(&key).await?
+            .as_ref()
             .map(|file| serde_json::from_slice(&file.bytes))
             .transpose()
             .map_err(codec)?
             .unwrap_or_else(|| json!({}));
-        if !value.is_object() {
+        if !task.is_object() {
             return Err(Error::Invalid(
                 "request settings must be a JSON object".into(),
             ));
         }
+        value.as_object_mut().ok_or_else(|| Error::Invalid("shared settings must be an object".into()))?
+            .extend(task.as_object().ok_or_else(|| Error::Invalid("task settings must be an object".into()))?.clone());
         Ok(value)
     }
 
@@ -210,7 +215,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             serde_json::to_vec(value).map_err(codec)?,
             false,
         )
-        .await
+        .await?;
+        if root == CommandFileRoot::Session && name == "layout.json" { self.load_task_settings().await?; }
+        Ok(())
     }
 
     /// Publish owner-provided definitions at the current query cut.
@@ -275,6 +282,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .catalog
             .resolve(input, reader, self.maximum_bytes)
             .await?;
+        self.load_task_settings().await?;
         let operation = OperationId::new();
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
@@ -310,34 +318,16 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     fn fold(&mut self, file: files::FileValue) -> Result<()> {
         if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
         {
-            if matches!(
-                file.key,
-                files::FileKey::Session {
-                    file: files::TaskFile::ExecutionResult(_),
-                    ..
-                }
-            ) {
-                #[derive(Deserialize)]
-                struct Sequence {
-                    sequence: u64,
-                }
-                if file.bytes.len() as u64 > self.maximum_bytes {
-                    return Err(Error::Invalid("command file exceeds byte bound".into()));
-                }
-                let value: Sequence = serde_json::from_slice(&file.bytes).map_err(codec)?;
-                if value.sequence == 0 {
-                    return Err(Error::Invalid("zero command output sequence".into()));
-                }
-                self.global_output_sequence = self.global_output_sequence.max(value.sequence);
-            }
             return Ok(());
+        }
+        if let files::FileKey::Ui { directory, .. } = &file.key {
+            if directory.as_str().starts_with("task-") && self.selected_task()?.is_none_or(|task| directory.as_str() != format!("task-{task}")) { return Ok(()) }
         }
         if file.bytes.len() as u64 > self.maximum_bytes {
             return Err(Error::Invalid("command file exceeds byte bound".into()));
         }
-        if !self.files.contains_key(&file.key) && self.files.len() >= self.maximum_files {
-            return Err(Error::Invalid("command query exceeds file bound".into()));
-        }
+        self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
+        self.fold_activity_file(&file)?;
         if file.key == ui("config", "commands.json")? {
             let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
             catalog.set_themes(self.catalog.themes.clone())?;
@@ -357,6 +347,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 ..
             }
         ) {
+            if let Some(request) = related(&file.key, files::TaskFile::Request) {
+                self.pending.retain(|pending| pending.key != request);
+            }
+            if let Some(claim) = related(&file.key, files::TaskFile::ExecutionClaim) { self.files.remove(&claim); }
             #[derive(Deserialize)]
             struct Order<'a> {
                 sequence: u64,
@@ -375,7 +369,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Err(Error::Conflict("duplicate command output sequence".into()));
             }
             self.outputs.insert(order.sequence, file.key.clone());
-            self.global_output_sequence = self.global_output_sequence.max(order.sequence);
             if let files::FileKey::Session {
                 session,
                 file: files::TaskFile::ExecutionResult(id),
@@ -429,6 +422,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             self.pending.push_back(file.clone());
         }
         self.files.insert(file.key.clone(), file);
+        self.trim_archive();
         Ok(())
     }
 
@@ -476,6 +470,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         if create_only && self.files.contains_key(&key) {
             return Err(Error::Conflict("command file already exists".into()));
         }
+        self.make_room(usize::from(!self.files.contains_key(&key)))?;
         let file = files::FileValue::new(key, bytes);
         let published = if create_only {
             self.volume.create(self.generation, &file).await
@@ -523,7 +518,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         F: FnOnce(OperationId, Option<TaskId>, CommandResolution) -> Fut,
         Fut: std::future::Future<Output = Result<Value>>,
     {
-        if self.files.get(&request.key) != Some(request) {
+        if self.read_file(&request.key).await?.as_ref() != Some(request) {
             return Err(Error::Unauthorized(
                 "command request differs from its observed immutable file".into(),
             ));
@@ -544,9 +539,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         };
         let operation = OperationId::parse(id.as_str())?;
-        self.global_output_sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("command output sequence overflow".into()))?;
         let key = |file| match &request.key {
             files::FileKey::Task { task, .. } => files::FileKey::Task {
                 task: task.clone(),
@@ -559,10 +551,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             _ => unreachable!(),
         };
         let claim = key(files::TaskFile::ExecutionClaim(id.clone()));
-        if self.files.contains_key(&claim) {
-            return if self
-                .files
-                .contains_key(&key(files::TaskFile::ExecutionResult(id.clone())))
+        if self.read_file(&claim).await?.is_some() {
+            return if self.read_file(&key(files::TaskFile::ExecutionResult(id.clone()))).await?.is_some()
             {
                 Ok(None)
             } else {
@@ -576,6 +566,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             })
             .map_err(codec)?;
         let bytes = request.bytes.to_vec();
+        self.make_room(3)?;
         if let Err(error) = self.publish(claim, bytes, true).await {
             if matches!(error, Error::Conflict(_)) {
                 self.pending.push_front(request.clone());
@@ -585,11 +576,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let result = execute(operation, task_id, resolution).await;
         loop {
             let previous = self.generation;
-            let sequence = self
-                .global_output_sequence
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("command output sequence overflow".into()))?;
-            let bytes = output_bytes(sequence, &result)?;
+            let sequence = self.generation.position;
+            let bytes = archive::output_bytes(sequence, &result, self.maximum_bytes)?;
             match self
                 .publish(
                     key(files::TaskFile::ExecutionResult(id.clone())),
@@ -610,6 +598,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(error) => return Err(error),
             }
         }
+        self.persist_activity().await?;
         result.map(Some)
     }
 
@@ -628,20 +617,4 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .and_then(Value::as_bool)
             .unwrap_or(false))
     }
-}
-
-fn output_bytes(sequence: u64, result: &Result<Value>) -> Result<Vec<u8>> {
-    use serde::{Serializer as _, ser::SerializeMap as _};
-    let mut bytes = Vec::new();
-    let mut serializer = serde_json::Serializer::new(&mut bytes);
-    let mut map = serializer.serialize_map(Some(2)).map_err(codec)?;
-    map.serialize_entry("sequence", &sequence).map_err(codec)?;
-    match result {
-        Ok(value) => map.serialize_entry("ok", value).map_err(codec)?,
-        Err(error) => map
-            .serialize_entry("error", &error.to_string())
-            .map_err(codec)?,
-    }
-    map.end().map_err(codec)?;
-    Ok(bytes)
 }

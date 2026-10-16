@@ -152,6 +152,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.commit.as_bytes() != &cursor.commit {
             return Err(Error::ResetRequired);
         }
+        let files = if let Query::CommandSession { session, recent } = query {
+            super::command_query::snapshot(&index, session, *recent, maximum_files)?
+        } else {
         let mut files = Vec::new();
         for range in query.ranges() {
             for (_, file) in index
@@ -165,6 +168,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 files.push(file.clone());
             }
         }
+        files
+        };
         Ok(Snapshot {
             files,
             generation: self.generation(&index),

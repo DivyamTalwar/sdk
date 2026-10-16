@@ -32,6 +32,8 @@ pub struct Config {
     #[serde(default)]
     pub command_workspace: Option<PathBuf>,
     #[serde(default)]
+    pub ui_session: Option<uuid::Uuid>,
+    #[serde(default)]
     pub command_roots: Vec<acyclic_harness::client::CommandRoot>,
     #[serde(default)]
     pub skill_roots: Vec<acyclic_harness::context::ContextRoot>,

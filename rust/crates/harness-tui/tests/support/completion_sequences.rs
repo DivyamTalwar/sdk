@@ -153,7 +153,7 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
 pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
     let mut menu = CompletionMenu::default();
     let definition =
-        serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}]);
+        serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
     menu.set_file(
         "commands/catalog.json",
         Some(&serde_json::to_vec(&definition)?),
@@ -167,16 +167,16 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), format!("/{alias} "));
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
-    editor.set_text("/THEME ", 1);
+    editor.set_text("/T ", 1);
     menu.refresh(&editor);
     let initial = theme.to_lowercase();
     editor.insert(&initial, 2);
     menu.refresh(&editor);
     assert_eq!(menu.items().len(), 1);
     assert!(menu.accept(&mut editor, 2));
-    assert_eq!(editor.text(), format!("/THEME {theme}"));
+    assert_eq!(editor.text(), format!("/T {theme}"));
     assert!(editor.undo());
-    assert_eq!(editor.text(), format!("/THEME {initial}"));
+    assert_eq!(editor.text(), format!("/T {initial}"));
     Ok(())
 }
 

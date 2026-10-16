@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 #[serde(try_from = "String", into = "String")]
 pub struct InputPath(pub(super) String);
 
+impl InputPath {
+    /// Canonical input source spelling.
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
 impl TryFrom<String> for InputPath {
     type Error = Error;
     fn try_from(path: String) -> Result<Self> {
