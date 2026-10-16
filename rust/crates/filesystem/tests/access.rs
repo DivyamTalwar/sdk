@@ -912,6 +912,7 @@ proptest! {
         let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
         let prepared = trie.prepare(&path)?;
         let mode = prepared.mount_mode(100);
+        prop_assert_eq!(mode.visible(), decide(&policy, &principal, Action::List, res, context, &cap).allowed);
         for action in Action::ALL {
             prop_assert_eq!(mode.allows(action), decide(&policy, &principal, action, res, context, &cap).allowed);
             prop_assert_eq!(trie.decide(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));

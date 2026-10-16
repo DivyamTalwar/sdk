@@ -13,7 +13,8 @@ pub(super) struct Output {
     generation: Generation,
     task: Component,
     call: Component,
-    sequence: [u64; 2],
+    sequence: (u64, u64),
+    step: u64,
     runtime: tokio::runtime::Handle,
 }
 
@@ -32,7 +33,7 @@ impl Output {
             .snapshot(
                 &Query::Tool {
                     task: task.clone(),
-                    turn: 0,
+                    turn: u64::from(context.model_step),
                     call: call.clone(),
                 },
                 0,
@@ -45,7 +46,8 @@ impl Output {
             generation,
             task,
             call,
-            sequence: [0; 2],
+            sequence: (0, 0),
+            step: u64::from(context.model_step),
             runtime: tokio::runtime::Handle::current(),
         };
         output.publish(ToolFile::Request, request.into()).await?;
@@ -61,7 +63,7 @@ impl Output {
             FileKey::Task {
                 task: self.task.clone(),
                 file: TaskFile::Tool {
-                    turn: 0,
+                    turn: self.step,
                     call: self.call.clone(),
                     file,
                 },
@@ -81,23 +83,32 @@ impl Output {
     }
 
     pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
-        let (channel, bytes) = match chunk {
-            ProcessOutput::Stdout(bytes) => (0, bytes),
-            ProcessOutput::Stderr(bytes) => (1, bytes),
+        let (file, bytes, mut next) = match chunk {
+            ProcessOutput::Stdout(bytes) => {
+                (ToolFile::Stdout(self.sequence.0), bytes, self.sequence)
+            }
+            ProcessOutput::Stderr(bytes) => {
+                (ToolFile::Stderr(self.sequence.1), bytes, self.sequence)
+            }
         };
-        let sequence = self.sequence[channel];
-        let file = if channel == 0 {
-            ToolFile::Stdout(sequence)
-        } else {
-            ToolFile::Stderr(sequence)
+        let sequence = match &file {
+            ToolFile::Stdout(_) => &mut next.0,
+            _ => &mut next.1,
         };
-        let runtime = self.runtime.clone();
-        runtime
-            .block_on(self.publish(file, bytes.to_vec().into()))
-            .map_err(std::io::Error::other)?;
-        self.sequence[channel] = sequence
+        *sequence = sequence
             .checked_add(1)
             .ok_or_else(|| std::io::Error::other("tool output sequence overflow"))?;
+        let runtime = self.runtime.clone();
+        runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                self.publish(file, bytes.to_vec().into()),
+            )
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)
+        })?;
+        self.sequence = next;
         Ok(())
     }
 

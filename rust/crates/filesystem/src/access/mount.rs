@@ -18,7 +18,7 @@ impl MountMode {
     /// Whether a directory listing may disclose this entry's name or metadata.
     #[must_use]
     pub const fn visible(self) -> bool {
-        self.allows(Action::List) || self.allows(Action::Read)
+        self.allows(Action::List)
     }
 
     /// Whether every mutation of entries and bytes at this path is denied.
