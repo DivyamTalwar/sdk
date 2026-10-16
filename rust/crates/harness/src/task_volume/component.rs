@@ -5,7 +5,7 @@ use std::sync::Arc;
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct Component(Arc<str>);
+pub struct Component(pub(super) Arc<str>);
 
 impl Component {
     /// Validates a task, request, tool, principal or mount identity.

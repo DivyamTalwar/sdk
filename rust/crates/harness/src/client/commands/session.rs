@@ -345,7 +345,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }
         if file.key == ui("config", "themes.json")? {
             self.catalog
-                .set_themes(serde_json::from_slice(&file.bytes).map_err(codec)?)?;
+                .set_themes(serde_json::from_slice::<Vec<String>>(&file.bytes).map_err(codec)?)?;
         }
         if matches!(
             file.key,

@@ -1,5 +1,6 @@
 use super::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "../../tests/task_volume/ranges.rs"]
