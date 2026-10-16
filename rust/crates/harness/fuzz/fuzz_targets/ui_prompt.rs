@@ -32,8 +32,8 @@ fuzz_target!(|data: &[u8]| {
                 .into_bytes()
                 .into();
             for (path, bytes) in [
-                (format!("ui/session-{session}/draft.json"), &data[..split]),
-                ("ui/config/history.json".into(), &data[split + 1..]),
+                (format!(".ui/session-{session}/draft.json"), &data[..split]),
+                (".ui/config/history.json".into(), &data[split + 1..]),
             ] {
                 let cut = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
                 volume
