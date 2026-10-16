@@ -413,6 +413,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .map_err(storage)?;
@@ -453,6 +454,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let workers: Vec<_> = (0..std::thread::available_parallelism()
             .unwrap()
             .get()
+            .min(4)
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
