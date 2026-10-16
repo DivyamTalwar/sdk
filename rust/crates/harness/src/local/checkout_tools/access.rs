@@ -110,6 +110,14 @@ impl CheckoutTools {
         }
         workspaces.remove(&selected);
         for id in workspaces {
+            let root = self.workspace.view().workspace();
+            if id == root.id() {
+                // Task roots are authenticated lazy bindings, not registrations
+                // in the separate branch-lineage catalog.
+                self.require_access(root, ceiling, "local fs facade")
+                    .await?;
+                continue;
+            }
             let workspace = acyclic_fs::WorkspaceResolver::resolve(
                 &(
                     self.workspace.filesystem.clone(),
