@@ -159,6 +159,7 @@ dependencies = [
  "cc",
  "crc-fast",
  "diffy",
+ "divan",
  "fs2",
  "fuser",
  "futures",
