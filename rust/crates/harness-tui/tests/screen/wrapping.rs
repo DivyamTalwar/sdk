@@ -100,3 +100,24 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    // Partitioning identical styled text at any character boundary preserves
+    // every projected row, including CR/LF and combining/ZWJ boundaries.
+    #[test]
+    fn span_partitions_preserve_the_same_logical_newlines(
+        pieces in prop::collection::vec(prop::sample::select(vec!["a", "日", "👩‍💻", "e", "\u{301}", "\r", "\n", "\t"]), 0..24),
+        cut in 0usize..64, width in 1u16..24,
+    ) {
+        let text = pieces.concat();
+        let middle = text.char_indices().nth(cut).map_or(text.len(), |(index, _)| index);
+        let source = [Line::from(vec![Span::raw(&text)])];
+        let split = [Line::from(vec![Span::raw(&text[..middle]), Span::raw(&text[middle..])])];
+        let mut whole = WrappedLines::default();
+        let mut divided = WrappedLines::default();
+        whole.update(&source, 0, width);
+        divided.update(&split, 0, width);
+        prop_assert_eq!(whole.rows(), divided.rows());
+    }
+}

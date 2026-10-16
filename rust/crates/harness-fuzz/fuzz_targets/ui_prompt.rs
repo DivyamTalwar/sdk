@@ -40,7 +40,8 @@ fuzz_target!(|data: &[u8]| {
             || matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
     }));
     assert_eq!(acyclic_harness::tui::display_text(&visible), visible);
-    let source = [Line::raw(text.as_ref())];
+    // Line::raw removes newlines; both partitions must retain the same bytes.
+    let source = [Line::from(vec![Span::raw(text.as_ref())])];
     let mut wrapped = WrappedLines::default();
     wrapped.update(&source, 0, width);
     assert!(
@@ -57,6 +58,18 @@ fuzz_target!(|data: &[u8]| {
         Span::raw(&text[..middle]),
         Span::raw(&text[middle..]),
     ])];
+    assert_eq!(
+        source[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>(),
+        split[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    );
     let mut split_wrapped = WrappedLines::default();
     split_wrapped.update(&split, 0, width);
     assert_eq!(wrapped.rows(), split_wrapped.rows());
