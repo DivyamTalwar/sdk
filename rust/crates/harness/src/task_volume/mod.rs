@@ -59,9 +59,6 @@ pub enum Error {
     /// Underlying durable storage failure.
     #[error(transparent)]
     Storage(StreamError),
-    /// The authenticated caller cannot write a privileged task record.
-    #[error("task-volume write is not authorized")]
-    Unauthorized,
     /// Noncanonical logical path or identifier.
     #[error("invalid task-volume path")]
     InvalidPath,

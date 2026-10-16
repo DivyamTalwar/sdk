@@ -4,7 +4,7 @@ use crate::filesystem::{FilesystemContentVerifier, FilesystemFileQuery};
 impl LocalHarness {
     /// Authority selecting this local agent's followed document and task files.
     pub fn client_owner(&self) -> crate::wire::Authority {
-        crate::wire_codec::encode_authority(self.signed.audience())
+        crate::wire_codec::encode_authority(self.verifier.audience())
     }
     /// Authenticated reader shared by file-backed client input and documents.
     pub fn client_reader(&self) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {

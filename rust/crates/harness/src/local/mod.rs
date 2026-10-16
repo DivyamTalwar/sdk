@@ -56,7 +56,6 @@ pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     runtime: Arc<LocalTaskRuntime>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -251,7 +250,6 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
                 stream: stream.clone(),
-                task_volume: &task_volume,
                 issuer: &issuer,
                 verifier: &verifier,
                 agent: owner.agent,
@@ -279,7 +277,6 @@ impl LocalHarness {
                 files,
                 task_files,
                 runtime,
-                task_files,
                 project: owner.project.clone(),
                 scratch,
                 journal,
@@ -298,11 +295,6 @@ impl LocalHarness {
                 workspace,
             })
         })
-    }
-
-    /// Owner-authorized task-file writes and bounded live queries.
-    pub fn task_files(&self) -> &crate::task_volume::TaskFiles<LocalStream> {
-        &self.task_files
     }
 
     /// Durable content and project host.
