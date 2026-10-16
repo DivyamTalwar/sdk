@@ -17,7 +17,9 @@ pub fn preceding_follow(
     {
         return Err(StreamError::InvalidArgument);
     }
-    super::commit_id(&follow.preceding_commit_id).map(Some)
+    super::commit_id(&follow.preceding_commit_id)
+        .map(Some)
+        .map_err(|_| StreamError::InvalidArgument)
 }
 
 /// Requires affirmative provider enforcement before a checked channel gets credit.
