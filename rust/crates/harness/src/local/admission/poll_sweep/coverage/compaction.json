@@ -1,1 +1,11 @@
-{"task:submitted": 1}
+{
+  "blocking:completed": 132,
+  "blocking:submitted": 132,
+  "model:accepted": 2,
+  "model:dispatch": 2,
+  "native:completed": 30,
+  "native:submitted": 30,
+  "stream:read:ready": 3995,
+  "task:completed": 73,
+  "task:submitted": 73
+}

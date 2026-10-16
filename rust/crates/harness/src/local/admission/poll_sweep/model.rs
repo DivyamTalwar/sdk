@@ -81,6 +81,7 @@ impl ModelProvider for ModelEffects {
                 summaries.push(file.clone());
             }
         }
+        drop(summaries);
         self.accounting.count_tokens(request)
     }
 

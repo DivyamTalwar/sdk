@@ -153,17 +153,10 @@ impl StockExecution<'_> {
             })?;
             // A turn may compact more than once. Its file receipt must not alias
             // another step or any of the task's tool publications.
-            let digest = crate::model::hash_bytes(path.as_bytes(), self.io)?;
-            let mut identity = [0; 16];
-            identity.copy_from_slice(&digest[..16]);
+            let publication = summary_publication(operation_id, step, self.io)?;
             self.verify_execution_owner().await?;
             let output = context
-                .stage_private_file_once(
-                    OperationId::from_bytes(identity),
-                    &path,
-                    text.as_bytes(),
-                    self.io,
-                )
+                .stage_private_file_once(publication, &path, text.as_bytes(), self.io)
                 .await?;
             self.verify_execution_owner().await?;
             output
@@ -194,6 +187,35 @@ impl StockExecution<'_> {
         stage_json(journal, operation_id, &provenance_key, &summary, self.io).await?;
         Ok(summary)
     }
+}
+
+fn summary_publication(
+    operation: OperationId,
+    step: u32,
+    io: Option<&PreparationIo>,
+) -> Result<OperationId> {
+    const DOMAIN: &[u8] = b"harness/v2/summary-content\0";
+    #[cfg(feature = "filesystem")]
+    let charge = acyclic_fs::WorkCounters {
+        bytes_hashed: DOMAIN.len() as u64 + 16 + 4,
+        ..Default::default()
+    };
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.preflight(charge)?;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN);
+    hasher.update(&operation.into_bytes());
+    hasher.update(&step.to_le_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.charge(charge)?;
+    }
+    let _ = io;
+    Ok(OperationId::from_bytes(bytes))
 }
 
 #[cfg(test)]

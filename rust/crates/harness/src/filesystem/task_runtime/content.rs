@@ -27,10 +27,7 @@ where
                 "private binding differs from original runtime work",
             ));
         }
-        if volume.class() != crate::conversation::VolumeClass::AgentPrivate
-            || !matches!(volume.owner(), crate::conversation::VolumeOwner::Agent(agent)
-                if Some(*agent) == self.signed.agent())
-        {
+        if !private_owner_matches(volume, self.signed.agent()) {
             return Err(observed::boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
@@ -135,3 +132,12 @@ where
         Ok(self)
     }
 }
+
+fn private_owner_matches(volume: &VolumeRef, agent: Option<crate::AgentId>) -> bool {
+    volume.class() == crate::conversation::VolumeClass::AgentPrivate
+        && matches!(volume.owner(), crate::conversation::VolumeOwner::Agent(owner)
+            if Some(*owner) == agent)
+}
+
+#[cfg(test)]
+mod tests;
