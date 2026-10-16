@@ -144,3 +144,10 @@ path = "fuzz_targets/command_parser.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "plan_markdown"
+path = "fuzz_targets/plan_markdown.rs"
+test = false
+doc = false
+bench = false
