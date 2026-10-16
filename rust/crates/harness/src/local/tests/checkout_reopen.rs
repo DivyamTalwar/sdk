@@ -1,8 +1,6 @@
 //! The durable branch catalog selects capture before the first reopened command.
-#[cfg(unix)]
 use super::*;
 
-#[cfg(unix)]
 async fn run(harness: &LocalHarness) -> Result<()> {
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "exercise the selected checkout")
@@ -18,7 +16,6 @@ async fn run(harness: &LocalHarness) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn commands(commands: &[(&str, &str)]) -> Arc<ScriptedModelProvider> {
     scripted(
         commands
@@ -186,15 +183,27 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     Ok(())
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Result<()> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let unread = directory.path().join("unread.txt");
     std::fs::write(&unread, b"unrelated source bytes").map_err(super::super::storage)?;
+    #[cfg(unix)]
     std::fs::set_permissions(&unread, std::fs::Permissions::from_mode(0))
         .map_err(super::super::storage)?;
+    #[cfg(windows)]
+    let _unread_guard = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // Deny every subsequent open until the test ends. An eager importer
+        // cannot read this file, while the held lazy checkout can run echo.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&unread)
+            .map_err(super::super::storage)?
+    };
     let provider = commands(&[
         ("bash", "echo first"),
         ("bash", "echo second"),
@@ -234,6 +243,7 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
         !directory.path().join(".git").exists(),
         "watch fencing changed the checkout"
     );
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(&unread)
             .map_err(super::super::storage)?
