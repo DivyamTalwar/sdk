@@ -1,9 +1,9 @@
 #![no_main]
-use acyclic_harness::{
-    client::CommandResolution,
-    model::{FileProjectionPolicy, ModelContent, ModelContentPart},
-};
+use acyclic_harness::client::CommandResolution;
 use libfuzzer_sys::fuzz_target;
+
+#[path = "../support/mentions.rs"]
+mod oracle;
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {
@@ -17,17 +17,6 @@ fuzz_target!(|data: &[u8]| {
         serde_json::from_slice::<CommandResolution>(&encoded).unwrap(),
         resolution
     );
-    if let Ok(content) = resolution.into_model_input() {
-        content.validate_user_input(&mut None).unwrap();
-        for part in content.parts() {
-            if let ModelContentPart::File { policy, .. } = part {
-                assert_eq!(policy, &FileProjectionPolicy::BoundedFull);
-            }
-        }
-        let json = serde_json::to_vec(&content).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ModelContent>(&json).unwrap(),
-            content
-        );
-    }
+    let actual = resolution.clone().into_model_input();
+    oracle::assert_conversion(&resolution, &actual);
 });

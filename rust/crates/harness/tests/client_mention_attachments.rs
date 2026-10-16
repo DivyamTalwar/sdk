@@ -4,6 +4,76 @@ use acyclic_harness::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
 
+#[path = "../../harness-fuzz/support/mentions.rs"]
+mod oracle;
+
+fn checked_input() -> CommandResolution {
+    let mentions = [file(1, 1, 1, b"one"), file(2, 1, 1, b"two")]
+        .into_iter()
+        .enumerate()
+        .map(|(index, file)| FileMention {
+            start: index * 8,
+            end: index * 8 + 7,
+            file,
+        })
+        .collect();
+    CommandResolution::Prompt {
+        text: "@file-1 @file-2".into(),
+        source: None,
+        mentions,
+    }
+}
+
+#[test]
+fn fuzz_oracle_checks_every_seed() {
+    for data in [
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/pinned-mentions").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/plain-prompt").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/view-selection").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/ordered-mentions").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/conflicting-metadata").as_slice(),
+    ] {
+        let input: CommandResolution = serde_json::from_slice(data).unwrap();
+        oracle::assert_conversion(&input, &input.clone().into_model_input());
+    }
+}
+
+#[test]
+#[should_panic(expected = "conversion must preserve ordered unique pinned references")]
+fn negative_control_dropped_attachment_fails_the_fuzz_oracle() {
+    let input = checked_input();
+    let mut content = input.clone().into_model_input().unwrap();
+    let ModelContent::Parts(parts) = &mut content else {
+        panic!("parts");
+    };
+    parts.remove(1);
+    oracle::assert_conversion(&input, &Ok(content));
+}
+
+#[test]
+#[should_panic(expected = "valid prompt conversion must succeed")]
+fn negative_control_rejected_valid_prompt_fails_the_fuzz_oracle() {
+    oracle::assert_conversion(
+        &checked_input(),
+        &Err(acyclic_harness::Error::Invalid("broken".into())),
+    );
+}
+
+#[test]
+#[should_panic(expected = "conflicting file metadata must be rejected")]
+fn negative_control_accepted_metadata_conflict_fails_the_fuzz_oracle() {
+    let mut input = checked_input();
+    let CommandResolution::Prompt { mentions, .. } = &mut input else {
+        unreachable!()
+    };
+    mentions.push(FileMention {
+        start: 16,
+        end: 23,
+        file: file(1, 1, 1, b"changed"),
+    });
+    oracle::assert_conversion(&input, &Ok(ModelContent::Text("broken".into())));
+}
+
 fn file(id: u8, revision: u8, volume: u8, body: &[u8]) -> FileRef {
     let fixture: FileRef =
         serde_json::from_str(include_str!("../fixtures/v2/file-ref.json")).unwrap();
@@ -49,6 +119,21 @@ fn conflicting_metadata_for_one_pinned_identity_is_rejected() {
 }
 
 proptest::proptest! {
+    // Property: the shared fuzz oracle covers success and metadata-conflict
+    // rejection for arbitrary repeated identities and file descriptors.
+    #[test]
+    fn fuzz_oracle_checks_arbitrary_metadata_conflicts(
+        rows in proptest::collection::vec((0u8..4, proptest::collection::vec(proptest::prelude::any::<u8>(), 0..16)), 0..16),
+    ) {
+        let mentions = rows.into_iter().enumerate().map(|(index, (id, body))| FileMention {
+            start: index * 8,
+            end: index * 8 + 7,
+            file: file(id, 1, 1, &body),
+        }).collect();
+        let input = CommandResolution::Prompt { text: "inspect files".into(), source: None, mentions };
+        oracle::assert_conversion(&input, &input.clone().into_model_input());
+    }
+
     // Property: attach each pinned (volume,path,version) exactly once, in first
     // mention order; preserve prompt text and the model-input codec, and reject
     // empty input when it contains no attachment.
