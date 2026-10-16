@@ -236,9 +236,13 @@ async fn send(
 ) -> Result<Value> {
     client.submit(text, &NoReads).await?;
     let request = client.next_request().await?;
-    Ok(consume_local_command(client, local, &request)
-        .await?
-        .expect("unclaimed request"))
+    let execution = consume_local_command(client, local, &request);
+    let size = std::mem::size_of_val(&execution);
+    assert!(
+        size < 16 * 1024,
+        "local command handler grew to {size} bytes"
+    );
+    Ok(execution.await?.expect("unclaimed request"))
 }
 async fn selected(
     local: &LocalHarness,

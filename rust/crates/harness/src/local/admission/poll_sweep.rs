@@ -198,13 +198,21 @@ impl Fixture {
             Limits::default().file_bytes,
             None,
         )?;
-        let context_manifest = crate::local::turn::default_manifest(
-            publisher.as_ref(),
-            &tools,
-            Limits::default(),
-            None,
-        )
-        .await?;
+        let manifest =
+            crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?;
+        let context_manifest = Some(
+            publisher
+                .stage_once(
+                    OperationId::from_bytes([17; 16]),
+                    "inputs/fixture.manifest.json",
+                    &manifest.encode(Limits::default())?,
+                    "application/json",
+                    "fixture.manifest.json",
+                    None,
+                )?
+                .await?
+                .0,
+        );
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -225,6 +233,11 @@ impl Fixture {
                 self.provider.clone(),
             )),
             context_manifest,
+            context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: Default::default(),
+            #[cfg(feature = "native-execution")]
+            checkout_context: false,
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
