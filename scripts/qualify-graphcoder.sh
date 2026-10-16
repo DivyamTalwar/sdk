@@ -24,6 +24,8 @@ if executable is None:
 for selected in ["task_volume::files::", "local::tests::task_files::"]:
     subprocess.run([executable, selected], check=True, timeout=9)
 '
+cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test client_session documents::
+cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test context-discovery manifest::
 cargo build -p acyclic-harness-local-fuzz --bin ui_prompt
 timeout 8 "$artifact_dir/debug/ui_prompt" rust/crates/harness/fuzz/corpus/ui_prompt -runs=64 -max_len=4096
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --lib task_volume::files::models::
