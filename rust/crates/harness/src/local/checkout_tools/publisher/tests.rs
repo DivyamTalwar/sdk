@@ -297,8 +297,8 @@ proptest::proptest! {
                 let view = active.as_ref().unwrap_or_else(|| publisher.tools.workspace.view());
                 publisher.tools.capture(view, watcher, OperationId::new(), 0, PublicationPermit::Unrestricted).await?;
                 let host = harness.files.for_workspace(&harness.project, view.workspace().clone())?;
-                let grant = crate::conversation::ContentGrant::verify(&harness.verifier, &harness.signed,
-                    &harness.project, crate::conversation::VolumeOperation::Read, 1024, &mut None)?;
+                let grant = crate::conversation::ContentGrant::verify_directory_read(&harness.verifier, &harness.signed,
+                    &harness.project, "", &mut None)?;
                 let (fresh, bytes) = host.read_private_path(&harness.project, &grant, source.path(), None, 1024, None, None).await?;
                 assert_eq!(bytes.as_ref(), b"original");
                 Ok::<_, Error>(fresh)
