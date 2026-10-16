@@ -28,7 +28,10 @@ async fn local_content_publication_futures_stay_bounded() -> Result<()> {
     );
     let scope = issuer.issue(
         "write",
-        &Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]),
+        &Capabilities::new([
+            volume.capability(VolumeOperation::Write, &mut None)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+        ]),
         Some(owner),
         None,
         &mut None,
@@ -73,5 +76,35 @@ async fn local_content_publication_futures_stay_bounded() -> Result<()> {
         host.read_pinned_io(&file, 4096, None).await?.as_ref(),
         b"content"
     );
+    let journal = crate::filesystem::FilesystemWorkflowJournal::new(
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        host,
+        "sizes",
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None)?,
+            scope: &scope,
+            maximum_bytes: 4096,
+            io: None,
+        },
+    )?;
+    let admission = crate::workflow::WorkflowAdmission {
+        operation_id: crate::OperationId::from_bytes([1; 16]),
+        request_digest: [2; 32],
+        initial: crate::workflow::MachineCheckpoint {
+            machine: crate::workflow::MachineIdentity {
+                name: "sizes".into(),
+                version: "1".into(),
+                digest: [3; 32],
+            },
+            revision: 0,
+            state: serde_json::Value::Null,
+        },
+    };
+    let admit = journal.admit_with_io(admission, None);
+    let read = journal.read_admission(None);
+    let sizes = [std::mem::size_of_val(&admit), std::mem::size_of_val(&read)];
+    eprintln!("workflow admission/read futures: {sizes:?} bytes");
+    assert!(sizes.iter().all(|size| *size < 4096));
     Ok(())
 }
