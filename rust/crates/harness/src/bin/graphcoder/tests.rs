@@ -477,8 +477,8 @@ async fn submitted_commands_quit_and_drafts_use_real_query_files() {
         .await
         .unwrap(),
     );
-    let identity = OperationId::from_bytes([7; 16]).into_bytes().into();
-    let mut files = CommandSession::open(volume.clone(), identity, 65_536, 64)
+    let identity = OperationId::from_bytes([7; 16]).to_string();
+    let mut files = CommandSession::open(volume.clone(), identity.parse().unwrap(), 65_536, 64)
         .await
         .unwrap();
     let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
@@ -528,7 +528,7 @@ async fn submitted_commands_quit_and_drafts_use_real_query_files() {
         before
     );
     drop(files);
-    let mut files = CommandSession::open(volume, identity, 65_536, 64)
+    let mut files = CommandSession::open(volume, identity.parse().unwrap(), 65_536, 64)
         .await
         .unwrap();
     let mut restored = PromptInput::default();
@@ -557,7 +557,7 @@ proptest::proptest! {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let volume = std::sync::Arc::new(TaskVolume::open(std::sync::Arc::new(MemoryStream::default()), StreamPath::new("prompt").unwrap()).await.unwrap());
-            let mut files = CommandSession::open(volume, OperationId::from_bytes([9;16]).into_bytes().into(), 65_536, 64).await.unwrap();
+            let mut files = CommandSession::open(volume, OperationId::from_bytes([9;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
             files.write_state(CommandFileRoot::Session, "draft.json", &serde_json::json!(text)).await.unwrap();
             files.write_state(CommandFileRoot::Config, "history.json", &if malformed_history { serde_json::json!(false) } else { serde_json::json!(["prior"]) }).await.unwrap();
             let mut input = PromptInput::new(Editor::new("original"));

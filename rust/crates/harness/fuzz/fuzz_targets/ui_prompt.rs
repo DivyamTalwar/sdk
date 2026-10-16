@@ -28,9 +28,7 @@ fuzz_target!(|data: &[u8]| {
                 .await
                 .unwrap(),
             );
-            let session = acyclic_harness::OperationId::from_bytes([9; 16])
-                .into_bytes()
-                .into();
+            let session = acyclic_harness::OperationId::from_bytes([9; 16]).to_string();
             for (path, bytes) in [
                 (format!(".ui/session-{session}/draft.json"), &data[..split]),
                 (".ui/config/history.json".into(), &data[split + 1..]),
@@ -44,7 +42,9 @@ fuzz_target!(|data: &[u8]| {
                     .await
                     .unwrap();
             }
-            let Ok(mut files) = CommandSession::open(volume, session, 65_536, 64).await else {
+            let Ok(mut files) =
+                CommandSession::open(volume, session.parse().unwrap(), 65_536, 64).await
+            else {
                 return;
             };
             let mut input = PromptInput::new(Editor::new("original"));
