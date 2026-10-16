@@ -21,9 +21,9 @@ fn text() -> impl Strategy<Value = String> {
 proptest! {
     // The actual case codec preserves scripts, bounds, assertions and Unicode.
     #[test]
-    fn goal_case_codec_round_trips(body in text(), answer in text(), limit in any::<u32>(), streamed in any::<bool>()) {
+    fn goal_case_scripts_round_trip(body in text(), answer in text(), limit in any::<u32>(), streamed in any::<bool>()) {
         let turns = if streamed {
-            json!([[{"type":"event", "kind":"tool_call", "call_id":"write", "name":"acyclic.write_file",
+            json!([[{"type":"event", "kind":"tool_call", "call_id":"write", "name":"write",
                 "arguments":{"path":"GOAL.md", "text":body, "media_type":"text/markdown", "display_name":"GOAL.md"}},
                 {"type":"event", "kind":"completed", "metadata":{"answer":answer}}], answer])
         } else {
@@ -32,7 +32,8 @@ proptest! {
         let case = GoalCase::parse(json!({"seed":{"GOAL.md":body},
             "prompt":body, "turns":turns, "max_steps":if streamed { 2 } else { 1 },
             "policy":{"max_continuations":limit},
-            "expect":{"text":answer, "request_prompt":body, "unchanged_goal":!streamed, "result":{"requests":1},
+            "expect":{"text":answer, "request_prompt":body, "result":{"requests":1},
+                "frames":[{"canonical_event_json":{"kind":"completed"}}],
                 "view":{"markdown":body}, "files":{"GOAL.md":body}}})).unwrap();
         let canonical = serde_json::to_value(case).unwrap();
         let bytes = serde_json::to_vec(&canonical).unwrap();
