@@ -2,7 +2,8 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Resolves a published generation's sequence and this view's observed head.
-    /// History traversal is paged and charged; generations after this view are refused.
+    /// Verified historical positions are cached; cold traversal remains paged
+    /// and charged. Generations after this view are refused.
     pub async fn generation_position<W: FsWork>(
         &self,
         generation: GenerationId,
@@ -18,6 +19,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .sequence;
             if generation == self.generation_id() {
                 return Ok((head, head));
+            }
+            let positions = &self.volume.fs.inner.generation_positions;
+            let key = (self.volume.id, generation);
+            accounting.charge(WorkCounters {
+                items_examined: super::generation_cache::CAPACITY as u64,
+                bytes_copied: size_of::<Sequence>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if let Some(position) = positions.get(&key, head) {
+                return Ok((position, head));
             }
             let mut after = Sequence::GENESIS;
             while after < head {
@@ -54,6 +65,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     if generation_from_record(record, self.volume.id, &mut accounting)?.digest
                         == generation.digest()
                     {
+                        // Only the first occurrence found from genesis enters
+                        // the cache. A restored head may repeat an older root.
+                        accounting.charge(WorkCounters {
+                            items_examined: super::generation_cache::CAPACITY as u64,
+                            bytes_copied: size_of::<Option<((VolumeId, GenerationId), Sequence)>>()
+                                as u64,
+                            ..WorkCounters::UNCHARGED
+                        })?;
+                        positions.record(key, record.sequence);
                         return Ok((record.sequence, head));
                     }
                     after = record.sequence;

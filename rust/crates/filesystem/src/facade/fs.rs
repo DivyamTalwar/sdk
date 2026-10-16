@@ -18,6 +18,7 @@ pub(super) struct FsInner<A, O> {
     pub(super) capabilities: EmbeddedCapabilities,
     pub(super) workspace_namespace: [u8; 16],
     pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
+    pub(super) generation_positions: super::generation_cache::GenerationPositions,
     pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
     // This field must remain last: Rust drops fields in declaration order, so every durable
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -175,6 +176,7 @@ impl<A, O> Fs<A, O> {
                 capabilities,
                 workspace_namespace,
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                generation_positions: super::generation_cache::GenerationPositions::default(),
                 publication_proof: Mutex::default(),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 _local_root_lifecycle: None,
