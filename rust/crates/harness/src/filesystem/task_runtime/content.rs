@@ -22,43 +22,6 @@ where
         Ok(self)
     }
 
-    pub(crate) fn with_private_volume(mut self, volume: &VolumeRef) -> Result<Self> {
-        if volume.class() != crate::conversation::VolumeClass::AgentPrivate {
-            return Err(Error::Invalid(
-                "private files require an agent-private volume".into(),
-            ));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if self._native_configuration_custody.is_some() {
-            return Err(Error::Unsupported(
-                "private files require ordinary construction".into(),
-            ));
-        }
-        let writer = FilesystemContentPublisher::new(
-            self.filesystem.clone(),
-            volume,
-            &self.verifier,
-            &self.signed,
-            self.maximum_payload_bytes,
-            None,
-        )?;
-        let reader = FilesystemContentVerifier::new(
-            self.filesystem.clone(),
-            &self.verifier,
-            &self.signed,
-            self.maximum_payload_bytes,
-            None,
-        )?;
-        let harness = Arc::get_mut(&mut self.harness).ok_or_else(|| {
-            Error::Conflict("bind private files before sharing the runtime".into())
-        })?;
-        harness.private_content = Some(ContentBindings {
-            reader,
-            writer: Some(writer),
-        });
-        Ok(self)
-    }
-
     /// Binds workspace command execution before sharing the runtime.
     pub fn with_workspace_tools(
         mut self,

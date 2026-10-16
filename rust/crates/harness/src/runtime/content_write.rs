@@ -2,6 +2,15 @@ use super::*;
 
 #[cfg(feature = "filesystem")]
 impl AgentHarness {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) fn output_volume(&self) -> Option<&VolumeRef> {
+        self.content
+            .as_ref()?
+            .writer
+            .as_ref()
+            .map(|writer| writer.volume())
+    }
+
     pub(crate) fn bind_output(
         &mut self,
         writer: Arc<dyn crate::conversation::ContentPublisher>,
@@ -91,6 +100,21 @@ impl TaskContext {
             )
             .await
         }
+    }
+
+    /// Checks the original content destination without reading or publishing bytes.
+    pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
+        let writer = bound_content_writer(
+            self.content_binding(source.map(FileRef::volume)),
+            &self.scope,
+            None,
+        )?;
+        if source.is_some_and(|source| source.volume() != writer.volume()) {
+            return Err(Error::Unauthorized(
+                "source differs from the owner-bound destination".into(),
+            ));
+        }
+        Ok(())
     }
 
     #[allow(

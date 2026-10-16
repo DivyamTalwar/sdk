@@ -5,13 +5,13 @@ pub(super) struct Configuration<'a> {
     #[cfg(feature = "native-execution")]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
+    pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,
     pub project: &'a VolumeRef,
     pub scratch: &'a VolumeRef,
     pub journal: &'a VolumeRef,
-    pub task_volume: &'a VolumeRef,
     pub tools: &'a ToolRegistry,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     pub capabilities: &'a Capabilities,
@@ -139,7 +139,6 @@ pub(super) async fn open(
     )
     .await?
     .with_output_volume(config.project, None)?
-    .with_private_volume(config.scratch)?
     .with_task_files(task_files.clone())?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
