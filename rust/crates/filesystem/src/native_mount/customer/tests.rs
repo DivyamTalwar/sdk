@@ -429,6 +429,38 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
 }
 
 #[tokio::test]
+async fn lazy_working_set_requires_authority_before_exactifying()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancel = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
+    let physical = tempfile::tempdir()?;
+    std::fs::create_dir(physical.path().join("hot"))?;
+    std::fs::write(physical.path().join("hot/secret"), b"secret")?;
+    let lazy = native_lazy_source(physical.path(), "unbound-working-set", &cancel).await?;
+    let before = head(lazy.workspace(), &work).await?;
+    let destination = tempfile::tempdir()?;
+    assert!(matches!(
+        lazy.prepare_native_working_set(
+            MountOptions::read_write()
+                .subdirectory("/hot")
+                .publication(MountPublication::Manual),
+            &crate::MaterializeOptions::native(destination.path()),
+            crate::WorkBudget::UNBOUNDED,
+            &cancel,
+            PublicationPermit::Unrestricted,
+        )
+        .await,
+        Err(MountLifecycleError::NativePolicy(
+            "native mounts require an authenticated policy and capability view"
+        ))
+    ));
+    assert_eq!(head(lazy.workspace(), &work).await?, before);
+    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();
@@ -448,7 +480,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let before_invalid = head(lazy.workspace(), &fixture_work).await?;
     assert!(matches!(
         lazy.prepare_native_working_set(
-            "/hot",
+            fixture_options(
+                lazy.workspace(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .subdirectory("/hot")
+            )
+            .await?,
             &crate::MaterializeOptions::native("relative-native-view"),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -462,7 +500,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, before_invalid);
     let working_set = lazy
         .prepare_native_working_set(
-            "/hot",
+            fixture_options(
+                lazy.workspace(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .subdirectory("/hot"),
+            )
+            .await?,
             &crate::MaterializeOptions::native(native_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -688,7 +732,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let latest_view = tempfile::tempdir()?;
     let ready = lazy
         .prepare_native_working_set(
-            "/hot",
+            fixture_options(
+                lazy.workspace(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .subdirectory("/hot"),
+            )
+            .await?,
             &crate::MaterializeOptions::native(latest_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -822,22 +872,11 @@ pub(super) fn test_work(
     NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, _)| cause)
 }
 
-pub(super) async fn fixture_options(
-    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
-    options: MountOptions,
-) -> Result<MountOptions, Box<dyn std::error::Error>> {
-    crate::initialize_native_mount_services()?;
-    let checkout = workspace
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode::read_only_pinned(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let config = checkout.volume_config();
-    let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
-    let view = super::super::adapter::tests::access::compiled(&source, 1, vec![], None)?;
-    Ok(options.access_view(Arc::new(crate::access::AccessView::new(view))))
+mod fixture_access {
+    use crate as acyclic_fs;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/native_access.rs"
+    ));
 }
+pub(super) use fixture_access::options as fixture_options;

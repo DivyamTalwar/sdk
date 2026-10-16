@@ -14,12 +14,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let config = checkout.volume_config();
-    let access = options
-        .access_view
-        .as_ref()
-        .ok_or(MountLifecycleError::NativePolicy(
-            "native mounts require an authenticated policy and capability view",
-        ))?;
+    let access = options.require_access_view()?;
     let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
     let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
@@ -67,6 +62,16 @@ pub struct MountOptions {
 }
 
 impl MountOptions {
+    pub(super) fn require_access_view(
+        &self,
+    ) -> Result<&Arc<crate::access::AccessView>, MountLifecycleError> {
+        self.access_view
+            .as_ref()
+            .ok_or(MountLifecycleError::NativePolicy(
+                "native mounts require an authenticated policy and capability view",
+            ))
+    }
+
     pub(super) fn work(
         &self,
         budget: crate::WorkBudget,

@@ -2,6 +2,9 @@
 
 #![cfg(all(target_os = "macos", feature = "native-mount"))]
 
+#[path = "support/native_access.rs"]
+mod native_access;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -273,7 +276,13 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     let working_set = lazy
         .prepare_native_working_set(
-            "/hot",
+            native_access::options(
+                lazy.workspace(),
+                acyclic_fs::MountOptions::read_write()
+                    .publication(acyclic_fs::MountPublication::Manual)
+                    .subdirectory("/hot"),
+            )
+            .await?,
             &MaterializeOptions::native(view.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
