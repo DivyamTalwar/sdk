@@ -29,7 +29,11 @@ async fn wake_case(deadline: u64, native: bool) -> Result<()> {
             .capabilities()
             .iter()
             .map(str::to_owned)
-            .chain([input_grant.clone(), "operation:wake".into()]),
+            .chain([
+                input_grant.clone(),
+                "operation:wake".into(),
+                "timer:wait".into(),
+            ]),
     );
     fixture.signed = fixture.issuer.issue(
         "owner",
@@ -42,11 +46,9 @@ async fn wake_case(deadline: u64, native: bool) -> Result<()> {
     fixture.machine.native.store(true, Ordering::SeqCst);
     fixture.tool.native.store(true, Ordering::SeqCst);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 64 * 1024 * 1024),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = Box::pin(fixture.runtime(native.then_some(&io))).await?;
     let operation = OperationId::from_bytes([104; 16]);
@@ -73,7 +75,11 @@ async fn wake_case(deadline: u64, native: bool) -> Result<()> {
     let definition = fixture
         .tasks
         .get_version::<Value, Value>("test.deadline", "1", None)?;
-    let scope = Capabilities::new(["task:spawn:test.deadline@1".into(), input_grant]);
+    let scope = Capabilities::new([
+        "task:spawn:test.deadline@1".into(),
+        "timer:wait".into(),
+        input_grant,
+    ]);
     let admitted = runtime
         .harness()
         .scoped(scope, Limits::default())?
