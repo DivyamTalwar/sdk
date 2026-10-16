@@ -269,7 +269,12 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
-            [".ui", directory, name] => return Ok(Self::Ui { directory: id(directory)?, name: id(name)? }),
+            [".ui", directory, name] => {
+                return Ok(Self::Ui {
+                    directory: id(directory)?,
+                    name: id(name)?,
+                });
+            }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
                 return Ok(Self::Plan(id(name
@@ -360,7 +365,8 @@ impl FileKey {
     pub(super) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Ui { .. } | Self::Goal
+            Self::Ui { .. }
+                | Self::Goal
                 | Self::Plan(_)
                 | Self::Task {
                     file: TaskFile::Status,

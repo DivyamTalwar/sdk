@@ -14,7 +14,9 @@ impl CommandCatalog {
         let mut commands = BTreeMap::new();
         for mut spec in specs {
             spec.name.make_ascii_lowercase();
-            for alias in &mut spec.aliases { alias.make_ascii_lowercase(); }
+            for alias in &mut spec.aliases {
+                alias.make_ascii_lowercase();
+            }
             for name in std::iter::once(&spec.name).chain(&spec.aliases) {
                 validate_name(name)?;
                 if names.insert(name, &spec.name).is_some() {
@@ -36,6 +38,7 @@ impl CommandCatalog {
                 | CommandAction::Select { .. } => CommandArguments::None,
                 CommandAction::Tool { .. } => CommandArguments::RequiredText,
                 CommandAction::Theme
+                | CommandAction::Sdk { .. }
                 | CommandAction::Prompt { .. }
                 | CommandAction::Skill { .. } => CommandArguments::Text,
             };
@@ -58,6 +61,7 @@ impl CommandCatalog {
                 }
             }
             match &spec.action {
+                CommandAction::Sdk { command } => validate_name(command)?,
                 CommandAction::Prompt { source, .. } => source.validate(&mut None)?,
                 CommandAction::Skill { skill } => skill.validate(&mut None)?,
                 _ => {}
@@ -202,7 +206,7 @@ impl CommandResolution {
                     serde_json::to_value(request).map_err(codec)?,
                 ));
             }
-            Self::Tool { .. } | Self::Prompt { .. } => {
+            Self::Tool { .. } | Self::Prompt { .. } | Self::Sdk { .. } => {
                 return Ok(publish_request(
                     CommandFileRoot::Task,
                     serde_json::to_value(self).map_err(codec)?,

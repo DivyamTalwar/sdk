@@ -303,16 +303,16 @@ try {
   const archival = cursor(manifest, manifest.callers.root.authority, 0, "real-root-cursor");
   const page = await active.command(`/cursor ${archival}`, /activity ([0-9]+)\.\.([0-9]+) generation=[^\n]+\n/);
   assert.ok(Number(page[2]) - Number(page[1]) < 16);
-  await active.command("/next", /activity [0-9]+\.\.[0-9]+ generation=/);
+  await active.command("/activity-next", /activity [0-9]+\.\.[0-9]+ generation=/);
   assert.match(visible(active.text), /transcript /, "actual EventPayload transcript layout must render");
   await active.command("/back 0", /activity [0-9]+\.\.[0-9]+ generation=/);
   await active.command("/back 1024", /display page unavailable; request an explicit archival page/);
   const before = await active.commandJson(`/read ${input("diff-before", { caller: root, lease: leases.root, file: manifest.files.root_project_before })}`, "file");
   const after = await active.commandJson(`/read ${input("diff-after", { caller: root, lease: leases.root, file: manifest.files.root_project_after })}`, "file");
   assert.notEqual(before.text, after.text);
-  const diff = await active.command(`/diff ${input("real-diff", { caller: root, lease: leases.root, before: before.file, after: after.file })}`, /diff exact before=[^\n]+\n--- before\n[\s\S]*?\n\+\+\+ after\n/);
+  const diff = await active.command(`/diff-files ${input("real-diff", { caller: root, lease: leases.root, before: before.file, after: after.file })}`, /diff-files exact before=[^\n]+\n--- before\n[\s\S]*?\n\+\+\+ after\n/);
   assert.ok(diff[0].includes(before.text.trimEnd()));
-  await active.command("/back 0", /diff exact before=/);
+  await active.command("/back 0", /diff-files exact before=/);
   const publicationRequest = bind(manifest.native_publication_request);
   const pending = await active.commandJson(`/publication-open ${publicationRequest}`, "publication");
   assert.equal(pending.status, "pending"); assert.equal(pending.caller, root);
@@ -353,7 +353,7 @@ try {
   assert.equal(inspected.caller, left); assert.equal(inspected.source_task, root); assert.equal(inspected.agent, manifest.callers.root.agent);
   await active.command(`/prepare ${cross.request}`, /queued preparation-task=([0-9a-f-]+) admission-operation=([0-9a-f-]+)/);
   const prepFrom = active.text.length;
-  await active.command(`/run ${cross.task}`, /worker started task=/);
+  await active.command(`/run-task ${cross.task}`, /worker started task=/);
   await active.expect(new RegExp(`worker completed task=${escapeRegex(cross.task)}`), prepFrom);
   const published = await active.commandJson(`/publish-fork ${input("real-cross-publish", { caller: left, lease: leases.left, preparation: cross.task })}`, "fork");
   const crossTask = published.admission.Accepted; assert.ok(crossTask && !Object.values(manifest.tasks).includes(crossTask));
@@ -406,7 +406,7 @@ try {
     assert.ok(outcome.outcome.Succeeded); outcomes.set(manifest.tasks[label], outcome);
   }
   const crossFrom = active.text.length;
-  await active.command(`/run ${crossTask}`, /worker started task=/);
+  await active.command(`/run-task ${crossTask}`, /worker started task=/);
   await active.expect(new RegExp(`worker completed task=${escapeRegex(crossTask)}`), crossFrom);
   const crossOutcome = await active.commandJson(`/outcome ${crossTask}`, "task");
   assert.ok(crossOutcome.outcome.Succeeded); outcomes.set(crossTask, crossOutcome);

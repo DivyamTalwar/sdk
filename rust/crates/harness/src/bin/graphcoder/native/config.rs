@@ -29,6 +29,8 @@ pub struct Config {
     pub private_volume: VolumeRef,
     pub owner: AuthorityBinding,
     pub generation: String,
+    #[serde(default)]
+    pub command_workspace: Option<PathBuf>,
     pub model_invocation_ledger: PathBuf,
     pub limits: Limits,
     pub run_limits: TaskRunLimits,

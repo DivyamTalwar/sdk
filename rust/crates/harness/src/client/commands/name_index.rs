@@ -15,7 +15,9 @@ struct Node {
 
 impl Default for NameIndex {
     fn default() -> Self {
-        Self { nodes: vec![Node::default()] }
+        Self {
+            nodes: vec![Node::default()],
+        }
     }
 }
 

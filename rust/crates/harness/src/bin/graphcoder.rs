@@ -1,6 +1,9 @@
 //! Native `GraphCoder` presentation over the public Harness runtime and wire API.
 
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "graphcoder/command_line.rs"]
+mod command_line;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/commands/mod.rs"]
 mod commands;
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,7 +16,7 @@ mod options;
 #[path = "graphcoder/terminal.rs"]
 mod terminal;
 #[cfg(not(target_arch = "wasm32"))]
-use options::{HELP, Selection};
+use options::Selection;
 #[cfg(all(not(target_arch = "wasm32"), feature = "filesystem-local"))]
 #[path = "graphcoder/native/mod.rs"]
 mod native;
@@ -127,8 +130,7 @@ fn input_lines()
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness::{Error, wire, wire_api::current_protocol};
-    use std::io::{IsTerminal as _, Write as _};
+    use acyclic_harness::Error;
     let Some((selection, headless)) = options::parse()? else {
         return Ok(());
     };
@@ -180,138 +182,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
-    let handshake = wire::client_frame::Frame::Handshake(wire::HandshakeRequest {
-        protocol: Some(current_protocol()),
-        required: None,
-    });
-    let api = &backend;
-    terminal::dispatch(api.api(), handshake).await?;
-    let mut cursor = api.cursor();
-    let fixture_mode = matches!(api, Backend::Fixture(_));
-    let mut backend = Some(backend);
-    let stdin = std::io::stdin();
-    let stdin_is_terminal = stdin.is_terminal();
-    let interactive = !headless && stdin_is_terminal;
-    let mut input = input_lines()?;
-    let mut output = std::io::stdout().lock();
-    let mut scrollback = terminal::Scrollback::default();
-    #[cfg(feature = "filesystem-local")]
-    let mut parent = None;
-    #[cfg(feature = "filesystem-local")]
-    let mut workers = tokio::task::JoinSet::<acyclic_harness::Result<String>>::new();
-    writeln!(
-        output,
-        "terminal-mode stdin-is-terminal={stdin_is_terminal} interactive={interactive} headless={headless} process-id={}",
-        std::process::id()
-    )?;
-    writeln!(
-        output,
-        "{}",
-        if fixture_mode {
-            "GraphCoder — fixture wire; UI playback only, no durable effects"
-        } else {
-            "GraphCoder — actual local Harness runtime; deterministic request-digest provider; native commands require explicit approved bindings"
-        }
-    )?;
-    loop {
-        if interactive {
-            write!(
-                output,
-                "{}> ",
-                if fixture_mode {
-                    "fixture"
-                } else {
-                    "graphcoder"
-                }
-            )?;
-        }
-        output.flush()?;
-        #[cfg(feature = "filesystem-local")]
-        let line = loop {
-            tokio::select! {
-                line = input.recv() => break line,
-                outcome = workers.join_next(), if !workers.is_empty() => {
-                    let rendered = outcome.ok_or_else(|| Error::Conflict("worker handle missing".into()))?
-                        .map_err(|error| Error::Storage(format!("frontend worker ended without a receipt; retain its original lease: {error}")))??;
-                    scrollback.push(rendered)?;
-                    if let Some(page) = scrollback.page(0) { write!(output, "{page}")?; }
-                    if interactive { write!(output, "graphcoder> ")?; }
-                    output.flush()?;
-                }
-            }
-        };
-        #[cfg(not(feature = "filesystem-local"))]
-        let line = input.recv().await;
-        let Some(line) = line else {
-            #[cfg(feature = "filesystem-local")]
-            if !workers.is_empty() {
-                writeln!(
-                    output,
-                    "input closed with active leases; outcomes remain uncertain until authoritative reconciliation"
-                )?;
-            }
-            break;
-        };
-        let line = line?;
-        let command = line.trim_end_matches(['\r', '\n']);
-        if command == "/quit" {
-            #[cfg(feature = "filesystem-local")]
-            if !workers.is_empty() {
-                writeln!(
-                    output,
-                    "closing presentation with active leases; outcomes remain uncertain until authoritative reconciliation"
-                )?;
-            }
-            break;
-        }
-        if command == "/help" {
-            write!(output, "{HELP}")?;
-            continue;
-        }
-        if command.is_empty() {
-            continue;
-        }
-        if let Some(back) = command.strip_prefix("/back ") {
-            let result = back
-                .parse::<usize>()
-                .ok()
-                .and_then(|back| scrollback.page(back));
-            if let Some(page) = result {
-                write!(output, "{page}")?;
-            } else {
-                writeln!(
-                    output,
-                    "display page unavailable; request an explicit archival page"
-                )?;
-            }
-            continue;
-        }
-        let result = commands::execute(
-            command,
-            &mut backend,
-            &mut cursor,
-            #[cfg(feature = "filesystem-local")]
-            &mut parent,
-            #[cfg(feature = "filesystem-local")]
-            &mut workers,
-            &mut output,
-        )
-        .await;
-        match result {
-            Ok(rendered) => {
-                scrollback.push(rendered)?;
-                if let Some(page) = scrollback.page(0) {
-                    write!(output, "{page}")?;
-                }
-                output.flush()?;
-            }
-            Err(error) if interactive => {
-                writeln!(output, "{}", terminal::text(&error.to_string()))?
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
+    command_line::run(backend, headless)
+        .await
+        .map_err(Into::into)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

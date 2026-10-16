@@ -14,11 +14,15 @@ use std::collections::{BTreeMap, BTreeSet};
 mod presentation;
 pub use presentation::*;
 mod files;
-mod syntax;
 mod name_index;
 mod session;
+mod syntax;
 pub use session::CommandSession;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod host_tools;
 pub use files::*;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use host_tools::execute_host_command;
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
@@ -83,6 +87,11 @@ pub enum BuiltinCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandAction {
+    /// Native SDK qualification operation, selected from the installed catalog.
+    Sdk {
+        /// Existing SDK operation name, independent of its slash spelling.
+        command: String,
+    },
     /// A fixed client operation; destructive operations require confirmation.
     Request {
         /// Operation routed to its client owner, without a model turn.
@@ -258,6 +267,13 @@ pub enum CommandQuery {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandResolution {
+    /// An installed SDK operation, consumed from an ordinary request file.
+    Sdk {
+        /// Exact SDK operation from the catalog.
+        command: String,
+        /// Unmodified argument text, normally a pinned request-file location.
+        arguments: String,
+    },
     /// A destructive client operation awaiting explicit confirmation.
     Confirm {
         /// Operation to admit only after confirmation.
@@ -410,7 +426,9 @@ impl CommandCatalog {
                                         )));
                                     }
                                 } else {
-                                    return Err(Error::Conflict(format!("reserved command: {name}")));
+                                    return Err(Error::Conflict(format!(
+                                        "reserved command: {name}"
+                                    )));
                                 }
                             }
                             source.validate(&mut None)?;
@@ -485,7 +503,10 @@ impl CommandCatalog {
 
     /// Prefix matches names or aliases, with direct tools first, then lexical order.
     pub fn complete<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a CommandSpec> {
-        let prefix = prefix.strip_prefix('/').unwrap_or(prefix).to_ascii_lowercase();
+        let prefix = prefix
+            .strip_prefix('/')
+            .unwrap_or(prefix)
+            .to_ascii_lowercase();
         let matches = move |spec: &&CommandSpec| {
             spec.name.starts_with(&prefix)
                 || spec.aliases.iter().any(|alias| alias.starts_with(&prefix))
@@ -503,7 +524,9 @@ impl CommandCatalog {
     }
 
     fn lookup(&self, name: &str) -> Option<&CommandSpec> {
-        self.names.get(name).and_then(|canonical| self.commands.get(canonical))
+        self.names
+            .get(name)
+            .and_then(|canonical| self.commands.get(canonical))
     }
 
     /// Install the owning renderer's theme data once; no duplicated preset table.
@@ -558,6 +581,10 @@ impl CommandCatalog {
             _ => {}
         }
         match &spec.action {
+            CommandAction::Sdk { command } => Ok(CommandResolution::Sdk {
+                command: command.clone(),
+                arguments: arguments.into(),
+            }),
             CommandAction::Request {
                 request,
                 confirmation,

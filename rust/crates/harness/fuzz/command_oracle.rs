@@ -11,9 +11,13 @@ pub fn accepts(
     if !trimmed.starts_with('/') {
         return matches!(result, Ok(None));
     }
-    let Ok(Some((name, arguments))) = result else { return false; };
+    let Ok(Some((name, arguments))) = result else {
+        return false;
+    };
     let rest = &trimmed[1..];
-    let end = rest.char_indices().find(|(_, ch)| ch.is_whitespace())
+    let end = rest
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace())
         .map_or(rest.len(), |(index, _)| index);
     *name == &rest[..end] && *arguments == rest[end..].trim()
 }

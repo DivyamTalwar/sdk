@@ -125,8 +125,9 @@ macro_rules! dispatch {
     };
 }
 
-pub(super) async fn execute(
-    command: &str,
+pub(super) async fn execute_sdk(
+    operation: &str,
+    argument: &str,
     backend: &mut Option<Backend>,
     parent: &mut Option<TaskId>,
     workers: &mut tokio::task::JoinSet<Result<String>>,
@@ -135,7 +136,7 @@ pub(super) async fn execute(
     let api = backend
         .as_ref()
         .ok_or_else(|| Error::Conflict("session is closed".into()))?;
-    if command == "/reopen" {
+    if operation == "reopen" {
         if !workers.is_empty() {
             return Err(Error::Conflict(
                 "active workers must settle before reopen".into(),
@@ -152,33 +153,14 @@ pub(super) async fn execute(
     let runtime = &native.runtime;
     let host = runtime.task_host();
     let harness = runtime.harness();
-    let (name, argument) = command.split_once(' ').unwrap_or(("", command));
+    let command_name = format!("/{operation}");
+    let name = command_name.as_str();
     let path = Path::new(argument);
     if matches!(name, "/run" | "/claim" | "/resume-lease")
         && workers.len() >= terminal::MAX_PAGE_EVENTS
     {
         return Err(Error::Invalid(
             "active frontend worker bound reached".into(),
-        ));
-    }
-    if !command.starts_with('/') {
-        let operation = OperationId::new();
-        let command_operation = OperationId::new();
-        emit(
-            output,
-            format_args!("prompt-publication-attempt command-operation={command_operation}"),
-        )?;
-        let command = native.prompt_command(command, command_operation).await?;
-        emit(
-            output,
-            format_args!(
-                "admission-attempt operation={operation} command-operation={}",
-                command.operation_id
-            ),
-        )?;
-        return Ok(format!(
-            "queued task={} admission-operation={operation}\n",
-            admitted(native.queue(operation, command, *parent).await?)?
         ));
     }
     dispatch!(name, path,

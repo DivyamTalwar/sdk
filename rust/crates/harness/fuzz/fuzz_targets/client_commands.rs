@@ -10,10 +10,10 @@ use acyclic_harness::{
 };
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../src/client/commands/syntax.rs"]
-mod syntax;
 #[path = "../command_oracle.rs"]
 mod command_oracle;
+#[path = "../../src/client/commands/syntax.rs"]
+mod syntax;
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
@@ -54,11 +54,26 @@ fuzz_target!(|input: &[u8]| {
     let Ok(input) = std::str::from_utf8(input) else {
         return;
     };
+    if let Ok(key) = acyclic_harness::task_volume::FileKey::parse(input) {
+        assert_eq!(
+            acyclic_harness::task_volume::FileKey::parse(&key.path()).unwrap(),
+            key
+        );
+        let encoded = serde_json::to_vec(&key).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::task_volume::FileKey>(&encoded).unwrap(),
+            key
+        );
+    }
     let maximum = input.len() as u64;
     let result = syntax::split(input, maximum);
     assert!(command_oracle::accepts(input, maximum, &result));
     let bounded = maximum.saturating_sub(1);
-    assert!(command_oracle::accepts(input, bounded, &syntax::split(input, bounded)));
+    assert!(command_oracle::accepts(
+        input,
+        bounded,
+        &syntax::split(input, bounded)
+    ));
     if input.is_empty() {
         assert!(result.is_err());
     } else if let Some((name, arguments)) = result.expect("positive exact input bound") {

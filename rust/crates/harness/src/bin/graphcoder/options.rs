@@ -13,7 +13,7 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /history FILE Page owned history: caller,lease,cursor (16 events/64 KiB)\n\
     /inherited-history FILE Page verified inherited slice: caller,lease,seed,after_sequence\n\
     /checkpoint FILE Observe real machine checkpoint: caller,lease\n\
-    /run TASK   Drive one finite ordinary worker turn for this exact task\n\
+    /run-task TASK   Drive one finite ordinary worker turn for this exact task\n\
     /claim TASK Retain/start an actual original owner lease without model dispatch\n\
     /resume-lease FILE Reconcile the original WorkLease JSON; never guess a new lease\n\
     /reconcile OPERATION  Observe a lost admission acknowledgement, without resend\n\
@@ -29,11 +29,11 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /publication-observe FILE Observe retained publication/approval journal\n\
     /publication-apply FILE Publish only the actual approved original plan\n\
     /publication-reconcile FILE Reconcile the original publication, never replan\n\
-    /next       Display one bounded activity delivery\n\
+    /activity-next       Display one bounded activity delivery\n\
     /cursor FILE Select a protobuf Resume ClientFrame for bounded archival paging\n\
     /back N     Show a retained display page (0 newest; 64 pages/256 KiB max)\n\
     /file FILE  Display scoped immutable content: caller,lease,file (max 64 KiB)\n\
-    /diff FILE  Display scoped exact refs: caller,lease,before,after (max 32 KiB each)\n\
+    /diff-files FILE  Display scoped exact refs: caller,lease,before,after (max 32 KiB each)\n\
     /request FILE Dispatch one scoped protobuf ClientFrame; no automatic retries\n\
     /approve FILE Dispatch an exact scoped interaction resolution command\n\
     /cancel-task TASK  Request cancellation through the actual typed task host\n\

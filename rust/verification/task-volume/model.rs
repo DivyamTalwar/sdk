@@ -11,6 +11,64 @@ use loom::thread;
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+fn create_claim_control(broken: bool) {
+    model(move || {
+        let volume = Arc::new(block_on(TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("claim")?,
+        ))?);
+        let dispatches = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+        let claim = move |volume: Arc<TaskVolume<MemoryStream>>,
+                          dispatches: Arc<loom::sync::atomic::AtomicUsize>|
+              -> Result {
+            let cut = block_on(volume.snapshot(&Query::Root, 1))?;
+            let file = Write::new(
+                FileKey::Task {
+                    task: Component::new("task")?,
+                    file: TaskFile::Request(Component::new("claim")?),
+                },
+                OwnedBytes::from_static(b"same request"),
+            );
+            // Broken: idempotent append reports success for an existing identical
+            // claim. Correct: create-only publication can authorize just one effect.
+            let accepted = if broken {
+                block_on(volume.append(cut.generation, &file))
+            } else {
+                block_on(volume.create(cut.generation, &file))
+            };
+            if accepted.is_ok() {
+                dispatches.fetch_add(1, loom::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        };
+        let worker = thread::spawn({
+            let volume = volume.clone();
+            let dispatches = dispatches.clone();
+            move || claim(volume, dispatches)
+        });
+        claim(volume.clone(), dispatches.clone())?;
+        worker.join().map_err(|_| "claim worker panicked")??;
+        assert_eq!(
+            dispatches.load(loom::sync::atomic::Ordering::SeqCst),
+            1,
+            "duplicate request dispatch"
+        );
+        assert_eq!(block_on(volume.snapshot(&Query::Root, 1))?.files.len(), 1);
+        Ok(())
+    });
+}
+
+#[test]
+fn command_claim_create_authorizes_one_dispatch() {
+    create_claim_control(false);
+}
+
+#[test]
+#[should_panic(expected = "duplicate request dispatch")]
+fn negative_control_detects_idempotent_command_claim() {
+    create_claim_control(true);
+}
+
 // Control property: one locked increment preserves both updates. Splitting the
 // same operations into separate critical sections must expose a lost update.
 fn increment_control(split: bool) {

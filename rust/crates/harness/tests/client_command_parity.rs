@@ -174,14 +174,25 @@ async fn aliases_are_reserved_against_prompts_and_skills() -> Result<()> {
 fn syntax_oracle_detects_classification_and_bound_mutants() {
     use proptest::test_runner::{Config, TestRunner};
     for mutation in ["slash", "bound"] {
-        let mut runner = TestRunner::new(Config { cases: 32, ..Config::default() });
+        let mut runner = TestRunner::new(Config {
+            cases: 32,
+            failure_persistence: None,
+            ..Config::default()
+        });
         let result = runner.run(&"[a-zA-Z0-9 λ]{1,80}", |text| {
             let input = format!("/{text}");
-            let maximum = if mutation == "bound" { input.len() as u64 - 1 } else { 1024 };
+            let maximum = if mutation == "bound" {
+                input.len() as u64 - 1
+            } else {
+                1024
+            };
             // Deliberate bugs: forward slash commands as chat, or bypass the
             // caller's byte allowance. The shared fuzz oracle must reject both.
-            let broken = if mutation == "slash" { Ok(None) }
-                else { command_syntax::split(&input, u64::MAX) };
+            let broken = if mutation == "slash" {
+                Ok(None)
+            } else {
+                command_syntax::split(&input, u64::MAX)
+            };
             prop_assert!(command_oracle::accepts(&input, maximum, &broken));
             Ok(())
         });
