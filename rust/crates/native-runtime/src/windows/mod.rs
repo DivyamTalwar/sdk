@@ -7,6 +7,7 @@
 mod driver;
 mod io;
 mod service;
+pub use io::hard_link_count;
 #[cfg(feature = "named-pipe")]
 pub(crate) mod pipe;
 

@@ -19,6 +19,8 @@ pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::hard_link_count;
 #[cfg(all(windows, feature = "named-pipe"))]
 pub use windows::pipe::UserPipeSecurity;
 #[cfg(all(unix, not(target_os = "linux")))]

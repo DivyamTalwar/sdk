@@ -273,7 +273,7 @@ fn reject_alias(path: &Path) -> io::Result<()> {
             .access_mode(0)
             .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
-        let links = link_count(&file)?;
+        let links = acyclic_native_runtime::hard_link_count(&file)?;
         if links != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -282,27 +282,4 @@ fn reject_alias(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn link_count(file: &File) -> io::Result<u32> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
-    };
-    let mut info = std::mem::MaybeUninit::<FILE_STANDARD_INFO>::uninit();
-    // SAFETY: the handle is live and the output has the exact API layout and size.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileStandardInfo,
-            info.as_mut_ptr().cast(),
-            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the successful call initialized the complete structure.
-    Ok(unsafe { info.assume_init() }.NumberOfLinks)
 }
