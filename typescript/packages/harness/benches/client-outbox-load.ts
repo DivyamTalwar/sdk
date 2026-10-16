@@ -1,8 +1,9 @@
 import { estimateShallowMemoryUsageOf, gcAndSweep, heapStats } from "bun:jsc";
 import { type ClientCommand } from "../src/client.js";
 
-const { MemoryOutbox: Before } = await import(process.env.HARNESS_OUTBOX_BEFORE ??
-  new URL("../src/client-store.ts", import.meta.url).href) as typeof import("../src/client-store.js");
+const baseline = process.env.HARNESS_OUTBOX_BEFORE;
+if (!baseline) throw new Error("HARNESS_OUTBOX_BEFORE must name an explicit baseline module");
+const { MemoryOutbox: Before } = await import(baseline) as typeof import("../src/client-store.js");
 const { MemoryOutbox: After } = await import("../src/client-store.js");
 const mode = process.env.HARNESS_OUTBOX_CASE ?? "timing";
 let checksum = 0;
