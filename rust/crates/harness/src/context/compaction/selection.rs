@@ -206,38 +206,6 @@ pub(crate) fn mandatory_messages(
     Ok(messages)
 }
 
-pub(crate) fn mandatory_messages(
-    context: &Context,
-    covered: usize,
-    retention: &super::CompactionRetention,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Vec<crate::model::ModelMessage>> {
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let mut messages = Vec::new();
-    let made = (|| {
-        let (selected, pending) = mandatory_flags(context, covered, retention, &mut quota)?;
-        messages = quota_vector(selected.iter().filter(|keep| **keep).count(), &mut quota)?;
-        for (message, keep) in context.messages.iter().zip(&selected) {
-            compaction_step(&mut quota)?;
-            if *keep {
-                messages.push(super::copying::clone_message(
-                    message.role,
-                    &message.content,
-                    &mut quota,
-                )?);
-            }
-        }
-        retire_vector(pending, &mut quota)?;
-        retire_vector(selected, &mut quota)
-    })();
-    if let Err(error) = made {
-        drop(messages);
-        return Err(error);
-    }
-    quota.transfer();
-    Ok(messages)
-}
-
 pub(crate) fn compact_context(
     context: &Context,
     maximum: usize,

@@ -2,7 +2,7 @@ use super::super::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Canonical command, workspace or caller-owned config file path.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InputPath(pub(super) String);
 
