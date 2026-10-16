@@ -81,6 +81,9 @@ proptest! {
                 let (prepared, _) = request(&provider).unwrap();
                 let mut request = prepared.request().clone();
                 request.tools.push(definition(canonical.into()));
+                if canonical != "A_anchor" {
+                    request.tools.push(definition("A_anchor".into()));
+                }
                 let choices = match adapter {
                     Adapter::Anthropic => vec![json!({"tool_choice":{"type":"tool","name":canonical}})],
                     Adapter::Responses => vec![json!({"tool_choice":{"type":"function","name":canonical}}),
