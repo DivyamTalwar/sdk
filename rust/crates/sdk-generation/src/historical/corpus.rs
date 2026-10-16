@@ -28,29 +28,18 @@ pub(super) fn frontier_revisions(
         return Err("registry frontier needs immutable Git history anchors".into());
     }
     let git = frontier_git()?;
-    let shallow = command_output(
+    let layout = command_output(
         sdk_docs::command(&git)
             .arg("--no-replace-objects")
             .current_dir(repository)
-            .args(["rev-parse", "--is-shallow-repository"]),
+            .args([
+                "rev-parse",
+                "--is-shallow-repository",
+                "--git-path",
+                "info/grafts",
+            ]),
     )?;
-    if std::str::from_utf8(&shallow)
-        .map_err(|e| e.to_string())?
-        .trim()
-        != "false"
-    {
-        return Err("source frontier requires complete original Git ancestry".into());
-    }
-    let graft = command_output(sdk_docs::command(&git).current_dir(repository).args([
-        "rev-parse",
-        "--git-path",
-        "info/grafts",
-    ]))?;
-    let graft = repository.join(
-        std::str::from_utf8(&graft)
-            .map_err(|e| e.to_string())?
-            .trim(),
-    );
+    let graft = repository.join(super::probe::graft_path(&layout)?);
     if graft.try_exists().map_err(|e| e.to_string())?
         || crate::command_var_os("GIT_GRAFT_FILE").is_some()
     {

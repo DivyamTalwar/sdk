@@ -12,6 +12,7 @@ struct Cache {
     files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
     parsed: RefCell<BTreeMap<Rc<[u8]>, Rc<rustdoc_types::Crate>>>,
     json: RefCell<BTreeMap<Rc<[u8]>, Rc<serde_json::Value>>>,
+    normalized: RefCell<BTreeMap<PathBuf, BTreeMap<Rc<[u8]>, Rc<[u8]>>>>,
 }
 thread_local! {
     // Every entry belongs to one calling operation; nested operations restore it.
@@ -85,6 +86,37 @@ pub(crate) fn json(raw: &[u8]) -> Result<Rc<serde_json::Value>, serde_json::Erro
     Ok(value)
 }
 
+pub(crate) fn normalized(
+    raw: &[u8],
+    root: &Path,
+    normalize: impl FnOnce() -> Result<Vec<u8>, Error>,
+) -> Result<Rc<[u8]>, Error> {
+    if let Some(value) = CACHE.with_borrow(|cache| {
+        cache.as_ref().and_then(|cache| {
+            cache
+                .normalized
+                .borrow()
+                .get(root)
+                .and_then(|values| values.get(raw))
+                .cloned()
+        })
+    }) {
+        return Ok(value);
+    }
+    let value: Rc<[u8]> = normalize()?.into();
+    CACHE.with_borrow(|cache| {
+        if let Some(cache) = cache {
+            cache
+                .normalized
+                .borrow_mut()
+                .entry(root.to_owned())
+                .or_default()
+                .insert(Rc::from(raw), Rc::clone(&value));
+        }
+    });
+    Ok(value)
+}
+
 pub(crate) fn decode(raw: Rc<[u8]>) -> Result<Rc<rustdoc_types::Crate>, serde_json::Error> {
     if let Some(parsed) = CACHE.with_borrow(|cache| {
         cache
@@ -140,6 +172,25 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn normalized_reuse_binds_every_byte_and_repository_root(leaf in "[a-z]{1,12}", version in ".{0,16}") {
+            let raw = serde_json::to_vec(&serde_json::json!({
+                "filename": format!("/checkout/src/{leaf}.rs"), "version": version,
+            })).unwrap();
+            let root = Path::new("/checkout");
+            let fresh = crate::normalized_rustdoc_digest_bytes(&raw, root).unwrap();
+            with_rustdoc_cache(|| {
+                let first = crate::normalized_rustdoc_digest_bytes(&raw, root).unwrap();
+                let second = crate::normalized_rustdoc_digest_bytes(&raw, root).unwrap();
+                prop_assert!(Rc::ptr_eq(&first, &second));
+                prop_assert_eq!(&*first, &*fresh);
+                let other_root = crate::normalized_rustdoc_digest_bytes(&raw, Path::new("/different")).unwrap();
+                prop_assert_ne!(&*first, &*other_root);
+                let changed = serde_json::to_vec(&serde_json::json!({"filename": "/checkout/other.rs"})).unwrap();
+                prop_assert_ne!(&*first, &*crate::normalized_rustdoc_digest_bytes(&changed, root).unwrap());
+                Ok(())
+            })?;
+        }
         #[test]
         fn json_reuse_preserves_all_fields_and_round_trips(values in prop::collection::btree_map(".{0,12}", ".{0,24}", 0..12)) {
             with_rustdoc_cache(|| {

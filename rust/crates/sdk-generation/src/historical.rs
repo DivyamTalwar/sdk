@@ -121,6 +121,7 @@ mod archives;
 mod corpus;
 mod discovery;
 mod examples;
+mod probe;
 mod producer;
 mod registry;
 
