@@ -4,7 +4,9 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 
+mod lock;
 mod mounts;
+pub(super) use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 pub(super) mod volumes;
 
 pub(super) struct MountedVolume {
@@ -12,6 +14,11 @@ pub(super) struct MountedVolume {
     pub(super) native: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
+
+pub(super) struct State {
+    pub(super) mounts: Mounts,
+    pub(super) capture: Option<super::checkout_tools::capture::CheckoutCapture>,
+}
 
 pub(super) type View = LazyWorkspace<
     LocalAuthorityBackend,
@@ -30,9 +37,7 @@ pub struct LocalWorkspace {
     // -> provider visibility -> provider state. Git cache/switch locks are
     // innermost and never held together. Callbacks never reacquire view state;
     // the Loom model exercises command and offloaded-cleanup custody.
-    pub(super) state: super::checkout_tools::StateArc<
-        super::checkout_tools::AsyncMutex<super::checkout_tools::State>,
-    >,
+    pub(super) state: StateArc<AsyncMutex<State>>,
     context_line: String,
     pub(super) repository: acyclic_fs::WorkspaceId,
 }
@@ -82,9 +87,7 @@ impl LocalWorkspace {
 
     #[cfg(test)]
     pub(super) async fn primary(&self) -> Result<Arc<MountedVolume>> {
-        let state =
-            super::checkout_tools::lock_owned(super::checkout_tools::StateArc::clone(&self.state))
-                .await;
+        let state = lock_owned(StateArc::clone(&self.state)).await;
         state
             .mounts
             .named(None)?
@@ -100,12 +103,19 @@ impl LocalWorkspace {
 pub(super) async fn open(
     filesystem: &acyclic_fs::Fs<LocalAuthorityBackend, LocalObjectBackend>,
     volume: &VolumeRef,
+    scratch: &VolumeRef,
     path: &Path,
     directory: &Path,
     identity: Option<[u8; 16]>,
     operation: acyclic_fs::OperationId,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
+    let mut mounts = mounts::owner(
+        &path,
+        volume,
+        None,
+        [("scratch".into(), scratch.clone(), None)],
+    )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -190,24 +200,22 @@ pub(super) async fn open(
         .await?;
         view.open_related(selected, &mut accounting).await?
     };
-    let mounts = mounts::owner(
-        &path,
-        volume,
-        Some(Arc::new(MountedVolume {
-            workspace: crate::tools::git::OwnedView::Checkout(view),
-            native: None,
-        })),
-        [],
-    )?;
+    let (_, primary) = mounts
+        .mounts_mut()
+        .find(|(relative, _)| relative.is_empty())
+        .ok_or_else(|| Error::NotFound("primary volume is not mounted".into()))?;
+    primary.view.source = Some(Arc::new(MountedVolume {
+        workspace: crate::tools::git::OwnedView::Checkout(view),
+        native: None,
+    }));
+    volumes::attach(filesystem, &store, &path, &mut mounts).await?;
     Ok(LocalWorkspace {
         repository,
         context_line: mounts.context_line(),
-        state: super::checkout_tools::StateArc::new(super::checkout_tools::AsyncMutex::new(
-            super::checkout_tools::State {
-                mounts,
-                capture: None,
-            },
-        )),
+        state: StateArc::new(AsyncMutex::new(State {
+            mounts,
+            capture: None,
+        })),
         path,
         filesystem: filesystem.clone(),
         store,

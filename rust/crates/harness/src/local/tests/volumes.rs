@@ -27,9 +27,9 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         "inspected"
     );
     let workspace = harness.workspace().unwrap();
-    let state = super::super::checkout_tools::lock_owned(
-        super::super::checkout_tools::StateArc::clone(&workspace.state),
-    )
+    let state = super::super::workspace::lock_owned(super::super::workspace::StateArc::clone(
+        &workspace.state,
+    ))
     .await;
     let scratch = state
         .mounts

@@ -5,12 +5,11 @@ use crate::{
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
-pub(super) use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
+use workspace::{AsyncMutex, OwnedMutexGuard, State, StateArc, lock_owned};
 
 mod bash;
-mod capture;
+pub(super) mod capture;
 mod git;
-mod lock;
 mod output;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
@@ -23,11 +22,6 @@ pub(super) struct CheckoutTools {
     task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     // Every binding shares the workspace's mount, branch and capture owner.
     state: StateArc<AsyncMutex<State>>,
-}
-
-pub(super) struct State {
-    pub(super) mounts: workspace::Mounts,
-    pub(super) capture: Option<capture::CheckoutCapture>,
 }
 
 // Keep the whole command, including its publication and cursor replacement,

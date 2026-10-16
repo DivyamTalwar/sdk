@@ -30,70 +30,43 @@ pub(in crate::local) fn excluded(
         .collect()
 }
 
-impl LocalWorkspace {
-    pub(in crate::local) async fn with_scratch(
-        mut self,
-        project: &VolumeRef,
-        scratch: &VolumeRef,
-    ) -> Result<Self> {
-        let cancellation = CancellationToken::new();
-        let mut state = super::super::checkout_tools::lock_owned(
-            super::super::checkout_tools::StateArc::clone(&self.state),
-        )
-        .await;
-        let primary = state
-            .mounts
-            .named(None)?
-            .1
-            .view
-            .source
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::NotFound("primary workspace is not bound".into()))?;
-        let mut mounts = mounts::owner(
-            &self.path,
-            project,
-            Some(primary),
-            [("scratch".into(), scratch.clone(), None)],
-        )?;
-        for (relative, mount) in mounts.mounts_mut() {
-            if relative.is_empty() {
-                continue;
-            }
-            let source = self
-                .filesystem
-                .open_workspace(
-                    &mount.view.volume.storage_name(&mut None)?,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| Error::from(failure.error))?
-                .value;
-            let destination = self.path.join(relative);
-            create_mount_directory(&self.path, Path::new(relative))?;
-            let options = if mount.mode.read_only() {
-                MountOptions::read_only()
-            } else {
-                MountOptions::read_write().publication(MountPublication::Manual)
-            };
-            acyclic_fs::WorkspaceGraph::new(self.store.clone())
-                .register_root(&source)
-                .await?;
-            let native = source
-                .mount(&destination, options)
-                .await
-                .map_err(Error::from)?;
-            mount.view.source = Some(Arc::new(MountedVolume {
-                workspace: crate::tools::git::OwnedView::Volume(source),
-                native: Some(native),
-            }));
+pub(super) async fn attach(
+    filesystem: &acyclic_fs::LocalFs,
+    store: &acyclic_fs::LocalCoreStateStore,
+    root: &Path,
+    mounts: &mut Mounts,
+) -> Result<()> {
+    let cancellation = CancellationToken::new();
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative.is_empty() {
+            continue;
         }
-        self.context_line = mounts.context_line();
-        state.mounts = mounts;
-        drop(state);
-        Ok(self)
+        let source = filesystem
+            .open_workspace(
+                &mount.view.volume.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        let destination = root.join(relative);
+        create_mount_directory(root, Path::new(relative))?;
+        let options = if mount.mode.read_only() {
+            MountOptions::read_only()
+        } else {
+            MountOptions::read_write().publication(MountPublication::Manual)
+        };
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(&source)
+            .await?;
+        let native = source.mount(&destination, options).await?;
+        mount.view.source = Some(Arc::new(MountedVolume {
+            workspace: crate::tools::git::OwnedView::Volume(source),
+            native: Some(native),
+        }));
     }
+    Ok(())
 }
 
 fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {

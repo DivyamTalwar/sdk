@@ -123,32 +123,7 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?;
             let provider_ref = owner.project.provider();
-            #[cfg(feature = "native-execution")]
-            let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(
-                    workspace::open(
-                        &filesystem,
-                        &owner.project,
-                        path,
-                        &directory,
-                        owner.workspace_identity,
-                        workspace::attach_operation(owner.task),
-                    )
-                    .await?,
-                ),
-                LocalProject::Volume { .. } => None,
-            };
-            let files = FilesystemHost::new(filesystem, provider_ref, None)?;
-            // A configured project is opened, never silently replaced by an empty volume.
-            files
-                .resolve(
-                    &crate::filesystem::workspace_ref(
-                        provider_ref.clone(),
-                        &owner.project.storage_name(&mut None)?,
-                    )?,
-                    None,
-                )
-                .await?;
+            let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
             let scratch = VolumeRef::new(
                 provider_ref.clone(),
                 format!("scratch-{}", owner.agent),
@@ -166,12 +141,33 @@ impl LocalHarness {
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
             #[cfg(feature = "native-execution")]
-            let workspace = match workspace {
-                Some(workspace) => Some(Arc::new(
-                    workspace.with_scratch(&owner.project, &scratch).await?,
-                )),
-                None => None,
+            let workspace = match &config.project {
+                LocalProject::Workspace(path) => Some(
+                    workspace::open(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        path,
+                        &directory,
+                        owner.workspace_identity,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                ),
+                LocalProject::Volume { .. } => None,
             };
+            // A configured project is opened, never silently replaced by an empty volume.
+            files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        provider_ref.clone(),
+                        &owner.project.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = workspace.map(Arc::new);
             #[cfg(feature = "native-execution")]
             let context = match &workspace {
                 Some(workspace) => context.with(workspace.context_stage()),
