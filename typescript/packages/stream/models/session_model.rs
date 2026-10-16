@@ -1,46 +1,14 @@
 //! JavaScript runs atomically between awaits. Enumerate all bounded external
 //! transport-event orders with loom, then replay each distinct order against
 //! the real TypeScript module, including paused transport writes.
-use loom::sync::{Arc, Mutex};
 use serde_json::json;
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 #[path = "../fuzz/driver.rs"]
 mod driver;
 
-fn traces(
-    left: &'static [&'static str],
-    right: &'static [&'static str],
-) -> BTreeSet<Vec<&'static str>> {
-    // This outer mutex only collects completed schedules, outside the explored
-    // threads. It neither controls nor prunes their ordering.
-    let output = std::sync::Arc::new(std::sync::Mutex::new(BTreeSet::new()));
-    let completed = std::sync::Arc::clone(&output);
-    loom::model(move || {
-        // One model-only lock rank: the external transport-event delivery order.
-        // No production JS state is mocked or guarded by this Rust mutex.
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let one = Arc::clone(&events);
-        let one = loom::thread::spawn(move || {
-            for event in left {
-                one.lock().unwrap().push(*event);
-            }
-        });
-        let two = Arc::clone(&events);
-        let two = loom::thread::spawn(move || {
-            for event in right {
-                two.lock().unwrap().push(*event);
-            }
-        });
-        one.join().unwrap();
-        two.join().unwrap();
-        let trace = events.lock().unwrap().clone();
-        completed.lock().unwrap().insert(trace);
-    });
-    std::sync::Arc::try_unwrap(output)
-        .unwrap()
-        .into_inner()
-        .unwrap()
-}
+#[path = "schedules.rs"]
+mod schedules;
+use schedules::traces;
 fn run(scenario: &str, fault: &str, left: &'static [&'static str], right: &'static [&'static str]) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     for trace in traces(left, right) {
@@ -542,7 +510,7 @@ proptest::proptest! {
     #[test]
     fn untrusted_frames_round_trip(input in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
         static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))));
+        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
         shared.lock().unwrap().call(json!({"action":"decode", "hex":hex}));
     }
@@ -550,7 +518,7 @@ proptest::proptest! {
     #[test]
     fn child_frames_round_trip_and_enforce_the_direct_parent(name in "[a-z]{1,8}", nested in proptest::prelude::any::<bool>()) {
         static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))));
+        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         let path = if nested { format!("parent/{name}") } else { name };
         let result = shared.lock().unwrap().call(json!({"action":"child", "path":path}));
         proptest::prop_assert_eq!(&result["outcome"], &json!(if nested { "invalid_response" } else { "child" }));
@@ -563,7 +531,7 @@ proptest::proptest! {
         "access_denied", "unavailable", "hierarchy_changed", "deadline_elapsed", "unsupported", "unknown"
     ])) {
         static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))));
+        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         // SessionFrame(channel=1,generation=1,closed(code)): stable fields 1,2,18.
         let mut bytes = vec![8, 1, 16, 1, 146, 1, u8::try_from(code.len() + 2).unwrap(), 10, u8::try_from(code.len()).unwrap()];
         bytes.extend_from_slice(code.as_bytes());

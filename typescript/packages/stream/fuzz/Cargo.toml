@@ -18,5 +18,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "follow_data"
+path = "fuzz_targets/follow_data.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

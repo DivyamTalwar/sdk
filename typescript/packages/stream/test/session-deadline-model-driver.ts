@@ -27,9 +27,9 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
     if (!source.includes(factory)) throw new Error("raw-follow factory probe no longer matches");
     source = source.replace(factory, "const { client, sessions } = { client: {}, sessions: globalThis.sessionDeadlineSessions };");
     if (fault === "deadline") {
-      const forwarding = "const timeoutMs = callOptions?.timeoutMs;";
+      const forwarding = "const { signal, timeoutMs } = callOptions ?? {};";
       if (fault !== "deadline" || !source.includes(forwarding)) throw new Error("deadline negative control no longer matches");
-      source = source.replaceAll(forwarding, "const timeoutMs = undefined;");
+      source = source.replaceAll(forwarding, "const { signal } = callOptions ?? {}; const timeoutMs = undefined;");
     }
     return { contents: source, loader: "ts" };
   });

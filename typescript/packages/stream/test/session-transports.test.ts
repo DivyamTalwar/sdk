@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { createSecureServer } from "node:http2";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
-import { StreamSessionService, SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
+import { StreamSessionService, SessionFrameSchema, SessionFollowSchema, SessionDelivery } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { GrpcStreamProvider, createStreamGrpcClient } from "../src/grpc.js";
 import { HttpStreamProvider } from "../src/http.js";
@@ -66,13 +66,23 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
   try {
     const provider = new GrpcStreamProvider(options);
     expect(await provider.tail("unary")).toBe(0n);
+    const latest = provider.followData(create(SessionFollowSchema, { path: "status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
     const discovered = children.next();
     const pending = Promise.all(follows.map(follow => follow.next()));
-    await Promise.race([node.until(() => node.active === follows.length + 1), pending.then(() => {})]);
+    await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
+    node.publishLatest("status", 3n);
+    node.publishLatest("status", 9n, true);
+    expect((await firstStatus).value?.after?.next).toBe(3n);
+    const status = (await latest.next()).value!;
+    expect(status.after?.next).toBe(9n);
+    expect(status.accepted).toBe(11n);
+    expect(status.durable).toBe(8n);
+    expect(status.item.case === "latestValue" && status.item.value.attention).toBe(true);
     expect((await discovered).value?.path).toBe("agent/0");
     for (let id = 1; id < follows.length; id++) expect((await children.next()).value?.path).toBe(`agent/${id}`);
     const later = children.next(); node.append("agent/later");
@@ -83,6 +93,7 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
     await children.return?.();
+    await latest.return?.();
     await node.until(() => node.active === 0);
   } finally { await close(); }
 });
@@ -157,13 +168,23 @@ test("public browser follows use one authenticated binary WebSocket without fetc
       fetcher: async () => { fetches += 1; throw new Error("follow issued an HTTP poll"); },
       webSocketFactory: (url, protocols) => { sockets += 1; return new WebSocket(url, { protocols, tls: { ca: cert } }); },
     });
+    const latest = provider.followData(create(SessionFollowSchema, { path: "status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
     const discovered = children.next();
     const pending = Promise.all(follows.map(follow => follow.next()));
-    await Promise.race([node.until(() => node.active === follows.length + 1), pending.then(() => {})]);
+    await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
+    node.publishLatest("status", 3n);
+    node.publishLatest("status", 9n, true);
+    expect((await firstStatus).value?.after?.next).toBe(3n);
+    const status = (await latest.next()).value!;
+    expect(status.after?.next).toBe(9n);
+    expect(status.accepted).toBe(11n);
+    expect(status.durable).toBe(8n);
+    expect(status.item.case === "latestValue" && status.item.value.attention).toBe(true);
     expect((await discovered).value?.path).toBe("agent/0");
     for (let id = 1; id < follows.length; id++) expect((await children.next()).value?.path).toBe(`agent/${id}`);
     const later = children.next(); node.append("agent/later");
@@ -172,6 +193,7 @@ test("public browser follows use one authenticated binary WebSocket without fetc
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
     await children.return?.();
+    await latest.return?.();
     await node.until(() => node.active === 0);
   } finally { await server.stop(true); }
 });

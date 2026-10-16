@@ -1,3 +1,4 @@
+import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
@@ -182,6 +183,12 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
     } finally { controller.abort(); }
+  }
+  async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
+    const authored = structuredClone(follow);
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path: authored.path, from });
+    yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     await validateWireRequest({ kind: "follow", path, from: options.from });

@@ -5,6 +5,7 @@ import { checkedRecord } from "./record.js";
 import { StreamError, type EncodedRecord, type FollowOptions, type ChildrenRequest, type StreamChild } from "./types.js";
 import { checkedChild } from "./child.js";
 import { SessionQueue } from "./session-queue.js";
+import { followSequence, validateFollow } from "./follow-data.js";
 
 export interface SessionTransport {
   readonly incoming: AsyncIterable<wire.SessionFrame>;
@@ -16,7 +17,7 @@ export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortS
 type Body = wire.SessionFrame["body"];
 type Credit = { bytes: bigint; frames: number };
 type StreamKind = Extract<wire.SessionSubscription["kind"], { case: "follow" | "children" }>;
-type Delivery = { value: EncodedRecord | StreamChild; sequence: bigint; opaque: Uint8Array; generation: bigint; link: Link; release(): void };
+type Delivery = { value: wire.SessionData | StreamChild; sequence: bigint; opaque: Uint8Array; generation: bigint; link: Link; release(): void };
 type Route = {
   id: bigint; generation: bigint; kind: StreamKind; applied: bigint; received: bigint;
   appliedOpaque: Uint8Array; receivedOpaque: Uint8Array;
@@ -61,8 +62,18 @@ export class StreamSessions {
   #active = 0;
   constructor(connect: SessionConnect, acknowledge = true) { this.#connect = connect; this.#acknowledge = acknowledge; }
 
-  follow(path: string, options: FollowOptions): AsyncGenerator<EncodedRecord> {
-    return this.#stream({ case: "follow", value: create(wire.SessionFollowSchema, { path, delivery: wire.SessionDelivery.ALL }) }, options) as AsyncGenerator<EncodedRecord>;
+  async *follow(path: string, options: FollowOptions): AsyncGenerator<EncodedRecord> {
+    for await (const data of this.followData(create(wire.SessionFollowSchema, { path, delivery: wire.SessionDelivery.ALL }), options)) {
+      if (data.item.case !== "record") throw failure();
+      yield checkedRecord(data.item.value, data.item.value.sequence);
+    }
+  }
+  followData(follow: wire.SessionFollow, options: FollowOptions): AsyncGenerator<wire.SessionData> {
+    const authored = create(wire.SessionFollowSchema, { path: follow.path, delivery: follow.delivery,
+      precedingCommitId: follow.precedingCommitId.slice() });
+    const { from, signal } = options;
+    validateFollow(authored, from);
+    return this.#stream({ case: "follow", value: authored }, { from, ...(signal === undefined ? {} : { signal }) }) as AsyncGenerator<wire.SessionData>;
   }
   children(request: ChildrenRequest): AsyncGenerator<StreamChild> {
     const { parent, signal, limit } = request;
@@ -70,7 +81,7 @@ export class StreamSessions {
       ...(parent === undefined ? {} : { parent }) } },
     { from: 0n, ...(signal === undefined ? {} : { signal }) }) as AsyncGenerator<StreamChild>;
   }
-  async *#stream(kind: StreamKind, options: FollowOptions): AsyncGenerator<EncodedRecord | StreamChild> {
+  async *#stream(kind: StreamKind, options: FollowOptions): AsyncGenerator<wire.SessionData | StreamChild> {
     if (options.signal?.aborted) return;
     if (this.#active >= 16_384 || this.#nextId > MAX_U64 - 2n) throw new StreamError("capacity", "session channel capacity exceeded");
     const id = this.#nextId;
@@ -99,10 +110,14 @@ export class StreamSessions {
         delivery.release();
         if (options.signal?.aborted) return;
         if (delivery.generation !== route.generation || delivery.link !== route.link) { await this.#grant(route); continue; }
-        if (delivery.sequence !== route.applied) throw failure();
+        const latest = route.kind.case === "follow" && route.kind.value.delivery === wire.SessionDelivery.LATEST;
+        if (latest ? delivery.sequence < route.applied : delivery.sequence !== route.applied) throw failure();
         // No await between application-cursor advancement and the yield boundary.
-        route.applied += 1n;
+        route.applied = delivery.sequence + 1n;
         route.appliedOpaque = delivery.opaque;
+        if (route.kind.case === "follow" && route.kind.value.precedingCommitId.length && "item" in delivery.value && delivery.value.item.case === "record") {
+          route.kind.value.precedingCommitId = delivery.value.item.value.commitId.slice();
+        }
         yield delivery.value;
         if (this.#acknowledge && this.#routes.get(id) === route) {
           await this.#write(route.link, frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied, opaque: route.appliedOpaque } }) }), route.controller.signal);
@@ -246,6 +261,11 @@ export class StreamSessions {
     switch (body.case) {
       case "opened":
         if (route.opened || body.value.resume?.next !== route.received || !sameBytes(body.value.resume.opaque, route.receivedOpaque)) throw failure();
+        if (route.kind.case === "follow" && route.kind.value.precedingCommitId.length && !sameBytes(route.kind.value.precedingCommitId, body.value.precedingCommitId)) {
+          this.#remove(route);
+          route.queue.end(new StreamError("unsupported", "peer did not confirm the checked follow"));
+          break;
+        }
         route.opened = true;
         route.resolve();
         await this.#grant(route);
@@ -253,16 +273,18 @@ export class StreamSessions {
       case "data": {
         consume(route.credit, bytes);
         const data = body.value;
-        if (!route.opened || data.after?.next !== route.received + 1n || data.durable > data.accepted || data.accepted < data.after.next) throw failure();
-        let value: EncodedRecord | StreamChild;
-        if (route.kind.case === "follow" && data.item.case === "record" && data.after.opaque.length === 0) {
-          value = checkedRecord(data.item.value, route.received);
-        } else if (route.kind.case === "children" && data.item.case === "child") {
+        if (!route.opened) throw failure();
+        let value: wire.SessionData | StreamChild;
+        let sequence: bigint;
+        if (route.kind.case === "follow") {
+          sequence = followSequence(route.kind.value.delivery, route.received, data);
+          value = data;
+        } else if (data.item.case === "child" && data.after?.next === route.received + 1n && data.durable <= data.accepted && data.accepted >= data.after.next) {
+          sequence = route.received;
           value = checkedChild(data.item.value, route.kind.value.parent);
         } else { throw failure(); }
-        const sequence = route.received;
-        const opaque = data.after.opaque.slice();
-        route.received += 1n;
+        const opaque = data.after!.opaque.slice();
+        route.received = sequence + 1n;
         route.receivedOpaque = opaque;
         let released = false;
         const release = (): void => {
