@@ -22,6 +22,10 @@ use acyclic_harness::{
 use acyclic_stream::{MemoryStream, StreamPath, SystemUnixMillisClock};
 use std::{collections::BTreeMap, sync::Arc};
 
+#[path = "session_runtime/fixture.rs"]
+mod fixture;
+pub(crate) use fixture::Fixture;
+
 #[tokio::test]
 async fn session_executes_the_registered_write_tool_through_the_real_worker() -> Result<()> {
     Box::pin(run_write_session(VolumeBinding::Separate)).await
@@ -38,109 +42,14 @@ async fn request_permissions_cannot_include_owner_result_files() -> Result<()> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum VolumeBinding {
+pub(crate) enum VolumeBinding {
     Separate,
     Foreign,
     Shared,
 }
 
 async fn run_write_session(binding: VolumeBinding) -> Result<()> {
-    let provider = ProviderRef::new(
-        "session-worker".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let files = FilesystemHost::new(Fs::memory(), &provider, None)?;
-    let agent = AgentId::from_bytes([61; 16]);
-    let volume = VolumeRef::new(
-        provider,
-        "private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    files.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
-        "session-worker",
-        [62; 32],
-        Authority {
-            kind: AggregateKind::Task,
-            id: "session-worker".into(),
-        },
-    );
-    let grants = Capabilities::new([
-        "operation:declare".to_owned(),
-        "operation:observe".to_owned(),
-        "operation:cancel".to_owned(),
-        "task:spawn:acyclic.command_session@1".to_owned(),
-        "tool:call:write".to_owned(),
-        volume.capability(VolumeOperation::Read, &mut None)?,
-        volume.capability(VolumeOperation::Write, &mut None)?,
-        volume.directory_read_capability("", &mut None)?,
-    ]);
-    let signed = issuer.issue("owner", &grants, Some(agent), None, &mut None)?;
-    let verifier = issuer.verifier(&mut None)?;
-    let scope = RuntimeScope::new(grants, Limits::default())?;
-    let machine = Arc::new(CommandSessionMachine::new());
-    let mut tasks = TaskRegistry::default();
-    tasks.register(machine.definition()?)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(machine, &mut None)?;
-    let mut tools = acyclic_harness::tool::ToolRegistry::default();
-    let write = acyclic_harness::tool::files::write()?;
-    let revision = write.definition.revision.clone();
-    tools.register((write, None), &mut None, None)?;
-    let stream = Arc::new(MemoryStream::default());
-    let requests = TaskVolume::open(
-        stream.clone(),
-        StreamPath::new("requests").map_err(storage)?,
-    )
-    .await
-    .map_err(storage)?;
-    let results = TaskVolume::open(
-        if binding == VolumeBinding::Foreign {
-            Arc::new(MemoryStream::default())
-        } else {
-            stream.clone()
-        },
-        StreamPath::new(if binding == VolumeBinding::Shared {
-            "requests"
-        } else {
-            "results"
-        })
-        .map_err(storage)?,
-    )
-    .await
-    .map_err(storage)?;
-    let runtime = Box::pin(FilesystemTaskRuntime::open(
-        stream,
-        files.clone(),
-        &volume,
-        &verifier,
-        &signed,
-        &scope,
-        &tasks,
-        &machines,
-        &tools,
-        SessionLimits {
-            active_tasks: 1,
-            total_tasks: 1,
-            depth: 1,
-            model_steps: 1,
-        },
-        1,
-        65_536,
-        Arc::new(SystemUnixMillisClock),
-        None,
-        &[],
-        &ResumableToolRegistry::default(),
-        None,
-    ))
-    .await?
-    .with_output_volume(&volume, None)?;
-    let publisher =
-        FilesystemContentPublisher::new(files.clone(), &volume, &verifier, &signed, 65_536, None)?;
+    let Fixture {runtime,files,volume,verifier,signed,tasks,revision,publisher,requests,results} = Fixture::new(binding).await?;
     let operation = OperationId::from_bytes([63; 16]);
     let arguments = json!({
         "path":"session.txt","text":"written by the task worker",
@@ -200,18 +109,18 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
         labels: BTreeMap::new(),
     };
     let commands = RequestCommands::new(&runtime, &requests, &results);
-    let arguments: Option<(
-        acyclic_harness::runtime::TaskContext,
-        acyclic_harness::scheduler::LeaseFence,
-        WorkflowCommand,
-    )> = None;
-    fn future_size<F: Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let bytes = future_size(|| {
-        let (context, fence, command) = arguments.unwrap();
-        commands.execute(context, fence, command, Value::Null)
-    });
+    let context = runtime.harness().durable_context(task, operation, None).await?;
+    let future = commands.execute(
+        context,
+        acyclic_harness::scheduler::LeaseFence {
+            reservation_id: "unpolled-size-probe".into(),
+            placement: worker.id.clone(),
+        },
+        command,
+        Value::Null,
+    );
+    let bytes = std::mem::size_of_val(&future);
+    drop(future);
     eprintln!("external request command future: {bytes} bytes");
     assert!(
         bytes < 16 * 1024,

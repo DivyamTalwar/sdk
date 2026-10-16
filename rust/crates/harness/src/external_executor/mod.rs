@@ -6,6 +6,8 @@ mod client;
 #[cfg(feature = "filesystem")]
 mod commands;
 mod failure;
+#[cfg(feature = "filesystem")]
+mod intake;
 mod manifest;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 mod native;
@@ -14,6 +16,8 @@ mod normalize;
 mod publication;
 mod request;
 mod session;
+#[cfg(feature = "filesystem")]
+mod tool_input;
 mod volume;
 
 pub use answer::hook_answer;
@@ -21,6 +25,8 @@ pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
 #[cfg(feature = "filesystem")]
 pub use commands::RequestCommands;
 pub use failure::hook_failure;
+#[cfg(feature = "filesystem")]
+pub use intake::RequestConsumer;
 pub use manifest::{claude_hooks, claude_manifest};
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use native::{HookBinding, run_hook};

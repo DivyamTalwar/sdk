@@ -84,6 +84,9 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(hook) = serde_json::from_slice::<Hook>(input)
         && let Ok(request) = request(hook.host, &hook.event, hook.input)
     {
+        if let Ok(call)=request.tool_call(&acyclic_harness::tools::defaults()?) {
+            assert!(!call.revision.is_empty());
+        }
         match request.to_file(task.clone()) {
             Ok(file) => assert_eq!(ExternalRequest::from_file(&task, &file)?, request),
             Err(acyclic_harness::task_volume::Error::LimitExceeded) => {}
@@ -91,6 +94,10 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Ok(request) = serde_json::from_slice::<ExternalRequest>(input) {
+        if let Ok(call) = request.tool_call(&acyclic_harness::tools::defaults()?) {
+            let bytes=serde_json::to_vec(&call)?;
+            assert_eq!(serde_json::from_slice::<acyclic_harness::filesystem::ToolTaskCommand>(&bytes)?,call);
+        }
         let original = file(task.clone(), &request, input.to_vec())?;
         if let Ok(accepted) = ExternalRequest::from_file(&task, &original) {
             assert_eq!(accepted, request);

@@ -9,6 +9,18 @@ use std::collections::HashSet;
 
 #[path = "external_hooks/answers.rs"]
 mod answers;
+#[path = "external_hooks/intake.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod intake;
+#[path = "external_hooks/intake_model.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod intake_model;
+#[path = "external_hooks/attachment_property.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod attachment_property;
+#[path = "external_hooks/lifecycle_recovery.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod lifecycle_recovery;
 #[path = "external_hooks/boundary_stream.rs"]
 #[cfg(all(
     any(feature = "filesystem", feature = "hooks"),
@@ -36,6 +48,9 @@ mod session;
 mod session_runtime;
 #[path = "external_hooks/volume.rs"]
 mod volume;
+#[path = "external_hooks/tool_input.rs"]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod tool_input;
 
 #[derive(Deserialize)]
 struct Scenario {

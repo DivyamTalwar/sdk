@@ -1,0 +1,132 @@
+use super::{ExternalAction, ExternalRequest, publication::storage, volume};
+use crate::{
+    Admission, Error, IdempotencyKey, OperationId, Result, TaskId,
+    distributed::SchedulerPayloadStore,
+    filesystem::{FilesystemTaskRuntime, TOOL_TASK_COMMAND_KIND},
+    runtime::{RuntimeTask, TaskStateProvider},
+    task_volume::{Component, FileValue, Query, TaskVolume},
+    workflow::WorkflowCommand,
+};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::StreamProvider;
+
+pub(super) const LIFECYCLE: &str = "acyclic.external.lifecycle.v1";
+
+/// One request-file delivery into the existing session workflow. This consumer
+/// retains no queue or task map; admission and the workflow slot own retries.
+pub struct RequestConsumer<'a, P, A, O> {
+    runtime: &'a FilesystemTaskRuntime<P, A, O>,
+    requests: &'a TaskVolume<P>,
+    results: &'a TaskVolume<P>,
+    payloads: &'a dyn SchedulerPayloadStore,
+    workspace: &'a str,
+}
+
+impl<'a, P, A, O> RequestConsumer<'a, P, A, O>
+where
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Binds the same provider-backed task runtime and its immutable input store.
+    pub fn new(
+        runtime: &'a FilesystemTaskRuntime<P, A, O>,
+        requests: &'a TaskVolume<P>,
+        results: &'a TaskVolume<P>,
+        payloads: &'a dyn SchedulerPayloadStore,
+        workspace: &'a str,
+    ) -> Self {
+        Self {runtime,requests,results,payloads,workspace}
+    }
+
+    /// Admits Attach or fills the current suspended session slot exactly once.
+    /// The actor schedules its existing worker after this delivery is accepted.
+    pub fn accept<'b>(&'b self, task: &'b Component, file: &'b FileValue)
+        -> impl Future<Output = Result<()>> + 'b {
+        Box::pin(async move {
+            let request = ExternalRequest::from_file(task, file).map_err(storage)?;
+            let task_id = TaskId::from_bytes(uuid::Uuid::parse_str(task.as_str())
+                .map_err(|_| Error::Invalid("external task folder is not a task ID".into()))?.into_bytes());
+            if task.as_str() != task_id.to_string() {
+                return Err(Error::Invalid("external task folder is not canonical".into()));
+            }
+            let provider = self.runtime.task_host().workflow_stream();
+            if !self.requests.uses_provider(&provider) || !self.results.uses_provider(&provider) {
+                return Err(Error::Unauthorized("request volumes use another task provider".into()));
+            }
+            let source = self.requests.snapshot(&Query::File(file.key.clone()), 1).await.map_err(storage)?;
+            if source.files.first() != Some(file) {
+                return Err(Error::Conflict("delivery differs from the immutable request file".into()));
+            }
+            let result = self.results.snapshot(&Query::File(request.result_key(task.clone()).map_err(storage)?),1)
+                .await.map_err(storage)?;
+            if source.generation.volume == result.generation.volume {
+                return Err(Error::Unauthorized("request and result volumes must be distinct".into()));
+            }
+            if let ExternalAction::Attach {workspace} = &request.action {
+                if workspace != self.workspace {
+                    return Err(Error::Unauthorized("native workspace differs from the configured project".into()));
+                }
+                let command = self.command(&request).await?;
+                let input = serde_json::json!({"command":command,"terminal":false});
+                let definition = self.runtime.harness().task::<serde_json::Value, ()>("acyclic.command_session@1")?;
+                return match self.runtime.harness().admit(
+                    OperationId::from_bytes(task_id.into_bytes()), &definition, input, None,
+                ).await? {
+                    Admission::Accepted(RuntimeTask::Durable {task_id:admitted, ..}) if admitted == task_id => Ok(()),
+                    Admission::Rejected {reason} => Err(Error::Conflict(reason)),
+                    _ => Err(Error::Indeterminate(request.operation_id)),
+                };
+            }
+            let admission = self.runtime.task_host().observe_admission(task_id).await?;
+            let initial: WorkflowCommand = serde_json::from_value(admission.input.get("command").cloned()
+                .ok_or_else(|| Error::Conflict("task is not an external session".into()))?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if initial.kind != LIFECYCLE {
+                return Err(Error::Conflict("task is not an attached external session".into()));
+            }
+            let context = self.runtime.harness().durable_context(task_id, admission.operation_id, None).await?;
+            let original: ExternalRequest = volume::decode(&context.read_file(&initial.payload, None).await?).map_err(storage)?;
+            if !matches!(original.action, ExternalAction::Attach {..})
+                || (original.host, &original.session_id, &original.caller) != (request.host, &request.session_id, &request.caller) {
+                return Err(Error::Unauthorized("request differs from the attached native session".into()));
+            }
+            if !result.files.is_empty() { return Ok(()); }
+            let command = self.command(&request).await?;
+            let terminal = matches!(request.action, ExternalAction::Detach);
+            let input = serde_json::json!({"command":command,"terminal":terminal});
+            let (phase, slot) = self.runtime.task_host().workflow_slot(task_id, None, &mut None).await?
+                .ok_or_else(|| Error::Conflict("external session is not suspended".into()))?;
+            if slot.waiting_command.is_some() {
+                return Err(Error::Conflict("external session still owns a pending command".into()));
+            }
+            let bytes = volume::encode(&input).map_err(storage)?;
+            let key = format!("external-resume:{}", request.operation_id);
+            let payload = self.payloads.stage(request.operation_id, &key, &bytes, None)?.await?;
+            if slot.input.as_ref() == Some(&payload) {
+                return Ok(());
+            }
+            if phase != crate::scheduler::OperationPhase::Suspended {
+                return Err(Error::Conflict("external session already has an admitted input".into()));
+            }
+            self.runtime.task_host().resume_workflow(task_id, slot.revision, payload,
+                IdempotencyKey::new(key)?, None, &mut None).await
+        })
+    }
+
+    async fn command(&self, request: &ExternalRequest) -> Result<WorkflowCommand> {
+        let (kind, bytes) = match &request.action {
+            ExternalAction::RunTool {..} => {
+                let input = request.tool_call(self.runtime.tool_registry())?;
+                (TOOL_TASK_COMMAND_KIND, volume::encode(&input).map_err(storage)?)
+            }
+            ExternalAction::Attach {..} | ExternalAction::Detach | ExternalAction::ToolFinished {..} =>
+                (LIFECYCLE, volume::encode(request).map_err(storage)?),
+            ExternalAction::Fork {..} | ExternalAction::Join {..} =>
+                return Err(Error::Unsupported("external child preparation is not bound".into())),
+        };
+        let key = format!("external-command:{}",request.operation_id);
+        let payload = self.payloads.stage(request.operation_id, &key, &bytes, None)?.await?;
+        Ok(WorkflowCommand {operation_id:request.operation_id,kind:kind.into(),payload})
+    }
+}

@@ -1,12 +1,12 @@
 use super::{
-    ExternalRequest,
+    ExternalAction, ExternalRequest, intake::LIFECYCLE,
     publication::{publish, storage},
     volume,
 };
 use crate::{
     Error, Result,
     distributed::JournalWrite,
-    filesystem::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress},
+    filesystem::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, TOOL_TASK_COMMAND_KIND, ToolTaskCommand},
     runtime::TaskContext,
     scheduler::LeaseFence,
     task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskVolume},
@@ -97,8 +97,16 @@ where
                     "request differs from the retained command".into(),
                 ));
             }
+            if command.kind == TOOL_TASK_COMMAND_KIND {
+                let actual: ToolTaskCommand = serde::Deserialize::deserialize(&payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                if actual != request.tool_call(self.runtime.tool_registry())? {
+                    return Err(Error::Conflict("tool command differs from the original native request".into()));
+                }
+            } else if command.kind != LIFECYCLE {
+                return Err(Error::Unsupported("external command kind is not bound".into()));
+            }
             let result_key = request.result_key(task.clone()).map_err(storage)?;
-            drop(request);
             let started = FileValue::new(
                 FileKey::Task {
                     task,
@@ -145,11 +153,33 @@ where
                 ));
             }
             drop(cached);
-            let commands = self.runtime.commands();
-            let progress = if reconcile {
-                commands.reconcile(context, fence, command, payload).await?
+            let progress = if command.kind == LIFECYCLE {
+                let original: ExternalRequest = serde_json::from_value(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                if original != request || !matches!(request.action,
+                    ExternalAction::Attach {..} | ExternalAction::Detach | ExternalAction::ToolFinished {..}) {
+                    return Err(Error::Conflict("lifecycle command differs from its native request".into()));
+                }
+                if let ExternalAction::ToolFinished {call_id,..}=&request.action {
+                    let call = ExternalAction::RunTool {call_id:call_id.clone(),name:String::new(),arguments:Value::Null};
+                    let operation=super::normalize::operation(request.host,&request.session_id,&request.caller,&call);
+                    let result_key=FileKey::Task {task:Component::new(owner.task_id().to_string()).map_err(storage)?,
+                        file:TaskFile::RequestResult(Component::new(operation.to_string()).map_err(storage)?)};
+                    if self.results.snapshot(&Query::File(result_key),1).await.map_err(storage)?.files.is_empty() {
+                        return Err(Error::Conflict("native completion has no original harness tool result".into()));
+                    }
+                }
+                TaskCommandProgress::Ready(serde_json::json!({
+                    "task":owner.task_id(),"operation_id":request.operation_id
+                }))
             } else {
-                commands.execute(context, fence, command, payload).await?
+                drop(request);
+                let commands = self.runtime.commands();
+                if reconcile {
+                    commands.reconcile(context, fence, command, payload).await?
+                } else {
+                    commands.execute(context, fence, command, payload).await?
+                }
             };
             if let TaskCommandProgress::Ready(value) = &progress {
                 let result = FileValue::new(result_key, volume::encode(value).map_err(storage)?);
