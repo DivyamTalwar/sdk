@@ -294,94 +294,141 @@ impl PathTrie {
         context: Context,
         capability: &Capability,
     ) -> Result<Self, InvalidPolicy> {
-        policy.validate()?;
-        capability.validate()?;
-        if resource.config.validate().is_err() || resource.generation > resource.head {
-            return Err(InvalidPolicy("generation exceeds head"));
-        }
-        let mut nfa = Nfa::default();
-        let mut starts = Vec::new();
-        let mut rules = BTreeMap::new();
-        let mut grants = BTreeMap::new();
-        let mut text_left = MAXIMUM_TEXT_BYTES;
-        spend(&mut text_left, resource.volume.len())?;
-        spend(&mut text_left, principal.id.len())?;
-        let mut valid_until = capability.expires_at.filter(|expiry| *expiry > context.now);
-        for rule in policy.layers.iter().flatten() {
-            if let Some(expiry) = rule
-                .conditions
-                .expires_at
-                .filter(|expiry| *expiry > context.now)
-            {
-                valid_until = Some(valid_until.map_or(expiry, |old| old.min(expiry)));
+        let mut work = MAXIMUM_WORK;
+        Self::compile_with_work(
+            policy,
+            principal,
+            resource,
+            context,
+            capability,
+            &mut work,
+            |_| Ok(()),
+        )
+    }
+
+    /// Compile with caller work and preallocation admission. The two storage
+    /// reservations cover NFA preparation and additional DFA storage. They must
+    /// remain funded until the returned trie is dropped. Failed work is charged
+    /// through `remaining_work`; the global compilation limits still apply.
+    pub fn compile_with_work(
+        policy: &Policy,
+        principal: &Principal,
+        resource: Resource<'_>,
+        context: Context,
+        capability: &Capability,
+        remaining_work: &mut usize,
+        mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
+    ) -> Result<Self, InvalidPolicy> {
+        let mut available = (*remaining_work).min(MAXIMUM_WORK);
+        let before = available;
+        let result = (|| {
+            let (bytes, validation_work) = super::compilation::preparation(policy, capability)?;
+            spend(&mut available, validation_work)?;
+            let bindings = resource
+                .volume
+                .len()
+                .checked_add(principal.id.len())
+                .and_then(|bytes| bytes.checked_mul(2))
+                .and_then(|bindings| bindings.checked_add(bytes))
+                .ok_or(InvalidPolicy("glob compilation storage overflow"))?;
+            reserve(bindings)?;
+            policy.validate()?;
+            capability.validate()?;
+            if resource.config.validate().is_err() || resource.generation > resource.head {
+                return Err(InvalidPolicy("generation exceeds head"));
             }
-            if super::decision::rule_matches(rule, principal, resource, context) {
-                spend(&mut text_left, rule.resource.path.len())?;
-                let key = super::names::fold(&rule.resource.path, resource.config);
-                let (start, end) =
-                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
-                starts.push(start);
-                rules.insert(rule.id.as_str(), end);
+            let mut nfa = Nfa::default();
+            let mut starts = Vec::new();
+            let mut rules = BTreeMap::new();
+            let mut grants = BTreeMap::new();
+            let mut text_left = MAXIMUM_TEXT_BYTES;
+            spend(&mut text_left, resource.volume.len())?;
+            spend(&mut text_left, principal.id.len())?;
+            let mut valid_until = capability.expires_at.filter(|expiry| *expiry > context.now);
+            for rule in policy.layers.iter().flatten() {
+                if let Some(expiry) = rule
+                    .conditions
+                    .expires_at
+                    .filter(|expiry| *expiry > context.now)
+                {
+                    valid_until = Some(valid_until.map_or(expiry, |old| old.min(expiry)));
+                }
+                if super::decision::rule_matches(rule, principal, resource, context) {
+                    spend(&mut text_left, rule.resource.path.len())?;
+                    let key = super::names::fold(&rule.resource.path, resource.config);
+                    let (start, end) =
+                        nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
+                    starts.push(start);
+                    rules.insert(rule.id.as_str(), end);
+                }
             }
-        }
-        for grant in capability.layers.iter().flatten() {
-            if grant.resource.matches_view(resource) {
-                spend(&mut text_left, grant.resource.path.len())?;
-                let key = super::names::fold(&grant.resource.path, resource.config);
-                let (start, end) =
-                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
-                starts.push(start);
-                grants.insert(std::ptr::from_ref(grant), end);
+            for grant in capability.layers.iter().flatten() {
+                if grant.resource.matches_view(resource) {
+                    spend(&mut text_left, grant.resource.path.len())?;
+                    let key = super::names::fold(&grant.resource.path, resource.config);
+                    let (start, end) =
+                        nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
+                    starts.push(start);
+                    grants.insert(std::ptr::from_ref(grant), end);
+                }
             }
-        }
-        let (symbols, other) = alphabet(&nfa)?;
-        let rule_ids: Vec<_> = rules
-            .keys()
-            .map(|id| {
-                text_left = text_left
-                    .checked_sub(id.len())
-                    .ok_or(InvalidPolicy("compiled rule ids exceed text limit"))?;
-                Ok((*id).to_owned())
+            let (symbols, other) = alphabet(&nfa)?;
+            let rule_ids: Vec<_> = rules
+                .keys()
+                .map(|id| {
+                    text_left = text_left
+                        .checked_sub(id.len())
+                        .ok_or(InvalidPolicy("compiled rule ids exceed text limit"))?;
+                    Ok((*id).to_owned())
+                })
+                .collect::<Result<_, InvalidPolicy>>()?;
+            let rules = rules
+                .into_iter()
+                .enumerate()
+                .map(|(index, (id, end))| (id, (end, index)))
+                .collect();
+            reserve(super::compilation::determinization(
+                nfa.nodes.len(),
+                symbols.len(),
+                std::mem::size_of::<State>(),
+            )?)?;
+            let states = determinize(
+                &nfa,
+                starts,
+                &symbols,
+                other,
+                |subset| {
+                    outcomes(
+                        policy,
+                        capability,
+                        context,
+                        resource.generation != resource.head,
+                        &rules,
+                        &grants,
+                        subset,
+                    )
+                },
+                policy.layers.len()
+                    + capability.layers.len()
+                    + policy.layers.iter().map(Vec::len).sum::<usize>()
+                    + capability.layers.iter().map(Vec::len).sum::<usize>(),
+                &mut available,
+            )?;
+            Ok(Self {
+                alphabet: Alphabet::new(&symbols)?,
+                states,
+                rules: rule_ids,
+                version: policy.version,
+                valid_from: context.now,
+                valid_until,
+                config: resource.config,
+                volume: resource.volume.to_owned(),
+                subject: (principal.kind, principal.id.clone()),
+                capability_binding: super::capability::binding(capability)?,
             })
-            .collect::<Result<_, InvalidPolicy>>()?;
-        let rules = rules
-            .into_iter()
-            .enumerate()
-            .map(|(index, (id, end))| (id, (end, index)))
-            .collect();
-        let states = determinize(
-            &nfa,
-            starts,
-            &symbols,
-            other,
-            |subset| {
-                outcomes(
-                    policy,
-                    capability,
-                    context,
-                    resource.generation != resource.head,
-                    &rules,
-                    &grants,
-                    subset,
-                )
-            },
-            policy.layers.len()
-                + capability.layers.len()
-                + policy.layers.iter().map(Vec::len).sum::<usize>()
-                + capability.layers.iter().map(Vec::len).sum::<usize>(),
-        )?;
-        Ok(Self {
-            alphabet: Alphabet::new(&symbols)?,
-            states,
-            rules: rule_ids,
-            version: policy.version,
-            valid_from: context.now,
-            valid_until,
-            config: resource.config,
-            volume: resource.volume.to_owned(),
-            subject: (principal.kind, principal.id.clone()),
-            capability_binding: super::capability::binding(capability)?,
-        })
+        })();
+        *remaining_work -= before - available;
+        result
     }
 
     /// Earliest time at which the caller must rebuild this immutable view.
@@ -526,9 +573,9 @@ fn determinize(
     other: char,
     decide: impl Fn(&[usize]) -> [Outcome; 12],
     rules: usize,
+    work: &mut usize,
 ) -> Result<Vec<State>, InvalidPolicy> {
-    let mut work = MAXIMUM_WORK;
-    nfa.close(&mut starts, &mut work)?;
+    nfa.close(&mut starts, work)?;
     let mut members = MAXIMUM_STATE_MEMBERS;
     spend(&mut members, starts.len())?;
     let mut transitions_left = MAXIMUM_TRANSITIONS;
@@ -537,7 +584,7 @@ fn determinize(
     let mut states = Vec::new();
     while states.len() < subsets.len() {
         spend(
-            &mut work,
+            work,
             rules
                 .checked_mul(24)
                 .ok_or(InvalidPolicy("glob compilation exceeds work limit"))?,
@@ -550,7 +597,7 @@ fn determinize(
         spend(&mut transitions_left, alphabet.len() + 1)?;
         let mut transitions = Vec::with_capacity(alphabet.len() + 1);
         for ch in alphabet.iter().copied().chain(std::iter::once(other)) {
-            let next = nfa.step(&subset, ch, &mut work)?;
+            let next = nfa.step(&subset, ch, work)?;
             let id = if let Some(id) = ids.get(&next) {
                 *id
             } else {

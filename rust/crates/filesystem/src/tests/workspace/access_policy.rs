@@ -68,7 +68,7 @@ async fn initial_policy(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
         .await?
         .value;
     let workspace = initial.workspace();
-    let mut first = current(workspace, false).await?;
+    let mut first = current(&workspace, false).await?;
     assert_eq!(first.generation_id(), initial.id());
     let position = unbounded!(first, generation_position(initial.id()))?;
     assert_eq!((position.0.get(), position.1.get()), (1, 1));
@@ -76,7 +76,7 @@ async fn initial_policy(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
 
     // Recovery observes the immutable original. It must not restage policy,
     // reauthenticate a moving head as the original, or perform writes.
-    let mut writer = current(workspace, true).await?;
+    let mut writer = current(&workspace, true).await?;
     unbounded!(
         writer,
         write_access_policy(b"later", NamedAttributeWriteMode::Replace)
@@ -98,16 +98,16 @@ async fn initial_policy(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     assert_eq!(recovered.value.id(), initial.id());
     assert_eq!(recovered.work.backend_write_operations, 0);
     assert_eq!(recorded(&mut first).await?.as_deref(), Some(bytes));
-    let mut latest = current(workspace, false).await?;
+    let mut latest = current(&workspace, false).await?;
     assert_eq!(
         recorded(&mut latest).await?.as_deref(),
         Some(b"later".as_slice())
     );
 
     let child = fork_workspace(
-        workspace,
+        &workspace,
         "initial-policy-fork",
-        ForkOptions::from_generation(initial.clone(), IdempotencyKey::new()).inherit_paths(vec![]),
+        ForkOptions::from_generation(initial, IdempotencyKey::new()).inherit_paths(vec![]),
     )
     .await?;
     assert_eq!(
