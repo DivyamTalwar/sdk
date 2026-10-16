@@ -61,7 +61,12 @@ pub fn completion_request(editor: &Editor) -> Option<CompletionRequest> {
     request_from(editor, 0, &mut 0, None)
 }
 
-fn request_from(editor: &Editor, from: usize, work: &mut usize, themes: Option<&BTreeMap<String, usize>>) -> Option<CompletionRequest> {
+fn request_from(
+    editor: &Editor,
+    from: usize,
+    work: &mut usize,
+    themes: Option<&BTreeMap<String, usize>>,
+) -> Option<CompletionRequest> {
     if !editor.selection().is_empty() {
         return None;
     }
@@ -84,7 +89,10 @@ fn request_from(editor: &Editor, from: usize, work: &mut usize, themes: Option<&
                 query: text[1..cursor].to_owned(),
                 cursor,
             });
-        } else if themes.map_or_else(|| text[1..end].eq_ignore_ascii_case("theme"), |names| names.contains_key(&text[1..end].to_ascii_lowercase())) {
+        } else if themes.map_or_else(
+            || text[1..end].eq_ignore_ascii_case("theme"),
+            |names| names.contains_key(&text[1..end].to_ascii_lowercase()),
+        ) {
             let start = end + text[end..].len() - text[end..].trim_start_matches([' ', '\t']).len();
             let line_end = end
                 + scan_until(&text[end..], |c| matches!(c, '\n' | '\r'), work)
@@ -293,7 +301,12 @@ impl CompletionMenu {
                     })
             })
             .unwrap_or(0);
-        let request = request_from(editor, from, &mut self.work.prompt_bytes, Some(&self.theme_commands));
+        let request = request_from(
+            editor,
+            from,
+            &mut self.work.prompt_bytes,
+            Some(&self.theme_commands),
+        );
         self.version = Some(version);
         if request != self.dismissed {
             self.dismissed = None;

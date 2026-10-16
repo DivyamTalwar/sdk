@@ -61,8 +61,20 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
     // The real command client publishes an immutable request file. The consumer
     // executes precisely that file through the same bounded host binding used
     // by GraphCoder, without a model or the removed text dispatcher.
-    client.write_state(CommandFileRoot::Session, "layout.json", &json!({"selected_task":TaskId::from_bytes([3;16])})).await?;
-    client.write_state(CommandFileRoot::Task, "settings.json", &json!({"agent_mode":"code"})).await?;
+    client
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":TaskId::from_bytes([3;16])}),
+        )
+        .await?;
+    client
+        .write_state(
+            CommandFileRoot::Task,
+            "settings.json",
+            &json!({"agent_mode":"code"}),
+        )
+        .await?;
     let script = if cfg!(windows) {
         "Add-Content -NoNewline effect.txt 'hi'; Write-Output hi"
     } else {
@@ -217,7 +229,9 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
     let config_path = directory.path().join("config.json");
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     let mut input = tempfile::NamedTempFile::new_in(directory.path())?;
-    input.write_all(b"/SH printf hi > cli-effect.txt; printf hi\n/KEYS\n/KEYS\n/back 0\n/back 0\n/q\n")?;
+    input.write_all(
+        b"/SH printf hi > cli-effect.txt; printf hi\n/KEYS\n/KEYS\n/back 0\n/back 0\n/q\n",
+    )?;
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
         .args(["--session", config_path.to_str().unwrap(), "--headless"])
@@ -249,8 +263,16 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
             && rendered.contains("/greet"),
         "catalog help: {rendered}"
     );
-    assert_eq!(rendered.matches("/greet —").count(), 2, "repeated help renders: {rendered}");
-    assert_eq!(rendered.matches("command-json=").count(), 3, "repeated archive renders: {rendered}");
+    assert_eq!(
+        rendered.matches("/greet —").count(),
+        2,
+        "repeated help renders: {rendered}"
+    );
+    assert_eq!(
+        rendered.matches("command-json=").count(),
+        3,
+        "repeated archive renders: {rendered}"
+    );
     assert_eq!(
         std::fs::read(directory.path().join("cli-effect.txt"))?,
         b"hi"
@@ -277,13 +299,24 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
     assert!(!rejected.status.success());
     assert!(String::from_utf8(rejected.stderr)?.contains("Unknown command: /does-not-exist"));
     assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
-    let stream = Arc::new(acyclic_stream::LocalStream::open(directory.path().join("stream"), Default::default()).await?);
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path().join("stream"), Default::default())
+            .await?,
+    );
     let digest = blake3::hash(&serde_json::to_vec(&volume)?);
-    let files = TaskVolume::open(stream, StreamPath::new(format!("graphcoder-files/{}", digest.to_hex()))?).await?;
+    let files = TaskVolume::open(
+        stream,
+        StreamPath::new(format!("graphcoder-files/{}", digest.to_hex()))?,
+    )
+    .await?;
     let snapshot = files.snapshot(&Query::Root, 64).await?;
     let exits: Vec<_> = snapshot.files.iter().filter(|file| matches!(&file.key, FileKey::Ui { directory, name } if directory.as_str().starts_with("session-") && name.as_str() == "layout.json"))
         .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["exit_requested"].as_bool().unwrap()).collect();
-    assert_eq!(exits.len(), 2, "terminals must have distinct persisted UI sessions");
+    assert_eq!(
+        exits.len(),
+        2,
+        "terminals must have distinct persisted UI sessions"
+    );
     assert!(exits.contains(&true) && exits.contains(&false));
     Ok(())
 }

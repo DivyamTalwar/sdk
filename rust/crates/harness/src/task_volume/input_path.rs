@@ -8,7 +8,9 @@ pub struct InputPath(pub(super) String);
 
 impl InputPath {
     /// Canonical input source spelling.
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl TryFrom<String> for InputPath {

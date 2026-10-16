@@ -38,6 +38,7 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
     )?;
     // Exercise malformed theme inventories too; replacement must be atomic.
     let mut probe = CompletionMenu::default();
+    probe.set_file("commands/base.json", Some(br#"[{"name":"theme","action":{"kind":"theme"}}]"#))?;
     probe.set_file("commands/themes.json", Some(b"[\"Theme\"]"))?;
     probe.refresh(&Editor::new("/theme "));
     let before: Vec<_> = probe.items().cloned().collect();
@@ -152,8 +153,7 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
 /// Shared by shrinking properties and the instrumented completion fuzz target.
 pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
     let mut menu = CompletionMenu::default();
-    let definition =
-        serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
+    let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
     menu.set_file(
         "commands/catalog.json",
         Some(&serde_json::to_vec(&definition)?),

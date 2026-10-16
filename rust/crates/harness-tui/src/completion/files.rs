@@ -31,7 +31,10 @@ impl CompletionMenu {
                 let name = entry.item.value.to_ascii_lowercase();
                 if let Some(count) = self.theme_commands.get_mut(&name) {
                     *count -= 1;
-                    if *count == 0 { self.theme_commands.remove(&name); self.version = None; }
+                    if *count == 0 {
+                        self.theme_commands.remove(&name);
+                        self.version = None;
+                    }
                 }
             }
             for (index, entry) in old.iter().enumerate() {
@@ -59,7 +62,10 @@ impl CompletionMenu {
         }
         for (index, entry) in entries.iter().enumerate() {
             if entry.theme {
-                *self.theme_commands.entry(entry.item.value.to_ascii_lowercase()).or_default() += 1;
+                *self
+                    .theme_commands
+                    .entry(entry.item.value.to_ascii_lowercase())
+                    .or_default() += 1;
                 self.version = None;
             }
             self.rank_entry(order, index, entry);
@@ -189,7 +195,8 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
                         tool,
                         append,
                     );
-                    entry.theme = action == Some("theme") || action.is_none() && entry.item.value.eq_ignore_ascii_case("theme");
+                    entry.theme = action == Some("theme")
+                        || action.is_none() && entry.item.value.eq_ignore_ascii_case("theme");
                     Ok(entry)
                 })
                 .collect::<io::Result<Vec<_>>>()

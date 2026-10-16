@@ -1,4 +1,4 @@
-use super::{Channel, Component, Error, FileKey, Result, TaskFile, ToolFile};
+use super::{Component, Error, FileKey, InputPath, Result, TaskFile, ToolFile};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -116,8 +116,14 @@ impl Query {
         };
         vec![match self {
             Self::UiDirectory(directory) => (
-                Included(FileKey::Ui { directory: directory.clone(), name: minimum }),
-                Included(FileKey::Ui { directory: directory.clone(), name: maximum }),
+                Included(FileKey::Ui {
+                    directory: directory.clone(),
+                    name: minimum,
+                }),
+                Included(FileKey::Ui {
+                    directory: directory.clone(),
+                    name: maximum,
+                }),
             ),
             Self::SessionFiles {
                 session,
@@ -227,8 +233,9 @@ impl Query {
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
             (Self::UiDirectory(selected), FileKey::Ui { directory, .. }) => selected == directory,
-            (Self::CommandSession { session, .. }, key) =>
-                super::super::command_query::matches(session, key),
+            (Self::CommandSession { session, .. }, key) => {
+                super::super::command_query::matches(session, key)
+            }
             (
                 Self::SessionFiles {
                     session: selected,

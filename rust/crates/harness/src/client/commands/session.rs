@@ -1,11 +1,11 @@
 //! Command composition over the existing volume snapshot and push follow.
 use super::*;
+use crate::task_volume::command_query::related;
 use crate::{OperationId, TaskId, task_volume as files};
 use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
-use crate::task_volume::command_query::related;
 #[path = "session_archive.rs"]
 mod archive;
 
@@ -63,7 +63,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Err(Error::Invalid("zero command-session bound".into()));
         }
         let observed = volume
-            .observe(files::Query::CommandSession { session: component(session.to_string())?, recent: u32::try_from((maximum_files / 4).max(1)).map_err(|error| Error::Invalid(error.to_string()))? }, None, maximum_files)
+            .observe(
+                files::Query::CommandSession {
+                    session: component(session.to_string())?,
+                    recent: u32::try_from((maximum_files / 4).max(1))
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                },
+                None,
+                maximum_files,
+            )
             .await
             .map_err(storage)?;
         let snapshot = observed
@@ -178,16 +186,16 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Settings bound to the request's immutable target, independently of any
     /// subsequent navigation in the consuming UI.
     pub async fn request_settings(&mut self, request: &files::FileValue) -> Result<Value> {
-        let mut value = self.state(CommandFileRoot::Config, "settings.json")?.unwrap_or_else(|| json!({}));
         let key = match &request.key {
             files::FileKey::Task { task, .. } => {
                 ui(&format!("task-{}", task.as_str()), "settings.json")?
             }
-            files::FileKey::Session { .. } => return Ok(value),
+            files::FileKey::Session { .. } => ui("config", "settings.json")?,
             _ => return Err(Error::Invalid("not a command request".into())),
         };
         let task: Value = self
-            .read_file(&key).await?
+            .read_file(&key)
+            .await?
             .as_ref()
             .map(|file| serde_json::from_slice(&file.bytes))
             .transpose()
@@ -198,8 +206,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "request settings must be a JSON object".into(),
             ));
         }
-        value.as_object_mut().ok_or_else(|| Error::Invalid("shared settings must be an object".into()))?
-            .extend(task.as_object().ok_or_else(|| Error::Invalid("task settings must be an object".into()))?.clone());
+        let mut value = self.state(CommandFileRoot::Config, "settings.json")?.unwrap_or_else(|| json!({}));
+        value
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("shared settings must be an object".into()))?
+            .extend(
+                task.as_object()
+                    .ok_or_else(|| Error::Invalid("task settings must be an object".into()))?
+                    .clone(),
+            );
         Ok(value)
     }
 
@@ -216,7 +231,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             false,
         )
         .await?;
-        if root == CommandFileRoot::Session && name == "layout.json" { self.load_task_settings().await?; }
+        if root == CommandFileRoot::Session && name == "layout.json" {
+            self.load_task_settings().await?;
+        }
         Ok(())
     }
 
@@ -321,7 +338,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Ok(());
         }
         if let files::FileKey::Ui { directory, .. } = &file.key {
-            if directory.as_str().starts_with("task-") && self.selected_task()?.is_none_or(|task| directory.as_str() != format!("task-{task}")) { return Ok(()) }
+            if directory.as_str().starts_with("task-")
+                && self
+                    .selected_task()?
+                    .is_none_or(|task| directory.as_str() != format!("task-{task}"))
+            {
+                return Ok(());
+            }
         }
         if file.bytes.len() as u64 > self.maximum_bytes {
             return Err(Error::Invalid("command file exceeds byte bound".into()));
@@ -350,7 +373,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             if let Some(request) = related(&file.key, files::TaskFile::Request) {
                 self.pending.retain(|pending| pending.key != request);
             }
-            if let Some(claim) = related(&file.key, files::TaskFile::ExecutionClaim) { self.files.remove(&claim); }
+            if let Some(claim) = related(&file.key, files::TaskFile::ExecutionClaim) {
+                self.files.remove(&claim);
+            }
             #[derive(Deserialize)]
             struct Order<'a> {
                 sequence: u64,
@@ -552,7 +577,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         };
         let claim = key(files::TaskFile::ExecutionClaim(id.clone()));
         if self.read_file(&claim).await?.is_some() {
-            return if self.read_file(&key(files::TaskFile::ExecutionResult(id.clone()))).await?.is_some()
+            return if self
+                .read_file(&key(files::TaskFile::ExecutionResult(id.clone())))
+                .await?
+                .is_some()
             {
                 Ok(None)
             } else {
