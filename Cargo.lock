@@ -729,6 +729,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-tonic-web-wasm-client",
  "async-trait",
  "base64 0.23.1",
  "bytes",

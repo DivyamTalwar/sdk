@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 mod native;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use native::Connect;
-#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(all(acyclic_stream_loom, not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;

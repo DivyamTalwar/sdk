@@ -1,4 +1,6 @@
 use super::*;
+use crate::grpc;
+use tonic::Request;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},

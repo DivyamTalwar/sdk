@@ -43,7 +43,10 @@ impl transport::Transport for Grpc {
                 grpc::request_authorization(self.authorization.as_ref(), self.credential.as_ref())
                     .await
                     .map_err(|error| grpc::status(&error))?;
-            let mut request = Request::new(source);
+            let input = stream::unfold(source, |mut source| async move {
+                source.next().await.map(|frame| (frame, source))
+            });
+            let mut request = Request::new(input);
             request
                 .metadata_mut()
                 .insert("authorization", authorization);
