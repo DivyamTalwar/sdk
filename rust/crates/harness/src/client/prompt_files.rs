@@ -49,7 +49,7 @@ impl PromptFiles {
             .map(|file| {
                 let text = std::str::from_utf8(&file.bytes)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                InputKeymap::from_json(text).map_err(|error| Error::Invalid(error.to_string()))
+                InputKeymap::parse(text).map_err(|errors| Error::Invalid(format!("{errors:?}")))
             })
             .transpose()?
             .unwrap_or_default();
@@ -60,7 +60,7 @@ impl PromptFiles {
             input.replace_history(history(entries)?);
         }
         if keymap_changed {
-            input.keymap = keymap;
+            input.set_keymap(keymap);
         }
         self.keymap = bindings.cloned();
         self.draft = draft.cloned();

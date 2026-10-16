@@ -1,7 +1,7 @@
 use super::super::{Error, Result};
 use serde::{Deserialize, Serialize};
 
-/// Canonical logical input source path, fenced to commands/ or workspace/.
+/// Canonical command, workspace or caller-owned config file path.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InputPath(pub(super) String);
@@ -18,7 +18,7 @@ impl TryFrom<String> for InputPath {
     fn try_from(path: String) -> Result<Self> {
         let mut parts = path.split('/');
         if path.len() > 4096
-            || !matches!(parts.next(), Some("commands" | "workspace"))
+            || !matches!(parts.next(), Some("commands" | "workspace" | "config"))
             || !path.contains('/')
             || parts.any(|p| {
                 p.is_empty()

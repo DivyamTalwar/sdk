@@ -28,6 +28,8 @@ pub enum Query {
     Root,
     /// Command definitions and workspace files used by the input UI.
     Inputs,
+    /// Declarative settings, keymap and theme files.
+    Config,
     /// Editable Markdown files in the private volume's plans folder.
     Plans,
     /// All task records.
@@ -120,6 +122,10 @@ impl Query {
             )
         };
         vec![match self {
+            Self::Config => (
+                Included(FileKey::Input(InputPath("config/".into()))),
+                Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
+            ),
             Self::UiDirectory(directory) => (
                 Included(FileKey::Ui {
                     directory: directory.clone(),
@@ -263,7 +269,11 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
-            (Self::Inputs, FileKey::Input(_)) => true,
+            (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
+            (Self::Config, FileKey::Input(path)) => matches!(
+                path.0.as_str(),
+                "config/settings.json" | "config/keymap.json" | "config/theme.json"
+            ),
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)
@@ -369,6 +379,7 @@ impl Query {
             [".ui", directory] => Self::UiDirectory(component(directory)?),
             [""] => Self::Root,
             ["plans"] => Self::Plans,
+            ["config"] => Self::Config,
             [".sessions", session] => Self::Session(component(session)?),
             [".sessions", session, folder] if matches!(*folder, "requests" | "executions") => {
                 Self::SessionFiles {

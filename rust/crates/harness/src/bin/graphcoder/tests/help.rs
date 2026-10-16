@@ -57,7 +57,7 @@ proptest::proptest! {
                 let description = format!("Followed command description {index}");
                 catalog[0]["description"] = serde_json::json!(description);
                 files.install_catalog(serde_json::to_vec(&catalog).unwrap()).await.unwrap();
-                files.write_state(CommandFileRoot::Config, "keymap.json", &serde_json::json!({"Ctrl+l":if enabled { "Home" } else { "" }})).await.unwrap();
+                files.write_state(CommandFileRoot::Config, "keymap.json", &serde_json::json!({"bindings":{"Ctrl+l":enabled.then_some("cursor.line-start")}})).await.unwrap();
                 handle_tui_input(&mut files, &NoFiles, InputEffect::Submit { text: "/help".into(), queued: false, edit: None }).await.unwrap();
                 let visible = paint(&mut live, &files, 140, 180);
                 proptest::prop_assert!(visible.contains("Shortcuts"));

@@ -190,12 +190,12 @@ proptest::proptest! {
             let mut projection = PromptFiles::default();
             let mut input = PromptInput::default();
             for (index, action) in sequence.into_iter().enumerate() {
-                let target = ["Home", "End", "Ctrl+a", ""][usize::from(action)];
-                let value = serde_json::json!({"Ctrl+l":target});
+                let target = ["cursor.line-start", "cursor.line-end", "select-all"].get(usize::from(action)).copied();
+                let value = serde_json::json!({"bindings":{"Ctrl+l":target}});
                 files.write_state(CommandFileRoot::Config, "keymap.json", &value).await.unwrap();
                 projection.refresh(&files, &mut input).unwrap();
                 let loaded = input.keymap.clone();
-                let round_trip = acyclic_harness::tui::InputKeymap::from_json(&loaded.to_json().unwrap()).unwrap();
+                let round_trip = acyclic_harness::tui::InputKeymap::parse(&loaded.encode()).unwrap();
                 proptest::prop_assert_eq!(&loaded, &round_trip);
                 proptest::prop_assert_eq!(input.keymap.help().contains("Ctrl+l\t"), action != 3);
                 input.editor = acyclic_harness::tui::Editor::new("日本語 é 👩‍💻");
@@ -212,7 +212,7 @@ proptest::proptest! {
                 proptest::prop_assert!(super::screen_text(&terminal).contains(expected));
                 let pending = format!("pending draft {index}");
                 files.write_state(CommandFileRoot::Session, "draft.json", &serde_json::json!(pending)).await.unwrap();
-                files.write_state(CommandFileRoot::Config, "keymap.json", &serde_json::json!({"Ctrl+l":"not a chord"})).await.unwrap();
+                files.write_state(CommandFileRoot::Config, "keymap.json", &serde_json::json!({"bindings":{"Ctrl+l":"not-an-action"}})).await.unwrap();
                 proptest::prop_assert!(projection.refresh(&files, &mut input).is_err());
                 proptest::prop_assert_eq!(input.editor.text(), expected);
                 proptest::prop_assert_eq!(&input.keymap, &loaded);

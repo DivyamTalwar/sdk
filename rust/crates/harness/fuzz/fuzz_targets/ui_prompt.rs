@@ -48,7 +48,7 @@ fuzz_target!(|data: &[u8]| {
     let expected_keymap = keymap.map_or(Some(InputKeymap::default()), |bytes| {
         std::str::from_utf8(bytes)
             .ok()
-            .and_then(|text| InputKeymap::from_json(text).ok())
+            .and_then(|text| InputKeymap::parse(text).ok())
     });
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

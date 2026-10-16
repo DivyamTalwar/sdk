@@ -257,7 +257,7 @@ impl FileKey {
                     name: id(name)?,
                 });
             }
-            ["commands" | "workspace", ..] => {
+            ["commands" | "workspace" | "config", ..] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
@@ -353,6 +353,7 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
+            Self::Input(path) if path.0.starts_with("config/") => Owner::Caller,
             Self::Ui { .. } => Owner::Caller,
             Self::Session {
                 file: TaskFile::Request(_),
