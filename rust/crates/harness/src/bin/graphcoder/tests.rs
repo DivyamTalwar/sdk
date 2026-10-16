@@ -134,3 +134,55 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
     input.editor.undo();
     assert_eq!(input.editor.text(), "/read @rea");
 }
+
+#[test]
+fn followed_documents_and_owner_feedback_render_and_reset() {
+    use acyclic_harness::{
+        client::{DocumentViews, TaskView},
+        core::LifecycleState,
+        task_volume::{Component, FileKey, Write},
+    };
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let key = format!("{}:{}", owner.kind, owner.id);
+    let mut documents = DocumentViews::default();
+    documents
+        .apply(&Write::new(FileKey::Goal, b"# Finish rewrite".to_vec()))
+        .unwrap();
+    documents
+        .apply(&Write::new(
+            FileKey::Plan(Component::new("layout").unwrap()),
+            b"**Compose widgets**".to_vec(),
+        ))
+        .unwrap();
+    let mut views = ClientViews::default();
+    views.documents.insert(key.clone(), documents);
+    views.tasks.insert(
+        key,
+        TaskView {
+            status: LifecycleState::Active,
+            lifecycle_operation_id: None,
+            reason: Some("owner feedback".into()),
+            parent: None,
+        },
+    );
+    let mut renderer = ClientRenderer::default();
+    renderer.update(&views, &owner);
+    let visible = picture(&renderer);
+    for text in [
+        "Finish rewrite",
+        "Compose widgets",
+        "owner feedback",
+        "GOAL.md",
+        "plans/",
+    ] {
+        assert!(visible.contains(text), "missing {text}");
+    }
+    renderer.update(&ClientViews::default(), &owner);
+    let visible = picture(&renderer);
+    for text in ["Finish rewrite", "Compose widgets", "owner feedback"] {
+        assert!(!visible.contains(text), "stale {text}");
+    }
+}
