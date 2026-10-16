@@ -259,6 +259,11 @@ impl<S: ClientStateStore> HarnessClient<S> {
         self.session.tool_output(authority, call_id, delta)
     }
 
+    /// Fold one platform file/model update through the same tracked ClientViews.
+    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
+        self.session.apply_update(update)
+    }
+
     /// Consumes one incoming streaming update and publishes it to the same views as replay.
     /// The source is the caller's platform stream follow; no second transport or journal.
     pub async fn next_update(

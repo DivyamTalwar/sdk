@@ -28,6 +28,8 @@ mod transport;
 pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
 mod content;
 mod documents;
+mod document_files;
+pub use document_files::document_files;
 pub use documents::DocumentViews;
 mod usage;
 pub(crate) mod views;
@@ -93,7 +95,7 @@ type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, local_prompt};
+pub use local::{connect_local, local_documents, local_prompt};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",

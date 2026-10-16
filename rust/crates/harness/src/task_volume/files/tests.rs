@@ -198,3 +198,56 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
         "unified"
     );
 }
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    // Property: authorized GOAL/plans snapshots plus push changes equal reopening
+    // at the final cut, in both ClientViews and the composed TestBackend cells.
+    #[test]
+    fn document_binding_snapshot_follow_equals_reopen(events in prop::collection::vec((0u8..2, ".{0,20}"), 1..7), cut in 0usize..7) {
+        use crate::{client::{ClientSession, MemoryClientState, document_files}, wire};
+        use futures::StreamExt;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let agent = AgentId::from_bytes([1;16]);
+            let volume = volume(agent);
+            let (verifier, scope) = authority(agent, &volume, &[VolumeOperation::Read, VolumeOperation::Write]);
+            let files = TaskFiles::open(Arc::new(MemoryStream::default()), &volume, &verifier, &scope, 65_536).await.unwrap();
+            let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: crate::TaskId::from_bytes([2;16]).to_string() };
+            let new_session = || {
+                let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
+                session.track(wire::ReplayCursor { authority: Some(owner.clone()), generation: "generation".into(), revision: 0 }).unwrap();
+                session
+            };
+            let cut = cut.min(events.len());
+            let mut generation = files.snapshot(&Query::Root, 4).await.unwrap().generation;
+            for (kind, text) in &events[..cut] {
+                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::Component::new("layout").unwrap()) };
+                generation = files.write(generation, &FileValue::new(key, text.as_bytes().to_vec())).await.unwrap();
+            }
+            let mut source = document_files(&files, &owner, 4).await.unwrap();
+            let mut live = new_session();
+            for _ in 0..2 { live.apply_update(source.next().await.unwrap().unwrap()).unwrap(); }
+            for (kind, text) in &events[cut..] {
+                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::Component::new("layout").unwrap()) };
+                generation = files.write(generation, &FileValue::new(key, text.as_bytes().to_vec())).await.unwrap();
+                live.apply_update(source.next().await.unwrap().unwrap()).unwrap();
+            }
+            let mut replayed = new_session();
+            let mut reopened = document_files(&files, &owner, 4).await.unwrap();
+            for _ in 0..2 { replayed.apply_update(reopened.next().await.unwrap().unwrap()).unwrap(); }
+            prop_assert_eq!(&live.views().documents, &replayed.views().documents);
+            let mut pictures = Vec::new();
+            for session in [&live, &replayed] {
+                let mut renderer = crate::tui::ClientRenderer::default();
+                renderer.update(session.views(), &owner);
+                let mut terminal = crate::tui::ratatui::Terminal::new(crate::tui::ratatui::backend::TestBackend::new(80, 20)).unwrap();
+                terminal.draw(|frame| { renderer.screen().render(frame, &crate::tui::PromptInput::default(), &mut crate::tui::Viewport::default(), 0, 0); }).unwrap();
+                pictures.push(terminal.backend().buffer().clone());
+            }
+            prop_assert_eq!(&pictures[0], &pictures[1]);
+            Ok(())
+        })?;
+    }
+}

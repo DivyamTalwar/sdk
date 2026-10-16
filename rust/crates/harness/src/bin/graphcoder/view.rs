@@ -52,6 +52,7 @@ pub async fn run(
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
     client.replay().await?;
+    let mut documents = client::local_documents(&local, &authority).await?;
     renderer.update(client.session().views(), &authority);
     loop {
         if commands.exit_requested()? {
@@ -76,6 +77,7 @@ pub async fn run(
             &mut completions,
             &mut input,
             &mut commands,
+            &mut documents,
         )
         .await?
         else {

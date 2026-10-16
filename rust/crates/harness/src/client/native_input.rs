@@ -22,10 +22,15 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     let delivery = tokio::select! {
         event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         delivery = client.read_delivery() => delivery?,
+        update = documents.next() => {
+            client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
+            return Ok(None);
+        },
         change = commands.observe_change() => { change?; return Ok(None); },
         change = completions.read_change() => {
             completions.apply_change(change?, prompt)?;
