@@ -200,14 +200,12 @@ pub(super) fn cargo_discovery_inputs(
     })
 }
 
-pub(super) fn registry_owner_source_inner(
+pub(super) fn registry_source(
     repository: &Path,
     root: &Path,
     revision: &str,
-    cargo: &Path,
     capture: bool,
-    frontier_authority: Option<&BTreeSet<String>>,
-) -> Result<RegistryOwnerSource, String> {
+) -> Result<(RegistryOwnerSource, BTreeSet<String>), String> {
     if revision.len() != 40 || !revision.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("registry owner source requires an immutable Git revision".into());
     }
@@ -251,7 +249,11 @@ pub(super) fn registry_owner_source_inner(
     };
     // The complete tracked frontier includes configs, workspace manifests and
     // original release authority; no source-owned input is replaced by a name list.
+    let mut authority = BTreeSet::new();
     git_source_blobs(&repository, &listing, |path, original| {
+        if path == "release/cargo-crates.json" {
+            authority.extend(decode_release_authority(original)?);
+        }
         let input = root.join(path);
         validate_import_path(&root, &input)?;
         if capture {
@@ -278,6 +280,16 @@ pub(super) fn registry_owner_source_inner(
             return Err("original Git link is a Cargo discovery config".into());
         }
     }
+    Ok((source, authority))
+}
+
+pub(super) fn discover_owner(
+    root: &Path,
+    cargo: &Path,
+    mut source: RegistryOwnerSource,
+    frontier_authority: Option<&BTreeSet<String>>,
+) -> Result<RegistryOwnerSource, String> {
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
     source.discovery = cargo_discovery_inputs(&root, cargo)?;
     let authority_path = "release/cargo-crates.json";
     let authority = if source.input_sha256.contains_key(authority_path) {
