@@ -65,7 +65,7 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     }
     let path = origins::path(operation, "declared", None, quota.work())?;
     let (declared_revision, declared_time, declared) =
-        origins::read(client, path, Some(&key), quota.work()).await?;
+        origins::read(client, operation, path, Some(&key), quota.work()).await?;
     quota.adopt(declared.logical_owned_bytes()?)?;
     let SchedulerEvent::Declared { spec } = declared else {
         return Err(guarded_boundary(
@@ -81,11 +81,11 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     ));
     let path = origins::path(operation, "admitted", selector, quota.work())?;
     let (admitted_revision, admitted_time, admitted) =
-        origins::read(client, path, None, quota.work()).await?;
+        origins::read(client, operation, path, None, quota.work()).await?;
     quota.adopt(admitted.logical_owned_bytes()?)?;
     let path = origins::path(operation, "started", selector, quota.work())?;
     let (started_revision, started_time, started) =
-        origins::read(client, path, None, quota.work()).await?;
+        origins::read(client, operation, path, None, quota.work()).await?;
     quota.adopt(started.logical_owned_bytes()?)?;
     if !(declared_revision < admitted_revision
         && admitted_revision < started_revision

@@ -63,11 +63,15 @@ pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider, const N:
     let mut quota = CodecQuota::from_retained(work, retained_request);
     let (sequence, retained) = {
         let mut sequence_quota = CodecQuota::new(quota.work(), 0)?;
-        let mut bytes = crate::core::reserve_copy_vector(8, &mut sequence_quota)?;
-        if let Some(io) = sequence_quota.work().as_deref_mut() {
-            io.copy_bytes(8)?;
-        }
-        bytes.extend_from_slice(&tail.to_le_bytes());
+        let key: &[u8; 32] = key.as_bytes().try_into().map_err(|_| {
+            guarded_boundary(
+                sequence_quota.work(),
+                wire::ErrorCode::Invalid,
+                "origin commit key must be a digest",
+            )
+        })?;
+        let bytes =
+            crate::core::copy_copy_vector(&origin_locator::encode(tail, key), &mut sequence_quota)?;
         sequence_quota.transfer();
         operations::owned_bytes_from_retained_vec(bytes, sequence_quota.work())?
     };
@@ -166,6 +170,7 @@ pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider, const N:
 
 pub(super) async fn read<P: StreamProvider>(
     client: &Arc<P>,
+    operation: OperationId,
     path: StreamPath,
     expected_key: Option<&str>,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -201,7 +206,7 @@ pub(super) async fn read<P: StreamProvider>(
             "distinct original reservation sources",
         ));
     }
-    let sequence = origin_sequence::decode(&index.value)
+    let (sequence, _) = origin_locator::decode(&index.value)
         .filter(|_| index.sequence == 0)
         .ok_or_else(|| {
             guarded_boundary(
@@ -210,27 +215,42 @@ pub(super) async fn read<P: StreamProvider>(
                 "invalid origin locator",
             )
         })?;
-    let source_path = stream_path(COORDINATOR_PATH, quota.work())?;
-    quota.adopt(source_path.as_str().len() as u64)?;
-    let source = operations::one_record(client, &source_path, sequence, quota.work())
-        .await?
+    let key = StreamIdempotencyKey::new(index.value.slice(8..40))
+        .map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
+    let outcome =
+        super::commit::inspect_idempotency(client, key, operation, &mut quota, None).await?;
+    let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = outcome else {
+        return Err(guarded_boundary(
+            quota.work(),
+            wire::ErrorCode::Storage,
+            "origin is not an atomic source commit",
+        ));
+    };
+    if envelope.commit_id != index.commit_id || !envelope.mutations.iter().any(|mutation| {
+        matches!(mutation, CommittedMutation::Append(append) if append.path == path
+            && append.records.len() == 1 && append.records[0].sequence == 0
+            && append.records[0].commit_id == index.commit_id && append.records[0].value == index.value)
+    }) {
+        return Err(guarded_boundary(quota.work(), wire::ErrorCode::Storage, "origin locator is not atomic with its source"));
+    }
+    let source = envelope
+        .mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            CommittedMutation::Append(append) if append.path.as_str() == COORDINATOR_PATH => append
+                .records
+                .iter()
+                .find(|record| record.sequence == sequence && record.commit_id == index.commit_id),
+            _ => None,
+        })
         .ok_or_else(|| {
             guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Storage,
-                "missing origin source",
+                "missing atomic origin source",
             )
         })?;
-    let held = operations::sdk_record_retained_bytes(&source, quota.work());
-    quota.adopt(held)?;
-    if source.commit_id != index.commit_id {
-        return Err(guarded_boundary(
-            quota.work(),
-            wire::ErrorCode::Storage,
-            "origin locator is not atomic with its source",
-        ));
-    }
-    let (revision, key, _, time, event) = decode(&source, quota.work())?;
+    let (revision, key, _, time, event) = decode(source, quota.work())?;
     let owned = event.logical_owned_bytes()?;
     quota.adopt(owned + key.capacity() as u64)?;
     if expected_key.is_some_and(|expected| expected != key) {
@@ -255,7 +275,7 @@ pub(super) async fn read<P: StreamProvider>(
             "origin source selector differs",
         ));
     }
-    drop((key, expected, source, source_path, index, records, path));
+    drop((key, expected, envelope, index, records, path));
     quota.replace(owned)?;
     quota.transfer();
     Ok((revision, time, event))

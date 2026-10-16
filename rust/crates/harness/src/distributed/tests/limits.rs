@@ -47,7 +47,11 @@ async fn append_source(
                     },
                     acyclic_stream::CommitMutation::Append {
                         path,
-                        records: vec![(revision - 1).to_le_bytes().to_vec().into()],
+                        records: vec![
+                            [(revision - 1).to_le_bytes().as_slice(), retry.as_bytes()]
+                                .concat()
+                                .into(),
+                        ],
                     },
                 ],
                 idempotency_key: retry,
@@ -476,15 +480,17 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
         let calls = client.io_snapshot();
         assert_eq!(calls.writes, 0);
         println!(
-            "indexed owner history={} calls={} bytes={} items={}",
+            "indexed owner history={} calls={} source_bytes={} authority_bytes={} items={}",
             3 + extra,
-            calls.reads,
+            calls.reads + calls.inspections,
             measured.source_bytes_read,
+            measured.authority_bytes_read,
             measured.items_examined
         );
         measurements.push((
-            calls.reads,
+            calls.reads + calls.inspections,
             measured.source_bytes_read,
+            measured.authority_bytes_read,
             measured.items_examined,
         ));
         drop((proof, custody));

@@ -32,7 +32,7 @@ mod coordinator;
 mod journal;
 mod observe;
 mod origins;
-mod origin_sequence;
+mod origin_locator;
 mod proof;
 mod results;
 mod scheduling;
