@@ -40,20 +40,16 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
         super::checked_commands::call(
             1,
             "bash",
-            "test $(cat existing.txt) = preexisting; test $(cat note.txt) = volume; printf shell > shell.txt",
+            "cat existing.txt note.txt; printf shell > shell.txt",
         ),
         super::checked_commands::call(2, "fs", "commit -m volume"),
         super::checked_commands::call(3, "fs", "checkout -b agents/child"),
         super::checked_commands::call(4, "bash", "printf child > note.txt"),
         ScriptedTurn::Text("done".into()),
         super::checked_commands::call(5, "fs", "status"),
-        super::checked_commands::call(6, "bash", "test $(cat note.txt) = child"),
+        super::checked_commands::call(6, "bash", "cat note.txt"),
         super::checked_commands::call(7, "fs", "checkout main"),
-        super::checked_commands::call(
-            8,
-            "bash",
-            "test $(cat note.txt) = volume; test $(cat shell.txt) = shell",
-        ),
+        super::checked_commands::call(8, "bash", "cat note.txt shell.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(volume_config(
@@ -100,12 +96,34 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
     let view = checkout.path.clone();
     drop(head);
     drop(harness);
-    let harness = LocalHarness::open(volume_config(directory.path(), project, provider)?).await?;
+    let harness =
+        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
     assert_eq!(harness.workspace().unwrap().path, view);
     super::checkout_reopen::run(&harness).await?;
     assert_eq!(
         std::fs::read(view.join("note.txt")).map_err(super::super::storage)?,
         b"volume"
     );
+    let requests = provider.requests();
+    for (id, expected) in [
+        ("checkout-1", "preexistingvolume"),
+        ("checkout-6", "child"),
+        ("checkout-8", "volumeshell"),
+    ] {
+        let content = requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                crate::model::ModelContentPart::ToolResult {
+                    call_id, content, ..
+                } if call_id == id => Some(content),
+                _ => None,
+            })
+            .expect("accepted bash result");
+        let encoded = serde_json::to_string(content).map_err(super::super::storage)?;
+        assert!(encoded.contains(expected), "{id}: {encoded}");
+        assert!(!encoded.contains("\\\"error\\\""), "{id}: {encoded}");
+    }
     Ok(())
 }
