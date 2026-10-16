@@ -8,10 +8,15 @@ use std::collections::BTreeMap;
 /// Bounds depend on selected content and retained latest status, not event history.
 #[derive(Clone, Copy, Debug)]
 pub struct SwarmViewLimits {
+    /// Maximum retained agents, including overview-only rows.
     pub agents: usize,
+    /// Maximum agents retaining full file views.
     pub selected: usize,
+    /// Maximum latest-value status keys across the entire swarm.
     pub overview_values: usize,
+    /// Maximum retained status key, payload and opaque cursor bytes.
     pub overview_bytes: u64,
+    /// Per-agent file and segment bounds.
     pub query: QueryViewLimits,
 }
 
@@ -34,8 +39,11 @@ impl Default for StatusView {
 }
 
 impl StatusView {
+    /// Greatest delivered status cursor; platform I/O owns replay and fencing.
     pub fn cursor(&self) -> Option<&wire::SessionCursor> { self.after.as_ref() }
+    /// Accepted and confirmed durable status prefixes.
     pub fn watermarks(&self) -> StreamWatermarks { self.watermarks }
+    /// Latest values in stable key order, with producer-defined payloads.
     pub fn values(&self) -> impl Iterator<Item = &wire::SessionLatestValue> { self.values.values().map(|v| &v.value) }
 }
 
@@ -64,19 +72,25 @@ pub struct SwarmViews {
 }
 
 impl SwarmViews {
+    /// Starts a subscription cache with overview interest for the whole root.
     pub fn new(root: StreamPath, limits: SwarmViewLimits) -> Result<Self> {
         Ok(Self { layout: ClientInterests::from_layout(root, [], [], 0)?, agents: BTreeMap::new(), limits,
             overview_values: 0, overview_bytes: 0 })
     }
 
+    /// Current file-derived rendering demand.
     pub fn layout(&self) -> &ClientInterests { &self.layout }
+    /// Latest status for one discovered agent, including agents out of view.
     pub fn status(&self, agent: &StreamPath) -> Option<&StatusView> { self.agents.get(agent).map(|a| &a.status) }
+    /// Selected content's exact snapshot/follow cut.
     pub fn cursor(&self, agent: &StreamPath) -> Option<&Cursor> {
         self.agents.get(agent)?.files.as_ref().map(FileViews::cursor)
     }
+    /// Borrows one logical file without joining or copying its segments.
     pub fn file(&self, agent: &StreamPath, key: &FileKey) -> Option<&HeadFile> {
         self.agents.get(agent)?.files.as_ref()?.file(key)
     }
+    /// Visits only the requested agent's selected content.
     pub fn files<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a HeadFile> {
         self.agents.get(agent).and_then(|a| a.files.as_ref()).into_iter().flat_map(FileViews::files)
     }

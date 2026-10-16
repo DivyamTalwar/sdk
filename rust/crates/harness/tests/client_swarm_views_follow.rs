@@ -19,6 +19,15 @@ async fn selected(sent: &mut mpsc::Receiver<wire::SessionInterest>, agent: &str)
     }
     panic!("interest stream ended before selecting {agent}")
 }
+async fn notice(changed: &mut mpsc::UnboundedReceiver<&'static str>, expected: &str) {
+    loop {
+        match changed.next().await {
+            Some(actual) if actual == expected => return,
+            Some(_) => (),
+            None => panic!("view notifications ended before {expected}"),
+        }
+    }
+}
 
 #[tokio::test]
 async fn view_file_writes_update_subscriptions_and_the_same_file_fold() -> Result<()> {
@@ -58,7 +67,7 @@ async fn view_file_writes_update_subscriptions_and_the_same_file_fold() -> Resul
     };
     let writer = async {
         let selected_a = selected(&mut sent, "swarm/a").await;
-        while changed.next().await != Some("snapshot") {}
+        notice(&mut changed, "snapshot").await;
         let cut = views.borrow().cursor(&path("swarm/a")).unwrap().clone();
         assert_eq!(selected_a.resume.as_ref().unwrap().next, cut.position);
         let mut write = Write::new(FileKey::parse(".tasks/t/turns/1/chunks/1").unwrap(), b"live".to_vec());
@@ -71,7 +80,7 @@ async fn view_file_writes_update_subscriptions_and_the_same_file_fold() -> Resul
                 after: Some(wire_codec::session::record_cursor(record.sequence + 1, record.commit_id).unwrap()),
                 accepted: record.sequence + 1, durable: 0,
                 item: Some(wire::session_data::Item::Record(wire_codec::record_wire(record))) })) })).await.unwrap();
-        while changed.next().await != Some("file") {}
+        notice(&mut changed, "file").await;
         let key = FileKey::parse(".tasks/t/turns/1/text.md").unwrap();
         let (cursor, pointer) = {
             let views = views.borrow();
@@ -79,13 +88,13 @@ async fn view_file_writes_update_subscriptions_and_the_same_file_fold() -> Resul
             (views.cursor(&path("swarm/a")).unwrap().clone(), views.file(&path("swarm/a"), &key).unwrap().segments[0].as_ptr())
         };
         put(&config, "workspace/layout.json", br#"{"in_view":["swarm/a"]}"#).await;
-        while changed.next().await != Some("layout") {}
+        notice(&mut changed, "layout").await;
         assert_eq!(views.borrow().cursor(&path("swarm/a")), Some(&cursor));
         assert_eq!(views.borrow().file(&path("swarm/a"), &key).unwrap().segments[0].as_ptr(), pointer);
-        assert!(sent.try_next().is_err(), "promotion must keep the same route");
+        assert!(sent.try_recv().is_err(), "promotion must keep the same route");
         put(&config, "workspace/layout.json", br#"{"in_view":["swarm/b"]}"#).await;
         selected(&mut sent, "swarm/b").await;
-        while changed.next().await != Some("snapshot") {}
+        notice(&mut changed, "snapshot").await;
         assert!(views.borrow().cursor(&path("swarm/a")).is_none());
         assert!(views.borrow().cursor(&path("swarm/b")).is_some());
         frames.send(Err(Error::Unsupported("scenario complete".into()))).await.unwrap();
