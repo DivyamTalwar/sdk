@@ -412,8 +412,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(storage)?;
@@ -430,7 +429,8 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         );
         schedules.push((scenario, baseline));
     }
-    // Replays own independent filesystems, sharing one executor and blocking pool.
+    // Replays own independent filesystems. Each bounded worker polls its driver
+    // and owned completions together, without cross-thread barrier handoffs.
     let cuts: Vec<_> = schedules
         .iter()
         .flat_map(|(scenario, baseline)| {
@@ -454,10 +454,14 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let workers: Vec<_> = (0..std::thread::available_parallelism()
             .unwrap()
             .get()
-            .min(4)
+            .min(32)
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(storage)?;
                     loop {
                         if failed.load(Ordering::Relaxed) {
                             return Ok(());
