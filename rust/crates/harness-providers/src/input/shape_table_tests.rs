@@ -124,29 +124,37 @@ fn admitted(position: Position, part: &Value) -> bool {
     validate_input(adapter, &body).is_empty()
 }
 
-fn assert_entry(position: Position, shape: &Shape, text: &str, omit_fields: bool) {
+#[derive(Clone, Copy, PartialEq)]
+enum Control {
+    None,
+    ShapeFieldsOmitted,
+    ValidatorMutationIgnored,
+    ShapeAcceptsNumbers,
+}
+
+fn assert_entry(position: Position, shape: &Shape, text: &str, control: Control) {
     let value = example(shape, text);
-    assert!(
-        shape.accepts(&value),
-        "bad generated fixture for {}",
-        shape.discriminator.1
-    );
+    assert!(shape.accepts(&value), "bad shape fixture: {value}");
     assert!(
         admitted(position, &value),
         "bad position fixture: {position:?} {value}"
     );
-    let encoded = serde_json::to_vec(&value).unwrap();
-    let replay: Value = serde_json::from_slice(&encoded).unwrap();
+    let replay: Value = serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(admitted(position, &replay));
-    // Negative control removes the required-field data, retaining the very same
-    // discriminator. The mutation oracle below must detect every weakened row.
     let rule = Shape {
         discriminator: shape.discriminator,
-        fields: if omit_fields { &[] } else { shape.fields },
+        fields: if control == Control::ShapeFieldsOmitted {
+            &[]
+        } else {
+            shape.fields
+        },
     };
-    for path in std::iter::once(format!("/{}", shape.discriminator.0))
-        .chain(shape.fields.iter().map(|(path, _)| (*path).into()))
-    {
+    for (path, constraint) in std::iter::once((format!("/{}", shape.discriminator.0), None)).chain(
+        shape
+            .fields
+            .iter()
+            .map(|(path, constraint)| ((*path).into(), Some(constraint))),
+    ) {
         let mut missing = value.clone();
         let (parent, key) = path.rsplit_once('/').unwrap();
         missing
@@ -157,23 +165,42 @@ fn assert_entry(position: Position, shape: &Shape, text: &str, omit_fields: bool
             .remove(key);
         assert!(
             !rule.accepts(&missing),
-            "missing {path}: {position:?} {missing}"
+            "shape accepted missing {path}: {position:?}"
         );
+        // Independent control: a validator which ignores the mutation reads the
+        // valid original. The shape checker still rejects the actual mutation.
+        let input = if control == Control::ValidatorMutationIgnored {
+            &value
+        } else {
+            &missing
+        };
         assert!(
-            !admitted(position, &missing),
-            "missing {path}: {position:?} {missing}"
+            !admitted(position, input),
+            "validator accepted missing {path}: {position:?}"
         );
         for wrong in [json!(null), json!(true), json!(42), json!({}), json!([])] {
-            let mut broken = value.clone();
-            *broken.pointer_mut(&path).unwrap() = wrong;
-            // [] is a valid array, not a wrong type for an array requirement.
-            if shape.accepts(&broken) {
+            // Expected types come from the declaration, never from acceptance.
+            // [] is the only correctly typed replacement in this mutation set.
+            if matches!(constraint, Some(Constraint::Array)) && wrong.is_array() {
                 continue;
             }
-            assert!(!rule.accepts(&broken), "wrong type {path}: {position:?}");
+            let mut broken = value.clone();
+            *broken.pointer_mut(&path).unwrap() = wrong;
+            let accepts_number = control == Control::ShapeAcceptsNumbers
+                && matches!(constraint, Some(Constraint::String { .. }))
+                && broken.pointer(&path).unwrap().is_number();
             assert!(
-                !admitted(position, &broken),
-                "wrong type {path}: {position:?} {broken}"
+                !rule.accepts(&broken) && !accepts_number,
+                "shape accepted wrong type {path}: {position:?}"
+            );
+            let input = if control == Control::ValidatorMutationIgnored {
+                &value
+            } else {
+                &broken
+            };
+            assert!(
+                !admitted(position, input),
+                "validator accepted wrong type {path}: {position:?}"
             );
         }
     }
@@ -187,17 +214,50 @@ proptest! {
     ) {
         let text: String = chars.into_iter().collect();
         for (position, shape) in entries() {
-            assert_entry(position, shape, &text, false);
+            assert_entry(position, shape, &text, Control::None);
         }
     }
 }
 
 #[test]
-fn ignoring_required_fields_breaks_every_shape_entry() {
+fn omitting_shape_requirements_fails_independently_of_the_validator() {
     for (position, shape) in entries() {
         assert!(
-            std::panic::catch_unwind(|| assert_entry(position, shape, "line\nquoted\"", true))
-                .is_err()
+            std::panic::catch_unwind(|| assert_entry(
+                position,
+                shape,
+                "line\nquoted\"",
+                Control::ShapeFieldsOmitted
+            ))
+            .is_err()
         );
     }
+}
+
+#[test]
+fn ignoring_validator_mutations_fails_independently_of_the_shape_checker() {
+    for (position, shape) in entries() {
+        assert!(
+            std::panic::catch_unwind(|| assert_entry(
+                position,
+                shape,
+                "line\nquoted\"",
+                Control::ValidatorMutationIgnored
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn accepting_numbers_as_strings_fails_the_same_mutation_oracle() {
+    assert!(
+        std::panic::catch_unwind(|| assert_entry(
+            Position::Chat("user"),
+            &shape::IMAGE_URL,
+            "image",
+            Control::ShapeAcceptsNumbers,
+        ))
+        .is_err()
+    );
 }
