@@ -11,10 +11,10 @@ mod record;
 use record::Turn;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
+#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+mod poll_sweep;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
-#[cfg(all(test, not(acyclic_harness_loom)))]
-mod poll_sweep;
 
 const HEAD: &str = "inputs/current.json";
 
