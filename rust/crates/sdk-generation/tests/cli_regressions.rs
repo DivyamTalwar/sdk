@@ -61,6 +61,10 @@ fn source_digest(files: &BTreeMap<String, String>) -> String {
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new(runtime::git())
         .current_dir(root)
+        // Identical fixture branches must not create extra frontier revisions
+        // merely because setup crossed a wall-clock second.
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
         .args(args)
         .output()
         .unwrap();
