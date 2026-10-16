@@ -36,7 +36,7 @@ mod task_query_case;
 mod task_query_tests;
 use acyclic_harness::context::CompactionPolicy;
 use drivers::run_execution as run;
-use futures::{StreamExt as _, stream};
+use futures::{FutureExt as _, StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
     path::Path,
@@ -249,6 +249,43 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
     );
 }
 
+async fn finish_case(future: impl Future<Output = TestResult>) -> TestResult {
+    std::panic::AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(5), future))
+        .catch_unwind()
+        .await
+        .map_err(|_| "scenario panicked")??
+}
+
+#[tokio::test]
+async fn concurrent_cases_preserve_panic_isolation() -> TestResult {
+    let cases = [false, true, false];
+    let results: Vec<_> = stream::iter(cases.map(|panics| {
+        finish_case(async move {
+            assert!(!panics, "injected scenario panic");
+            Ok(())
+        })
+    }))
+    .buffer_unordered(cases.len())
+    .collect()
+    .await;
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 2);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    assert!(
+        results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(|error| error.to_string().contains("scenario panicked"))
+    );
+    // Former unguarded polling propagates the same panic out of its case.
+    assert!(
+        std::panic::AssertUnwindSafe(async { panic!("injected unguarded panic") })
+            .catch_unwind()
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
 async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
@@ -265,13 +302,11 @@ async fn run_scenarios(started: Instant) -> TestResult {
         let root = root.clone();
         async move {
             let case_path = path.clone();
-            let result: TestResult = tokio::spawn(async move {
+            let result = finish_case(async move {
                 let case = scenario::load_value(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                drivers::run(case).await
             })
-            .await
-            .unwrap_or_else(|error| Err(Box::new(error)));
+            .await;
             (path, result)
         }
     }))
