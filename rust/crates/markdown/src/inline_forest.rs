@@ -180,11 +180,18 @@ impl Forest {
         self.scopes_at(self.root)
     }
 
-    pub(super) fn scopes_at(&self, mut cursor: usize) -> Vec<Range<usize>> {
+    pub(super) fn scopes_at(&self, cursor: usize) -> Vec<Range<usize>> {
+        self.scopes_since(cursor, 0)
+    }
+
+    pub(super) fn scopes_since(&self, mut cursor: usize, start: usize) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         while let Some(node) = self.node(cursor) {
             #[cfg(test)]
             crate::work::scan(1);
+            if node.range.end <= start {
+                break;
+            }
             if node.kind != Kind::Text {
                 debug_assert!(
                     matches!(node.kind, Kind::Escape | Kind::Code)

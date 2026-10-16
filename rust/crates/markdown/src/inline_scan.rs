@@ -15,6 +15,14 @@ pub(super) struct Scanner {
     tokens: Tokens,
     atomic: Vec<Range<usize>>,
     state: State,
+    syntax: Syntax,
+    processed: usize,
+    fed: usize,
+    frontier: usize,
+    #[cfg(test)]
+    replay: bool,
+    #[cfg(test)]
+    fed_bytes: usize,
 }
 
 #[derive(Default)]
@@ -90,6 +98,36 @@ impl Syntax {
         }
         syntax
     }
+
+    fn absolute(&mut self, base: usize, sentinel: usize) {
+        for range in self
+            .outer
+            .iter_mut()
+            .chain(&mut self.opaque)
+            .chain(&mut self.links)
+        {
+            #[cfg(test)]
+            work::scan(1);
+            *range = base + range.start.saturating_sub(sentinel)
+                ..base + range.end.saturating_sub(sentinel);
+        }
+    }
+
+    fn agrees_before(&self, previous: &Self, base: usize, end: usize) -> bool {
+        fn agrees(left: &[Range<usize>], right: &[Range<usize>], base: usize, end: usize) -> bool {
+            let clipped = |range: &Range<usize>| {
+                #[cfg(test)]
+                work::scan(1);
+                let range = range.start.max(base)..range.end.min(end);
+                (!range.is_empty()).then_some(range)
+            };
+            left.iter()
+                .filter_map(clipped)
+                .eq(right.iter().filter_map(clipped))
+        }
+        agrees(&self.opaque, &previous.opaque, base, end)
+            && agrees(&self.links, &previous.links, base, end)
+    }
 }
 
 fn push_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
@@ -126,8 +164,9 @@ impl Scanner {
                     .get(..start)
                     .and_then(|text| text.chars().next_back()),
             ),
-            atomic: Vec::new(),
-            state: State::default(),
+            processed: start,
+            frontier: start,
+            ..Self::default()
         }
     }
 
@@ -136,10 +175,16 @@ impl Scanner {
         self.tokens.retained()
             + self.atomic.capacity() * std::mem::size_of::<Range<usize>>()
             + self.state.retained()
+            + (self.syntax.outer.capacity()
+                + self.syntax.opaque.capacity()
+                + self.syntax.links.capacity())
+                * std::mem::size_of::<Range<usize>>()
     }
 
     pub(super) fn discard_before(&mut self, position: usize) {
+        let before = self.tokens.ready.len();
         self.tokens.discard_before(position);
+        self.fed = self.fed.saturating_sub(before - self.tokens.ready.len());
         self.atomic.clear();
     }
 
@@ -177,18 +222,36 @@ impl Scanner {
         sentinel: usize,
     ) -> usize {
         self.tokens.push(original);
-        let syntax = Syntax::new(source, events);
+        let mut syntax = Syntax::new(source, events);
+        syntax.absolute(base, sentinel);
         let pending = self.tokens.preview().map(|token| token.range.start);
-        let pending = pending.map(|start| start.saturating_sub(base) + sentinel);
+        // Parser-resolved scopes can override an earlier tentative bracket or
+        // HTML opener. Retain lexical state only while those classifications
+        // agree over the bytes already consumed; newly appended scopes need
+        // no replay. Coordinates stay in the original append-only source.
+        let replay = !syntax.agrees_before(&self.syntax, base, self.processed);
+        #[cfg(test)]
+        let replay = replay || self.replay;
+        if replay {
+            self.state.reset();
+            self.processed = base;
+            self.fed = 0;
+            self.frontier = base;
+        }
         let (mut opaque, mut link) = (0, 0);
         let state = &mut self.state;
-        state.reset();
-        let mut frontier = sentinel;
-        for token in &self.tokens.ready {
+        for token in self.tokens.ready.range(self.fed..) {
+            if token.range.end <= self.processed {
+                continue;
+            }
             #[cfg(test)]
             work::scan(1);
-            let start = token.range.start.max(base).saturating_sub(base) + sentinel;
-            let end = token.range.end.saturating_sub(base) + sentinel;
+            let start = token.range.start.max(base).max(self.processed);
+            let end = token.range.end;
+            #[cfg(test)]
+            {
+                self.fed_bytes += end - start;
+            }
             if inside(&syntax.opaque, &mut opaque, start) {
                 state.opaque_text(start..end);
             } else {
@@ -198,49 +261,39 @@ impl Scanner {
             if state.neutral()
                 && (self.tokens.neutral() || pending.is_some_and(|start| start >= end))
             {
-                frontier = end;
+                self.frontier = end;
             }
+            self.processed = end;
         }
+        // The lexer may extend its final plain-text token on the next push.
+        self.fed = self.tokens.ready.len().saturating_sub(usize::from(
+            self.tokens
+                .ready
+                .back()
+                .is_some_and(|token| token.kind == Kind::Text),
+        ));
         if state.invalid {
             return sentinel;
         }
-        let candidate = frontier.max(state.earliest(pending.unwrap_or(source.len())));
-        let scopes = if let Some(mut pending) = self.tokens.preview() {
-            pending.range = pending.range.start.saturating_sub(base) + sentinel
-                ..pending.range.end.saturating_sub(base) + sentinel;
+        let candidate = self
+            .frontier
+            .max(base)
+            .max(state.earliest(pending.unwrap_or(original.len())));
+        let scopes = if let Some(pending) = self.tokens.preview() {
             let root = state.projection(Some(&pending));
-            state.forest.scopes_at(root)
+            state.forest.scopes_since(root, base)
         } else {
-            state.forest.scopes()
+            state.forest.scopes_since(state.forest.snapshot(), base)
         };
-        self.forbid_splits(syntax.outer, scopes, base, sentinel);
-        self.checkpoint(base + candidate.saturating_sub(sentinel))
-            .saturating_sub(base)
-            + sentinel
+        self.forbid_splits(&syntax.outer, scopes);
+        self.syntax = syntax;
+        self.checkpoint(candidate).saturating_sub(base) + sentinel
     }
 
-    fn forbid_splits(
-        &mut self,
-        ranges: Vec<Range<usize>>,
-        scopes: Vec<Range<usize>>,
-        base: usize,
-        sentinel: usize,
-    ) {
+    fn forbid_splits(&mut self, ranges: &[Range<usize>], scopes: Vec<Range<usize>>) {
         self.atomic.clear();
-        let mut syntax = ranges
-            .into_iter()
-            .map(|range| {
-                base + range.start.saturating_sub(sentinel)
-                    ..base + range.end.saturating_sub(sentinel)
-            })
-            .peekable();
-        let mut scopes = scopes
-            .into_iter()
-            .map(|range| {
-                base + range.start.saturating_sub(sentinel)
-                    ..base + range.end.saturating_sub(sentinel)
-            })
-            .peekable();
+        let mut syntax = ranges.iter().cloned().peekable();
+        let mut scopes = scopes.into_iter().peekable();
         let mut tokens = self
             .tokens
             .ready
@@ -291,3 +344,7 @@ impl Scanner {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/inline_scan.rs"]
+mod tests;
