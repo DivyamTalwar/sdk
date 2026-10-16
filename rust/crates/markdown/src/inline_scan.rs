@@ -3,69 +3,17 @@ use super::*;
 mod delimiters;
 #[path = "inline_forest.rs"]
 mod forest;
+#[path = "inline_state.rs"]
+mod state;
 #[path = "inline_tokens.rs"]
 mod tokens;
-use delimiters::{Delimiters, Run};
+use state::State;
 use tokens::{Kind, Tokens};
 
 #[derive(Default)]
 pub(super) struct Scanner {
     tokens: Tokens,
     atomic: Vec<Range<usize>>,
-}
-
-#[derive(Default)]
-struct State {
-    delimiter: Delimiters,
-    forest: forest::Forest,
-    invalid: bool,
-    bracket: Vec<Bracket>,
-    labels: Vec<Range<usize>>,
-    opaque: Option<usize>,
-}
-
-struct Bracket {
-    start: usize,
-    frontier: usize,
-}
-
-impl State {
-    fn neutral(&self) -> bool {
-        self.delimiter.neutral()
-            && self.bracket.is_empty()
-            && self.labels.is_empty()
-            && self.opaque.is_none()
-    }
-
-    fn label(&mut self, range: Range<usize>) {
-        #[cfg(test)]
-        work::copy(
-            std::mem::size_of::<Range<usize>>()
-                * (1 + if self.labels.len() == self.labels.capacity() {
-                    self.labels.len()
-                } else {
-                    0
-                }),
-        );
-        self.labels.push(range);
-        if self.labels.len() > 2 {
-            #[cfg(test)]
-            work::copy(2 * std::mem::size_of::<Range<usize>>());
-            self.labels.remove(0);
-        }
-    }
-
-    fn earliest(&self, end: usize) -> usize {
-        [
-            self.delimiter.first(),
-            self.bracket.first().map(|bracket| bracket.frontier),
-            self.labels.first().map(|label| label.start),
-            self.opaque,
-        ]
-        .into_iter()
-        .flatten()
-        .fold(end, usize::min)
-    }
 }
 
 #[derive(Default)]
@@ -132,7 +80,7 @@ impl Syntax {
                 Event::Start(Tag::Link { .. } | Tag::Image { .. }) => {
                     push_range(&mut syntax.outer, consumed);
                 }
-                Event::Code(_) | Event::InlineHtml(_) => {
+                Event::InlineHtml(_) => {
                     push_range(&mut syntax.opaque, range.clone());
                     push_range(&mut syntax.outer, range.clone());
                 }
@@ -236,12 +184,11 @@ impl Scanner {
             work::scan(1);
             let start = token.range.start.max(base).saturating_sub(base) + sentinel;
             let end = token.range.end.saturating_sub(base) + sentinel;
-            let cursor = state.forest.text(start..end);
             if inside(&syntax.opaque, &mut opaque, start) {
-                state.labels.clear();
+                state.opaque_text(start..end);
             } else {
                 let linked = inside(&syntax.links, &mut link, start);
-                literal(start..end, token.kind, &mut state, linked, cursor);
+                state.feed(start..end, token.kind, linked);
             }
             if state.neutral()
                 && (self.tokens.neutral() || pending.is_some_and(|start| start >= end))
@@ -329,64 +276,5 @@ impl Scanner {
                 self.atomic.push(next);
             }
         }
-    }
-}
-
-fn literal(range: Range<usize>, kind: Kind, state: &mut State, linked: bool, cursor: usize) {
-    if !matches!(kind, Kind::Open { .. } | Kind::Close | Kind::ParenOpen) {
-        state.labels.clear();
-    }
-    match kind {
-        Kind::Open { .. } if !linked => {
-            #[cfg(test)]
-            work::copy(
-                std::mem::size_of::<Bracket>()
-                    * (1 + if state.bracket.len() == state.bracket.capacity() {
-                        state.bracket.len()
-                    } else {
-                        0
-                    }),
-            );
-            let frontier = state.earliest(range.start);
-            state.bracket.push(Bracket {
-                start: range.start,
-                frontier,
-            });
-        }
-        Kind::Close if !linked => {
-            if let Some(bracket) = state.bracket.pop()
-                && state.bracket.is_empty()
-            {
-                state.label(bracket.start..range.end);
-            }
-        }
-        Kind::ParenOpen if !state.labels.is_empty() => {
-            if let Some(label) = state.labels.first() {
-                state.opaque.get_or_insert(label.start);
-            }
-        }
-        Kind::AngleOpen | Kind::Run { byte: b'`', .. } => {
-            state.opaque.get_or_insert(range.start);
-        }
-        Kind::Run {
-            byte,
-            before,
-            after,
-        } if !linked => {
-            let mut run = Run::new(range, byte, before, after);
-            run.cursor = cursor;
-            state.delimiter.feed(run, |matched| {
-                let wrapped = state.forest.wrap(matched);
-                debug_assert!(
-                    wrapped.is_some(),
-                    "delimiter cursors must belong to the active forest"
-                );
-                if wrapped.is_none() {
-                    state.invalid = true;
-                }
-                wrapped.unwrap_or_default()
-            });
-        }
-        _ => {}
     }
 }

@@ -4,6 +4,8 @@ use std::ops::Range;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Text,
+    Escape,
+    Code,
     Emphasis,
     Strong,
     StrongEmphasis,
@@ -74,6 +76,19 @@ impl Forest {
         }
     }
 
+    pub(super) fn escape(&mut self, range: Range<usize>) -> usize {
+        self.append(range, 0, 0, Kind::Escape)
+    }
+
+    pub(super) fn code(&mut self, opening: Range<usize>, closing: Range<usize>) {
+        self.append(
+            opening.start..closing.end,
+            opening.end,
+            closing.start,
+            Kind::Code,
+        );
+    }
+
     pub(super) fn wrap(&mut self, matched: Matched) -> Option<(usize, usize)> {
         let opening = self.node(matched.opener_cursor)?;
         let closing = self.node(matched.closer_cursor)?;
@@ -140,7 +155,10 @@ impl Forest {
             #[cfg(test)]
             crate::work::scan(1);
             if node.kind != Kind::Text {
-                debug_assert!(node.stop <= node.children && node.children < cursor);
+                debug_assert!(
+                    matches!(node.kind, Kind::Escape | Kind::Code)
+                        || node.stop <= node.children && node.children < cursor
+                );
                 #[cfg(test)]
                 crate::work::copy(
                     std::mem::size_of::<Range<usize>>()
@@ -174,6 +192,7 @@ impl Forest {
         }
         let mut tasks = vec![Task::List(self.root, 0, Style::default())];
         let mut line = crate::Line::default();
+        let end = source.trim_end_matches([' ', '\t']).len();
         while let Some(task) = tasks.pop() {
             match task {
                 Task::List(cursor, stop, style) => {
@@ -187,7 +206,30 @@ impl Forest {
                 Task::Value(cursor, mut style) => {
                     let node = self.node(cursor)?;
                     match node.kind {
-                        Kind::Text => line.push(source.get(node.range.clone())?, style, None),
+                        Kind::Text => line.push(
+                            source.get(node.range.start.min(end)..node.range.end.min(end))?,
+                            style,
+                            None,
+                        ),
+                        Kind::Escape => line.push(
+                            source.get(node.range.start + 1..node.range.end)?,
+                            style,
+                            None,
+                        ),
+                        Kind::Code => {
+                            let code = source.get(node.children..node.stop)?;
+                            let code = code.replace(['\r', '\n'], " ");
+                            let code = if code.starts_with(' ')
+                                && code.ends_with(' ')
+                                && code.bytes().any(|byte| byte != b' ')
+                            {
+                                code.get(1..code.len() - 1)?
+                            } else {
+                                &code
+                            };
+                            style.foreground = Some(crate::style::YELLOW);
+                            line.push(code, style, None);
+                        }
                         kind => {
                             style.bold |= matches!(kind, Kind::Strong | Kind::StrongEmphasis);
                             style.italic |= matches!(kind, Kind::Emphasis | Kind::StrongEmphasis);

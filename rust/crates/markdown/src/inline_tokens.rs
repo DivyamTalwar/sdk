@@ -163,7 +163,12 @@ impl Tokens {
                     };
                     return;
                 }
-                let end = if escaped {
+                let end = if escaped && byte == b'`' {
+                    // Code treats the whole physical run as a possible closer,
+                    // including its escaped first tick. Keep that unit intact.
+                    self.emit(start..position, Kind::Escape('`'));
+                    position
+                } else if escaped {
                     self.emit(start..start + 2, Kind::Escape(char::from(byte)));
                     start + 2
                 } else {

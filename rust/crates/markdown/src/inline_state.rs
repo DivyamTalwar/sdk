@@ -1,0 +1,247 @@
+use super::{
+    delimiters::{self, Delimiters, Run},
+    forest,
+    tokens::Kind,
+};
+use std::{collections::HashMap, ops::Range};
+
+#[derive(Default)]
+pub(super) struct State {
+    delimiter: Delimiters,
+    pub(super) forest: forest::Forest,
+    pub(super) invalid: bool,
+    brackets: Vec<Bracket>,
+    bracket: usize,
+    labels: [Option<Range<usize>>; 2],
+    opaque: Option<usize>,
+    codes: Vec<Code>,
+    code_lengths: HashMap<usize, usize>,
+    #[cfg(test)]
+    stale: bool,
+    #[cfg(test)]
+    rescan: bool,
+}
+
+struct Bracket {
+    previous: usize,
+    start: usize,
+    frontier: usize,
+}
+
+#[derive(Clone)]
+struct Snapshot {
+    delimiter: delimiters::Snapshot,
+    forest: usize,
+    bracket: usize,
+    labels: [Option<Range<usize>>; 2],
+    opaque: Option<usize>,
+}
+
+struct Code {
+    opening: Range<usize>,
+    before: Snapshot,
+}
+
+impl State {
+    fn snapshot(&self) -> Snapshot {
+        #[cfg(test)]
+        crate::work::copy(std::mem::size_of::<Snapshot>());
+        Snapshot {
+            delimiter: self.delimiter.snapshot(),
+            forest: self.forest.snapshot(),
+            bracket: self.bracket,
+            labels: self.labels.clone(),
+            opaque: self.opaque,
+        }
+    }
+
+    fn restore(&mut self, before: Snapshot) {
+        self.delimiter.restore(before.delimiter);
+        self.invalid |= !self.forest.restore(before.forest);
+        self.bracket = before.bracket;
+        self.labels = before.labels;
+        self.opaque = before.opaque;
+    }
+
+    pub(super) fn neutral(&self) -> bool {
+        self.delimiter.neutral()
+            && self.bracket == 0
+            && self.labels.iter().all(Option::is_none)
+            && self.opaque.is_none()
+            && self.codes.is_empty()
+    }
+
+    fn bracket(&self) -> Option<&Bracket> {
+        self.bracket
+            .checked_sub(1)
+            .and_then(|index| self.brackets.get(index))
+    }
+
+    pub(super) fn earliest(&self, end: usize) -> usize {
+        [
+            self.delimiter.first(),
+            self.bracket().map(|bracket| bracket.frontier),
+            self.labels.iter().flatten().next().map(|label| label.start),
+            self.opaque,
+            self.codes.first().map(|code| code.opening.start),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(end, usize::min)
+    }
+
+    pub(super) fn opaque_text(&mut self, range: Range<usize>) {
+        self.forest.text(range);
+        self.labels = [None, None];
+    }
+
+    pub(super) fn feed(&mut self, range: Range<usize>, kind: Kind, linked: bool) {
+        #[cfg(test)]
+        if self.rescan {
+            self.forest.scopes();
+        }
+        if matches!(kind, Kind::Run { byte: b'`', .. } | Kind::Escape('`')) {
+            self.ticks(range, kind == Kind::Escape('`'));
+            return;
+        }
+        let cursor = if matches!(kind, Kind::Escape(_)) {
+            self.forest.escape(range.clone())
+        } else {
+            self.forest.text(range.clone())
+        };
+        if !matches!(kind, Kind::Open { .. } | Kind::Close | Kind::ParenOpen) {
+            self.labels = [None, None];
+        }
+        match kind {
+            Kind::Open { .. } if !linked => {
+                let frontier = self.earliest(range.start);
+                #[cfg(test)]
+                if self.brackets.len() == self.brackets.capacity() {
+                    crate::work::copy(self.brackets.len() * std::mem::size_of::<Bracket>());
+                }
+                self.brackets.push(Bracket {
+                    previous: self.bracket,
+                    start: range.start,
+                    frontier,
+                });
+                self.bracket = self.brackets.len();
+            }
+            Kind::Close if !linked => {
+                if let Some(bracket) = self.bracket() {
+                    let (previous, start) = (bracket.previous, bracket.start);
+                    self.bracket = previous;
+                    if previous == 0 {
+                        #[cfg(test)]
+                        crate::work::copy(2 * std::mem::size_of::<Option<Range<usize>>>());
+                        self.labels = if self.labels.iter().all(Option::is_none) {
+                            [Some(start..range.end), None]
+                        } else {
+                            [
+                                self.labels[1].take().or_else(|| self.labels[0].take()),
+                                Some(start..range.end),
+                            ]
+                        };
+                    }
+                }
+            }
+            Kind::ParenOpen => {
+                if let Some(label) = self.labels.iter().flatten().next() {
+                    self.opaque.get_or_insert(label.start);
+                }
+            }
+            Kind::AngleOpen => {
+                self.opaque.get_or_insert(range.start);
+            }
+            Kind::Run {
+                byte,
+                before,
+                after,
+            } if !linked => {
+                let mut run = Run::new(range, byte, before, after);
+                run.cursor = cursor;
+                self.delimiter.feed(run, |matched| {
+                    let wrapped = self.forest.wrap(matched);
+                    debug_assert!(wrapped.is_some(), "active delimiter cursors");
+                    self.invalid |= wrapped.is_none();
+                    wrapped.unwrap_or_default()
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn ticks(&mut self, range: Range<usize>, escaped: bool) {
+        let physical = range.start + usize::from(escaped)..range.end;
+        #[cfg(test)]
+        crate::work::scan(1);
+        if let Some(index) = self.code_lengths.get(&physical.len()).copied() {
+            // Every removed opener was inserted once. A late match restores
+            // its prefix directly, discarding tentative inner interpretations.
+            let mut opening = None;
+            while self.codes.len() > index {
+                let Some(code) = self.codes.pop() else { break };
+                #[cfg(test)]
+                crate::work::scan(1);
+                self.code_lengths.remove(&code.opening.len());
+                opening = Some(code);
+            }
+            if let Some(code) = opening {
+                #[cfg(test)]
+                let restore = !self.stale;
+                #[cfg(not(test))]
+                let restore = true;
+                if restore {
+                    self.restore(code.before);
+                }
+                self.forest.code(code.opening, physical);
+                self.labels = [None, None];
+            }
+            return;
+        }
+        if escaped {
+            self.forest.escape(range.start..range.start + 2);
+        }
+        let opening = physical.start + usize::from(escaped)..physical.end;
+        if opening.is_empty() {
+            self.labels = [None, None];
+            return;
+        }
+        if self.code_lengths.contains_key(&opening.len()) {
+            // An escaped first tick can make a later opener the same length
+            // as an earlier one. The earlier opener wins every future match.
+            self.forest.text(opening);
+            self.labels = [None, None];
+            return;
+        }
+        let before = self.snapshot();
+        #[cfg(test)]
+        {
+            if self.codes.len() == self.codes.capacity() {
+                crate::work::copy(self.codes.len() * std::mem::size_of::<Code>());
+            }
+            if self.code_lengths.len() == self.code_lengths.capacity() {
+                crate::work::copy(self.code_lengths.len() * std::mem::size_of::<(usize, usize)>());
+            }
+        }
+        self.code_lengths.insert(opening.len(), self.codes.len());
+        self.codes.push(Code {
+            opening: opening.clone(),
+            before,
+        });
+        self.forest.text(opening);
+        self.labels = [None, None];
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained(&self) -> usize {
+        self.delimiter.retained()
+            + self.forest.retained()
+            + self.brackets.capacity() * std::mem::size_of::<Bracket>()
+            + self.codes.capacity() * std::mem::size_of::<Code>()
+            + self.code_lengths.capacity() * std::mem::size_of::<(usize, usize)>()
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/inline_state.rs"]
+mod tests;
