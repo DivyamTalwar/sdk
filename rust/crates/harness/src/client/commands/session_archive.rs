@@ -1,7 +1,7 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
-    pub(in crate::client::commands) fn view_bounds(&self) -> (usize, usize) {
+    pub(crate) fn view_bounds(&self) -> (usize, usize) {
         (self.maximum_files, self.maximum_bytes as usize)
     }
 

@@ -611,3 +611,6 @@ mod terminal_input;
 
 #[path = "tests/task_files.rs"]
 mod task_files;
+
+#[path = "tests/history_bounds.rs"]
+mod history_bounds;

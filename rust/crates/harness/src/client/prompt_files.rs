@@ -25,6 +25,32 @@ fn history(file: Option<&FileValue>) -> Result<PromptHistory> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
+// Keep the largest chronological suffix that fits the serialized file budget.
+// Count encoded strings, including JSON escaping, commas and array brackets.
+fn recent_history(history: &PromptHistory, maximum_bytes: usize) -> Result<PromptHistory> {
+    if maximum_bytes < 2 {
+        return Err(Error::Invalid(
+            "history file cannot hold an empty array".into(),
+        ));
+    }
+    let (mut bytes, mut count) = (2, 0);
+    for text in history.entries().iter().rev() {
+        let encoded =
+            serde_json::to_vec(text).map_err(|error| Error::Invalid(error.to_string()))?;
+        let additional = encoded.len() + usize::from(count > 0);
+        if additional > maximum_bytes - bytes {
+            break;
+        }
+        bytes += additional;
+        count += 1;
+    }
+    let mut recent = PromptHistory::default();
+    for text in &history.entries()[history.entries().len() - count..] {
+        recent.push(text.clone());
+    }
+    Ok(recent)
+}
+
 impl PromptFiles {
     /// Apply changed files together, validating every file before mutating the editor.
     pub fn refresh<P: StreamProvider + ?Sized>(
@@ -91,6 +117,7 @@ impl PromptFiles {
             for text in appended {
                 merged.push(text.clone());
             }
+            let merged = recent_history(&merged, files.view_bounds().1)?;
             let value = serde_json::to_value(merged.entries())
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             if files
