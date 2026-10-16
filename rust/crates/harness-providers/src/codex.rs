@@ -479,11 +479,20 @@ fn stage(
     auth: &Value,
     io: &mut CredentialIo<'_>,
 ) -> Result<()> {
-    use std::io::{Seek as _, SeekFrom};
     let encoded = (crate::projection::encoded_len(auth)? as u64)
         .checked_add(1)
         .filter(|&bytes| bytes <= MAX_AUTH_BYTES)
         .ok_or_else(|| invalid("Codex merged credentials exceed limit"))?;
+    write_staged(file, auth, encoded, io)
+}
+
+fn write_staged(
+    file: &mut tempfile::NamedTempFile,
+    auth: &Value,
+    encoded: u64,
+    io: &mut CredentialIo<'_>,
+) -> Result<()> {
+    use std::io::{Seek as _, SeekFrom};
     io.charge(WorkCounters {
         bytes_encoded: encoded,
         output_bytes: encoded,
