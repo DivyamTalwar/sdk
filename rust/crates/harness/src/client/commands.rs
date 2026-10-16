@@ -609,14 +609,20 @@ impl CommandCatalog {
             }),
             CommandAction::Theme => {
                 let normalized = arguments.to_lowercase();
-                Ok(match self.themes.iter().find(|theme| theme.to_lowercase() == normalized) {
-                    Some(name) => CommandResolution::Submit {
-                        request: CommandRequest::Theme { name: name.clone() },
+                Ok(
+                    match self
+                        .themes
+                        .iter()
+                        .find(|theme| theme.to_lowercase() == normalized)
+                    {
+                        Some(name) => CommandResolution::Submit {
+                            request: CommandRequest::Theme { name: name.clone() },
+                        },
+                        None => CommandResolution::Select {
+                            query: CommandQuery::Theme,
+                        },
                     },
-                    None => CommandResolution::Select {
-                        query: CommandQuery::Theme,
-                    },
-                })
+                )
             }
             CommandAction::Builtin { command } => Ok(resolve_builtin(*command, arguments)),
             CommandAction::Prompt { source, .. } => {

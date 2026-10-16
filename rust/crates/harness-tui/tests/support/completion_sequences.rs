@@ -26,7 +26,11 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
         .take(24)
         .map(|byte| char::from(b'a' + byte % 26))
         .collect();
-    let theme: String = String::from_utf8_lossy(data).chars().filter(|c| !c.is_control()).take(48).collect();
+    let theme: String = String::from_utf8_lossy(data)
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(48)
+        .collect();
     catalog_round_trip(
         &format!("cmd{suffix}"),
         &format!("alias{suffix}"),
