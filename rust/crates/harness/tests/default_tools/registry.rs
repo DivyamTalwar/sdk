@@ -49,6 +49,66 @@ proptest! {
         prop_assert_eq!(wrapped.code(), expected);
         prop_assert_eq!(wrapped.to_string(), display);
     }
+
+    // A complete replacement preserves exactly the selected contracts for any
+    // subset of builtin names and never synthesizes registrations or grants.
+    #[test]
+    fn registry_replacement_preserves_selections_with_any_bindings(
+        names in proptest::collection::btree_set(0usize..5, 0..=5),
+        volume in any::<bool>(), workspace in any::<bool>(), hidden in any::<bool>(),
+        revision in 1u8..=2, description in ".{0,32}",
+    ) {
+        let builtins = ["bash", "fs", "read", "write", "edit"];
+        let mut registry = ToolRegistry::default();
+        for &index in &names {
+            for version in 1..=2 {
+                let mut tool = example_tool();
+                tool.definition.name = builtins[index].into();
+                tool.definition.revision = version.to_string();
+                tool.definition.description = format!("Custom {description}");
+                registry.register((tool, None), &mut None, None).unwrap();
+            }
+            registry.select_model_version(builtins[index], &revision.to_string()).unwrap();
+            if hidden {
+                registry.remove_from_model(builtins[index]).unwrap();
+            }
+        }
+        let expected = registry.definitions(None).unwrap();
+        let mut builder = HarnessBuilder::new()
+            .agent_loop(Arc::new(DelegatingLoop))
+            .replace_tools(registry)
+            .tool(example_tool());
+        if volume { builder = builder.content(content()); }
+        if workspace { builder = builder.workspace(Arc::new(Echo)); }
+        let bundle = builder.build().unwrap();
+        for (index, name) in builtins.into_iter().enumerate() {
+            let actual = bundle.runtime().tool(name);
+            match expected.iter().find(|tool| tool.name == name) {
+                Some(definition) => prop_assert_eq!(&actual.unwrap(), definition),
+                None => prop_assert!(matches!(actual, Err(Error::NotFound(_)))),
+            }
+            let capability = format!("tool:call:{name}");
+            prop_assert!(!bundle.capabilities().contains(&capability));
+            prop_assert_eq!(expected.iter().any(|tool| tool.name == name), names.contains(&index) && !hidden);
+        }
+        prop_assert_eq!(bundle.runtime().tool("example.echo").unwrap(), example_tool().definition);
+    }
+}
+
+#[test]
+fn exported_defaults_can_replace_a_complete_bound_registry() -> Result<()> {
+    let defaults = crate::tools::defaults()?;
+    let expected = defaults.definitions(None)?;
+    let bundle = HarnessBuilder::new()
+        .agent_loop(Arc::new(DelegatingLoop))
+        .content(content())
+        .workspace(Arc::new(Echo))
+        .replace_tools(defaults)
+        .build()?;
+    for definition in expected {
+        assert_eq!(bundle.runtime().tool(&definition.name)?, definition);
+    }
+    Ok(())
 }
 
 #[test]

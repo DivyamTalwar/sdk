@@ -95,10 +95,12 @@ impl HarnessBuilder {
         self
     }
 
-    /// Replaces the complete registry, including pinned revisions and projections.
+    /// Replaces the complete registry and disables automatic default registration.
+    /// Retains its pinned revisions, projections and model selections.
     #[must_use]
     pub fn replace_tools(mut self, registry: ToolRegistry) -> Self {
         self.bindings.tools = registry;
+        self.disable_default_tools = true;
         self
     }
 
