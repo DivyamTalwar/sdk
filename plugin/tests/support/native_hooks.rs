@@ -1,7 +1,10 @@
 //! Real hook-process fixture shared by focused integration suites.
 use serde_json::Value;
 use std::{path::Path, process::Stdio};
-use tokio::{io::AsyncWriteExt as _, process::Command};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    process::{Child, Command},
+};
 pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub struct Fixture {
@@ -22,13 +25,31 @@ impl Fixture {
     pub fn path(&self) -> &Path {
         &self.project
     }
+    pub async fn start_owner(&self) -> Result<Child> {
+        let mut owner = command(self.path())
+            .args(["__service", "--signal-ready"])
+            .spawn()?;
+        owner
+            .stdout
+            .take()
+            .ok_or("owner readiness missing")?
+            .read_u8()
+            .await?;
+        Ok(owner)
+    }
+    pub async fn close_owner(&self, owner: Child) -> Result {
+        let stopped = self.close().await;
+        let output = owner.wait_with_output().await?;
+        if !output.status.success() {
+            return Err(format!("owner failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+        }
+        stopped
+    }
     pub async fn close(&self) -> Result {
         let output = command(self.path()).arg("__owner-stop").output().await?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        }
         Ok(())
     }
 }
@@ -57,11 +78,13 @@ pub fn command(directory: &Path) -> Command {
 pub async fn hook(directory: &Path, host: &str, event: &str, input: Value) -> Result<Value> {
     let child = start_hook(directory, host, event, input).await?;
     let output = child.wait_with_output().await?;
-    assert!(
-        output.status.success(),
-        "{host} {event}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if !output.status.success() {
+        return Err(format!(
+            "{host} {event}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 

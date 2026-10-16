@@ -29,7 +29,9 @@ impl<'a> Tools<'a> {
         let input = json!({"session_id":session,"cwd":cwd});
         let task = request(host, event, input.clone())?.task_id();
         native_hooks::hook(cwd, host.name(), event, input).await?;
-        let results = native_hooks::files(cwd, &format!("external/results/{task}")).await?;
+        let results = native_hooks::files(cwd, &format!("external/results/{task}"))
+            .await
+            .map_err(|error| format!("{} attach results: {error}", host.name()))?;
         Ok(Self {
             cwd,
             host,
@@ -63,7 +65,9 @@ impl<'a> Tools<'a> {
             session: self.session.clone(),
             caller: Some(caller.to_owned()),
             task,
-            results: native_hooks::files(self.cwd, &format!("external/results/{task}")).await?,
+            results: native_hooks::files(self.cwd, &format!("external/results/{task}"))
+                .await
+                .map_err(|error| format!("{} child {caller} results: {error}", self.host.name()))?,
         })
     }
 
@@ -82,7 +86,11 @@ impl<'a> Tools<'a> {
         let child = native_hooks::start_hook(self.cwd, self.host.name(), event, input).await?;
         let output = child.wait_with_output().await?;
         let key = call.result_key(Component::new(self.task.to_string())?)?;
-        let snapshot = self.results.snapshot(&Query::File(key), 1).await?;
+        let snapshot = self
+            .results
+            .snapshot(&Query::File(key), 1)
+            .await
+            .map_err(|error| format!("{} {name} {id} result query: {error}", self.host.name()))?;
         assert_eq!(
             snapshot.files.len(),
             1,
