@@ -487,11 +487,24 @@ async fn submitted_commands_quit_and_drafts_use_real_query_files() {
         queued: false,
         edit: None,
     };
+    let error = apply_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
+        .await
+        .unwrap_err();
     assert!(
-        apply_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
-            .await
-            .is_err()
+        matches!(error, acyclic_harness::Error::NotFound(message) if message == "Unknown command: /not-a-command")
     );
+    let error = apply_tui_input(
+        &mut files,
+        &NoFiles,
+        InputEffect::Submit {
+            text: "replacement".into(),
+            queued: false,
+            edit: Some("prior-message".into()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, acyclic_harness::Error::Unsupported(_)));
     assert_eq!(
         volume.snapshot(&Query::Root, 64).await.unwrap().generation,
         before
