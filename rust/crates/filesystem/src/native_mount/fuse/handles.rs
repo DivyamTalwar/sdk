@@ -39,7 +39,7 @@ pub(super) fn fuse_open_file(
 pub(super) struct FileHandle {
     pub(super) inode: u64,
     pub(super) open_file: FuseOpenFile,
-    pub(super) operation: Arc<(Mutex<()>, crate::NativeAllocation)>,
+    pub(super) operation: Arc<(RankedMutex<(), OPERATION>, crate::NativeAllocation)>,
     pub(super) dirty: bool,
     pub(super) writes: bool,
     pub(super) _storage: crate::NativeAllocation,
@@ -82,11 +82,11 @@ impl ProjectionState {
             crate::WorkCounters::UNCHARGED,
         )?;
         let operation = work.claim(
-            std::mem::size_of::<(Mutex<()>, crate::NativeAllocation)>() as u64,
+            std::mem::size_of::<(RankedMutex<(), OPERATION>, crate::NativeAllocation)>() as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
-        let operation = Arc::new((Mutex::new(()), operation));
+        let operation = Arc::new((RankedMutex::new(()), operation));
         self.files
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
