@@ -12,6 +12,8 @@ mod archive;
 mod activity;
 #[path = "session_init.rs"]
 mod init;
+#[path = "session_publish.rs"]
+mod publication;
 #[cfg(all(test, acyclic_harness_loom))]
 #[path = "session_init_models.rs"]
 mod init_models;
@@ -532,47 +534,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             position: change.cursor.position,
             commit: change.cursor.commit,
         };
-        Ok(())
-    }
-
-    async fn publish(
-        &mut self,
-        key: files::FileKey,
-        bytes: Vec<u8>,
-        create_only: bool,
-    ) -> Result<()> {
-        if bytes.len() as u64 > self.maximum_bytes {
-            return Err(Error::Invalid(
-                "command publication exceeds byte bound".into(),
-            ));
-        }
-        if create_only && self.files.contains_key(&key) {
-            return Err(Error::Conflict("command file already exists".into()));
-        }
-        self.make_room(usize::from(!self.files.contains_key(&key)))?;
-        let file = files::FileValue::new(key, bytes);
-        let published = if let Some(writer) = &self.writer {
-            writer.write(self.generation, &file).await
-        } else if create_only {
-            self.volume.create(self.generation, &file).await
-        } else {
-            self.volume.append(self.generation, &file).await
-        };
-        let generation = match published {
-            Ok(generation) => generation,
-            Err(files::Error::Conflict(generation)) => {
-                while self.generation.position < generation.position {
-                    self.advance().await?;
-                }
-                return Err(Error::Conflict(
-                    "command query advanced; retry from the new cut".into(),
-                ));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        while self.generation.position < generation.position {
-            self.advance().await?;
-        }
         Ok(())
     }
 

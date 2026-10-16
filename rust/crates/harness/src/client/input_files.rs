@@ -123,7 +123,7 @@ pub async fn save_tui_draft<P: StreamProvider + ?Sized>(
         != Some(&draft)
     {
         files
-            .write_state(CommandFileRoot::Session, "draft.json", &draft)
+            .write_unchanged_state(CommandFileRoot::Session, "draft.json", &draft)
             .await?;
     }
     Ok(())

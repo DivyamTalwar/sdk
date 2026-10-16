@@ -14,7 +14,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Ok(());
             }
             let before = self.generation;
-            match self.publish(key.clone(), bytes.clone(), true).await {
+            match self
+                .publish_rebased::<RETRY, true>(key.clone(), bytes.clone(), true)
+                .await
+            {
                 Err(Error::Conflict(_)) if RETRY && self.generation != before => {}
                 result => return result,
             }

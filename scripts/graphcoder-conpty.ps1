@@ -79,7 +79,7 @@ public static class GraphcoderConPty {
         try {
             Require(CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0), "CreatePipe input");
             Require(CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0), "CreatePipe output");
-            int hr = CreatePseudoConsole(new Coord { X = 32767, Y = 100 }, inRead, outWrite, 0, out console);
+            int hr = CreatePseudoConsole(new Coord { X = 80, Y = 24 }, inRead, outWrite, 0, out console);
             if (hr != 0) throw new COMException("CreatePseudoConsole unavailable; real Windows ConPTY is mandatory", hr);
             IntPtr size = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);

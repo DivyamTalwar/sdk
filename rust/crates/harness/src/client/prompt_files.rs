@@ -70,7 +70,8 @@ impl PromptFiles {
 
     /// Save local submissions by appending to the latest followed history file,
     /// preserving entries published by other sessions since the previous frame.
-    /// Existing generation CAS rejects a publication racing this accepted cut.
+    /// Unrelated owner publications may advance the cut; peer edits to the
+    /// saved file still fail closed instead of overwriting their contents.
     pub async fn save<P: StreamProvider + ?Sized>(
         &mut self,
         files: &mut CommandSession<P>,
@@ -98,7 +99,7 @@ impl PromptFiles {
                 != Some(&value)
             {
                 files
-                    .write_state(CommandFileRoot::Config, "history.json", &value)
+                    .write_unchanged_state(CommandFileRoot::Config, "history.json", &value)
                     .await?;
             }
             input.replace_history(merged);

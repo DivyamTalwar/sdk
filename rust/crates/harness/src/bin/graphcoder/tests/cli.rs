@@ -15,14 +15,23 @@ use std::{
 
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
+#[derive(Clone, Copy)]
+enum Mode {
+    Prompt,
+    Jsonl,
+    OpenJsonl,
+    Dumb,
+}
+
 async fn execute(
     workspace: &Path,
     catalog: &Path,
     settings: &Path,
     operation: OperationId,
-    jsonl: bool,
-    keep_open: bool,
+    mode: Mode,
 ) -> Vec<u8> {
+    let jsonl = !matches!(mode, Mode::Prompt);
+    let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
         format!(
@@ -56,7 +65,9 @@ async fn execute(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if jsonl {
+    if matches!(mode, Mode::Dumb) {
+        command.env("TERM", "dumb");
+    } else if jsonl {
         command.args(["--input-format", "jsonl"]);
     } else {
         command.args(["-p", "hello"]);
@@ -98,7 +109,7 @@ async fn execute(
     output.stdout
 }
 
-async fn scenario(jsonl: bool, keep_open: bool) {
+async fn scenario(mode: Mode) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -146,7 +157,7 @@ async fn scenario(jsonl: bool, keep_open: bool) {
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
     let operation = OperationId::new();
-    let output = execute(&workspace, &catalog, &settings, operation, jsonl, keep_open).await;
+    let output = execute(&workspace, &catalog, &settings, operation, mode).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
     let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
@@ -170,7 +181,7 @@ async fn scenario(jsonl: bool, keep_open: bool) {
     assert_eq!(answers[0]["ok"]["text"], "fixture answer");
     assert_eq!(answers[0]["completion"], "completed");
     // A second real process restores the same request/result instead of generating again.
-    execute(&workspace, &catalog, &settings, operation, jsonl, keep_open).await;
+    execute(&workspace, &catalog, &settings, operation, mode).await;
     let mut generated = 0;
     let mut counted = 0;
     while let Ok(kind) = observed.try_recv() {
@@ -188,15 +199,20 @@ async fn scenario(jsonl: bool, keep_open: bool) {
 
 #[tokio::test]
 async fn prompt_argv_uses_the_real_registry_and_file_client() {
-    scenario(false, false).await;
+    scenario(Mode::Prompt).await;
 }
 
 #[tokio::test]
 async fn jsonl_stdin_eof_preserves_the_real_client_operation() {
-    scenario(true, false).await;
+    scenario(Mode::Jsonl).await;
 }
 
 #[tokio::test]
 async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
-    scenario(true, true).await;
+    scenario(Mode::OpenJsonl).await;
+}
+
+#[tokio::test]
+async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
+    scenario(Mode::Dumb).await;
 }

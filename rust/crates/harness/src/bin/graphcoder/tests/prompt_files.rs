@@ -33,6 +33,66 @@ async fn session() -> CommandSession<MemoryStream> {
 }
 
 #[tokio::test]
+async fn prompt_save_follows_owner_progress_but_preserves_a_peer_draft() {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("prompt-contention").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let id = OperationId::from_bytes([9; 16]).to_string().parse().unwrap();
+    let mut files = CommandSession::open(volume.clone(), id, 65_536, 64)
+        .await
+        .unwrap();
+    let mut peer = CommandSession::open(volume.clone(), id, 65_536, 64)
+        .await
+        .unwrap();
+    let mut projection = PromptFiles::default();
+    let mut input = PromptInput::default();
+    projection.refresh(&files, &mut input).unwrap();
+    input.editor.set_text("local draft", 0);
+    peer.write_state(
+        CommandFileRoot::Session,
+        "notifications.json",
+        &serde_json::json!(["owner progress"]),
+    )
+    .await
+    .unwrap();
+    projection.save(&mut files, &mut input).await.unwrap();
+    assert_eq!(
+        files.state(CommandFileRoot::Session, "draft.json").unwrap(),
+        Some(serde_json::json!("local draft"))
+    );
+    while peer
+        .state(CommandFileRoot::Session, "draft.json")
+        .unwrap()
+        .is_none()
+    {
+        peer.observe_change().await.unwrap();
+    }
+    peer.write_state(
+        CommandFileRoot::Session,
+        "draft.json",
+        &serde_json::json!("peer draft"),
+    )
+    .await
+    .unwrap();
+    input.editor.set_text("unsaved local edit", 0);
+    assert!(matches!(
+        projection.save(&mut files, &mut input).await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    let mut restored = PromptInput::default();
+    let reopened = CommandSession::open(volume, id, 65_536, 64).await.unwrap();
+    PromptFiles::default()
+        .refresh(&reopened, &mut restored)
+        .unwrap();
+    assert_eq!(restored.editor.text(), "peer draft");
+}
+
+#[tokio::test]
 async fn unchanged_files_preserve_navigation_and_invalid_updates_are_atomic() {
     let mut files = session().await;
     files

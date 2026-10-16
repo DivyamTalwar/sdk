@@ -17,6 +17,7 @@ async function run(args, input = "") {
   const code = await new Promise((resolve, reject) => { child.on("error", error => reject(new Error(`${error.message}\nstdout: ${stdout}\nstderr: ${stderr}`, { cause: error }))); child.on("exit", (code, signal) => signal ? reject(new Error(`CLI terminated by ${signal}\nstdout: ${stdout}\nstderr: ${stderr}`)) : resolve(code)); });
   return { code, stdout, stderr };
 }
+let failure;
 try {
   const help = await run(["--help"]);
   assert.equal(help.code, 0);
@@ -52,4 +53,9 @@ try {
   assert.equal(host.calls(), 2, "malformed stdin must not reach the model");
   host.fail();
   assert.notEqual((await run([...host.args, "-p", "provider failure"])).code, 0);
-} finally { await host.close(); }
+} catch (error) { failure = error; }
+finally {
+  try { await host.close(); }
+  catch (cleanup) { throw failure ? new AggregateError([failure, cleanup], "CLI qualification and cleanup failed") : cleanup; }
+}
+if (failure) throw failure;

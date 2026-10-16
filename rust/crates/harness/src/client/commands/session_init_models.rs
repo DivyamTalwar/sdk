@@ -74,3 +74,64 @@ fn initialization_preserves_a_request_on_both_sides_of_seed_publication() {
 fn fail_on_initialization_contention_is_detected_negative_control() {
     assert!(std::panic::catch_unwind(|| race::<false>(true)).is_err());
 }
+
+fn peer_edit<const MATCH_KEY: bool>(same_file: bool) {
+    loom::model(move || {
+        loom::future::block_on(Box::pin(async {
+            let volume = Arc::new(
+                files::TaskVolume::open(
+                    Arc::new(MemoryStream::default()),
+                    StreamPath::new("command-key-model").unwrap(),
+                )
+                .await
+                .unwrap(),
+            );
+            let mut commands =
+                CommandSession::open(volume.clone(), uuid::Uuid::from_bytes([1; 16]), 8192, 32)
+                    .await
+                    .unwrap();
+            let key = ui("config", "extra.json").unwrap();
+            commands
+                .initialize_file::<true>(key.clone(), b"{}".to_vec())
+                .await
+                .unwrap();
+            let expected = commands.generation;
+            let peer_key = if same_file {
+                key.clone()
+            } else {
+                ui("config", "peer.json").unwrap()
+            };
+            let peer = files::FileValue::new(peer_key, br#"{"peer":true}"#.to_vec());
+            volume.append(expected, &peer).await.unwrap();
+            let result = commands
+                .publish_rebased::<true, MATCH_KEY>(key.clone(), b"null".to_vec(), false)
+                .await;
+            if same_file {
+                assert!(
+                    matches!(result, Err(Error::Conflict(_))),
+                    "overwrote a concurrent edit"
+                );
+            } else {
+                result.unwrap();
+                let snapshot = volume.snapshot(&files::Query::File(key), 1).await.unwrap();
+                assert_eq!(snapshot.files[0].bytes.as_ref(), b"null");
+            }
+            let snapshot = volume
+                .snapshot(&files::Query::File(peer.key.clone()), 1)
+                .await
+                .unwrap();
+            assert_eq!(snapshot.files, [peer]);
+        }));
+    });
+}
+
+#[test]
+fn a_same_file_edit_is_never_overwritten_by_rebasing() {
+    peer_edit::<true>(false);
+    peer_edit::<true>(true);
+}
+
+#[test]
+fn omitting_the_file_comparison_is_detected_negative_control() {
+    assert!(std::panic::catch_unwind(|| peer_edit::<false>(true)).is_err());
+}

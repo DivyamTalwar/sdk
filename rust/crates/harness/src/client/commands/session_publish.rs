@@ -1,0 +1,84 @@
+use super::*;
+
+impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(super) async fn publish(
+        &mut self,
+        key: files::FileKey,
+        bytes: Vec<u8>,
+        create_only: bool,
+    ) -> Result<()> {
+        self.publish_rebased::<false, true>(key, bytes, create_only)
+            .await
+    }
+
+    /// Persist an editor projection across unrelated owner publications. The
+    /// observed target contents are still a precondition; peer edits fail closed.
+    /// Command resolution and execution claims retain their strict query CAS.
+    pub(crate) async fn write_unchanged_state(
+        &mut self,
+        root: CommandFileRoot,
+        name: &str,
+        value: &Value,
+    ) -> Result<()> {
+        self.publish_rebased::<true, true>(
+            self.state_key(root, name)?,
+            serde_json::to_vec(value).map_err(codec)?,
+            false,
+        )
+        .await
+    }
+
+    // Rebase across unrelated publications only. A peer's same-file update
+    // remains authoritative; immutable execution claims still have one winner.
+    // The const variants are the real-path models' two negative controls.
+    pub(super) async fn publish_rebased<const RETRY: bool, const MATCH_KEY: bool>(
+        &mut self,
+        key: files::FileKey,
+        bytes: Vec<u8>,
+        create_only: bool,
+    ) -> Result<()> {
+        if bytes.len() as u64 > self.maximum_bytes {
+            return Err(Error::Invalid(
+                "command publication exceeds byte bound".into(),
+            ));
+        }
+        if create_only && self.files.contains_key(&key) {
+            return Err(Error::Conflict("command file already exists".into()));
+        }
+        let before = self.files.get(&key).cloned();
+        let file = files::FileValue::new(key, bytes);
+        loop {
+            self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
+            let expected = self.generation;
+            let published = if let Some(writer) = &self.writer {
+                writer.write(expected, &file).await
+            } else if create_only {
+                self.volume.create(expected, &file).await
+            } else {
+                self.volume.append(expected, &file).await
+            };
+            match published {
+                Ok(generation) => {
+                    while self.generation.position < generation.position {
+                        self.advance().await?;
+                    }
+                    return Ok(());
+                }
+                Err(files::Error::Conflict(generation)) => {
+                    while self.generation.position < generation.position {
+                        self.advance().await?;
+                    }
+                    if !RETRY
+                        || self.generation == expected
+                        || (MATCH_KEY && self.files.get(&file.key) != before.as_ref())
+                    {
+                        return Err(Error::Conflict(
+                            "command file changed; retry from the new cut".into(),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}

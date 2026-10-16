@@ -15,7 +15,9 @@ if (process.platform === "win32") {
   args = ["-NoProfile", "-NonInteractive", "-File", fileURLToPath(new URL("graphcoder-conpty.ps1", import.meta.url)), "-Binary", binary, "-Workspace", host.root, "-SettingsRoot", host.settings, "-Catalog", host.args.at(-1), "-Model", "scripted/test", "-DeadlineMilliseconds", "8000"];
 } else {
   launcher = "/usr/bin/script";
-  const command = [binary, ...host.args].map(quote).join(" ");
+  const executable = [binary, ...host.args].map(quote).join(" ");
+  // A redirected parent gives script(1) a 0x0 PTY unless sized explicitly.
+  const command = `stty rows 24 cols 80\nexec ${executable}`;
   args = process.platform === "linux" ? ["-q", "-e", "-f", "-c", command, "/dev/null"] : ["-q", "/dev/null", "/bin/sh", "-c", command];
 }
 const child = spawn(launcher, args, { windowsHide: true, env: { ...process.env, TERM: "xterm-256color" }, stdio: ["pipe", "pipe", "pipe"] });
@@ -28,10 +30,17 @@ child.stdout.on("data", bytes => {
   if (!completed && visible.includes("test answer")) { completed = true; child.stdin.write("\x04"); }
 });
 child.stderr.on("data", bytes => { output += bytes.toString("utf8"); });
+let failure;
 try {
   const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`PTY terminated by ${signal}: ${output}`)) : resolve(code)); });
   assert.equal(code, 0, output);
   assert.ok(submitted, "composed prompt never appeared");
-  assert.ok(completed, "streamed Markdown never reached the real PTY");
+  assert.ok(completed, "Markdown answer never reached the real PTY");
   assert.ok(output.includes("\x1b["), "no terminal frames emitted");
-} finally { clearTimeout(timeout); child.kill(); await host.close(); }
+} catch (error) { failure = error; }
+finally {
+  clearTimeout(timeout); child.kill();
+  try { await host.close(); }
+  catch (cleanup) { throw failure ? new AggregateError([failure, cleanup], "PTY qualification and cleanup failed") : cleanup; }
+}
+if (failure) throw failure;
