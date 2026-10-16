@@ -162,7 +162,9 @@ proptest! {
         let file = request.result_file(task.clone(), &json!(answer))?;
         let started = FileKey::Task {task:task.clone(), file:TaskFile::RequestStarted(
             Component::new(request.operation_id.to_string())?)};
-        for key in [file.key, started] {
+        let ready = FileKey::Task {task:task.clone(), file:TaskFile::RequestReady(
+            Component::new(request.operation_id.to_string())?)};
+        for key in [file.key, started, ready] {
             prop_assert_eq!(FileKey::parse(&key.path())?, key.clone());
             prop_assert_eq!(key.owner(), Owner::Harness);
             prop_assert!(Query::Task(task.clone()).matches(&key));
