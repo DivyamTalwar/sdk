@@ -35,7 +35,7 @@ pub fn project_reasoning<'a>(
     let readable = block.text.as_deref().filter(|text| !text.trim().is_empty());
     let compatible = !block.origin.provider.trim().is_empty()
         && block.origin.provider == target.provider
-        && !block.origin.credential_scope.trim().is_empty()
+        && block.origin.credential_scope.is_some()
         && block.origin.credential_scope == target.credential_scope;
     if compatible && !block.continuity.is_empty() {
         return ProjectedReasoning::Native {

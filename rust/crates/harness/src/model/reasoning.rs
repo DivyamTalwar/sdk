@@ -26,8 +26,8 @@ pub struct ReasoningOrigin {
     pub provider: String,
     /// Exact selected model that produced this block.
     pub model: String,
-    /// Opaque nonsecret credential-scope identity; empty means unknown.
-    pub credential_scope: String,
+    /// Nonsecret scope digest; None means ownership is unknown.
+    pub credential_scope: Option<[u8; 32]>,
 }
 
 /// Reasoning shapes normalized by the adapters.

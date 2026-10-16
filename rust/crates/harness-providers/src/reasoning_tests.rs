@@ -16,7 +16,7 @@ fn origin(provider: &str, scope: &str) -> ReasoningOrigin {
     ReasoningOrigin {
         provider: provider.into(),
         model: "source-model".into(),
-        credential_scope: scope.into(),
+        credential_scope: (!scope.is_empty()).then(|| *blake3::hash(scope.as_bytes()).as_bytes()),
     }
 }
 
@@ -92,7 +92,7 @@ proptest! {
                 } else {
                     prop_assert!(matches!(projected, ProjectedReasoning::Dropped {..}));
                 }
-                destination.credential_scope = "another-org".into();
+                destination.credential_scope = Some(*blake3::hash(b"another-org").as_bytes());
                 prop_assert!(!matches!(project_reasoning(&replay, &destination), ProjectedReasoning::Native {..}));
             }
         }
@@ -143,22 +143,20 @@ fn canonical_json_reencoding_negative_control_changes_native_continuity() {
 }
 
 #[test]
-fn missing_or_whitespace_ownership_never_authorizes_native_replay() {
-    for scope in ["", " ", "\t\n"] {
-        let block = ReasoningBlock {
-            kind: ReasoningKind::Signature,
-            text: None,
-            origin: origin("responses", scope),
-            continuity: vec![0, 255],
-            outcome: ReasoningOutcome::PreservedOpaque,
-        };
-        assert_eq!(
-            project_reasoning(&block, &block.origin),
-            ProjectedReasoning::Dropped {
-                outcome: ReasoningOutcome::UnsupportedShape
-            }
-        );
-    }
+fn missing_ownership_never_authorizes_native_replay() {
+    let block = ReasoningBlock {
+        kind: ReasoningKind::Signature,
+        text: None,
+        origin: origin("responses", ""),
+        continuity: vec![0, 255],
+        outcome: ReasoningOutcome::PreservedOpaque,
+    };
+    assert_eq!(
+        project_reasoning(&block, &block.origin),
+        ProjectedReasoning::Dropped {
+            outcome: ReasoningOutcome::UnsupportedShape
+        }
+    );
 }
 
 #[test]
