@@ -68,6 +68,26 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
         .await
         .unwrap();
     let mut renderer = ClientRenderer::default();
+    let owner = acyclic_harness::wire::Authority {
+        kind: acyclic_harness::wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let mut views = ClientViews::default();
+    views.tasks.insert(
+        format!(
+            "{}:{}",
+            acyclic_harness::wire::AggregateKind::Task.as_str_name(),
+            owner.id
+        ),
+        acyclic_harness::client::TaskView {
+            status: acyclic_harness::core::LifecycleState::Active,
+            lifecycle_operation_id: None,
+            reason: Some("owner feedback".into()),
+            parent: None,
+        },
+    );
+    renderer.update(&views, &owner);
+    assert!(painted(&mut renderer, &files).contains("owner feedback"));
     assert!(painted(&mut renderer, &files).contains("Unknown command: /not-a-command"));
     let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
     handle_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
@@ -109,6 +129,7 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
     assert!(files.take_request().is_some());
     assert!(files.take_request().is_none());
     assert!(!painted(&mut renderer, &files).contains("Unknown command"));
+    assert!(painted(&mut renderer, &files).contains("owner feedback"));
     assert_eq!(
         files
             .state(CommandFileRoot::Session, "notifications.json")
@@ -160,20 +181,20 @@ proptest::proptest! {
             let message: String = chars.into_iter().collect();
             files.write_state(CommandFileRoot::Session, "notifications.json", &serde_json::json!([message])).await.unwrap();
             let mut renderer = ClientRenderer::default();
-            let rows = renderer.screen_for(&files).unwrap().notifications.to_vec();
+            let rows: Vec<String> = renderer.screen_for(&files).unwrap().notifications.iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect()).collect();
             proptest::prop_assert_eq!(rows.len(), 1);
-            let text: String = rows[0].spans.iter().map(|span| span.content.as_ref()).collect();
-            proptest::prop_assert_eq!(&text, &message.escape_debug().to_string());
+            let text = &rows[0];
+            proptest::prop_assert_eq!(text, &message.escape_debug().to_string());
             proptest::prop_assert!(!text.chars().any(char::is_control));
             let first = painted(&mut renderer, &files);
             proptest::prop_assert_eq!(painted(&mut ClientRenderer::default(), &files), first);
             files.write_state(CommandFileRoot::Session, "notifications.json", &serde_json::json!(false)).await.unwrap();
             proptest::prop_assert!(renderer.screen_for(&files).is_err());
-            proptest::prop_assert_eq!(renderer.screen().notifications, rows.as_slice());
+            let retained: Vec<String> = renderer.screen().notifications.iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect()).collect();
+            proptest::prop_assert_eq!(retained, rows);
             files.write_state(CommandFileRoot::Session, "notifications.json", &serde_json::json!([])).await.unwrap();
-            proptest::prop_assert!(renderer.screen_for(&files).unwrap().notifications.is_empty());
-            // Ordinary ClientViews updates still compose their lifecycle feedback.
-            renderer.update(&ClientViews::default(), &acyclic_harness::wire::Authority { kind: acyclic_harness::wire::AggregateKind::Task as i32, id: "task".into() });
             proptest::prop_assert!(renderer.screen_for(&files).unwrap().notifications.is_empty());
             Ok(())
         })?;
