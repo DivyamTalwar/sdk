@@ -70,6 +70,10 @@ path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
 
 [[test]]
+name = "external_hooks"
+path = "tests/external_hooks.rs"
+
+[[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
 required-features = ["filesystem", "test-support"]
@@ -83,6 +87,10 @@ required-features = ["service", "test-support"]
 name = "service-lifecycle-models"
 path = "tests/service_lifecycle_models.rs"
 required-features = ["service", "test-support"]
+
+[[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -194,7 +202,7 @@ tracing-subscriber.workspace = true
 proptest.workspace = true
 shuttle = "0.8.1"
 loom = { version = "0.7.2", features = ["futures"] }
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
 

@@ -2,6 +2,7 @@
 //! the tonic service glue under the `grpc` feature.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
     println!("cargo:rustc-check-cfg=cfg(loom)");
     if cfg!(feature = "model-checking") {
         println!("cargo:rustc-cfg=loom");

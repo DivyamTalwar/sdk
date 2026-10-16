@@ -239,37 +239,16 @@ pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<P
                 .cloned()
                 .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?;
             let hooks = object_entry(&mut document, "hooks")?;
-            for event in [
-                "SessionStart",
-                "PreToolUse",
-                "PostToolUse",
-                "PostToolUseFailure",
-                "SubagentStart",
-                "SubagentStop",
-                "SessionEnd",
-            ] {
+            let command = executable
+                .to_str()
+                .ok_or_else(|| "Claude hook executable path is not UTF-8".to_owned())?;
+            for (event, generated) in acyclic_harness::external_executor::claude_hooks(command) {
                 let entries = hooks
                     .entry(event.to_owned())
                     .or_insert_with(|| json!([]))
                     .as_array_mut()
                     .ok_or_else(|| format!("Claude Code hooks.{event} must be an array"))?;
-                let mut group = serde_json::Map::new();
-                if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
-                    group.insert("matcher".to_owned(), Value::String(".*".to_owned()));
-                }
-                // Exec form: Claude Code spawns the executable directly
-                // instead of through bash, Git Bash or PowerShell.
-                group.insert(
-                    "hooks".to_owned(),
-                    json!([{
-                        "type": "command",
-                        "command": executable,
-                        "args": ["__hook", "claude-code", event],
-                        "timeout": claude_hook_timeout(event),
-                        "statusMessage": "Acyclic is routing the workspace"
-                    }]),
-                );
-                entries.push(Value::Object(group));
+                entries.extend(generated);
             }
             Ok(Value::Object(document))
         },
@@ -346,7 +325,14 @@ pub(crate) fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
     if hook.len() != 5
         || hook.get("type").and_then(Value::as_str) != Some("command")
         || hook.get("args") != Some(&json!(["__hook", "claude-code", event]))
-        || hook.get("timeout").and_then(Value::as_u64) != Some(claude_hook_timeout(event))
+        || hook.get("timeout").and_then(Value::as_u64)
+            != Some(
+                acyclic_harness::external_executor::hooks(
+                    acyclic_harness::external_executor::ExternalHost::ClaudeCode,
+                )
+                .find(|spec| spec.event == event)
+                .map_or(120, |spec| spec.timeout_seconds()),
+            )
         || hook.get("statusMessage").and_then(Value::as_str)
             != Some("Acyclic is routing the workspace")
     {
@@ -360,13 +346,6 @@ pub(crate) fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
         .is_some_and(|name| {
             name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
         })
-}
-
-pub(crate) fn claude_hook_timeout(event: &str) -> u64 {
-    // Claude bounds SessionEnd separately from ordinary hooks. Keep teardown
-    // within its terminal-hook budget so the process cannot exit while mounts
-    // and service session ownership remain live.
-    if event == "SessionEnd" { 3 } else { 120 }
 }
 
 pub(crate) fn remove_claude_hooks(project: bool) -> Result<(), String> {

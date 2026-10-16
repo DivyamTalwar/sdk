@@ -32,6 +32,7 @@ pub mod durable_tool;
 pub mod effect_host;
 pub mod effects;
 pub mod executor;
+pub mod external_executor;
 pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
@@ -76,6 +77,7 @@ pub mod scheduler;
 pub mod service;
 pub mod source_authorization;
 pub mod store;
+pub mod task_volume;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tool;
