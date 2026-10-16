@@ -362,5 +362,40 @@
     "files": {"commands/tools.json":"[{\"name\":\"theme\",\"action\":{\"kind\":\"theme\"}}]", "commands/themes.json":"[\"dark\",\"light\"]"},
     "events": [{"key":"Tab"}], "completion": false,
     "expected": "/theme dark", "visible": ["/theme dark"]
+  },
+  {
+    "row": "Tab inserts spaces when no completion is active",
+    "text": "a", "events": [{"key":"Tab"},{"text":"b"}],
+    "expected": "a   b", "visible": ["a   b"]
+  },
+  {
+    "row": "Alt+Tab inserts a literal tab",
+    "text": "a", "events": [{"key":"Tab","alt":true},{"text":"b"}],
+    "expected": "a\tb", "visible": ["a","b"]
+  },
+  {
+    "row": "Copy input selection preserves the prompt",
+    "text": "日本語", "events": [{"key":"a","ctrl":true},{"key":"c","ctrl":true}],
+    "expected": "日本語", "visible": ["日本語"], "copied": "日本語", "effects": 1
+  },
+  {
+    "row": "Only editing and navigation keys repeat: deletion",
+    "text": "abc", "events": [{"key":"Backspace","repeat":true}],
+    "expected": "ab", "visible": ["ab"]
+  },
+  {
+    "row": "Released keys do not edit the prompt",
+    "text": "abc", "events": [{"key":"Backspace","release":true}],
+    "expected": "abc", "visible": ["abc"]
+  },
+  {
+    "row": "Ctrl+D on empty input requests quit",
+    "text": "", "events": [{"key":"d","ctrl":true}],
+    "expected": "", "visible": [], "quit": true, "effects": 1
+  },
+  {
+    "row": "Double Ctrl+C clears then requests quit",
+    "text": "draft", "events": [{"key":"c","ctrl":true,"at":1},{"key":"c","ctrl":true,"at":2}],
+    "expected": "", "visible": [], "quit": true, "effects": 1
   }
 ]

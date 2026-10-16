@@ -77,6 +77,9 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
                 if event["repeat"].as_bool() == Some(true) {
                     key.kind = KeyEventKind::Repeat;
                 }
+                if event["release"].as_bool() == Some(true) {
+                    key.kind = KeyEventKind::Release;
+                }
                 effects.extend(input.key(key, now, 38));
             }
             if event["folded"].as_bool() == Some(true) {
@@ -97,6 +100,17 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
                 ),
                 "{name}"
             );
+        }
+        if let Some(copied) = row["copied"].as_str() {
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| matches!(effect, InputEffect::Copy(text) if text == copied)),
+                "{name}"
+            );
+        }
+        if row["quit"].as_bool() == Some(true) {
+            assert_eq!(effects, vec![InputEffect::Quit], "{name}");
         }
         assert_eq!(
             input.editor.text(),
