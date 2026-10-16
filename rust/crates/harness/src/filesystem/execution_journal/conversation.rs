@@ -4,11 +4,15 @@ mod tools;
 
 use super::*;
 use crate::{
-    conversation::{Attachment, ConversationMessage, MessageKind, ReferencedAttachments},
+    conversation::{
+        Attachment, ConversationMessage, MessageKind, ReferencedAttachments, assistant_message_id,
+        derived_operation_id,
+    },
     core::{Action, Command},
     executor::{TurnInput, TurnOutput},
     filesystem::InternalContentClass,
 };
+use serde_json::Value;
 use uuid::Uuid;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -355,8 +359,8 @@ where
             attachment.validate(&mut None)?;
             limits.validate_file(&attachment.file, &mut None)?;
         }
-        let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
-        let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
+        let assistant_id = assistant_message_id(operation_id);
+        let assistant_operation = OperationId::from_bytes(*assistant_id.as_bytes());
         let content = self
             .stage_conversation(
                 operation_id,
@@ -364,17 +368,6 @@ where
                 output.text.as_bytes(),
                 "text/plain",
                 "assistant.txt",
-            )
-            .await?;
-        let metadata = serde_json::to_vec(&output.metadata)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let metadata = self
-            .stage_conversation(
-                operation_id,
-                &format!("turns/{operation_id}/metadata.json"),
-                &metadata,
-                "application/json",
-                "metadata.json",
             )
             .await?;
         let attachments = if output.attachments.len() <= 128 {
@@ -414,7 +407,19 @@ where
             }
         };
         let mut aggregate = self.conversation_projection(limits).await?;
-        self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
+        let usage = self
+            .append_turn_history(&mut aggregate, operation_id, user_id, limits)
+            .await?;
+        let metadata =
+            serde_json::to_vec(&usage).map_err(|error| Error::Invalid(error.to_string()))?;
+        let metadata = self
+            .stage_conversation(
+                operation_id,
+                &format!("turns/{operation_id}/metadata.json"),
+                &metadata,
+                "application/json",
+                "metadata.json",
+            )
             .await?;
         let mut extensions = BTreeMap::new();
         extensions.insert("acyclic.model.metadata".to_owned(), metadata);
@@ -454,14 +459,6 @@ where
         )
         .await
     }
-}
-fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(domain);
-    hasher.update(&turn.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
 }
 
 #[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
