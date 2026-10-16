@@ -89,6 +89,7 @@ impl Case {
         )
         .await?
         .with_content_verifier(storage.content_verifier.clone());
+        let (prepared, history) = summary_context(&storage, &aggregate, reference, limits).await?;
         let SummaryFixture {
             storage,
             aggregate,
@@ -98,7 +99,7 @@ impl Case {
             stream_provider,
             limits,
             ..
-        } = summary_fork_fixture(storage, aggregate, reference, limits).await?;
+        } = summary_fork_fixture(storage, aggregate, prepared, history, limits).await?;
         let (task_preparation, _invocation) =
             sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728)
                 .await?;
@@ -295,19 +296,26 @@ async fn check_round_trip(input: &Input, case: &Case, fault: Fault) -> TestCaseR
     Ok(())
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn generated_capture_publication_and_authenticated_read(
-        text in prop::array::uniform5("[a-z0-9\\x00é🦀]{0,8}"),
-    ) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+#[test]
+fn generated_capture_publication_and_authenticated_read() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let config = ProptestConfig {
+        test_name: Some(concat!(
+            module_path!(),
+            "::generated_capture_publication_and_authenticated_read"
+        )),
+        ..ProptestConfig::with_cases(32)
+    };
+    proptest!(config, |(text in prop::array::uniform5("[a-z0-9\\x00é🦀]{0,8}"))| {
         let input = Input::new(text);
         runtime.block_on(async {
             let case = Case::new(&input).await.unwrap();
             check_round_trip(&input, &case, Fault::None).await
         })?;
-    }
+    });
 }
 
 fn detected(result: TestCaseResult, target: &str) {

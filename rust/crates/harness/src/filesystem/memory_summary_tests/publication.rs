@@ -76,7 +76,7 @@ async fn summary_parent_inputs(
 async fn summary_preparation(
     inputs: [&[u8]; 3],
     model: Arc<ScriptedModelProvider>,
-) -> Result<SummaryFixture> {
+) -> Result<(SummaryFixture, Context)> {
     let (storage, bundle, reference, limits) =
         summary_parent_inputs([inputs[0], inputs[1]], model.clone()).await?;
     let later = OperationId::new();
@@ -154,24 +154,29 @@ async fn summary_preparation(
     assert_eq!(retired.resident_after_sequence(), 6);
     assert!(retired.messages().is_empty());
 
-    summary_fork_fixture(storage, aggregate, reference, limits).await
+    let (prepared, history) = summary_context(&storage, &aggregate, reference, limits).await?;
+    let proof: crate::context::CompactionReference = crate::contract::json_from_slice(
+        &storage
+            .journal
+            .load(&prepared.checkpoint().compaction, None)?
+            .await?,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(proof.summary.is_some());
+    let source = prepared.context().clone();
+    let fixture = summary_fork_fixture(storage, aggregate, prepared, history, limits).await?;
+    Ok((fixture, source))
 }
 
-async fn summary_fork_fixture(
-    storage: MemoryHarnessStorage,
-    aggregate: StreamAggregate<MemoryStream>,
+async fn summary_context(
+    storage: &MemoryHarnessStorage,
+    aggregate: &StreamAggregate<MemoryStream>,
     reference: FileRef,
     limits: Limits,
-) -> Result<SummaryFixture> {
-    let agent = storage
-        .scope
-        .agent()
-        .ok_or_else(|| Error::Invalid("missing agent".into()))?;
-    let through = aggregate
-        .reducer()
-        .conversation()
-        .ok_or_else(|| Error::Invalid("missing conversation".into()))?
-        .logical_revision();
+) -> Result<(
+    crate::fork::PreparedSummaryFork,
+    HistoryReader<MemoryStream>,
+)> {
     let history = HistoryReader::new(
         &storage.stream,
         &storage.conversation,
@@ -197,15 +202,25 @@ async fn summary_fork_fixture(
         storage.content_verifier.as_ref(),
     )
     .await?;
-    let proof: crate::context::CompactionReference = crate::contract::json_from_slice(
-        &storage
-            .journal
-            .load(&prepared.checkpoint().compaction, None)?
-            .await?,
-    )
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(proof.summary.is_some());
-    let source = prepared.context().clone();
+    Ok((prepared, history))
+}
+
+async fn summary_fork_fixture(
+    storage: MemoryHarnessStorage,
+    aggregate: StreamAggregate<MemoryStream>,
+    prepared: crate::fork::PreparedSummaryFork,
+    history: HistoryReader<MemoryStream>,
+    limits: Limits,
+) -> Result<SummaryFixture> {
+    let agent = storage
+        .scope
+        .agent()
+        .ok_or_else(|| Error::Invalid("missing agent".into()))?;
+    let through = aggregate
+        .reducer()
+        .conversation()
+        .ok_or_else(|| Error::Invalid("missing conversation".into()))?
+        .logical_revision();
     let selection = prepared.selection().clone();
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(
@@ -345,7 +360,6 @@ async fn summary_fork_fixture(
         aggregate,
         preparer,
         request,
-        source,
         scope,
         stream_provider,
         child_private,
@@ -359,7 +373,6 @@ struct SummaryFixture {
     aggregate: StreamAggregate<MemoryStream>,
     preparer: FilesystemForkPreparer<MemoryAuthorityBackend, MemoryObjectBackend>,
     request: ForkRequest,
-    source: Context,
     scope: Scope,
     stream_provider: ProviderRef,
     child_private: VolumeRef,
@@ -377,18 +390,18 @@ async fn published_summary(
     Context,
     Limits,
 )> {
+    let (fixture, source) = summary_preparation(inputs, model).await?;
     let SummaryFixture {
         storage,
         mut aggregate,
         preparer,
         request,
-        source,
         scope,
         stream_provider,
         child_private,
         provider,
         limits,
-    } = summary_preparation(inputs, model).await?;
+    } = fixture;
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(
