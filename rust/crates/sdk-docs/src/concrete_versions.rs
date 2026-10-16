@@ -4,17 +4,17 @@ use std::collections::BTreeMap;
 #[cfg(not(acyclic_sdk_docs_loom))]
 pub use std::sync::Mutex;
 
-pub type Versions<K, S> = Mutex<BTreeMap<K, (S, String)>>;
+pub type Versions<K, S, T = String> = Mutex<BTreeMap<K, (S, T)>>;
 
 // Leaf lock: observation and the concrete executable probe acquire no other
 // SDK cache lock. Keep lookup, probe and publication in this one critical section.
-pub fn query<K: Ord, S: Eq, E>(
-    versions: &Versions<K, S>,
+pub fn query<K: Ord, S: Eq, T: Clone, E>(
+    versions: &Versions<K, S, T>,
     key: K,
     mut observe: impl FnMut() -> Result<S, E>,
-    probe: impl FnOnce() -> Result<String, E>,
+    probe: impl FnOnce() -> Result<T, E>,
     changed: impl FnOnce() -> E,
-) -> Result<String, E> {
+) -> Result<T, E> {
     let before = observe()?;
     let mut versions = versions.lock().unwrap();
     let value = match versions.get(&key) {
@@ -29,4 +29,5 @@ pub fn query<K: Ord, S: Eq, E>(
 }
 
 #[cfg(all(test, not(acyclic_sdk_docs_loom)))]
+#[path = "concrete_versions/tests.rs"]
 mod tests;

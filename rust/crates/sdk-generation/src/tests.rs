@@ -392,6 +392,26 @@ fn ambiguous_external_rustdoc_span_is_rejected() {
 }
 
 #[test]
+fn missing_owned_generated_source_is_restored_across_root_spellings() {
+    let root = test_root("restore-generated-span");
+    let bytes = b"pub struct Restored;\n";
+    write(&root, "target/one/wire.rs", bytes);
+    // Keep this ordinary spelling. materialize_generated_sources canonicalizes
+    // its root to a verbatim path on Windows before checking ownership.
+    let missing = root.join("target/producer/wire.rs");
+    let receipt = root.join("receipt.json");
+    fs::write(&receipt, serde_json::to_vec(&serde_json::json!({
+        "span": { "filename": missing.to_string_lossy() }
+    })).unwrap()).unwrap();
+    let sources = materialize_generated_sources(&root, &[receipt]).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(fs::read(&missing).unwrap(), bytes);
+    assert_eq!(sources[0].physical_path, missing.canonicalize().unwrap());
+    assert_eq!(sources[0].sha256, sha256_file(&missing).unwrap());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
     let root = test_root("restoration-boundary");
     for path in [

@@ -144,7 +144,7 @@ pub(super) fn normalize_generated_logical_path(path: &Path) -> Result<String, Er
 }
 
 pub(super) fn normalized_rustdoc_digest_bytes(
-    bytes: &[u8],
+    bytes: &std::rc::Rc<[u8]>,
     repository_root: &Path,
 ) -> Result<std::rc::Rc<[u8]>, Error> {
     crate::render_cache::normalized(bytes, repository_root, || {

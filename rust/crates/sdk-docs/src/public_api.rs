@@ -24,7 +24,7 @@ pub struct PublicItemSignature {
 
 pub fn extract(
     json_path: &Path,
-    raw: &[u8],
+    raw: &std::rc::Rc<[u8]>,
     krate: &Crate,
 ) -> Result<Vec<PublicItemSignature>, Error> {
     if krate.format_version != FORMAT_VERSION {
@@ -46,7 +46,7 @@ pub fn extract(
 
 fn extract_uncached(
     json_path: &Path,
-    raw: &[u8],
+    raw: &std::rc::Rc<[u8]>,
     krate: &Crate,
 ) -> Result<Vec<PublicItemSignature>, Error> {
     let value = (*crate::render_cache::json(raw)?).clone();

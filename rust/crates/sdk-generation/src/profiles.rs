@@ -173,6 +173,120 @@ pub(super) fn execute_historical_profiles(
     cargo: &Path,
     plan: &historical::Plan,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
+    // Default receipts use Cargo target names. Preserve sequential behavior
+    // when owners collide, including Windows case aliases.
+    let disjoint = distinct_receipt_names(
+        plan.released_packages
+            .iter()
+            .filter_map(|release| {
+                metadata
+                    .packages
+                    .iter()
+                    .find(|package| release.package == package.name.as_ref())
+            })
+            .flat_map(historical_targets)
+            .map(|(target, _)| target.name.as_str()),
+    );
+    let executed = if plan.released_packages.len() < 2 || !disjoint {
+        compile_historical_profiles(root, output, rustdoc_dir, metadata, cargo, plan)?
+    } else {
+        let jobs = plan
+            .released_packages
+            .iter()
+            .map(|release| {
+                let mut owner = plan.clone();
+                owner.released_packages = vec![release.clone()];
+                owner
+            })
+            .collect();
+        let (root, output, rustdoc_dir, cargo) = (
+            root.to_owned(),
+            output.to_owned(),
+            rustdoc_dir.to_owned(),
+            cargo.to_owned(),
+        );
+        let metadata = metadata.clone();
+        let environment = sdk_docs::command("cargo");
+        crate::parallel::map(jobs, move |owner| {
+            sdk_docs::with_command_environment(&environment, || {
+                sdk_docs::with_rustdoc_cache(|| {
+                    compile_historical_profiles(
+                        &root,
+                        &output,
+                        &rustdoc_dir,
+                        &metadata,
+                        &cargo,
+                        &owner,
+                    )
+                })
+            })
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect()
+    };
+    // Retained aliases form one shared inventory, so publish them serially
+    // after every compiler has finished and before admitting any manifest.
+    for profile in &executed {
+        retain_profile_generated_sources(root, &profile.receipt)?;
+        fs::write(
+            profile.receipt.with_extension("source.sha256"),
+            source_sha256,
+        )
+        .map_err(io_error)?;
+    }
+    Ok(executed)
+}
+
+fn distinct_receipt_names<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut seen = BTreeSet::new();
+    names
+        .into_iter()
+        .all(|name| seen.insert(name.replace('-', "_").to_ascii_lowercase()))
+}
+
+fn historical_targets(
+    package: &Package,
+) -> Vec<(
+    &cargo_metadata::Target,
+    sdk_docs::rustdoc_profiles::RustdocTarget,
+)> {
+    use sdk_docs::rustdoc_profiles::RustdocTarget;
+    let library = package.targets.iter().find(|target| {
+        target.kind.iter().any(|kind| {
+            matches!(
+                kind,
+                TargetKind::ProcMacro
+                    | TargetKind::Lib
+                    | TargetKind::RLib
+                    | TargetKind::CDyLib
+                    | TargetKind::StaticLib
+                    | TargetKind::DyLib
+            )
+        })
+    });
+    if let Some(target) = library {
+        vec![(target, RustdocTarget::Library)]
+    } else {
+        package
+            .targets
+            .iter()
+            .filter(|target| target.kind.contains(&TargetKind::Bin))
+            .map(|target| (target, RustdocTarget::Binary(target.name.clone())))
+            .collect()
+    }
+}
+
+fn compile_historical_profiles(
+    root: &Path,
+    output: &Path,
+    rustdoc_dir: &Path,
+    metadata: &Metadata,
+    cargo: &Path,
+    plan: &historical::Plan,
+) -> Result<Vec<ExecutedProfile>, CliError> {
     use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
@@ -188,29 +302,7 @@ pub(super) fn execute_historical_profiles(
             .iter()
             .find(|package| package.name.as_ref() == release.package)
             .ok_or_else(|| CliError("released Cargo owner is absent".into()))?;
-        let library = package.targets.iter().find(|target| {
-            target.kind.iter().any(|kind| {
-                matches!(
-                    kind,
-                    TargetKind::ProcMacro
-                        | TargetKind::Lib
-                        | TargetKind::RLib
-                        | TargetKind::CDyLib
-                        | TargetKind::StaticLib
-                        | TargetKind::DyLib
-                )
-            })
-        });
-        let targets = if let Some(target) = library {
-            vec![(target, RustdocTarget::Library)]
-        } else {
-            package
-                .targets
-                .iter()
-                .filter(|target| target.kind.contains(&TargetKind::Bin))
-                .map(|target| (target, RustdocTarget::Binary(target.name.clone())))
-                .collect()
-        };
+        let targets = historical_targets(package);
         if targets.is_empty() {
             return Err(CliError(
                 "released Cargo package has no native Rustdoc target".into(),
@@ -278,7 +370,10 @@ pub(super) fn execute_historical_profiles(
                         execution_metadata,
                         &spec,
                         &available,
-                        output.join(".profile-build"),
+                        output.join(".profile-build").join(
+                            crate::sha256_bytes(release.package.as_bytes())
+                                .trim_start_matches("sha256:"),
+                        ),
                         &receipt,
                         CargoExecutionContext {
                             cargo_path: Some(cargo),
@@ -295,9 +390,6 @@ pub(super) fn execute_historical_profiles(
                         compiled.insert(key, receipt.clone());
                     }
                 }
-                retain_profile_generated_sources(root, &receipt)?;
-                fs::write(receipt.with_extension("source.sha256"), source_sha256)
-                    .map_err(io_error)?;
                 executed.push(ExecutedProfile {
                     target: rustdoc_target.clone(),
                     receipt,

@@ -8,11 +8,43 @@ use std::{
 
 #[derive(Default)]
 struct Cache {
-    rendered: RefCell<BTreeMap<Vec<u8>, Vec<PublicItemSignature>>>,
+    producers: RefCell<
+        BTreeMap<
+            BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+            Rc<crate::rustdoc_profiles::RustdocProducer>,
+        >,
+    >,
+    rendered: RefCell<BTreeMap<Rc<[u8]>, Vec<PublicItemSignature>>>,
     files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
     parsed: RefCell<BTreeMap<Rc<[u8]>, Rc<rustdoc_types::Crate>>>,
     json: RefCell<BTreeMap<Rc<[u8]>, Rc<serde_json::Value>>>,
     normalized: RefCell<BTreeMap<PathBuf, BTreeMap<Rc<[u8]>, Rc<[u8]>>>>,
+}
+
+pub(crate) fn producer(
+    resolve: impl FnOnce() -> Result<
+        crate::rustdoc_profiles::RustdocProducer,
+        crate::rustdoc_profiles::ProfileError,
+    >,
+) -> Result<Rc<crate::rustdoc_profiles::RustdocProducer>, crate::rustdoc_profiles::ProfileError> {
+    let environment = crate::child::command_environment();
+    if let Some(producer) = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .and_then(|cache| cache.producers.borrow().get(&environment).cloned())
+    }) {
+        return Ok(producer);
+    }
+    let producer = Rc::new(resolve()?);
+    CACHE.with_borrow(|cache| {
+        if let Some(cache) = cache {
+            cache
+                .producers
+                .borrow_mut()
+                .insert(environment, Rc::clone(&producer));
+        }
+    });
+    Ok(producer)
 }
 thread_local! {
     // Every entry belongs to one calling operation; nested operations restore it.
@@ -21,7 +53,7 @@ thread_local! {
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Reuse immutable Rustdoc reads, decoding and rendering within one operation.
+/// Reuse Rustdoc inputs and tool-selection snapshots within one operation.
 pub fn with_rustdoc_cache<T>(operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<Cache>);
     impl Drop for Restore {
@@ -66,11 +98,11 @@ pub fn read_rustdoc_json(path: &Path) -> Result<Rc<serde_json::Value>, Error> {
     Ok(json(&read_rustdoc(path)?)?)
 }
 
-pub(crate) fn json(raw: &[u8]) -> Result<Rc<serde_json::Value>, serde_json::Error> {
+pub(crate) fn json(raw: &Rc<[u8]>) -> Result<Rc<serde_json::Value>, serde_json::Error> {
     if let Some(value) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| cache.json.borrow().get(raw).cloned())
+            .and_then(|cache| cache.json.borrow().get(raw.as_ref()).cloned())
     }) {
         return Ok(value);
     }
@@ -80,14 +112,14 @@ pub(crate) fn json(raw: &[u8]) -> Result<Rc<serde_json::Value>, serde_json::Erro
             cache
                 .json
                 .borrow_mut()
-                .insert(Rc::from(raw), Rc::clone(&value));
+                .insert(Rc::clone(raw), Rc::clone(&value));
         }
     });
     Ok(value)
 }
 
 pub(crate) fn normalized(
-    raw: &[u8],
+    raw: &Rc<[u8]>,
     root: &Path,
     normalize: impl FnOnce() -> Result<Vec<u8>, Error>,
 ) -> Result<Rc<[u8]>, Error> {
@@ -97,7 +129,7 @@ pub(crate) fn normalized(
                 .normalized
                 .borrow()
                 .get(root)
-                .and_then(|values| values.get(raw))
+                .and_then(|values| values.get(raw.as_ref()))
                 .cloned()
         })
     }) {
@@ -111,7 +143,7 @@ pub(crate) fn normalized(
                 .borrow_mut()
                 .entry(root.to_owned())
                 .or_default()
-                .insert(Rc::from(raw), Rc::clone(&value));
+                .insert(Rc::clone(raw), Rc::clone(&value));
         }
     });
     Ok(value)
@@ -135,13 +167,13 @@ pub(crate) fn decode(raw: Rc<[u8]>) -> Result<Rc<rustdoc_types::Crate>, serde_js
 }
 
 pub(crate) fn extract(
-    bytes: &[u8],
+    bytes: &Rc<[u8]>,
     render: impl FnOnce() -> Result<Vec<PublicItemSignature>, Error>,
 ) -> Result<Vec<PublicItemSignature>, Error> {
     if let Some(items) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| cache.rendered.borrow().get(bytes).cloned())
+            .and_then(|cache| cache.rendered.borrow().get(bytes.as_ref()).cloned())
     }) {
         return Ok(items);
     }
@@ -151,7 +183,7 @@ pub(crate) fn extract(
             cache
                 .rendered
                 .borrow_mut()
-                .insert(bytes.to_vec(), items.clone());
+                .insert(Rc::clone(bytes), items.clone());
         }
     });
     Ok(items)
@@ -174,9 +206,9 @@ mod tests {
     proptest! {
         #[test]
         fn normalized_reuse_binds_every_byte_and_repository_root(leaf in "[a-z]{1,12}", version in ".{0,16}") {
-            let raw = serde_json::to_vec(&serde_json::json!({
+            let raw: Rc<[u8]> = serde_json::to_vec(&serde_json::json!({
                 "filename": format!("/checkout/src/{leaf}.rs"), "version": version,
-            })).unwrap();
+            })).unwrap().into();
             let root = Path::new("/checkout");
             let fresh = crate::normalized_rustdoc_digest_bytes(&raw, root).unwrap();
             with_rustdoc_cache(|| {
@@ -187,21 +219,27 @@ mod tests {
                 let other_root = crate::normalized_rustdoc_digest_bytes(&raw, Path::new("/different")).unwrap();
                 prop_assert_ne!(&*first, &*other_root);
                 let changed = serde_json::to_vec(&serde_json::json!({"filename": "/checkout/other.rs"})).unwrap();
-                prop_assert_ne!(&*first, &*crate::normalized_rustdoc_digest_bytes(&changed, root).unwrap());
+                prop_assert_ne!(&*first, &*crate::normalized_rustdoc_digest_bytes(&changed.into(), root).unwrap());
                 Ok(())
             })?;
         }
         #[test]
         fn json_reuse_preserves_all_fields_and_round_trips(values in prop::collection::btree_map(".{0,12}", ".{0,24}", 0..12)) {
             with_rustdoc_cache(|| {
-                let bytes = serde_json::to_vec(&values).unwrap();
+                let bytes: Rc<[u8]> = serde_json::to_vec(&values).unwrap().into();
                 let first = json(&bytes).unwrap();
+                let _ = crate::normalized_rustdoc_digest_bytes(&bytes, Path::new("/checkout")).unwrap();
+                CACHE.with_borrow(|cache| {
+                    let cache = cache.as_ref().unwrap();
+                    assert!(Rc::ptr_eq(cache.json.borrow().first_key_value().unwrap().0, &bytes));
+                    assert!(Rc::ptr_eq(cache.normalized.borrow()[Path::new("/checkout")].first_key_value().unwrap().0, &bytes));
+                });
                 prop_assert!(Rc::ptr_eq(&first, &json(&bytes).unwrap()));
                 prop_assert_eq!(&*first, &serde_json::to_value(&values).unwrap());
-                prop_assert_eq!(&*json(&serde_json::to_vec(&*first).unwrap()).unwrap(), &*first);
+                prop_assert_eq!(&*json(&serde_json::to_vec(&*first).unwrap().into()).unwrap(), &*first);
                 let changed = serde_json::to_vec(&(values, "different JSON shape")).unwrap();
-                prop_assert_ne!(&*first, &*json(&changed).unwrap());
-                prop_assert!(json(b"truncated {").is_err(), "truncated JSON must fail");
+                prop_assert_ne!(&*first, &*json(&changed.into()).unwrap());
+                prop_assert!(json(&Rc::from(&b"truncated {"[..])).is_err(), "truncated JSON must fail");
                 Ok(())
             })?;
         }
@@ -232,7 +270,7 @@ mod tests {
                 inputs.extend([vec![tag, 0], vec![tag, 1]]);
                 let unique = inputs.iter().collect::<std::collections::BTreeSet<_>>().len();
                 for bytes in inputs.iter().chain(&inputs) {
-                    let actual = extract(bytes, || { calls += 1; Ok(item(bytes)) }).unwrap();
+                    let actual = extract(&Rc::from(bytes.as_slice()), || { calls += 1; Ok(item(bytes)) }).unwrap();
                     prop_assert_eq!(actual, item(bytes));
                 }
                 prop_assert_eq!(calls, unique);
@@ -277,14 +315,14 @@ mod tests {
     #[test]
     fn nested_and_unwinding_operations_restore_the_outer_cache() {
         with_rustdoc_cache(|| {
-            extract(b"outer", || Ok(item(b"outer"))).unwrap();
+            extract(&Rc::from(&b"outer"[..]), || Ok(item(b"outer"))).unwrap();
             assert!(std::panic::catch_unwind(|| with_rustdoc_cache(|| {
-                extract(b"inner", || Ok(item(b"inner"))).unwrap();
+                extract(&Rc::from(&b"inner"[..]), || Ok(item(b"inner"))).unwrap();
                 panic!("negative control");
             }))
             .is_err());
             assert_eq!(
-                extract(b"outer", || panic!("outer result was lost")).unwrap(),
+                extract(&Rc::from(&b"outer"[..]), || panic!("outer result was lost")).unwrap(),
                 item(b"outer")
             );
             assert_eq!(

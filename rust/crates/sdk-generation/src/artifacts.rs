@@ -227,7 +227,9 @@ pub fn materialize_generated_sources(
         }
         if !physical.is_file() {
             validate_restore_path(root, rustdoc_files, &physical)?;
-            if !physical.starts_with(root) && !retained_aliases.contains_key(&filename) {
+            if !comparable_path(&physical).starts_with(comparable_path(root))
+                && !retained_aliases.contains_key(&filename)
+            {
                 return Err(CliError(format!(
                     "external Rustdoc restoration requires a captured source alias: {filename}"
                 )));
@@ -344,26 +346,9 @@ pub(super) fn validate_restore_path(
             }
         }
     }
-    let comparable = |path: &Path| -> PathBuf {
-        #[cfg(windows)]
-        {
-            let text = path
-                .to_string_lossy()
-                .replace('/', "\\")
-                .to_ascii_lowercase();
-            let text = if let Some(unc) = text.strip_prefix("\\\\?\\unc\\") {
-                format!("\\\\{unc}")
-            } else {
-                text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
-            };
-            PathBuf::from(text)
-        }
-        #[cfg(not(windows))]
-        path.to_path_buf()
-    };
     if !owned
         .iter()
-        .any(|directory| comparable(path).starts_with(comparable(directory)))
+        .any(|directory| comparable_path(path).starts_with(comparable_path(directory)))
     {
         return Err(CliError(format!(
             "Rustdoc restoration is outside owned build directories: {}",
@@ -391,6 +376,24 @@ pub(super) fn validate_restore_path(
         }
     }
     Ok(())
+}
+
+fn comparable_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let text = if let Some(unc) = text.strip_prefix("\\\\?\\unc\\") {
+            format!("\\\\{unc}")
+        } else {
+            text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
+        };
+        PathBuf::from(text)
+    }
+    #[cfg(not(windows))]
+    path.to_path_buf()
 }
 
 pub(super) fn collect_span_filenames(value: &serde_json::Value, output: &mut BTreeSet<String>) {

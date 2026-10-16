@@ -22,6 +22,7 @@ mod release_manifest;
 use generation::*;
 mod drift_check;
 use drift_check::*;
+mod parallel;
 mod profiles;
 use profiles::*;
 mod toolchains;
@@ -30,6 +31,7 @@ mod artifacts;
 mod cache_record;
 mod file_cache;
 mod shared_cache;
+#[path = "../../sdk-docs/src/concrete_versions.rs"]
 mod concrete_versions;
 pub use artifacts::materialize_generated_sources;
 use artifacts::*;

@@ -63,24 +63,28 @@ pub fn components(path: &str, windows: bool) -> Option<Vec<String>> {
 }
 
 pub fn stable_filename(filename: &str, root: &str) -> String {
-    let windows = [filename, root].iter().any(|value| {
-        value.contains('\\') || value.as_bytes().get(1) == Some(&b':') || value.starts_with("//")
-    });
+    // The checkout selects the path flavor. A backslash is a legal POSIX
+    // filename character, even when a receipt is read on a Windows host.
+    let windows =
+        root.as_bytes().get(1) == Some(&b':') || root.starts_with("\\\\") || root.starts_with("//");
     let Some(parts) = components(filename, windows) else {
-        return filename.replace('\\', "/");
+        return filename.to_owned();
     };
     if matches!(parts[0].as_str(), "relative" | "drive-relative") {
-        return filename.replace('\\', "/");
+        return filename.to_owned();
     }
-    if let Some(rebased) = rebase(filename, root, "/<root>", windows) {
-        let rebased = rebased.replace('\\', "/");
-        return format!(
-            "<root>/{}",
-            rebased
-                .strip_prefix("/<root>")
-                .unwrap()
-                .trim_start_matches('/')
-        );
+    if let Some(prefix) = components(root, windows) {
+        if parts.len() >= prefix.len()
+            && parts.iter().zip(&prefix).all(|(a, b)| {
+                if windows {
+                    a.eq_ignore_ascii_case(b)
+                } else {
+                    a == b
+                }
+            })
+        {
+            return format!("<root>/{}", parts[prefix.len()..].join("/"));
+        }
     }
     format!(
         "<external>/{}",
@@ -112,9 +116,15 @@ pub fn rebase(path: &str, old: &str, new: &str, windows: bool) -> Option<String>
     {
         return None;
     }
-    let mut result = std::path::PathBuf::from(new);
-    for component in &parts[prefix.len()..] {
-        result.push(component);
-    }
-    Some(result.to_str()?.to_owned())
+    let destination = if windows {
+        new.replace('\\', "/")
+    } else {
+        new.to_owned()
+    };
+    let suffix = &parts[prefix.len()..];
+    Some(if suffix.is_empty() {
+        destination
+    } else {
+        format!("{}/{}", destination.trim_end_matches('/'), suffix.join("/"))
+    })
 }

@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod child;
+mod concrete_versions;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
 mod path_identity;

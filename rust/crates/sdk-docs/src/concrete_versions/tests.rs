@@ -29,7 +29,7 @@ proptest! {
 
 #[test]
 fn changed_identity_cannot_publish_a_version_under_the_old_identity() {
-    let versions = Mutex::new(BTreeMap::new());
+    let versions: Versions<i32, i32> = Mutex::new(BTreeMap::new());
     let stamp = Cell::new(0);
     assert_eq!(
         query(
@@ -60,7 +60,7 @@ fn changed_identity_cannot_publish_a_version_under_the_old_identity() {
 
 #[test]
 fn a_cache_hit_is_fenced_on_the_observation_after_lookup() {
-    let versions = Mutex::new(BTreeMap::from([(0, (0, "original".into()))]));
+    let versions: Versions<i32, i32> = Mutex::new(BTreeMap::from([(0, (0, "original".into()))]));
     let calls = Cell::new(0);
     let result = query(
         &versions,
