@@ -20,7 +20,7 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 pub struct CodexLogin {
     path: PathBuf,
     account: OnceLock<Option<String>>,
-    refresh: crate::sync::AsyncMutex<()>,
+    refresh: crate::sync::Arc<crate::sync::AsyncMutex<()>>,
 }
 
 impl CodexLogin {
@@ -29,12 +29,16 @@ impl CodexLogin {
         Self {
             path,
             account: OnceLock::new(),
-            refresh: crate::sync::AsyncMutex::new(()),
+            refresh: crate::sync::Arc::new(crate::sync::AsyncMutex::new(())),
         }
     }
 
     pub(crate) fn fresh(&self) -> Self {
-        Self::from_path(self.path.clone())
+        Self {
+            path: self.path.clone(),
+            account: OnceLock::new(),
+            refresh: self.refresh.clone(),
+        }
     }
 
     /// Finds `$CODEX_HOME/auth.json` or the current user's `~/.codex/auth.json`.
@@ -228,11 +232,9 @@ fn persist_with(
     let parent = path
         .parent()
         .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
-    // Stage beside CODEX_HOME, leaving its directory containing only auth.json.
-    let staging = parent
-        .parent()
-        .ok_or_else(|| invalid("Codex auth directory needs a parent"))?;
-    let mut file = tempfile::NamedTempFile::new_in(staging)
+    // A temporary sibling makes the final rename atomic even when CODEX_HOME
+    // is a mount point. It is removed on every discarded or failed update.
+    let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| invalid("cannot create Codex credential update"))?;
     serde_json::to_writer(file.as_file_mut(), &auth)
         .map_err(|_| invalid("cannot encode Codex credential update"))?;

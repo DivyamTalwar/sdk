@@ -104,9 +104,11 @@ async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> R
 async fn shared_login_serializes_refresh_and_reloads_the_winner() -> Result<()> {
     let (_root, first, transport) = fixture(&jwt(0), 200)?;
     let transport = Arc::new(transport);
+    let second = first.fresh();
+    assert!(crate::sync::Arc::ptr_eq(&first.refresh, &second.refresh));
     let (left, right) = futures::join!(
         first.bearer(transport.as_ref(), None),
-        first.bearer(transport.as_ref(), None)
+        second.bearer(transport.as_ref(), None)
     );
     assert_eq!(left?, right?);
     assert_eq!(

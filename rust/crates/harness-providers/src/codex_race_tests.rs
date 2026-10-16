@@ -16,6 +16,13 @@ fn cli_write_after_comparison_before_persist_is_adopted() -> Result<()> {
         login.check_account(&auth("original"))?;
         let adopted = persist_with(&path, &original, auth("provider-access"), || {
             // Exact former race: the first comparison has already succeeded.
+            let staged: Vec<_> = std::fs::read_dir(root.path())
+                .expect("fixture directory")
+                .map(|entry| entry.expect("fixture entry").path())
+                .filter(|entry| entry != &path)
+                .collect();
+            assert_eq!(staged.len(), 1, "stage inside the auth directory");
+            assert_eq!(staged[0].parent(), path.parent());
             std::fs::write(&path, &cli_bytes).map_err(|_| invalid("fixture write"))
         })?;
         assert_eq!(adopted, cli);
@@ -51,8 +58,12 @@ impl HttpTransport for RacingCli {
                 // Publish a complete credential document while independent readers run.
                 let mut update = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())
                     .map_err(|_| invalid("fixture staging"))?;
-                update.write_all(&self.cli_bytes).map_err(|_| invalid("fixture write"))?;
-                update.persist(&self.path).map_err(|_| invalid("fixture replace"))?;
+                update
+                    .write_all(&self.cli_bytes)
+                    .map_err(|_| invalid("fixture write"))?;
+                update
+                    .persist(&self.path)
+                    .map_err(|_| invalid("fixture replace"))?;
             }
             let (status, value) = self
                 .replies
