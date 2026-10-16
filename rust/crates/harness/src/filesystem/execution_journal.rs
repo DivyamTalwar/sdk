@@ -42,6 +42,8 @@ mod selected;
 mod summary;
 mod summary_authorization;
 #[cfg(test)]
+mod summary_authorization_tests;
+#[cfg(test)]
 mod tests;
 mod traits;
 use selected::JournalSelectedResolver;

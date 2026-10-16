@@ -28,6 +28,24 @@ where
             else {
                 return Ok(false);
             };
+            if self.execution.is_some_and(|bound| bound.0 != operation) {
+                return Ok(false);
+            }
+            if let Some((owner, bound)) = &self.owner {
+                let Some((execution, turn)) = self.execution else {
+                    return Ok(false);
+                };
+                if *bound != execution
+                    || execution
+                        != super::super::task_runtime::execution_operation(
+                            owner.task_id(),
+                            turn,
+                            io,
+                        )?
+                {
+                    return Ok(false);
+                }
+            }
             crate::executor::with_history_io(io, |work| {
                 ContentGrant::authorize_volume(
                     &self.verifier,
@@ -46,17 +64,6 @@ where
             let path_hold = io
                 .map(|io| io.guard_owned((retry.as_str().len() + path.capacity()) as u64))
                 .transpose()?;
-            let workspace = super::super::fork_preparer_io::content_workspace(
-                &self.host.provider,
-                &self.volume,
-                io,
-            )?;
-            let absolute = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{path}"), work)
-            })?;
-            let absolute_hold = io
-                .map(|io| io.guard_owned(absolute.capacity() as u64))
-                .transpose()?;
             if let Some((owner, _)) = &self.owner {
                 owner
                     .verify_read_access(
@@ -67,19 +74,25 @@ where
                     )
                     .await?;
             }
-            // This protected provenance is written only by publish_summary. Query
-            // it directly, once; do not grant a directory or rescan model history.
-            let bytes = match self
+            // Only the original harness upload receipt authenticates this
+            // provenance. A file at the same mutable Head path is insufficient.
+            let Some((provenance, bytes)) = self
                 .host
-                .read(&workspace, None, &absolute, self.maximum_payload_bytes, io)
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(error) if super::super::fork_preparer::journal_absent(&error) => {
-                    return Ok(false);
-                }
-                Err(error) => return Err(error),
+                .content_for_operation_record_io(
+                    &self.volume,
+                    &retry,
+                    Some(&path),
+                    self.maximum_payload_bytes,
+                    Some(InternalContentClass::Execution),
+                    io,
+                )
+                .await?
+            else {
+                return Ok(false);
             };
+            if provenance.descriptor().media_type() != "application/json" {
+                return Ok(false);
+            }
             let allowed = match io {
                 Some(io) => {
                     let (summary, hold) = io.decode(
@@ -87,9 +100,7 @@ where
                         &bytes,
                         crate::wire::ErrorCode::Invalid,
                     )?;
-                    let allowed = summary.operation_id == operation
-                        && summary.source_messages > 0
-                        && summary.output == *file;
+                    let allowed = payload_matches::<true>(&summary, operation, file);
                     drop(summary);
                     drop(hold);
                     allowed
@@ -98,12 +109,11 @@ where
                     let summary: crate::context::ContextSummary =
                         crate::contract::json_from_slice(&bytes)
                             .map_err(|error| Error::Storage(error.to_string()))?;
-                    summary.operation_id == operation
-                        && summary.source_messages > 0
-                        && summary.output == *file
+                    payload_matches::<true>(&summary, operation, file)
                 }
             };
             drop(bytes);
+            drop(provenance);
             if let Some((owner, _)) = &self.owner {
                 owner
                     .verify_read_access(
@@ -114,8 +124,6 @@ where
                     )
                     .await?;
             }
-            drop(absolute);
-            drop(absolute_hold);
             drop(retry);
             drop(path);
             drop(path_hold);
@@ -127,4 +135,16 @@ where
         PreparationIo::release_since(io, Some(before))?;
         result
     }
+}
+
+// The test-only false instantiation is an assertion-deletion control over the
+// same predicate; live authorization always checks the complete output ref.
+pub(super) fn payload_matches<const CHECK_OUTPUT: bool>(
+    summary: &crate::context::ContextSummary,
+    operation: OperationId,
+    file: &FileRef,
+) -> bool {
+    summary.operation_id == operation
+        && summary.source_messages > 0
+        && (!CHECK_OUTPUT || summary.output == *file)
 }

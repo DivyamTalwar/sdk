@@ -82,7 +82,7 @@ where
                         work,
                     )
                 })?;
-                let file = self
+                let (file, bytes) = self
                     .host
                     .content_for_operation_record_io(
                         &self.volume,
@@ -100,6 +100,9 @@ where
                             "original staged payload was not published",
                         )
                     })?;
+                let hold = io.guard_bytes(&bytes)?;
+                drop(bytes);
+                drop(hold);
                 owner
                     .verify_read_access(&mut Some(
                         &mut crate::filesystem::PreparationIo::from_native_work(work)
