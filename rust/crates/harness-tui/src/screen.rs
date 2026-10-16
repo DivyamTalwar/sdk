@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::Line,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 /// Borrowed presentation of followed files and client views. The caller owns
@@ -24,8 +24,6 @@ pub struct Screen<'a> {
     pub plans: &'a [Line<'a>],
     /// Notification/feedback rows from the followed attention files.
     pub notifications: &'a [Line<'a>],
-    /// Completion rows in display order; selected styling comes from the widget.
-    pub completions: &'a [Line<'a>],
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -128,20 +126,11 @@ impl Screen<'_> {
             remaining.height,
         );
         remaining.width -= side_width;
-        let popup_height = self
-            .completions
-            .len()
-            .min(12)
-            .min(usize::from(prompt.y - area.y)) as u16;
-        let mut completions = Rect::new(
-            prompt.x,
-            prompt.y - popup_height,
-            prompt.width.min(60),
-            popup_height,
-        );
-        if input.completion.active(&input.editor) {
-            completions = CompletionPopup::new(&input.completion, &input.editor).area(prompt, area);
-        }
+        let completions = if input.completion.active(&input.editor) {
+            CompletionPopup::new(&input.completion, &input.editor).area(prompt, area)
+        } else {
+            Rect::new(prompt.x, prompt.y, 0, 0)
+        };
         ScreenAreas {
             header,
             transcript: remaining,
@@ -197,9 +186,6 @@ impl Screen<'_> {
                 CompletionPopup::new(&input.completion, &input.editor),
                 areas.completions,
             );
-        } else if !self.completions.is_empty() {
-            frame.render_widget(Clear, areas.completions);
-            rows(frame, self.completions, areas.completions, 0);
         }
         areas
     }

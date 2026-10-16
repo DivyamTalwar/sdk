@@ -63,12 +63,12 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
 #[test]
 fn completion_overlays_above_prompt_and_resize_preserves_input()
 -> Result<(), Box<dyn std::error::Error>> {
-    let completions = [Line::from("/help"), Line::from("/theme")];
-    let screen = Screen {
-        completions: &completions,
-        ..Screen::default()
-    };
-    let input = PromptInput::new(Editor::new("界\nsecond"));
+    let screen = Screen::default();
+    let mut input = PromptInput::new(Editor::new("界\n@sec"));
+    input
+        .completion
+        .set_file("workspace/second", Some(b"source"))?;
+    input.refresh_completions();
     let mut viewport = Viewport::default();
     let mut terminal = Terminal::new(TestBackend::new(100, 20))?;
     terminal.draw(|frame| {
@@ -76,14 +76,14 @@ fn completion_overlays_above_prompt_and_resize_preserves_input()
         assert_eq!(areas.completions.bottom(), areas.prompt.y);
         assert_eq!(areas.completions.width, 60);
     })?;
-    assert!(visible(&terminal).contains("/help"));
+    assert!(visible(&terminal).contains("Completions"));
     terminal.backend_mut().resize(20, 10);
     terminal.resize(Rect::new(0, 0, 20, 10))?;
     terminal.draw(|frame| {
         screen.render(frame, &input, &mut viewport, 0, 1000);
     })?;
     assert!(visible(&terminal).contains("second"));
-    assert_eq!(input.editor.text(), "界\nsecond");
+    assert_eq!(input.editor.text(), "界\n@sec");
     Ok(())
 }
 
@@ -94,8 +94,10 @@ proptest! {
     #[test]
     fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100) {
         let rows = vec![Line::from("row"); count];
-        let screen = Screen { transcript: &rows, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, completions: &rows, ..Screen::default() };
-        let input = PromptInput::new(Editor::new(&"line\n".repeat(count)));
+        let screen = Screen { transcript: &rows, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, ..Screen::default() };
+        let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
+        input.completion.set_file("workspace/row", Some(b"source")).unwrap();
+        input.refresh_completions();
         let outer = Rect::new(x, y, width, height);
         let areas = screen.areas(outer, &input);
         let scroll = screen.tail_scroll(outer, &input);
