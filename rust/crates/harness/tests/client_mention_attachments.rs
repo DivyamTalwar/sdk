@@ -50,11 +50,12 @@ fn conflicting_metadata_for_one_pinned_identity_is_rejected() {
 
 proptest::proptest! {
     // Property: attach each pinned (volume,path,version) exactly once, in first
-    // mention order; preserve prompt text and the ordinary model-input codec.
+    // mention order; preserve prompt text and the model-input codec, and reject
+    // empty input when it contains no attachment.
     #[test]
     fn attachment_projection_preserves_pinned_identity_order_and_roundtrips(
         identities in proptest::collection::vec((0u8..8, 0u8..4, 0u8..4), 0..64),
-        prefix in "[a-zA-Z ]{1,32}",
+        prefix in "[a-zA-Z ]{0,32}",
     ) {
         let mut text = prefix;
         let mut mentions = Vec::new();
@@ -72,7 +73,12 @@ proptest::proptest! {
             }
         }
         let original = text.clone();
-        let content = CommandResolution::Prompt { text, source: None, mentions }.into_model_input().unwrap();
+        let content = CommandResolution::Prompt { text, source: None, mentions }.into_model_input();
+        if original.is_empty() {
+            proptest::prop_assert!(matches!(content, Err(acyclic_harness::Error::Invalid(_))));
+            return Ok(());
+        }
+        let content = content.unwrap();
         match &content {
             ModelContent::Text(text) => {
                 proptest::prop_assert!(expected.is_empty());
