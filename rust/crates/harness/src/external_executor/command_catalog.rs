@@ -17,9 +17,9 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
         ("acyclic_receive", "Receive the first mailbox file after the acknowledged sequence", json!({
             "after":{"type":"integer","minimum":0}
         }), vec!["after"]),
-        ("acyclic_wait", "Wait for a direct child admitted by an earlier command", json!({
-            "admission_operation":operation
-        }), vec!["admission_operation"]),
+        ("acyclic_wait", "Wait for an admitted direct child by its returned task ID", json!({
+            "child":operation
+        }), vec!["child"]),
         ("acyclic_cancel", "Cancel a direct child and its subtree under the caller's fence", json!({
             "child":operation
         }), vec!["child"]),

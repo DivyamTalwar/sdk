@@ -62,7 +62,7 @@ async fn all_hosts_use_stock_child_and_mail_commands_through_request_files() -> 
             assert_eq!(inspected["Succeeded"]["admission"]["parent"], attach.task_id().to_string());
             assert_eq!(inspected["Succeeded"]["outcome"], json!({"Succeeded":null}));
             let waited = call(&fixture, &folder, host, "wait", "acyclic_wait",
-                json!({"admission_operation":spawn.operation_id})).await?;
+                json!({"child":child})).await?;
             assert_eq!(waited, json!({"Succeeded":null}));
             assert_eq!(spawn.send(&fixture.requests, &fixture.results, folder.clone()).await.map_err(storage)?, spawned,
                 "retry reads the original child without a new request append");

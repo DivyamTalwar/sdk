@@ -35,8 +35,8 @@ impl ExternalRequest {
                 canonical::<MailReceiveTaskCommand>(arguments)?,
             ),
             "acyclic_wait" => (
-                TASK_OBSERVE_COMMAND_KIND,
-                canonical::<TaskObserveCommand>(arguments)?,
+                TASK_JOIN_COMMAND_KIND,
+                canonical::<TaskJoinCommand>(arguments)?,
             ),
             "acyclic_cancel" => (
                 TASK_CANCEL_COMMAND_KIND,

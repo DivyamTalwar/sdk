@@ -14,11 +14,10 @@ proptest! {
         choice in 0usize..5,
         input in "[a-z]{0,32}",
     ) {
-        let operation = crate::OperationId::from_bytes(id);
         let (name, arguments, kind) = match choice {
             0 => ("acyclic_spawn", json!({"name":"acyclic.command_session","version":"1","input":input}), TASK_ADMIT_COMMAND_KIND),
             1 => ("acyclic_receive", json!({"after":sequence}), MAIL_RECEIVE_TASK_COMMAND_KIND),
-            2 => ("acyclic_wait", json!({"admission_operation":operation}), TASK_OBSERVE_COMMAND_KIND),
+            2 => ("acyclic_wait", json!({"child":crate::TaskId::from_bytes(id)}), TASK_JOIN_COMMAND_KIND),
             3 => ("acyclic_cancel", json!({"child":crate::TaskId::from_bytes(id)}), TASK_CANCEL_COMMAND_KIND),
             _ => ("acyclic_inspect", json!({"task":crate::TaskId::from_bytes(id)}), TASK_INSPECT_COMMAND_KIND),
         };

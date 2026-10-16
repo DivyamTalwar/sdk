@@ -32,6 +32,94 @@ async fn started(files: &TaskVolume<Client>, call: &ExternalRequest) -> Result {
 }
 
 #[tokio::test]
+async fn exposed_wait_uses_the_returned_child_handle_for_every_host() -> Result {
+    let fixture = Fixture::new()?;
+    let cwd = fixture.path();
+    for host in [
+        ExternalHost::Codex,
+        ExternalHost::ClaudeCode,
+        ExternalHost::Pi,
+    ] {
+        let pi = host == ExternalHost::Pi;
+        let session = host.name();
+        let attach = if pi { "session_start" } else { "SessionStart" };
+        hook(
+            cwd,
+            host.name(),
+            attach,
+            json!({"session_id":session,"cwd":cwd}),
+        )
+        .await?;
+        let spawned = hook(
+            cwd,
+            host.name(),
+            if pi {
+                "subagent_start"
+            } else {
+                "SubagentStart"
+            },
+            json!({"session_id":session,"agent_id":"child"}),
+        )
+        .await?;
+        let child = spawned["Succeeded"]
+            .as_str()
+            .ok_or("spawn did not return a child handle")?;
+        hook(
+            cwd,
+            host.name(),
+            attach,
+            json!({"session_id":session,"agent_id":"child","cwd":cwd}),
+        )
+        .await?;
+        let event = if pi { "tool_call" } else { "PreToolUse" };
+        let arguments = json!({"child":child});
+        let input = json!({"session_id":session,"tool_use_id":"wait","tool_name":
+            if pi {"acyclic_wait"} else {"mcp__acyclic__acyclic_wait"},"tool_input":arguments});
+        let call = request(
+            host,
+            event,
+            json!({"session_id":session,"tool_use_id":"wait",
+            "tool_name":"acyclic_wait","tool_input":arguments}),
+        )?;
+        let results = files(cwd, &format!("external/results/{}", call.task_id())).await?;
+        let mut waiting = Box::pin(hook(cwd, host.name(), event, input));
+        tokio::select! {
+            result = &mut waiting => panic!("wait returned before child completion: {result:?}"),
+            result = started(&results,&call) => result?,
+        }
+        let (answer, ended) = tokio::join!(
+            waiting,
+            hook(
+                cwd,
+                host.name(),
+                if pi { "session_shutdown" } else { "SessionEnd" },
+                json!({"session_id":session,"agent_id":"child"})
+            )
+        );
+        let answer = answer?;
+        ended?;
+        if pi {
+            assert_eq!(answer["isError"], false);
+            assert!(answer["details"].is_null());
+        } else {
+            assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "allow");
+        }
+        let settled = results
+            .snapshot(
+                &Query::File(call.result_key(Component::new(call.task_id().to_string())?)?),
+                1,
+            )
+            .await?;
+        assert_eq!(settled.files.len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&settled.files[0].bytes)?,
+            json!({"Succeeded":null})
+        );
+    }
+    fixture.close().await
+}
+
+#[tokio::test]
 async fn pending_native_parent_joins_do_not_block_child_hooks_for_any_host() -> Result {
     let fixture = Fixture::new()?;
     let cwd = fixture.path();
