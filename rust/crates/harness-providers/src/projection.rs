@@ -256,7 +256,19 @@ fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
     match (previous, next) {
         (_, Value::Null) => {}
         (previous @ Value::Null, next) => *previous = next,
+        (Value::String(previous), Value::String(next)) => {
+            previous.push('\n');
+            previous.push_str(&next);
+        }
         (Value::Array(previous), Value::Array(mut next)) => previous.append(&mut next),
+        (Value::Array(previous), Value::String(next)) => {
+            previous.push(json!({"type":"text", "text":next}));
+        }
+        (previous @ Value::String(_), Value::Array(mut next)) => {
+            let text = previous.take();
+            next.insert(0, json!({"type":"text", "text":text}));
+            *previous = Value::Array(next);
+        }
         _ => return Err(invalid("invalid Chat tool batch content")),
     }
     Ok(())
