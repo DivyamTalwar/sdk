@@ -352,27 +352,96 @@ fn explicit_chatgpt_mode_is_metadata_when_the_original_mode_was_implicit() -> Re
     Ok(())
 }
 
+#[cfg(unix)]
+fn owner_only_permissions(path: &Path) -> (u32, u32, u32) {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = std::fs::metadata(path).unwrap();
+    assert_eq!(
+        metadata.mode() & 0o777,
+        0o600,
+        "credentials must remain owner-only"
+    );
+    (metadata.mode(), metadata.uid(), metadata.gid())
+}
+
+#[cfg(windows)]
+fn owner_only_permissions(path: &Path) -> bool {
+    let file = File::open(path).unwrap();
+    // This checks a protected DACL with exactly one full-access ACE for the
+    // current owner: equality to true denotes the same permission semantics.
+    let private = acyclic_fs::has_owner_only_permissions(&file).unwrap();
+    assert!(private, "credentials must remain owner-only");
+    private
+}
+
+fn oversized_merge_preserves_original(
+    metadata: usize,
+    access: usize,
+    remove_size_bound: bool,
+) -> proptest::test_runner::TestCaseResult {
+    let (root, login, mut transport) = fixture(&jwt(0), 200).unwrap();
+    let path = root.path().join("auth.json");
+    let mut original = auth(&jwt(0));
+    original["agent_identity"] = json!("m".repeat(metadata));
+    let original = serde_json::to_vec_pretty(&original).unwrap();
+    transport.response = json!({"access_token":"r".repeat(access)});
+    prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
+    prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
+    let mut private = crate::credential_file::create(root.path()).unwrap();
+    private.write_all(&original).unwrap();
+    private.persist(&path).unwrap();
+    let permissions = owner_only_permissions(&path);
+    let outcome = if remove_size_bound {
+        // Mutation of stage: use its real writer and atomic publication but
+        // omit only the encoded-size guard. The same oracle must reject it.
+        let mut merged = crate::json(&original).unwrap();
+        merged["tokens"]["access_token"] = transport.response["access_token"].clone();
+        let encoded = crate::projection::encoded_len(&merged).unwrap() as u64 + 1;
+        let mut staged = crate::credential_file::create(root.path()).unwrap();
+        write_staged(
+            &mut staged,
+            &merged,
+            encoded,
+            &mut CredentialIo::new(None).unwrap(),
+        )
+        .unwrap();
+        staged.persist(&path).unwrap();
+        Ok(())
+    } else {
+        futures::executor::block_on(login.bearer(&transport, None, None)).map(|_| ())
+    };
+    prop_assert!(
+        std::fs::read(&path).unwrap() == original,
+        "original credential bytes changed"
+    );
+    prop_assert_eq!(owner_only_permissions(&path), permissions);
+    prop_assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    prop_assert!(
+        outcome.is_err_and(|error| {
+            error
+                .to_string()
+                .contains("merged credentials exceed limit")
+        }),
+        "oversized merge was not rejected"
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
-    fn oversized_refresh_merges_preserve_the_original_file_byte_for_byte(
+    fn oversized_refresh_merges_preserve_original_bytes_and_owner_only_permissions(
         metadata in 524_288usize..720_896,
         access in 524_288usize..720_896,
     ) {
-        let (root, login, mut transport) = fixture(&jwt(0), 200).unwrap();
-        let path = root.path().join("auth.json");
-        let mut original = auth(&jwt(0));
-        original["agent_identity"] = json!("m".repeat(metadata));
-        let original = serde_json::to_vec_pretty(&original).unwrap();
-        transport.response = json!({"access_token":"r".repeat(access)});
-        prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
-        prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
-        std::fs::write(&path, &original).unwrap();
-        let error = futures::executor::block_on(login.bearer(&transport, None, None)).unwrap_err();
-        prop_assert!(error.to_string().contains("merged credentials exceed limit"));
-        prop_assert_eq!(std::fs::read(&path).unwrap(), original);
-        prop_assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        oversized_merge_preserves_original(metadata, access, false)?;
     }
+}
+
+#[test]
+#[should_panic(expected = "original credential bytes changed")]
+fn negative_control_removing_oversized_merge_bound_fails_the_same_property() {
+    oversized_merge_preserves_original(524_288, 524_288, true).unwrap();
 }
 
 #[tokio::test]
