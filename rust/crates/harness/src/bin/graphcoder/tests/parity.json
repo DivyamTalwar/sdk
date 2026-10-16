@@ -397,5 +397,27 @@
     "row": "Double Ctrl+C clears then requests quit",
     "text": "draft", "events": [{"key":"c","ctrl":true,"at":1},{"key":"c","ctrl":true,"at":2}],
     "expected": "", "visible": [], "quit": true, "effects": 1
+  },
+  {
+    "row": "Copy transcript selection as Markdown when input has no selection",
+    "text": "draft", "transcript_selection": "**Selected Markdown**",
+    "events": [{"key":"c","ctrl":true}],
+    "expected": "draft", "visible": ["draft"], "copied": "**Selected Markdown**", "effects": 1
+  },
+  {
+    "row": "Input selection takes precedence over transcript selection",
+    "text": "日本語", "transcript_selection": "**Selected Markdown**",
+    "events": [{"key":"a","ctrl":true},{"key":"c","ctrl":true}],
+    "expected": "日本語", "visible": ["日本語"], "copied": "日本語", "effects": 1
+  },
+  {
+    "row": "Bracketed paste into a question enters comment mode",
+    "text": "", "question": true, "events": [{"paste":"日本語 comment"}],
+    "expected": "日本語 comment", "visible": ["日本語 comment"], "comment": true
+  },
+  {
+    "row": "Clipboard paste into a question requests paste in comment mode",
+    "text": "", "question": true, "events": [{"key":"v","ctrl":true}],
+    "expected": "", "visible": [], "comment": true, "clipboard_paste": true, "effects": 1
   }
 ]

@@ -11,6 +11,8 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
     for row in rows {
         let name = row["row"].as_str().unwrap();
         let mut input = PromptInput::new(Editor::new(row["text"].as_str().unwrap()));
+        input.question = row["question"].as_bool().unwrap_or(false);
+        input.transcript_selection = row["transcript_selection"].as_str().map(str::to_owned);
         if let Some(entries) = row["history"].as_array() {
             let mut history = acyclic_harness::tui::PromptHistory::default();
             for entry in entries {
@@ -111,6 +113,12 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
         }
         if row["quit"].as_bool() == Some(true) {
             assert_eq!(effects, vec![InputEffect::Quit], "{name}");
+        }
+        if let Some(comment) = row["comment"].as_bool() {
+            assert_eq!(input.comment_mode, comment, "{name}");
+        }
+        if row["clipboard_paste"].as_bool() == Some(true) {
+            assert_eq!(effects, vec![InputEffect::Paste], "{name}");
         }
         assert_eq!(
             input.editor.text(),
