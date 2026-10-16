@@ -102,56 +102,57 @@ async fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> 
     let baseline =
         crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
     crate::drivers::run(baseline.clone()).await?;
-    futures::future::try_join_all(
-        [
-            "file",
-            "view",
-            "count",
-            "requests",
-            "context",
-            "tasks",
-            "prompt",
-            "script",
-            "policy",
-            "frames",
-            "automatic",
-            "text",
-            "max_steps",
-        ]
-        .into_iter()
-        .map(|mutation| {
-            let mut value = baseline.clone();
-            async move {
-                match mutation {
-                    "file" => value["expect"]["files"]["GOAL.md"] = json!("wrong"),
-                    "view" => value["expect"]["view"]["status"] = json!("done"),
-                    "count" => value["expect"]["result"]["continuations"] = json!(99),
-                    "requests" => value["expect"]["result"]["requests"] = json!(99),
-                    "context" => {
-                        value["expect"]["requests"][1]["messages"][0]["content"] =
-                            json!("wrong continuation prompt")
-                    }
-                    "tasks" => value["expect"]["result"]["tasks"] = json!(99),
-                    "prompt" => value["prompt"] = json!("wrong prompt"),
-                    "script" => value["turns"].as_array_mut().unwrap().push(json!("unused")),
-                    "policy" => value["policy"]["max_continuations"] = json!(0),
-                    "frames" => {
-                        value["expect"]["frames"] =
-                            json!([{ "canonical_event_json": {"kind":"missing_completion"}}])
-                    }
-                    "automatic" => value["policy"] = Value::Null,
-                    "text" => value["expect"]["text"] = json!("wrong"),
-                    "max_steps" => value["max_steps"] = json!(0),
-                    _ => unreachable!(),
+    let mutations = [
+        "file",
+        "view",
+        "count",
+        "requests",
+        "context",
+        "tasks",
+        "prompt",
+        "script",
+        "policy",
+        "frames",
+        "automatic",
+        "text",
+        "max_steps",
+    ];
+    let pool = tokio_util::task::LocalPoolHandle::new(
+        std::thread::available_parallelism()?
+            .get()
+            .min(mutations.len()),
+    );
+    futures::future::try_join_all(mutations.into_iter().map(|mutation| {
+        let mut value = baseline.clone();
+        pool.spawn_pinned(move || async move {
+            match mutation {
+                "file" => value["expect"]["files"]["GOAL.md"] = json!("wrong"),
+                "view" => value["expect"]["view"]["status"] = json!("done"),
+                "count" => value["expect"]["result"]["continuations"] = json!(99),
+                "requests" => value["expect"]["result"]["requests"] = json!(99),
+                "context" => {
+                    value["expect"]["requests"][1]["messages"][0]["content"] =
+                        json!("wrong continuation prompt")
                 }
-                assert!(
-                    crate::drivers::run(value).await.is_err(),
-                    "accepted changed {mutation}"
-                );
-                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+                "tasks" => value["expect"]["result"]["tasks"] = json!(99),
+                "prompt" => value["prompt"] = json!("wrong prompt"),
+                "script" => value["turns"].as_array_mut().unwrap().push(json!("unused")),
+                "policy" => value["policy"]["max_continuations"] = json!(0),
+                "frames" => {
+                    value["expect"]["frames"] =
+                        json!([{ "canonical_event_json": {"kind":"missing_completion"}}])
+                }
+                "automatic" => value["policy"] = Value::Null,
+                "text" => value["expect"]["text"] = json!("wrong"),
+                "max_steps" => value["max_steps"] = json!(0),
+                _ => unreachable!(),
             }
-        }),
-    )
+            assert!(
+                crate::drivers::run(value).await.is_err(),
+                "accepted changed {mutation}"
+            );
+        })
+    }))
     .await?;
 
     Ok(())
