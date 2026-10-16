@@ -465,7 +465,10 @@ where
             }
             if !configuration {
                 if summary_files.contains(file) {
-                    drop(self.load_content(file, io).await?);
+                    let _bytes_hold;
+                    let bytes = self.load_content(file, io).await?;
+                    _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+                    drop(bytes);
                 } else {
                     self.verify_input_file_with_io(file, io).await?;
                 }

@@ -10,7 +10,7 @@ async fn fixture() -> Result<Fixture> {
     Fixture::new(
         Arc::new(MemoryStream::default()),
         Fs::memory(),
-        json!({}),
+        json!({"type":"integer"}),
         None,
         &[],
     )
@@ -300,5 +300,40 @@ fn complete_summary_output_identity_is_required_even_at_a_valid_provenance_key()
             },
         )
         .unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
+    let fixture = fixture().await?;
+    let journal = FilesystemExecutionJournal::new(
+        fixture.stream.clone(),
+        fixture.files.clone(),
+        &SchemaRegistry::new(),
+        super::super::FilesystemJournalBinding {
+            volume: &fixture.storage,
+            verifier: &fixture.issuer.verifier(&mut None)?,
+            scope: &fixture.host.owner_scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
+    )?;
+    let file = output(&journal, OperationId::new(), "summary:0:output").await?;
+    let content = ModelContent::Part(crate::model::ModelContentPart::File {
+        file: file.clone(),
+        policy: crate::model::FileProjectionPolicy::BoundedFull,
+    });
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
+        &cancellation,
+    )?;
+    for _ in 0..16 {
+        let before = io.owned_bytes()?;
+        journal
+            .verify_model_content_with_io(&content, Some(&io), None, &[&file])
+            .await?;
+        assert_eq!(io.owned_bytes()?, before, "freed summary retained custody");
+    }
     Ok(())
 }
