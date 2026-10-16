@@ -21,6 +21,7 @@ ratatui = { version = "0.30", default-features = false, optional = true }
 crossterm = { version = "0.28", optional = true }
 
 [dev-dependencies]
+allocation-counter = "=0.8.1"
 proptest.workspace = true
 alacritty_terminal = "0.26"
 serde = { workspace = true, features = ["derive"] }

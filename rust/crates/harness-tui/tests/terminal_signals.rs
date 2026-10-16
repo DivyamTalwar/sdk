@@ -1,5 +1,5 @@
 //! Real subprocesses and PTYs exercise the production signal lifecycle.
-#![cfg(all(unix, feature = "tui", not(feature = "model-checking")))]
+#![cfg(all(unix, feature = "tui", not(acyclic_harness_tui_loom)))]
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -32,13 +32,24 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(caps.images, ImageProtocol::Placeholder);
     assert_eq!(caps.colour, ColourDepth::Ansi16);
     tty.setup(ScreenMode::Alternate)?;
+    if mode == "dropped" {
+        drop(tty);
+        std::io::stdout().write_all(b"READY\n")?;
+        loop {
+            std::thread::park();
+        }
+    }
+    if mode == "reopen" {
+        drop(tty);
+        tty = Tty::from_file(File::from(rustix::io::dup(std::io::stdin())?))?;
+    }
     if mode == "outside" {
         tty.restore()?;
         std::io::stdout().write_all(b"READY\n")?;
     } else {
         tty.write_all(b"READY\n")?;
     }
-    if mode != "read" && mode != "handoff" {
+    if mode != "read" && mode != "handoff" && mode != "escape" {
         loop {
             std::thread::park();
         }
@@ -46,8 +57,12 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     let mut received = Vec::new();
     loop {
         for event in tty.read_events(Instant::now() + Duration::from_millis(20))? {
-            if mode == "handoff" {
+            if mode == "handoff" || mode == "escape" {
                 received.push(event.clone());
+            }
+            if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc)
+            {
+                tty.write_all(b"ESC\n")?;
             }
             if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
                 if mode == "handoff" {
@@ -64,10 +79,61 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
                         ]
                     );
                 }
+                if mode == "escape" {
+                    assert_eq!(
+                        received,
+                        vec![
+                            InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                        ]
+                    );
+                }
                 return Ok(());
             }
         }
     }
+}
+
+#[test]
+fn dropping_and_reopening_tty_preserves_signal_dispositions()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (mode, signal) in [
+        ("dropped", Signal::TERM),
+        ("dropped", Signal::HUP),
+        ("dropped", Signal::INT),
+        ("reopen", Signal::TERM),
+    ] {
+        let mut process = Process::start(mode)?;
+        kill_process(process.pid()?, signal)?;
+        let mut status = None;
+        process.until(|process| {
+            status = process.child.try_wait()?;
+            Ok(status.is_some())
+        })?;
+        assert_eq!(
+            status.and_then(|status| status.signal()),
+            Some(signal.as_raw())
+        );
+        process.restored()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn isolated_escape_resolves_before_the_next_key() -> Result<(), Box<dyn std::error::Error>> {
+    let mut process = Process::start("escape")?;
+    process.master.write_all(b"\x1b")?;
+    process.until(|process| Ok(process.bytes.windows(4).any(|bytes| bytes == b"ESC\n")))?;
+    process.master.write_all(b"xq")?;
+    let mut status = None;
+    process.until(|process| {
+        status = process.child.try_wait()?;
+        Ok(status.is_some())
+    })?;
+    assert!(status.is_some_and(|status| status.success()));
+    process.restored()?;
+    Ok(())
 }
 
 #[test]

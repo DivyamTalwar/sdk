@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
-#[cfg(feature = "model-checking")]
+#[cfg(acyclic_harness_tui_loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
-#[cfg(not(feature = "model-checking"))]
+#[cfg(not(acyclic_harness_tui_loom))]
 pub(crate) use std::sync::{Arc, Mutex};
 
 use super::{Capabilities, RestoreGuard};
@@ -11,6 +11,46 @@ pub(crate) struct State<W: Write> {
     pub(crate) guard: RestoreGuard<W>,
     active: bool,
     closed: bool,
+}
+
+#[cfg(any(unix, acyclic_harness_tui_loom))]
+pub(crate) type Owner<W> = Mutex<Option<Arc<Mutex<State<W>>>>>;
+
+// Lock order: owner slot -> terminal state. Ordinary I/O only takes state;
+// it never takes the owner slot. The dispatcher remains installed for life.
+#[cfg(any(unix, acyclic_harness_tui_loom))]
+pub(crate) fn attach<W: Write>(
+    owner: &Owner<W>,
+    create: impl FnOnce() -> io::Result<W>,
+) -> io::Result<Arc<Mutex<State<W>>>> {
+    let mut owner = owner.lock().map_err(|_| io::ErrorKind::Other)?;
+    if owner.is_some() {
+        return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    let state = Arc::new(Mutex::new(State::new(create()?)));
+    *owner = Some(Arc::clone(&state));
+    Ok(state)
+}
+
+#[cfg(any(unix, acyclic_harness_tui_loom))]
+pub(crate) fn detach<W: Write>(
+    owner: &Owner<W>,
+    state: &Arc<Mutex<State<W>>>,
+    os_restore: impl FnOnce(&mut W) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut owner = owner.lock().map_err(|_| io::ErrorKind::Other)?;
+    let result = restore(state, true, os_restore);
+    *owner = None;
+    result
+}
+
+#[cfg(any(unix, acyclic_harness_tui_loom))]
+pub(crate) fn with_owner<W: Write, T>(
+    owner: &Owner<W>,
+    action: impl FnOnce(Option<&Arc<Mutex<State<W>>>>) -> T,
+) -> io::Result<T> {
+    let owner = owner.lock().map_err(|_| io::ErrorKind::Other)?;
+    Ok(action(owner.as_ref()))
 }
 
 impl<W: Write> State<W> {
@@ -23,8 +63,8 @@ impl<W: Write> State<W> {
     }
 }
 
-// Lock order: this is the sole terminal-state lock. Never acquire a signal
-// iterator lock, wait for input, or join the signal worker while holding it.
+// Lock order: owner slot, then this terminal-state lock. Never acquire the
+// owner slot or a signal-iterator lock, or join the worker while holding state.
 // Output, mode mutations and lifecycle callbacks ALL enter through these paths.
 pub(crate) fn active<W: Write, T>(
     state: &Mutex<State<W>>,
@@ -53,7 +93,7 @@ pub(crate) fn restore<W: Write>(
     dec.and(os)
 }
 
-#[cfg(any(unix, feature = "model-checking"))]
+#[cfg(any(unix, acyclic_harness_tui_loom))]
 pub(crate) fn resume<W: Write>(
     state: &Mutex<State<W>>,
     os_reapply: impl FnOnce(&mut W) -> io::Result<()>,
@@ -67,10 +107,61 @@ pub(crate) fn resume<W: Write>(
     Ok(())
 }
 
-#[cfg(all(test, feature = "model-checking"))]
+#[cfg(all(test, acyclic_harness_tui_loom))]
 mod terminal_lifecycle_model {
     use super::*;
     use crate::term::ModeState;
+
+    fn owner_model(broken: bool) {
+        loom::model(move || {
+            let owner = Arc::new(Mutex::new(None));
+            let state = match attach(&owner, || Ok(Vec::new())) {
+                Ok(state) => state,
+                Err(_) => unreachable!(),
+            };
+            let signal_owner = Arc::clone(&owner);
+            let signal_state = Arc::clone(&state);
+            let signal = loom::thread::spawn(move || {
+                assert!(
+                    with_owner(&signal_owner, |owner| {
+                        if owner.is_none() {
+                            let state = match signal_state.lock() {
+                                Ok(state) => state,
+                                Err(_) => unreachable!(),
+                            };
+                            assert!(!state.active, "default signal action before restoration");
+                        }
+                    })
+                    .is_ok()
+                );
+            });
+            if broken {
+                // Negative control: detach before restore permits default
+                // termination while the terminal still belongs to this owner.
+                if let Ok(mut slot) = owner.lock() {
+                    *slot = None;
+                }
+                loom::thread::yield_now();
+                assert!(restore(&state, true, |_| Ok(())).is_ok());
+            } else {
+                assert!(detach(&owner, &state, |_| Ok(())).is_ok());
+            }
+            assert!(signal.join().is_ok());
+            assert!(with_owner(&owner, |owner| assert!(owner.is_none())).is_ok());
+            assert!(attach(&owner, || Ok(Vec::new())).is_ok());
+            assert!(attach(&owner, || Ok(Vec::new())).is_err());
+        });
+    }
+
+    #[test]
+    fn detach_restores_before_default_signal_and_allows_reopen() {
+        owner_model(false);
+    }
+
+    #[test]
+    fn negative_control_detects_early_owner_detach() {
+        assert!(std::panic::catch_unwind(|| owner_model(true)).is_err());
+    }
 
     fn model(broken: bool) {
         loom::model(move || {

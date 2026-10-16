@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -120,12 +120,22 @@ pub struct Probe {
     pub replies: ProbeReplies,
     frame: Vec<u8>,
     state: u8,
-    pub(crate) input: Vec<Vec<u8>>,
+    pub(crate) input: VecDeque<Vec<u8>>,
     discarding: bool,
     string_kind: u8,
 }
 
 impl Probe {
+    pub(crate) fn idle(&self) -> bool {
+        self.state == 0
+    }
+
+    pub(crate) fn recycle(&mut self, mut frame: Vec<u8>) {
+        if self.frame.is_empty() && frame.capacity() > self.frame.capacity() {
+            frame.clear();
+            self.frame = frame;
+        }
+    }
     /// One batch, with DA1 last so its response acts as a completion sentinel.
     pub fn batch(multiplexer: Multiplexer) -> Vec<u8> {
         let mut batch = b"\x1b[?u".to_vec();
@@ -281,7 +291,7 @@ impl Probe {
         if handler.recognized {
             self.replies.answered = true;
         } else {
-            self.input.push(std::mem::take(&mut self.frame));
+            self.input.push_back(std::mem::take(&mut self.frame));
         }
         self.frame.clear();
         self.state = 0;

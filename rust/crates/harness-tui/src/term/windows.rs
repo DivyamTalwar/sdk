@@ -134,6 +134,9 @@ impl Tty {
         let count = self.receive(&mut bytes, deadline)?;
         self.decoder
             .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
+        if count == 0 || Instant::now() >= deadline {
+            self.decoder.finish_input()?;
+        }
         Ok(self.decoder.take_events())
     }
 }

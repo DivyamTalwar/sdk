@@ -18,6 +18,8 @@ fuzz_target!(|bytes: &[u8]| {
     assert_eq!(whole_ok, split_ok);
     assert_eq!(whole.replies(), split.replies());
     assert_eq!(whole.take_events(), split.take_events());
+    assert_eq!(whole.finish_input().is_ok(), split.finish_input().is_ok());
+    assert_eq!(whole.take_events(), split.take_events());
     let _ = whole.replies().capabilities(&Environment::default());
     let code = bytes.first().map_or('x', |byte| char::from(*byte).max(' '));
     let modifiers = KeyModifiers::from_bits_retain(bytes.get(1).copied().unwrap_or_default() & 63);

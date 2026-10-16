@@ -1,12 +1,10 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use signal_hook::consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGTERM, SIGTSTP};
-use signal_hook::iterator::{Handle, Signals};
+use signal_hook::consts::signal::SIGTSTP;
 
-use super::lifecycle::{self, Arc, Mutex, State};
+use super::lifecycle::{self, Arc, Mutex, Owner, State};
 use super::tty::RawTty;
 use super::{Capabilities, Decoder, Environment, ProbeIo, ScreenMode, detect};
 use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
@@ -16,8 +14,7 @@ use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 /// serializes every output mutation with restore/close, including on resume.
 pub struct Tty {
     state: Arc<Mutex<State<RawTty>>>,
-    signals: Handle,
-    worker: Option<JoinHandle<()>>,
+    owner: &'static Owner<RawTty>,
     decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
@@ -31,31 +28,11 @@ impl Tty {
     /// Install signal handling BEFORE making the terminal raw. A process owns
     /// one terminal lifecycle; callers must not open competing sessions.
     pub fn from_file(file: File) -> io::Result<Self> {
-        let mut signals = Signals::new([SIGTERM, SIGHUP, SIGINT, SIGTSTP, SIGCONT])?;
-        let handle = signals.handle();
-        let state = Arc::new(Mutex::new(State::new(RawTty::from_file(file)?)));
-        let worker_state = Arc::clone(&state);
-        let worker = std::thread::Builder::new()
-            .name("terminal-signals".into())
-            .spawn(move || {
-                for signal in signals.forever() {
-                    if signal == SIGCONT {
-                        let _ = lifecycle::resume(&worker_state, RawTty::reapply);
-                    } else {
-                        // No signal-iterator lock is held while acquiring state.
-                        let terminating = signal != SIGTSTP;
-                        let _ = lifecycle::restore(&worker_state, terminating, RawTty::restore);
-                        let _ = signal_hook::low_level::emulate_default_handler(signal);
-                        if !terminating {
-                            let _ = lifecycle::resume(&worker_state, RawTty::reapply);
-                        }
-                    }
-                }
-            })?;
+        let owner = super::signals::owner()?;
+        let state = lifecycle::attach(owner, || RawTty::from_file(file))?;
         Ok(Self {
             state,
-            signals: handle,
-            worker: Some(worker),
+            owner,
             decoder: Decoder::default(),
             capabilities: None,
         })
@@ -99,11 +76,16 @@ impl Tty {
     /// Read only classified events. Late probe replies remain in this decoder.
     pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
         let mut events = self.decoder.take_events();
-        if events.is_empty() {
+        while events.is_empty() {
             let mut bytes = [0; 1024];
             let count = self.receive(&mut bytes, deadline)?;
             self.decoder
                 .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
+            if count == 0 || Instant::now() >= deadline {
+                self.decoder.finish_input()?;
+                events = self.decoder.take_events();
+                break;
+            }
             events = self.decoder.take_events();
         }
         let mut output = Vec::new();
@@ -162,11 +144,6 @@ impl Write for Tty {
 
 impl Drop for Tty {
     fn drop(&mut self) {
-        let _ = lifecycle::restore(&self.state, true, RawTty::restore);
-        self.signals.close();
-        // Join only AFTER releasing state: the worker may be finishing restore.
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
     }
 }

@@ -41,9 +41,11 @@ impl Decoder {
                 }
                 continue;
             }
-            self.probe.feed(&[byte]);
-            for frame in std::mem::take(&mut self.probe.input) {
-                self.input(&frame)?;
+            if self.probe.idle() && byte != 0x1b {
+                self.input(&[byte])?;
+            } else {
+                self.probe.feed(&[byte]);
+                self.drain_input()?;
             }
         }
         Ok(())
@@ -51,7 +53,23 @@ impl Decoder {
 
     /// Take only classified input; there is no raw startup replay API.
     pub fn take_events(&mut self) -> Vec<InputEvent> {
-        std::mem::take(&mut self.events)
+        self.events.drain(..).collect()
+    }
+
+    /// Resolve a lone legacy Escape at an input deadline. Startup detection
+    /// never calls this; partial CSI/OSC/DCS/APC replies remain quarantined.
+    pub fn finish_input(&mut self) -> io::Result<()> {
+        self.probe.finish_input();
+        self.drain_input()
+    }
+
+    fn drain_input(&mut self) -> io::Result<()> {
+        while let Some(frame) = self.probe.input.pop_front() {
+            let result = self.input(&frame);
+            self.probe.recycle(frame);
+            result?;
+        }
+        Ok(())
     }
 
     fn input(&mut self, frame: &[u8]) -> io::Result<()> {
@@ -96,43 +114,16 @@ impl Decoder {
             frame
         };
         for &byte in bytes {
+            if self.text.is_empty() && byte.is_ascii() {
+                self.character(char::from(byte))?;
+                continue;
+            }
             self.text.push(byte);
             match std::str::from_utf8(&self.text) {
                 Ok(text) => {
-                    let mut keys = Vec::new();
-                    for c in text.chars() {
-                        if c == '\n' && self.cr {
-                            self.cr = false;
-                            continue;
-                        }
-                        self.cr = c == '\r';
-                        let (code, modifiers) = match c {
-                            '\r' | '\n' => (KeyCode::Enter, KeyModifiers::NONE),
-                            '\t' => (KeyCode::Tab, KeyModifiers::NONE),
-                            '\0' => (KeyCode::Null, KeyModifiers::NONE),
-                            '\u{7f}' | '\u{8}' => (KeyCode::Backspace, KeyModifiers::NONE),
-                            '\u{1}'..='\u{1a}' => (
-                                KeyCode::Char(
-                                    char::from_u32(u32::from(c) + 96)
-                                        .ok_or(io::ErrorKind::InvalidData)?,
-                                ),
-                                KeyModifiers::CONTROL,
-                            ),
-                            _ => (KeyCode::Char(c), KeyModifiers::NONE),
-                        };
-                        keys.push(InputEvent::Key(KeyEvent::new(
-                            code,
-                            modifiers
-                                | if self.alt {
-                                    KeyModifiers::ALT
-                                } else {
-                                    KeyModifiers::NONE
-                                },
-                        )));
-                    }
-                    self.events.extend(keys);
+                    let c = text.chars().next().ok_or(io::ErrorKind::InvalidData)?;
+                    self.character(c)?;
                     self.text.clear();
-                    self.alt = false;
                 }
                 Err(error) if error.error_len().is_none() && self.text.len() < 4 => {}
                 Err(_) => {
@@ -142,6 +133,37 @@ impl Decoder {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn character(&mut self, c: char) -> io::Result<()> {
+        if c == '\n' && self.cr {
+            self.cr = false;
+            self.alt = false;
+            return Ok(());
+        }
+        self.cr = c == '\r';
+        let (code, modifiers) = match c {
+            '\r' | '\n' => (KeyCode::Enter, KeyModifiers::NONE),
+            '\t' => (KeyCode::Tab, KeyModifiers::NONE),
+            '\0' => (KeyCode::Null, KeyModifiers::NONE),
+            '\u{7f}' | '\u{8}' => (KeyCode::Backspace, KeyModifiers::NONE),
+            '\u{1}'..='\u{1a}' => (
+                KeyCode::Char(char::from_u32(u32::from(c) + 96).ok_or(io::ErrorKind::InvalidData)?),
+                KeyModifiers::CONTROL,
+            ),
+            _ => (KeyCode::Char(c), KeyModifiers::NONE),
+        };
+        self.events.push(InputEvent::Key(KeyEvent::new(
+            code,
+            modifiers
+                | if self.alt {
+                    KeyModifiers::ALT
+                } else {
+                    KeyModifiers::NONE
+                },
+        )));
+        self.alt = false;
         Ok(())
     }
 }

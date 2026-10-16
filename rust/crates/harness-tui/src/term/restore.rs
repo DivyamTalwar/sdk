@@ -79,7 +79,7 @@ impl<W: Write> RestoreGuard<W> {
         Ok(())
     }
 
-    #[cfg(any(unix, feature = "model-checking"))]
+    #[cfg(any(unix, acyclic_harness_tui_loom))]
     pub(crate) fn reapply(&mut self) -> io::Result<()> {
         for mode in self.desired.clone() {
             self.enable_mode(mode)?;

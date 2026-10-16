@@ -69,6 +69,38 @@ fn late_and_partial_replies_never_become_input() -> io::Result<()> {
 }
 
 #[test]
+fn input_deadline_only_resolves_an_isolated_escape() -> io::Result<()> {
+    let mut decoder = Decoder::default();
+    decoder.feed(b"\x1b")?;
+    decoder.finish_input()?;
+    assert_eq!(
+        decoder.take_events(),
+        vec![InputEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        ))]
+    );
+    decoder.feed(b"x")?;
+    assert_eq!(decoder.take_events(), key_events("x"));
+    for reply in [
+        b"\x1b]11;rgb:ffff/0000/0000\x07".as_slice(),
+        b"\x1bP1+r524742\x1b\\",
+        b"\x1b[?2026;2$y",
+    ] {
+        for split in 2..reply.len() {
+            let mut decoder = Decoder::default();
+            decoder.feed(reply.get(..split).ok_or(io::ErrorKind::InvalidData)?)?;
+            decoder.finish_input()?;
+            assert!(decoder.take_events().is_empty());
+            decoder.feed(reply.get(split..).ok_or(io::ErrorKind::InvalidData)?)?;
+            decoder.feed(b"x")?;
+            assert_eq!(decoder.take_events(), key_events("x"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn input_protocols_share_the_reply_decoder() -> io::Result<()> {
     let mut decoder = Decoder::default();
     decoder.feed(b"\x1b[?62;1c\x1b[13;6:3u\x1b[27;3;13~\x1b[I\x1b[O\x1b[<0;4;2M\r\n")?;
