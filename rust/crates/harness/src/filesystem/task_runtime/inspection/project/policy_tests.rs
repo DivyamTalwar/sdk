@@ -62,7 +62,7 @@ impl Source {
         let fixture = Fixture::new(
             Arc::new(MemoryStream::default()),
             Fs::memory(),
-            json!({}),
+            json!({"type": "integer"}),
             None,
             &[&read, &write, &label],
         )

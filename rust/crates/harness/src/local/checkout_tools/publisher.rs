@@ -20,7 +20,6 @@ pub(in crate::local) struct CheckoutPublisher {
     files: Arc<LocalFilesystem>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
-    signed: Scope,
     maximum: u64,
 }
 
@@ -44,7 +43,6 @@ impl CheckoutPublisher {
         files: Arc<LocalFilesystem>,
         volume: &VolumeRef,
         verifier: &AuthorityVerifier,
-        signed: &Scope,
         maximum: u64,
     ) -> Self {
         Self {
@@ -52,7 +50,6 @@ impl CheckoutPublisher {
             files,
             volume: volume.clone(),
             verifier: verifier.clone(),
-            signed: signed.clone(),
             maximum,
         }
     }
@@ -63,7 +60,7 @@ impl CheckoutPublisher {
                 .for_workspace(&self.volume, view.workspace().clone())?,
             &self.volume,
             &self.verifier,
-            &self.signed,
+            &self.tools.signed,
             self.maximum,
             None,
         )
@@ -78,6 +75,7 @@ impl CheckoutPublisher {
     ) -> Result<FileRef> {
         serialized(&self.tools.state, async |mut state| {
             let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+            self.tools.require_access(view.workspace(), ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
             if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
                 state.watcher = None;
             }
@@ -278,6 +276,13 @@ impl ContentPublisher for CheckoutPublisher {
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.tools.workspace.view());
+                self.tools
+                    .require_access(
+                        view.workspace(),
+                        ceiling.unwrap_or(self.tools.signed.capabilities()),
+                        "local checkout publication",
+                    )
+                    .await?;
                 let file = self
                     .writer(view)?
                     .observe_staged_once(operation, maximum, ceiling, None)?

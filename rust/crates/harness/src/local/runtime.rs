@@ -139,7 +139,6 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
                 config.files,
                 config.project,
                 config.verifier,
-                &signed,
                 config.limits.file_bytes,
             );
             runtime

@@ -20,6 +20,8 @@ fn temporary_directory() -> Result<tempfile::TempDir> {
 }
 
 async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+    acyclic_fs::initialize_native_mount_services().map_err(storage)?;
     let directory = temporary_directory()?;
     let state = temporary_directory()?;
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
@@ -87,8 +89,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         )
         .await?,
     );
-    let publisher =
-        CheckoutPublisher::new(tools, files.clone(), &project, &verifier, &signed, 65536);
+    let publisher = CheckoutPublisher::new(tools, files.clone(), &project, &verifier, 65536);
     Ok((
         directory,
         Fixture {
@@ -485,6 +486,56 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         }
         Ok(())
     }
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let before = tools
+        .workspace
+        .view()
+        .workspace()
+        .head(budget, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    let denied = publisher
+        .stage_once(
+            OperationId::new(),
+            "public/new.txt",
+            b"new",
+            "text/plain",
+            "new",
+            Some(&restricted),
+            None,
+        )?
+        .await;
+    assert!(matches!(
+        denied,
+        Err(Error::FilesystemAccessConfiguration(
+            "local checkout publication"
+        ))
+    ));
+    drop(denied);
+    assert_eq!(
+        before,
+        tools
+            .workspace
+            .view()
+            .workspace()
+            .head(budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        "denied publication imported unrelated physical edits"
+    );
+    assert!(matches!(
+        publisher
+            .observe_staged_once(OperationId::new(), 1024, Some(&restricted), None)?
+            .await,
+        Err(Error::FilesystemAccessConfiguration(
+            "local checkout publication"
+        ))
+    ));
     execute(tools.clone(), restricted).await?;
     let mut policy: Policy =
         serde_json::from_slice(crate::filesystem::access::INITIAL_POLICY).map_err(storage)?;
@@ -539,6 +590,43 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         )
         .await
         .map_err(storage)?;
+    let before = tools
+        .workspace
+        .view()
+        .workspace()
+        .head(budget, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    assert!(matches!(
+        publisher
+            .stage_once(
+                OperationId::new(),
+                "public/new.txt",
+                b"new",
+                "text/plain",
+                "new",
+                None,
+                None
+            )?
+            .await,
+        Err(Error::FilesystemAccessConfiguration(
+            "local checkout publication"
+        ))
+    ));
+    assert_eq!(
+        before,
+        tools
+            .workspace
+            .view()
+            .workspace()
+            .head(budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id()
+    );
     execute(tools, all).await?;
     assert_eq!(
         std::fs::read(directory.path().join("secrets/key")).map_err(storage)?,

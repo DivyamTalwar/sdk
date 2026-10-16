@@ -129,7 +129,10 @@ mod facts {
                 4 => rule.conditions.relation = Some(acyclic_fs::access::Relation::SelfTask),
                 _ => rule.resource.lineage_root = Some(value),
             }
-            prop_assert!(matches!(require_authenticated_facts(&policy, &io), Err(Error::FilesystemAccessConfiguration(_))));
+            let error = require_authenticated_facts(&policy, &io).unwrap_err();
+            prop_assert!(matches!(error, Error::FilesystemAccessConfiguration(_)));
+            prop_assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
+            prop_assert!(!error.is_native_failure());
         }
     }
 }

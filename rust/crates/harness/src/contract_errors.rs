@@ -427,6 +427,7 @@ impl Error {
                 | Self::Invalid(_)
                 | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
+                | Self::FilesystemAccessConfiguration(_)
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
