@@ -26,6 +26,7 @@ impl Remote {
             self.endpoint.url.clone(),
             FetchOptions::new()
                 .redirect(Redirect::Error)
+                .timeout(std::time::Duration::from_secs(1))
                 .response_limits(
                     UnaryResponseLimits::new(MAX_COMMAND_BYTES)
                         .expect("fixed positive command bound"),
