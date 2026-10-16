@@ -1,0 +1,133 @@
+//! Real native composition uses each granted volume's publication owner.
+use super::*;
+
+#[tokio::test]
+async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::create_dir(directory.path().join(".volumes")).map_err(super::super::storage)?;
+    std::fs::write(directory.path().join(".volumes/user-owned"), b"retain")
+        .map_err(super::super::storage)?;
+    let provider = scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall {
+                call_id: "seed".into(),
+                name: "write".into(),
+                arguments: json!({"path":"seed", "text":"from tool\n", "media_type":"text/plain", "display_name":"seed"}),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ]),
+        super::checkout::call(
+            1,
+            "bash",
+            r#"test "$ACYCLIC_VOLUME_SCRATCH_MODE" = rw && IFS= read -r text < .volumes/scratch/seed && printf '%s' "$text" > copied && printf scratch > .volumes/scratch/created && test ! -e .volumes/journal"#,
+        ),
+        super::checkout::call(2, "fs", "status"),
+        ScriptedTurn::Text("composed".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    assert_eq!(
+        harness.run("copy across the granted volumes").await?.text,
+        "composed"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("copied")).map_err(super::super::storage)?,
+        b"from tool"
+    );
+    let entries: Vec<_> = std::fs::read_dir(directory.path().join(".volumes"))
+        .map_err(super::super::storage)?
+        .filter_map(|entry| match entry {
+            Ok(entry) => match entry.file_type() {
+                Ok(kind) if kind.is_dir() => Some(Ok(entry.file_name())),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            },
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<std::io::Result<_>>()
+        .map_err(super::super::storage)?;
+    assert_eq!(entries, [std::ffi::OsString::from("scratch")]);
+    let workspace = harness.workspace().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let primary = workspace
+        .view()
+        .workspace()
+        .head(budget, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    assert_eq!(
+        primary
+            .read("/copied", 32, budget, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
+        b"from tool"
+    );
+    assert!(matches!(
+        primary
+            .stat("/.volumes/scratch/created", budget, &cancellation)
+            .await,
+        Err(acyclic_fs::OperationFailure {
+            error: acyclic_fs::WorkspaceError::NotFound,
+            ..
+        })
+    ));
+    let scratch = workspace
+        .filesystem
+        .open_workspace(
+            &harness.scratch().storage_name(&mut None)?,
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    let scratch = scratch
+        .head(budget, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    assert_eq!(
+        scratch
+            .read("/created", 32, budget, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
+        b"scratch"
+    );
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 4);
+    let results: Vec<_> = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult { name, content, .. } => {
+                Some((name, content))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 3);
+    for (name, content) in results {
+        let result = serde_json::to_string(content).map_err(super::super::storage)?;
+        assert!(!result.contains("\"error\""), "{name}: {result}");
+        if name == "fs" {
+            assert!(!result.contains("created"), "{result}");
+            assert!(!result.contains("acyclic-fs-mount"), "{result}");
+            assert!(result.contains("user-owned"), "{result}");
+        }
+    }
+    Ok(())
+}

@@ -5,6 +5,10 @@ use acyclic_fs::{
 };
 
 mod mounts;
+pub(super) mod volumes;
+
+pub(super) type MountedVolume = acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>;
+pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
 pub(super) type View = LazyWorkspace<
     LocalAuthorityBackend,
@@ -20,7 +24,7 @@ pub struct LocalWorkspace {
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
-    pub(super) mounts: Arc<crate::workspace::MountTable<()>>,
+    pub(super) mounts: Arc<Mounts>,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -116,6 +120,9 @@ pub(super) async fn open(
             "local checkout root was replaced during open".into(),
         ));
     }
+    let source = source
+        .exclude(volumes::excluded(&path, view_config())?, &&work, &cancellation)
+        .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     let source = Arc::new(source);
     let view = match original {
         Some(_) => {
@@ -147,7 +154,7 @@ pub(super) async fn open(
         .await
         .map_err(storage)?;
     Ok(LocalWorkspace {
-        mounts: Arc::new(mounts::owner(&path, volume)?),
+        mounts: Arc::new(mounts::owner(&path, volume, None, [])?),
         path,
         view,
         filesystem: filesystem.clone(),
@@ -156,4 +163,8 @@ pub(super) async fn open(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
     })
+}
+
+fn view_config() -> acyclic_fs::VolumeConfig {
+    acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable)
 }

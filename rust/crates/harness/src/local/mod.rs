@@ -125,7 +125,7 @@ impl LocalHarness {
             let provider_ref = owner.project.provider();
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(Arc::new(
+                LocalProject::Workspace(path) => Some(
                     workspace::open(
                         &filesystem,
                         &owner.project,
@@ -135,13 +135,8 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                     )
                     .await?,
-                )),
+                ),
                 LocalProject::Volume { .. } => None,
-            };
-            #[cfg(feature = "native-execution")]
-            let context = match &workspace {
-                Some(workspace) => context.with(workspace.context_stage()),
-                None => context,
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
             // A configured project is opened, never silently replaced by an empty volume.
@@ -170,6 +165,18 @@ impl LocalHarness {
             )?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = match workspace {
+                Some(workspace) => Some(Arc::new(
+                    workspace.with_scratch(&owner.project, &scratch).await?,
+                )),
+                None => None,
+            };
+            #[cfg(feature = "native-execution")]
+            let context = match &workspace {
+                Some(workspace) => context.with(workspace.context_stage()),
+                None => context,
+            };
             let stream = Arc::new(
                 LocalStream::open(directory.join("stream"), Default::default())
                     .await

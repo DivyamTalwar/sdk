@@ -2,7 +2,12 @@
 use super::*;
 use acyclic_fs::access::*;
 
-pub(super) fn owner(root: &Path, volume: &VolumeRef) -> Result<crate::workspace::MountTable<()>> {
+pub(super) fn owner<T>(
+    root: &Path,
+    volume: &VolumeRef,
+    source: T,
+    volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
+) -> Result<crate::workspace::MountTable<T>> {
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
@@ -14,7 +19,7 @@ pub(super) fn owner(root: &Path, volume: &VolumeRef) -> Result<crate::workspace:
     };
     let resource = ResourcePattern {
         lineage_root: None,
-        volume: Some(volume.id().into()),
+        volume: None,
         generations: Generations::All,
         path: "**".into(),
     };
@@ -34,12 +39,32 @@ pub(super) fn owner(root: &Path, volume: &VolumeRef) -> Result<crate::workspace:
             },
         }]],
     });
+    let volumes: Vec<_> = volumes.into_iter().collect();
     let capability = Capability {
-        layers: vec![vec![Grant {
-            actions: Action::ALL.into_iter().collect(),
-            resource,
-        }]],
+        layers: vec![
+            std::iter::once(volume)
+                .chain(volumes.iter().map(|(_, volume, _)| volume))
+                .map(|volume| Grant {
+                    actions: Action::ALL.into_iter().collect(),
+                    resource: ResourcePattern {
+                        volume: Some(volume.id().into()),
+                        ..resource.clone()
+                    },
+                })
+                .collect(),
+        ],
         expires_at: None,
+    };
+    let view = |name, volume, source| crate::workspace::VolumeView {
+        name,
+        agent: principal.id.clone(),
+        volume,
+        lineage: principal.lineage.clone(),
+        generation: 0,
+        head: 0,
+        config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        policy: Arc::clone(&policy),
+        source,
     };
     crate::workspace::compose(
         root.into(),
@@ -49,17 +74,46 @@ pub(super) fn owner(root: &Path, volume: &VolumeRef) -> Result<crate::workspace:
             now: 0,
             approvals: 0,
         },
-        crate::workspace::VolumeView {
-            name: "project".into(),
-            agent: principal.id.clone(),
-            volume: volume.clone(),
-            lineage: principal.lineage.clone(),
-            generation: 0,
-            head: 0,
-            config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-            policy,
-            source: (),
-        },
-        [],
+        view("project".into(), volume.clone(), source),
+        volumes
+            .into_iter()
+            .map(|(name, volume, source)| view(name, volume, source)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        // Replacing a provider binding cannot change the namespace, access
+        // decisions or volume identity compiled at composition time.
+        #[test]
+        fn binding_keeps_the_composed_authority(sources in any::<[u8; 2]>()) {
+            let provider = crate::resources::ProviderRef::new(
+                "binding".into(), "filesystem".into(), "1".into(), &mut None,
+            ).unwrap();
+            let volume = |name: &str| VolumeRef::new(provider.clone(), name.into(),
+                VolumeClass::Project, VolumeOwner::Project("owner".into()), &mut None).unwrap();
+            let root = std::env::current_dir().unwrap();
+            let mut mounts = owner(&root, &volume("project"), sources[0],
+                [("data".into(), volume("data"), sources[1])]).unwrap();
+            let before: Vec<_> = mounts.mounts().map(|(path, mount)|
+                (path.to_owned(), mount.view.volume.clone(), mount.mode, mount.view.source)).collect();
+            for (_, mount) in mounts.mounts_mut() {
+                mount.view.source = mount.view.source.wrapping_add(1);
+            }
+            for (path, volume, mode, source) in before {
+                let (mounted, relative) = mounts.resolve(Path::new(&path)).unwrap();
+                prop_assert!(relative.is_empty());
+                prop_assert_eq!(&mounted.view.volume, &volume);
+                prop_assert_eq!(mounted.mode, mode);
+                prop_assert_eq!(mounted.view.source, source.wrapping_add(1));
+                prop_assert!(mounted.check(Action::Read, "file", 0).is_ok());
+                prop_assert!(mounted.check(Action::Write, "file", 0).is_ok());
+            }
+        }
+    }
 }

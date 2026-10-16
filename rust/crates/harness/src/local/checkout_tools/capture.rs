@@ -22,6 +22,13 @@ impl CheckoutTools {
         phase: u8,
         owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
     ) -> Result<()> {
+        for (_, mount) in self.mounts.mounts() {
+            if let Some(source) = &mount.view.source {
+                owner.verify(false, &mut None).await?;
+                source.sync().await.map_err(Error::from)?;
+                source.advance_to_head().await.map_err(Error::from)?;
+            }
+        }
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
         let options = &self.capture_options;
@@ -160,18 +167,24 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
         maximum_paths: MAXIMUM_PATHS,
         maximum_extent_spans: 65_536,
     };
-    let policy = CapturePolicy::excluding(
-        EXCLUDED
-            .iter()
-            .map(|name| {
-                let path =
-                    acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
-                        .map_err(storage)?;
-                NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
-                    .map_err(storage)
-            })
-            .collect::<Result<Vec<_>>>()?,
-    )
-    .map_err(storage)?;
+    let mut excluded = EXCLUDED
+        .iter()
+        .copied()
+        .chain(
+            workspace
+                .mounts
+                .mounts()
+                .map(|(path, _)| path)
+                .filter(|path| !path.is_empty()),
+        )
+        .map(|name| {
+            let path = acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
+                .map_err(storage)?;
+            NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
+                .map_err(storage)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    excluded.extend(workspace::volumes::excluded(&workspace.path, config)?);
+    let policy = CapturePolicy::excluding(excluded).map_err(storage)?;
     Ok((options, policy))
 }

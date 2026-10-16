@@ -23,7 +23,7 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    mounts: Arc<crate::workspace::MountTable<()>>,
+    mounts: Arc<workspace::Mounts>,
     task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     // Lock order: checkout state -> coordinator, released before task-file
     // index -> provider visibility -> provider state. Command-local git cache

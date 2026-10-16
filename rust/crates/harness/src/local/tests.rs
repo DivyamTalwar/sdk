@@ -22,6 +22,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(all(feature = "native-execution", unix))]
+mod volumes;
+
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))
 }

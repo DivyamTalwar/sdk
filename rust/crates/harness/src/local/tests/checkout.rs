@@ -1,7 +1,7 @@
 //! Stock default commands execute against and publish the same checkout.
 use super::*;
 
-fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
+pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall {
             call_id: format!("checkout-{index}"),

@@ -59,6 +59,13 @@ pub struct MountTable<T> {
 }
 
 impl<T> MountTable<T> {
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    pub(crate) fn mounts_mut(&mut self) -> impl Iterator<Item = (&str, &mut Mount<T>)> {
+        self.entries
+            .iter_mut()
+            .filter_map(|(path, mount)| mount.as_mut().map(|mount| (path.as_str(), mount)))
+    }
+
     /// Visible mounts in canonical path order; the primary path is empty.
     pub fn mounts(&self) -> impl Iterator<Item = (&str, &Mount<T>)> {
         self.entries
