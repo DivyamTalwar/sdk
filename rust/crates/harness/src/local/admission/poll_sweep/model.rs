@@ -158,11 +158,11 @@ impl ModelProvider for ModelEffects {
 
 pub(super) fn tool_turn() -> ScriptedTurn {
     ScriptedTurn::Events(vec![
-        ScriptedEvent::Event(ModelEvent::ToolCall {
-            call_id: "effect".into(),
-            name: "test.effect".into(),
-            arguments: serde_json::json!({}),
-        }),
+        ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+            "effect".into(),
+            "test.effect".into(),
+            serde_json::json!({}),
+        ))),
         ScriptedEvent::Event(ModelEvent::Completed {
             metadata: serde_json::Value::Null,
         }),
