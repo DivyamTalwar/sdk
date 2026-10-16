@@ -340,11 +340,11 @@ fn independently_selected_event_budget_still_rejects_excess_observations() -> Re
     };
     limits.validate(&mut None)?;
     let mut admission = ModelEventAdmission::default();
-    let event = ModelEvent::ToolCall {
-        call_id: "call-1".into(),
-        name: "example.echo".into(),
-        arguments: Value::Null,
-    };
+    let event = ModelEvent::ToolCall(crate::model::ToolCall::new(
+        "call-1".into(),
+        "example.echo".into(),
+        Value::Null,
+    ));
     admission.observe(&event, limits, None)?;
     assert!(matches!(
         admission.observe(&ModelEvent::Completed { metadata: Value::Null }, limits, None),

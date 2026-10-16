@@ -1,20 +1,46 @@
 use super::*;
 use crate::conversation::{ContentHold, FileRef};
-use crate::model::ToolResultContent;
+use crate::model::{ToolCall, ToolResultContent};
 use serde_json::Value;
 
-pub(crate) async fn read_invocation(
+pub(crate) async fn read_tool_call(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
     maximum: u64,
     io: Option<&PreparationIo>,
-) -> Result<(String, String, Value)> {
+) -> Result<ToolCall> {
     let (mut value, hold) = read_value(resolver, file, maximum, io).await?;
-    let source_hold = hold;
+    #[cfg(feature = "filesystem")]
+    let source_bytes = match (io, hold) {
+        (Some(_), Some(hold)) => {
+            let bytes = hold.bytes();
+            hold.into_retained()?;
+            Some(bytes)
+        }
+        (Some(io), None) => {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "observed tool value lacks ownership",
+            ));
+        }
+        (None, _) => None,
+    };
+    #[cfg(not(feature = "filesystem"))]
+    let _ = hold;
     #[cfg(feature = "filesystem")]
     let strings_hold;
-    crate::model::charge_items(io, 3)?;
+    crate::model::charge_items(io, 5)?;
     let object = value
+        .as_object_mut()
+        .ok_or_else(|| stock_boundary(io, Invalid, "tool invocation must be an object"))?;
+    let metadata = object.remove("metadata").ok_or_else(|| {
+        stock_boundary(io, Invalid, "recorded invocation lacks provider metadata")
+    })?;
+    let mut invocation = object
+        .remove("invocation")
+        .ok_or_else(|| stock_boundary(io, Invalid, "recorded invocation lacks its authority"))?;
+    let object = invocation
         .as_object_mut()
         .ok_or_else(|| stock_boundary(io, Invalid, "tool invocation must be an object"))?;
     let Some(Value::String(call_id)) = object.remove("call_id") else {
@@ -42,7 +68,8 @@ pub(crate) async fn read_invocation(
                 stock_boundary(Some(io), Invalid, "tool identity ownership overflows")
             })?;
         let argument_bytes = crate::executor::json::json_value_logical_owned_bytes(&arguments)?;
-        let source = source_hold.ok_or_else(|| {
+        let metadata_bytes = crate::executor::json::json_value_logical_owned_bytes(&metadata)?;
+        let source = source_bytes.ok_or_else(|| {
             stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
@@ -50,28 +77,30 @@ pub(crate) async fn read_invocation(
             )
         })?;
         let discarded = source
-            .bytes()
             .checked_sub(strings)
             .and_then(|bytes| bytes.checked_sub(argument_bytes))
+            .and_then(|bytes| bytes.checked_sub(metadata_bytes))
             .ok_or_else(|| {
                 stock_boundary(Some(io), Invalid, "tool fields exceed source ownership")
             })?;
         strings_hold = io.guard_owned(strings)?;
-        let arguments_hold = io.guard_owned(argument_bytes)?;
+        let arguments = (arguments, io.guard_owned(argument_bytes)?);
+        let metadata = (metadata, io.guard_owned(metadata_bytes)?);
         let discarded_hold = io.guard_owned(discarded)?;
-        source.into_retained()?;
-        drop(value);
-        drop(discarded_hold);
-        // The invocation envelope consumes one level of the 128-level bound.
-        let (arguments, hold) = convert::<Value>((arguments, arguments_hold), maximum, 127, io)?;
+        drop((value, invocation, discarded_hold));
+        // The record and invocation envelopes consume two levels.
+        let (arguments, hold) = convert::<Value>(arguments, maximum, 126, io)?;
+        hold.into_retained()?;
+        let (metadata, hold) = convert::<Value>(metadata, maximum, 127, io)?;
         hold.into_retained()?;
         strings_hold.into_retained()?;
-        return Ok((call_id, name, arguments));
+        return Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata));
     }
-    let _ = source_hold;
     let arguments = serde_json::from_value(arguments)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    Ok((call_id, name, arguments))
+    let metadata = serde_json::from_value(metadata)
+        .map_err(|error| Error::Invalid(format!("tool metadata is invalid: {error}")))?;
+    Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata))
 }
 
 pub(super) async fn read_result(

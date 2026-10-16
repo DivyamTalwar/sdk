@@ -11,7 +11,10 @@ mod usage;
 pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
 mod tests;
+mod tool_call;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use crate::executor::json::json_value_logical_owned_bytes;
 pub use content::{
     ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole, ToolResultContent,
 };
@@ -30,6 +33,7 @@ pub(crate) use preparation::{
 pub use provider::NativeModelStream;
 pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
 pub use request::{ModelRequest, PreparedModelRequest};
+pub use tool_call::ToolCall;
 
 use crate::store::HistoryIo;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
