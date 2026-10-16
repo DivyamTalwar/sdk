@@ -73,6 +73,11 @@ pub(crate) fn body(mut generation: Value, model: &str, adapter: Adapter) -> Resu
             "tool_choice",
             "text",
             "parallel_tool_calls",
+            "reasoning",
+            "personality",
+            "conversation",
+            "previous_response_id",
+            "truncation",
         ],
         Adapter::Anthropic => &[
             "model",

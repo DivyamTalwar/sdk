@@ -15,6 +15,7 @@ fn response_count_request_keeps_every_input_field_without_generation_controls() 
     let original = json!({"model":"gpt-6-luna", "input":[{"role":"user", "content":"dense"}],
         "instructions":"system", "tools":[{"type":"function", "name":"echo"}],
         "tool_choice":"required", "parallel_tool_calls":false,
+        "reasoning":{"effort":"high"}, "personality":"pragmatic", "truncation":"disabled",
         "text":{"format":{"type":"json_schema", "name":"result", "schema":{"type":"object"}}},
         "stream":true, "store":false, "max_output_tokens":128});
     let mut expected = original.clone();
