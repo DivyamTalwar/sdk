@@ -81,6 +81,11 @@ fn group(byte: u8) -> usize {
 }
 
 impl Delimiters {
+    pub(super) fn reset(&mut self) {
+        self.entries.clear();
+        self.heads = Snapshot::default();
+    }
+
     pub(super) fn snapshot(&self) -> Snapshot {
         self.heads
     }
@@ -190,10 +195,23 @@ impl Delimiters {
         (latest != 0).then_some(latest)
     }
 
-    pub(super) fn feed(&mut self, run: Run, mut matched: impl FnMut(Matched) -> (usize, usize)) {
+    pub(super) fn feed(
+        &mut self,
+        run: Run,
+        mut matched: impl FnMut(Matched) -> (usize, usize),
+    ) -> Range<usize> {
         let original = run.range.len();
+        self.feed_original(run, original, |value, _| matched(value))
+    }
+
+    pub(super) fn feed_original(
+        &mut self,
+        run: Run,
+        original: usize,
+        mut matched: impl FnMut(Matched, Snapshot) -> (usize, usize),
+    ) -> Range<usize> {
         if original == 0 || run.byte == b'~' && original > 2 {
-            return;
+            return run.range;
         }
         let both = run.open && run.close;
         let mut remaining = run.range;
@@ -220,17 +238,21 @@ impl Delimiters {
             let open = opener.end - count..opener.end;
             let close = remaining.start..remaining.start + count;
             let floor = self.heads.tilde_floor.min(before.depth);
+            let heads = self.snapshot();
             self.restore(before);
             self.heads.tilde_floor = floor;
             remaining.start += count;
             let opener_end = open.start;
-            let (left, right) = matched(Matched {
-                opener: open,
-                closer: close,
-                byte: run.byte,
-                opener_cursor,
-                closer_cursor: cursor,
-            });
+            let (left, right) = matched(
+                Matched {
+                    opener: open,
+                    closer: close,
+                    byte: run.byte,
+                    opener_cursor,
+                    closer_cursor: cursor,
+                },
+                heads,
+            );
             if opener.start < opener_end {
                 self.push(
                     opener.start..opener_end,
@@ -243,8 +265,9 @@ impl Delimiters {
             cursor = right;
         }
         if run.open && !remaining.is_empty() {
-            self.push(remaining, original, run.byte, both, cursor);
+            self.push(remaining.clone(), original, run.byte, both, cursor);
         }
+        remaining
     }
 
     #[cfg(test)]

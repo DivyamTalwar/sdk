@@ -14,6 +14,7 @@ use tokens::{Kind, Tokens};
 pub(super) struct Scanner {
     tokens: Tokens,
     atomic: Vec<Range<usize>>,
+    state: State,
 }
 
 #[derive(Default)]
@@ -126,12 +127,15 @@ impl Scanner {
                     .and_then(|text| text.chars().next_back()),
             ),
             atomic: Vec::new(),
+            state: State::default(),
         }
     }
 
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.tokens.retained() + self.atomic.capacity() * std::mem::size_of::<Range<usize>>()
+        self.tokens.retained()
+            + self.atomic.capacity() * std::mem::size_of::<Range<usize>>()
+            + self.state.retained()
     }
 
     pub(super) fn discard_before(&mut self, position: usize) {
@@ -177,7 +181,8 @@ impl Scanner {
         let pending = self.tokens.preview().map(|token| token.range.start);
         let pending = pending.map(|start| start.saturating_sub(base) + sentinel);
         let (mut opaque, mut link) = (0, 0);
-        let mut state = State::default();
+        let state = &mut self.state;
+        state.reset();
         let mut frontier = sentinel;
         for token in &self.tokens.ready {
             #[cfg(test)]
@@ -200,7 +205,15 @@ impl Scanner {
             return sentinel;
         }
         let candidate = frontier.max(state.earliest(pending.unwrap_or(source.len())));
-        self.forbid_splits(syntax.outer, state.forest.scopes(), base, sentinel);
+        let scopes = if let Some(mut pending) = self.tokens.preview() {
+            pending.range = pending.range.start.saturating_sub(base) + sentinel
+                ..pending.range.end.saturating_sub(base) + sentinel;
+            let root = state.projection(Some(&pending));
+            state.forest.scopes_at(root)
+        } else {
+            state.forest.scopes()
+        };
+        self.forbid_splits(syntax.outer, scopes, base, sentinel);
         self.checkpoint(base + candidate.saturating_sub(sentinel))
             .saturating_sub(base)
             + sentinel

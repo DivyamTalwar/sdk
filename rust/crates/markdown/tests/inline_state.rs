@@ -16,6 +16,54 @@ fn full(source: &str) -> crate::Line {
     lines.pop().expect("one inline paragraph")
 }
 
+fn hyphen_is_italic(line: &crate::Line) -> bool {
+    line.spans
+        .iter()
+        .any(|span| span.style.italic && span.text.contains(['‐']))
+}
+
+#[test]
+fn retained_flanking_preserves_every_ascii_predecessor() {
+    for before in 0u8..=127 {
+        let source = format!("x{}*‐* x", char::from(before));
+        let mut tokens = Tokens::default();
+        let mut state = State::default();
+        for (offset, character) in source.char_indices() {
+            feed(
+                &mut state,
+                &mut tokens,
+                source
+                    .get(..offset + character.len_utf8())
+                    .expect("UTF-8 prefix"),
+            );
+        }
+        let actual = state
+            .forest
+            .rendered(&source)
+            .expect("retained inline forest");
+        assert_eq!(
+            hyphen_is_italic(&actual),
+            hyphen_is_italic(&full(&source)),
+            "ASCII {before}"
+        );
+    }
+}
+
+#[test]
+fn flanking_property_detects_substituting_control_with_punctuation() {
+    let source = "x\u{e}*‐* x";
+    // This neutral boundary is exactly where the old synthetic parser context
+    // substituted punctuation for the real non-whitespace control character.
+    let mut tokens = Tokens::at(2, Some('.'));
+    let mut state = State::default();
+    feed(&mut state, &mut tokens, source);
+    let actual = state
+        .forest
+        .rendered(source)
+        .expect("retained inline forest");
+    assert_ne!(hyphen_is_italic(&actual), hyphen_is_italic(&full(source)));
+}
+
 fn parts() -> impl Strategy<Value = Vec<&'static str>> {
     prop::collection::vec(
         prop::sample::select(vec![
@@ -46,19 +94,122 @@ proptest! {
         boundaries.dedup();
         let mut tokens = Tokens::default();
         let mut state = State::default();
+        let mut replayed = State::default();
         for boundary in boundaries {
             let prefix = source.get(..boundary).expect("UTF-8 prefix");
             feed(&mut state, &mut tokens, prefix);
             prop_assert!(!state.invalid);
-            // EOF tokens remain speculative. Here the lexical right flank is
-            // settled, so compare the retained forest without finalizing EOF.
-            if tokens.neutral() && !prefix.is_empty() {
-                prop_assert_eq!(state.forest.rendered(prefix), Some(full(prefix)), "prefix {:?}", prefix);
+            let before = state.snapshot();
+            let root = state.projection(tokens.preview().as_ref());
+            prop_assert_eq!(state.snapshot(), before, "EOF changed settled scanner state");
+            if !prefix.is_empty() {
+                prop_assert_eq!(state.forest.rendered_at(root, prefix), Some(full(prefix)), "prefix {:?}", prefix);
+            } else {
+                prop_assert_eq!(root, 0);
             }
+            replayed.reset();
+            let mut fresh = Tokens::default();
+            feed(&mut replayed, &mut fresh, prefix);
+            let replayed_root = replayed.projection(fresh.preview().as_ref());
+            prop_assert_eq!(replayed.forest.rendered_at(replayed_root, prefix), state.forest.rendered_at(root, prefix));
         }
         prop_assert!(tokens.neutral());
         prop_assert_eq!(state.forest.rendered(&source), Some(full(&source)));
     }
+
+    #[test]
+    fn growing_eof_runs_and_their_real_flanks_match_full_parse(
+        parts in parts(),
+        marker in prop::sample::select(vec!['*', '_', '~', '`']),
+        escaped in any::<bool>(),
+        count in 1usize..64,
+        flank in prop::sample::select(vec!["x", " ", ".", "‐", "¡"]),
+    ) {
+        let mut source = format!("x {}z", parts.concat());
+        let mut tokens = Tokens::default();
+        let mut state = State::default();
+        feed(&mut state, &mut tokens, &source);
+        if escaped { source.push('\\'); }
+        for _ in 0..count {
+            source.push(marker);
+            feed(&mut state, &mut tokens, &source);
+            let before = state.snapshot();
+            let root = state.projection(tokens.preview().as_ref());
+            prop_assert_eq!(state.snapshot(), before);
+            prop_assert!(!tokens.neutral());
+            prop_assert_eq!(state.forest.rendered_at(root, &source), Some(full(&source)),
+                "EOF source {:?}", source);
+        }
+        source.push_str(flank);
+        feed(&mut state, &mut tokens, &source);
+        let root = state.projection(tokens.preview().as_ref());
+        prop_assert_eq!(state.forest.rendered_at(root, &source), Some(full(&source)),
+            "real flank source {:?}", source);
+    }
+}
+
+fn eof_work(count: usize, replay: bool, partial: bool) -> (usize, usize, usize) {
+    let mut source = format!(
+        "x {}z",
+        if partial {
+            "*".repeat(3 * count)
+        } else {
+            "*x ".repeat(count)
+        }
+    );
+    let mut state = State {
+        replay_eof: replay,
+        ..State::default()
+    };
+    let mut tokens = Tokens::default();
+    let before = crate::work::current();
+    feed(&mut state, &mut tokens, &source);
+    for _ in 0..count {
+        source.push('*');
+        feed(&mut state, &mut tokens, &source);
+        state.projection(tokens.preview().as_ref());
+    }
+    source.push_str(" x");
+    feed(&mut state, &mut tokens, &source);
+    let work = crate::work::current() - before;
+    assert_eq!(state.forest.rendered(&source), Some(full(&source)));
+    (work, state.retained() + tokens.retained(), source.len())
+}
+
+#[test]
+fn eof_projection_has_linear_work_and_storage() {
+    for partial in [false, true] {
+        for count in [64, 128, 256, 1024] {
+            let small = eof_work(count, false, partial);
+            let large = eof_work(count * 2, false, partial);
+            assert!(
+                large.0 <= 128 * large.2 + 4096,
+                "partial {partial}: {} work for {} bytes",
+                large.0,
+                large.2
+            );
+            assert!(
+                large.0 <= 2 * small.0 + 4096,
+                "partial {partial}: work {} -> {}",
+                small.0,
+                large.0
+            );
+            assert!(
+                large.1 <= 2 * small.1 + 4096,
+                "partial {partial}: storage {} -> {}",
+                small.1,
+                large.1
+            );
+        }
+    }
+}
+
+#[test]
+fn work_property_detects_replaying_eof_matches() {
+    let small = eof_work(64, true, false);
+    let large = eof_work(128, true, false);
+    assert!(large.0 > 2 * small.0 + 4096);
+    assert!(large.1 > 2 * small.1 + 4096);
 }
 
 fn measure(count: usize, rescan: bool) -> (usize, usize, usize) {

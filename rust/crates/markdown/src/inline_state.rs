@@ -4,6 +4,8 @@ use super::{
     tokens::Kind,
 };
 use std::{collections::HashMap, ops::Range};
+#[path = "inline_eof.rs"]
+mod eof;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -16,10 +18,13 @@ pub(super) struct State {
     opaque: Option<usize>,
     codes: Vec<Code>,
     code_lengths: HashMap<usize, usize>,
+    eof: Option<Box<eof::Projections>>,
     #[cfg(test)]
     stale: bool,
     #[cfg(test)]
     rescan: bool,
+    #[cfg(test)]
+    replay_eof: bool,
 }
 
 struct Bracket {
@@ -28,7 +33,7 @@ struct Bracket {
     frontier: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Snapshot {
     delimiter: delimiters::Snapshot,
     forest: usize,
@@ -43,6 +48,29 @@ struct Code {
 }
 
 impl State {
+    pub(super) fn reset(&mut self) {
+        self.delimiter.reset();
+        self.forest.reset();
+        self.invalid = false;
+        self.brackets.clear();
+        self.bracket = 0;
+        self.labels = [None, None];
+        self.opaque = None;
+        for code in &self.codes {
+            #[cfg(test)]
+            crate::work::scan(1);
+            self.code_lengths.remove(&code.opening.len());
+        }
+        self.codes.clear();
+        debug_assert!(
+            self.code_lengths.is_empty(),
+            "every code opener has one index entry"
+        );
+        if let Some(eof) = &mut self.eof {
+            eof.invalidate();
+        }
+    }
+
     fn snapshot(&self) -> Snapshot {
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<Snapshot>());
@@ -91,11 +119,17 @@ impl State {
     }
 
     pub(super) fn opaque_text(&mut self, range: Range<usize>) {
+        if let Some(eof) = &mut self.eof {
+            eof.invalidate();
+        }
         self.forest.text(range);
         self.labels = [None, None];
     }
 
     pub(super) fn feed(&mut self, range: Range<usize>, kind: Kind, linked: bool) {
+        if let Some(eof) = &mut self.eof {
+            eof.invalidate();
+        }
         #[cfg(test)]
         if self.rescan {
             self.forest.scopes();
@@ -170,6 +204,20 @@ impl State {
         }
     }
 
+    pub(super) fn projection(&mut self, token: Option<&super::tokens::Token>) -> usize {
+        if token.is_none() {
+            return self.forest.snapshot();
+        }
+        let mut eof = self.eof.take().unwrap_or_default();
+        #[cfg(test)]
+        if self.replay_eof {
+            eof.invalidate();
+        }
+        let root = eof.project(self, token);
+        self.eof = Some(eof);
+        root
+    }
+
     fn ticks(&mut self, range: Range<usize>, escaped: bool) {
         let physical = range.start + usize::from(escaped)..range.end;
         #[cfg(test)]
@@ -239,6 +287,10 @@ impl State {
             + self.brackets.capacity() * std::mem::size_of::<Bracket>()
             + self.codes.capacity() * std::mem::size_of::<Code>()
             + self.code_lengths.capacity() * std::mem::size_of::<(usize, usize)>()
+            + self
+                .eof
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<eof::Projections>())
     }
 }
 

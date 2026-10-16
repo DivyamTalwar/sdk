@@ -97,13 +97,17 @@ impl Tokens {
                 start,
                 byte,
                 before,
-                ..
+                escaped,
             } => (
                 start,
-                Kind::Run {
-                    byte,
-                    before,
-                    after: ' ',
+                if escaped {
+                    Kind::Escape(char::from(byte))
+                } else {
+                    Kind::Run {
+                        byte,
+                        before,
+                        after: ' ',
+                    }
                 },
             ),
             Pending::Escape(start) | Pending::Bang(start) | Pending::Entity(start) => {

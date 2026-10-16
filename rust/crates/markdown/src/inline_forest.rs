@@ -20,9 +20,12 @@ struct Node {
     kind: Kind,
 }
 
+const PAGE: usize = 8;
+
 #[derive(Default)]
 pub(super) struct Forest {
-    nodes: Vec<Node>,
+    nodes: Vec<Vec<Node>>,
+    length: usize,
     root: usize,
     #[cfg(test)]
     scan: bool,
@@ -31,12 +34,17 @@ pub(super) struct Forest {
 }
 
 impl Forest {
+    pub(super) fn reset(&mut self) {
+        self.length = 0;
+        self.root = 0;
+    }
+
     pub(super) fn snapshot(&self) -> usize {
         self.root
     }
 
     pub(super) fn restore(&mut self, cursor: usize) -> bool {
-        if cursor > self.nodes.len() {
+        if cursor > self.length {
             return false;
         }
         self.root = cursor;
@@ -44,27 +52,47 @@ impl Forest {
     }
 
     fn node(&self, cursor: usize) -> Option<&Node> {
-        cursor
-            .checked_sub(1)
-            .and_then(|index| self.nodes.get(index))
+        if cursor > self.length {
+            return None;
+        }
+        let index = cursor.checked_sub(1)?;
+        self.nodes.get(index / PAGE)?.get(index % PAGE)
+    }
+
+    pub(super) fn text_prefix(&self, cursor: usize) -> Option<(usize, Range<usize>)> {
+        let node = self.node(cursor)?;
+        (node.kind == Kind::Text).then(|| (node.previous, node.range.clone()))
     }
 
     fn append(&mut self, range: Range<usize>, children: usize, stop: usize, kind: Kind) -> usize {
         #[cfg(test)]
-        {
-            crate::work::scan(1);
-            if self.nodes.len() == self.nodes.capacity() {
-                crate::work::copy(self.nodes.len() * std::mem::size_of::<Node>());
+        crate::work::scan(1);
+        if self.length.is_multiple_of(PAGE) {
+            if self.length / PAGE == self.nodes.len() {
+                #[cfg(test)]
+                if self.nodes.len() == self.nodes.capacity() {
+                    crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Node>>());
+                }
+                self.nodes.push(Vec::with_capacity(PAGE));
+            } else {
+                self.nodes
+                    .get_mut(self.length / PAGE)
+                    .expect("existing node page")
+                    .clear();
             }
         }
-        self.nodes.push(Node {
-            previous: self.root,
-            range,
-            children,
-            stop,
-            kind,
-        });
-        self.root = self.nodes.len();
+        self.nodes
+            .get_mut(self.length / PAGE)
+            .expect("node page allocated")
+            .push(Node {
+                previous: self.root,
+                range,
+                children,
+                stop,
+                kind,
+            });
+        self.length += 1;
+        self.root = self.length;
         self.snapshot()
     }
 
@@ -149,7 +177,10 @@ impl Forest {
     }
 
     pub(super) fn scopes(&self) -> Vec<Range<usize>> {
-        let mut cursor = self.root;
+        self.scopes_at(self.root)
+    }
+
+    pub(super) fn scopes_at(&self, mut cursor: usize) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         while let Some(node) = self.node(cursor) {
             #[cfg(test)]
@@ -180,17 +211,27 @@ impl Forest {
 
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.nodes.capacity() * std::mem::size_of::<Node>()
+        self.nodes.capacity() * std::mem::size_of::<Vec<Node>>()
+            + self
+                .nodes
+                .iter()
+                .map(|page| page.capacity() * std::mem::size_of::<Node>())
+                .sum::<usize>()
     }
 
     #[cfg(test)]
     pub(super) fn rendered(&self, source: &str) -> Option<crate::Line> {
+        self.rendered_at(self.root, source)
+    }
+
+    #[cfg(test)]
+    pub(super) fn rendered_at(&self, root: usize, source: &str) -> Option<crate::Line> {
         use crate::Style;
         enum Task {
             List(usize, usize, Style),
             Value(usize, Style),
         }
-        let mut tasks = vec![Task::List(self.root, 0, Style::default())];
+        let mut tasks = vec![Task::List(root, 0, Style::default())];
         let mut line = crate::Line::default();
         let end = source.trim_end_matches([' ', '\t']).len();
         while let Some(task) = tasks.pop() {
