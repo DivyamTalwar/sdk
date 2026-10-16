@@ -53,7 +53,9 @@ proptest::proptest! {
                 let cursor = files.cursor.clone();
                 let previous = generation.clone();
                 generation = volume.append(generation, &Write::new(current.clone(), command(&name))).await.unwrap();
-                let ready = files.read_change().now_or_never();
+                // Poll the accepted in-memory cut once, independently of the
+                // enclosing task's cooperative budget; never wait for absent data.
+                let ready = tokio::task::unconstrained(files.read_change()).now_or_never();
                 if generation == previous {
                     proptest::prop_assert!(ready.is_none());
                     proptest::prop_assert_eq!(&files.cursor, &cursor);
