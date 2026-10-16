@@ -88,7 +88,7 @@ impl Markdown {
         } else {
             base + range.start.saturating_sub(prefix) + length
         };
-        self.stable_lines = self.lines.len();
+        self.set_stable_lines(self.lines.len());
         self.fence = Some(Fence {
             indented,
             pending: String::new(),
@@ -150,7 +150,7 @@ impl Markdown {
                 if self.context.is_empty() {
                     self.lines.push(Line::default());
                 }
-                self.stable_lines = self.lines.len();
+                self.set_stable_lines(self.lines.len());
                 return true;
             }
             if !raw.ends_with('\n') {
@@ -168,7 +168,7 @@ impl Markdown {
                 if self.context.is_empty() {
                     self.lines.push(Line::default());
                 }
-                self.stable_lines = self.lines.len();
+                self.set_stable_lines(self.lines.len());
                 return true;
             }
             if let FenceLine::Text(line) = decoded {
@@ -179,7 +179,7 @@ impl Markdown {
             }
         }
         self.lines.extend(out.lines);
-        self.stable_lines = self.lines.len();
+        self.set_stable_lines(self.lines.len());
         let raw = self.source.get(self.offset..).unwrap_or_default();
         #[cfg(test)]
         if (fence.indented && !indented_blank(raw, &fence))

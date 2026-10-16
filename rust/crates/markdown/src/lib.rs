@@ -3,6 +3,7 @@
 
 mod code;
 mod events;
+mod reference_render;
 mod references;
 mod render;
 mod stream_code;
@@ -25,6 +26,8 @@ pub struct Markdown {
     source: String,
     offset: usize,
     stable_lines: usize,
+    stable_visible_lines: usize,
+    visible_lines: usize,
     lines: Vec<Line>,
     state: render::Renderer,
     context: Vec<Container>,
@@ -44,6 +47,10 @@ pub struct Markdown {
     reference_cache_visits: usize,
     #[cfg(test)]
     reference_moved_lines: usize,
+    #[cfg(test)]
+    boundary_work: usize,
+    #[cfg(test)]
+    visible_work: std::cell::Cell<usize>,
 }
 
 #[derive(Clone)]
@@ -114,7 +121,7 @@ impl Markdown {
     /// A consumer can truncate its presentation there and replace the suffix
     /// from [`Self::lines`]. Empty deltas leave the presentation unchanged.
     pub fn push(&mut self, delta: &str) -> usize {
-        let old_len = self.lines().len();
+        let old_len = self.visible_lines;
         if delta.is_empty() {
             return old_len;
         }
@@ -152,6 +159,7 @@ impl Markdown {
         let mut changed = self.stable_lines.min(old_len);
         self.lines.truncate(self.stable_lines);
         if self.fence.is_some() && !self.advance_fence() {
+            self.finish_visible();
             return changed;
         }
         loop {
@@ -164,18 +172,39 @@ impl Markdown {
                 break;
             }
         }
+        self.finish_visible();
         changed
     }
 
     /// Current unwrapped lines. A partial delimiter remains visible until it
     /// forms valid Markdown; no input is hidden waiting for a future delta.
     pub fn lines(&self) -> &[Line] {
-        let end = self
-            .lines
+        &self.lines[..self.visible_lines]
+    }
+
+    fn visible_end(&self, start: usize, end: usize, fallback: usize) -> usize {
+        self.lines[start..end]
             .iter()
-            .rposition(|line| !line.spans.is_empty())
-            .map_or(0, |index| index + 1);
-        self.lines.get(..end).unwrap_or_default()
+            .rposition(|line| {
+                #[cfg(test)]
+                self.visible_work.set(self.visible_work.get() + 1);
+                !line.spans.is_empty()
+            })
+            .map_or(fallback, |index| start + index + 1)
+    }
+
+    fn finish_visible(&mut self) {
+        self.visible_lines = self.visible_end(
+            self.stable_lines,
+            self.lines.len(),
+            self.stable_visible_lines,
+        );
+    }
+
+    fn set_stable_lines(&mut self, length: usize) {
+        self.stable_visible_lines =
+            self.visible_end(self.stable_lines, length, self.stable_visible_lines);
+        self.stable_lines = length;
     }
 
     /// Recover the Markdown source with CRLF and CR normalized to LF.
@@ -203,102 +232,6 @@ impl Markdown {
         }
     }
 
-    fn resolve(&mut self, keys: &HashSet<Key>) -> usize {
-        let mut affected: HashSet<usize> = HashSet::new();
-        for key in keys {
-            if let Some(indices) = self.dependencies.get(key) {
-                affected.extend(indices);
-            }
-        }
-        if affected.is_empty() {
-            return self.stable_lines;
-        }
-        let mut changed = self.stable_lines;
-        let mut replacements = HashMap::new();
-        let mut length = self.lines.len();
-        let mut resize = false;
-        for index in affected {
-            #[cfg(test)]
-            {
-                self.reference_cache_visits += 1;
-            }
-            let Some(cache) = self.cached.get(index) else {
-                continue;
-            };
-            let mut renderer = cache.state.checkpoint();
-            for event in cache.template.events(&self.references) {
-                renderer.event(&event);
-            }
-            renderer.flush();
-            changed = changed.min(cache.lines.start);
-            length = length - cache.lines.len() + renderer.lines.len();
-            resize |= cache.lines.len() != renderer.lines.len();
-            replacements.insert(index, renderer.lines);
-        }
-        if resize {
-            self.replace_reference_lines(replacements, length);
-        } else {
-            for (index, lines) in replacements {
-                #[cfg(test)]
-                {
-                    self.reference_cache_visits += 1;
-                    self.reference_moved_lines += lines.len();
-                }
-                if let Some(cache) = self.cached.get(index) {
-                    for (target, line) in self
-                        .lines
-                        .get_mut(cache.lines.clone())
-                        .unwrap_or_default()
-                        .iter_mut()
-                        .zip(lines)
-                    {
-                        *target = line;
-                    }
-                }
-            }
-        }
-        changed
-    }
-
-    fn replace_reference_lines(
-        &mut self,
-        mut replacements: HashMap<usize, Vec<Line>>,
-        length: usize,
-    ) {
-        let previous = std::mem::take(&mut self.lines);
-        let previous_length = previous.len();
-        let mut previous = previous.into_iter();
-        let mut cursor = 0;
-        let mut lines = Vec::with_capacity(length);
-        // Caches are appended in source order. Walk them once while consuming
-        // each old line once; neither splice a suffix nor rescan cache ranges.
-        for (index, cache) in self.cached.iter_mut().enumerate() {
-            #[cfg(test)]
-            {
-                self.reference_cache_visits += 1;
-            }
-            let range = cache.lines.clone();
-            if let Some(replacement) = replacements.remove(&index) {
-                lines.extend(previous.by_ref().take(range.start - cursor));
-                previous.by_ref().take(range.len()).for_each(drop);
-                cursor = range.end;
-                cache.lines.start = lines.len();
-                lines.extend(replacement);
-                cache.lines.end = lines.len();
-            } else {
-                let start = range.start - cursor + lines.len();
-                cache.lines = start..start + range.len();
-            }
-        }
-        lines.extend(previous);
-        #[cfg(test)]
-        {
-            self.reference_moved_lines += lines.len();
-        }
-        self.stable_lines = self.stable_lines - previous_length + lines.len();
-        self.lines = lines;
-    }
-
     fn parse_tail(&mut self) -> bool {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
@@ -309,6 +242,12 @@ impl Markdown {
         }
         let events = events::parse(&source, &self.references);
         self.seal_leading_definitions(base, &source, &events);
+        let following_blocks = following_blocks(&source, &events);
+        #[cfg(test)]
+        {
+            // Charge the full newline-search input and each reverse-sweep event.
+            self.boundary_work += source.len() + events.len();
+        }
         let mut out = self.state.checkpoint();
         let mut stack = self.context.clone();
         let mut candidate = None;
@@ -372,11 +311,20 @@ impl Markdown {
                 if stack.is_empty() {
                     out.lines.push(Line::default());
                 }
-                let following = events.get(index + 1..).unwrap_or_default();
-                let next_block = next_block_complete(&source, following);
+                if matches!(
+                    end,
+                    TagEnd::Emphasis
+                        | TagEnd::Strong
+                        | TagEnd::Strikethrough
+                        | TagEnd::Link
+                        | TagEnd::Image
+                ) {
+                    continue;
+                }
+                let next_block = following_blocks[index];
                 if range.end >= prefix.len()
                     && (leaf_end || (stack.is_empty() && next_block))
-                    && (closed || sealed(&source, range.end, *end, following))
+                    && (closed || sealed(&source, range.end, *end, next_block))
                 {
                     candidate = Some((
                         base + range.end - prefix.len(),
@@ -422,7 +370,7 @@ impl Markdown {
     ) {
         if let Some((offset, lines, state, context)) = candidate {
             self.offset = offset;
-            self.stable_lines = lines;
+            self.set_stable_lines(lines);
             self.state = state;
             self.context = context;
             for (end, cache) in caches {
@@ -656,9 +604,8 @@ fn context_prefix(context: &[Container]) -> String {
     prefix
 }
 
-fn sealed(source: &str, end: usize, tag: TagEnd, following: &[(Event<'_>, Range<usize>)]) -> bool {
+fn sealed(source: &str, end: usize, tag: TagEnd, next_complete: bool) -> bool {
     let rest = source.get(end..).unwrap_or_default();
-    let next_complete = next_block_complete(source, following);
     if tag == TagEnd::Table {
         let rest = if source.as_bytes().get(end.saturating_sub(1)) == Some(&b'\n') {
             rest
@@ -680,15 +627,17 @@ fn blank_line(source: &str) -> bool {
     })
 }
 
-fn next_block_complete(source: &str, following: &[(Event<'_>, Range<usize>)]) -> bool {
+fn following_blocks(source: &str, events: &[(Event<'_>, Range<usize>)]) -> Vec<bool> {
+    let newline = source.rfind('\n');
+    let mut next = false;
+    let mut following = vec![false; events.len()];
+    for (index, (event, range)) in events.iter().enumerate().rev() {
+        following[index] = next;
+        if matches!(event, Event::Start(_)) {
+            next = newline.is_some_and(|newline| range.start <= newline);
+        }
+    }
     following
-        .iter()
-        .find(|(event, _)| matches!(event, Event::Start(_)))
-        .is_some_and(|(_, range)| {
-            source
-                .get(range.start..)
-                .is_some_and(|tail| tail.contains('\n'))
-        })
 }
 
 fn options() -> Options {

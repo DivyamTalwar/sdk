@@ -3,6 +3,7 @@ use crate::{
     style::{BLUE, CYAN, MAGENTA, MUTED, YELLOW},
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
+use std::sync::Arc;
 
 pub(crate) fn render_styled(events: &[Event<'_>], style: Style) -> Vec<Line> {
     let mut out = Renderer {
@@ -20,9 +21,9 @@ pub(crate) fn render_styled(events: &[Event<'_>], style: Style) -> Vec<Line> {
 pub(crate) struct Renderer {
     pub(crate) lines: Vec<Line>,
     line: Line,
-    styles: Vec<(Style, Option<String>)>,
+    styles: Vec<(Style, Option<Arc<str>>)>,
     style: Style,
-    link: Option<String>,
+    link: Option<Arc<str>>,
     lists: Vec<Option<u64>>,
     prefixes: Vec<String>,
     code: Option<code::Code>,
@@ -57,7 +58,7 @@ impl Renderer {
             self.line.push(
                 part.trim_end_matches(['\r', '\n']),
                 self.style,
-                self.link.as_deref(),
+                self.link.as_ref(),
             );
             if part.ends_with(['\r', '\n']) {
                 if self.line.spans.is_empty() {
@@ -163,7 +164,7 @@ impl Renderer {
             Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
                 self.style.foreground = Some(BLUE);
                 self.style.underline = true;
-                self.link = Some(dest_url.to_string());
+                self.link = Some(Arc::from(dest_url.as_ref()));
             }
             Tag::BlockQuote(_) => {
                 self.flush();

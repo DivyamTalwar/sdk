@@ -32,7 +32,7 @@ impl Table {
                             cell.push(" ↵ ", self.style, None);
                         }
                         for span in line.spans {
-                            cell.push(&span.text, span.style, span.link.as_deref());
+                            cell.push(&span.text, span.style, span.link.as_ref());
                         }
                     }
                     row.push(cell);
@@ -69,7 +69,7 @@ impl Table {
                 line.push(&" ".repeat(left + 1), Style::default(), None);
                 for mut span in cell.spans {
                     span.style.bold |= index == 0;
-                    line.push(&span.text, span.style, span.link.as_deref());
+                    line.push(&span.text, span.style, span.link.as_ref());
                 }
                 line.push(&" ".repeat(padding - left + 1), Style::default(), None);
                 line.push("│", MUTED, None);

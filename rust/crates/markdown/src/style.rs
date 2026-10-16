@@ -1,5 +1,7 @@
 //! Renderer-independent presentation values.
 
+use std::sync::Arc;
+
 /// An RGB foreground color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color(pub u8, pub u8, pub u8);
@@ -29,7 +31,7 @@ pub struct Span {
     /// Presentation attributes.
     pub style: Style,
     /// Link target, retained independently of the visible label.
-    pub link: Option<String>,
+    pub link: Option<Arc<str>>,
 }
 
 /// One unwrapped display line. The renderer owns viewport layout.
@@ -40,20 +42,24 @@ pub struct Line {
 }
 
 impl Line {
-    pub(crate) fn push(&mut self, text: &str, style: Style, link: Option<&str>) {
+    pub(crate) fn push(&mut self, text: &str, style: Style, link: Option<&Arc<str>>) {
         if text.is_empty() {
             return;
         }
         if let Some(last) = self.spans.last_mut()
             && last.style == style
-            && last.link.as_deref() == link
+            && match (&last.link, link) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
         {
             last.text.push_str(text);
         } else {
             self.spans.push(Span {
                 text: text.into(),
                 style,
-                link: link.map(str::to_owned),
+                link: link.cloned(),
             });
         }
     }
