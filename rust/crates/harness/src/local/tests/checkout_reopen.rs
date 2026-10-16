@@ -378,12 +378,20 @@ async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -
             );
         }
         let workspace_id = workspace.id();
+        drop(coordinator);
         drop(harness);
         harness = LocalHarness::open(LocalHarnessConfig::new(
             directory.path(),
             (model()?, provider.clone()),
         ))
         .await?;
+        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
+            harness
+                .workspace()
+                .unwrap()
+                .filesystem
+                .operation_window_store(),
+        );
         run(&harness).await?;
         assert!(matches!(
             coordinator
