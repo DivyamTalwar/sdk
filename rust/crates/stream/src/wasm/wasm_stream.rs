@@ -81,12 +81,20 @@ impl WasmStream {
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
-                let tail = self.provider.tail(path).await.map_err(js_error)?;
-                wire::TailResponse {
-                    tail,
-                    ..Default::default()
+                if request.accepted {
+                    let marks = self.provider.watermarks(path).await.map_err(js_error)?;
+                    wire::TailResponse {
+                        tail: marks.accepted,
+                        durable: Some(marks.durable),
+                    }
+                    .encode_to_vec()
+                } else {
+                    wire::TailResponse {
+                        tail: self.provider.tail(path).await.map_err(js_error)?,
+                        durable: None,
+                    }
+                    .encode_to_vec()
                 }
-                .encode_to_vec()
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;
