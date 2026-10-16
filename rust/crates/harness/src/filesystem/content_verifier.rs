@@ -373,15 +373,6 @@ where
         let io = temporary.as_ref().or(io);
         self.verify_creation(reference.volume(), Some(reference), io)
             .await?;
-        if self.exact_file.is_some() {
-            return self
-                .host
-                .read_pinned_io(reference, maximum_bytes.min(self.maximum_bytes), io)
-                .await;
-        }
-        if io.is_none() {
-            self.verifier.verify(&self.scope, &mut None)?;
-        }
         let unmeasured;
         let authority_io = if let Some(io) = io {
             io
@@ -389,7 +380,15 @@ where
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        require_file_read(&self.scope, reference, authority_io)?;
+        self.host
+            .require_file_read_access(
+                &self.verifier,
+                &self.scope,
+                reference,
+                self.exact_file.is_some(),
+                authority_io,
+            )
+            .await?;
         let bytes = self
             .host
             .read_pinned_io(reference, maximum_bytes.min(self.maximum_bytes), io)

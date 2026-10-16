@@ -14,6 +14,7 @@ members = ["."]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [features]
+filesystem-access = ["acyclic-harness/test-support", "acyclic-harness/filesystem"]
 notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
@@ -26,6 +27,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 which = "=8.0.6"
+
+[[bin]]
+name = "filesystem_access"
+path = "fuzz_targets/filesystem_access.rs"
+required-features = ["filesystem-access"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "protocol_identity"

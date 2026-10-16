@@ -1,4 +1,9 @@
 //! Signed filesystem delegation boundaries.
+#[path = "filesystem_access_compilation.rs"]
+mod compilation;
+#[cfg(feature = "filesystem")]
+#[path = "filesystem_access_reads.rs"]
+mod reads;
 use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
 use acyclic_harness::{
     Capabilities,

@@ -152,6 +152,10 @@ mod host;
 pub(crate) use host::map_error;
 use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
+mod access;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use access::check_access_record;
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
 use content_verifier::*;

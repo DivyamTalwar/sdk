@@ -124,6 +124,7 @@ macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
+    acyclic_fs::access::Policy => None, acyclic_fs::access::Capability => None,
     crate::context::Context => Context, crate::context::CanonicalContextCheckpoint => None, crate::context::CompactionReference => None,
     crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
