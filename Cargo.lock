@@ -742,6 +742,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-proto-build",
+ "allocation-counter",
  "async-trait",
  "base64 0.23.1",
  "bytes",
