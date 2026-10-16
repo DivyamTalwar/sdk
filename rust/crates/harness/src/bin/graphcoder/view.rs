@@ -60,13 +60,13 @@ pub async fn run(
             return Ok(());
         }
         prompt_files.refresh(&commands, &mut input)?;
-        input.busy = renderer.is_busy();
         input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let back = client::tui_scroll(&commands)?;
         let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
+        input.busy = renderer.is_busy();
         let size = terminal.size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;

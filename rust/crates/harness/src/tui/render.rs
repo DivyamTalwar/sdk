@@ -248,6 +248,14 @@ impl ClientRenderer {
             self.stream = StreamText::default();
             self.update(views, authority);
         }
+        self.busy = files.pending_execution()?
+            || views
+                .tasks
+                .get(&self.key)
+                .is_some_and(|task| task.status == crate::core::LifecycleState::Active);
+        if let Some(marker) = self.header.spans.first_mut() {
+            marker.content = std::borrow::Cow::Borrowed(if self.busy { "● " } else { "○ " });
+        }
         Ok(())
     }
 

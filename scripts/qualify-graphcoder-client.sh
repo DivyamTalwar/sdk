@@ -12,4 +12,4 @@ cargo test -p acyclic-harness --features filesystem-local,native-execution,termi
 cargo build -p acyclic-harness-fuzz --bin ui_prompt
 timeout 8 "$artifact_dir/debug/ui_prompt" rust/crates/harness-fuzz/corpus/ui_prompt -runs=64 -max_len=4096
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http,model-checking --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models:: local::checkout_tools::tests::
+python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models:: local::checkout_tools::tests:: client::commands::session::init_models::

@@ -14,7 +14,7 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
         ".tasks/t/status.json",
         "plans/main.md",
         "plans/release notes.md",
-        "plans/Ã¨ÂªÂ¿Ã¦Å¸Â».md",
+        "plans/調査.md",
         "plans/\u{10ffff}tail.md",
         ".tasks/t/requests/r.json",
         ".tasks/t/requests/r/started.json",

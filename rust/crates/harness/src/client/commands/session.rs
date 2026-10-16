@@ -8,6 +8,13 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
 #[path = "session_archive.rs"]
 mod archive;
+#[path = "session_activity.rs"]
+mod activity;
+#[path = "session_init.rs"]
+mod init;
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "session_init_models.rs"]
+mod init_models;
 
 /// Disposable command/UI fold. All authoritative contents and execution markers
 /// are ordinary files in the supplied, already-authorized private/config volume.
@@ -147,9 +154,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .map_err(codec)?,
             ),
         ] {
-            if !client.files.contains_key(&key) {
-                client.publish(key, bytes, true).await?;
-            }
+            client.initialize_file::<true>(key, bytes).await?;
         }
         Ok(client)
     }

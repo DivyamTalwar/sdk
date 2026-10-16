@@ -10,6 +10,8 @@ use proptest::prelude::*;
 use std::sync::Arc;
 #[path = "client_command_session_bounds.rs"]
 mod bounds;
+#[path = "client_command_activity.rs"]
+mod activity;
 
 fn session_id() -> uuid::Uuid {
     uuid::Uuid::from_bytes([7; 16])

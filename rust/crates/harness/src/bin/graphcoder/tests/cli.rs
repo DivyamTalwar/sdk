@@ -73,7 +73,8 @@ async fn execute(
     .unwrap();
     assert!(
         output.status.success(),
-        "{}\n{}",
+        "exit {:?}\n{}\n{}",
+        output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

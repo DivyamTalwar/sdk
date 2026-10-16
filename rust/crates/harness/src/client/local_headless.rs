@@ -88,7 +88,7 @@ pub struct LocalFileClient {
     submitted: bool,
     host: Pin<Box<dyn Future<Output = Result<()>>>>,
     host_done: bool,
-    host_error: Option<HeadlessOutcome>,
+    host_error: Option<Error>,
     drain_through: u64,
 }
 
@@ -215,10 +215,16 @@ impl LocalFileClient {
         }
         self.initial(output)?;
         loop {
-            let settled = self.outcome()?.or_else(|| {
-                (self.host_done && self.query.cursor().position >= self.drain_through)
-                    .then_some(self.host_error.unwrap_or(HeadlessOutcome::Indeterminate))
-            });
+            let settled = self.outcome()?;
+            if settled.is_none()
+                && self.host_done
+                && self.query.cursor().position >= self.drain_through
+            {
+                return Err(self
+                    .host_error
+                    .take()
+                    .unwrap_or(Error::Indeterminate(operation)));
+            }
             if let Some(outcome) = settled {
                 if input_open {
                     match input.next().now_or_never() {
@@ -264,7 +270,7 @@ impl LocalFileClient {
                 }
                 Next::Host(result) => {
                     self.host_done = true;
-                    self.host_error = result.as_ref().err().map(HeadlessOutcome::from_error);
+                    self.host_error = result.err();
                     self.drain_through = self
                         .local
                         .task_files()
