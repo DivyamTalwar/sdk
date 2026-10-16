@@ -23,9 +23,8 @@ struct Cache {
 }
 
 // public-api accepts a path only. Reuse one private adapter per operation,
-// on the receipt volume when writable, and truncate before every rendering.
+// in the effective child temporary directory, truncating before every rendering.
 pub(crate) fn with_adapter<T>(
-    receipt: &Path,
     render: impl FnOnce(&mut tempfile::NamedTempFile) -> Result<T, Error>,
 ) -> Result<T, Error> {
     use std::io::{Seek, SeekFrom};
@@ -36,12 +35,15 @@ pub(crate) fn with_adapter<T>(
     });
     let mut file = match cached {
         Some(file) => file,
-        None => receipt
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .and_then(|path| tempfile::NamedTempFile::new_in(path).ok())
-            .map(Ok)
-            .unwrap_or_else(tempfile::NamedTempFile::new)?,
+        None => {
+            let key = if cfg!(windows) { "TEMP" } else { "TMPDIR" };
+            crate::child::command_environment()
+                .into_iter()
+                .find(|(name, _)| name.as_encoded_bytes().eq_ignore_ascii_case(key.as_bytes()))
+                .and_then(|(_, directory)| tempfile::NamedTempFile::new_in(directory).ok())
+                .map(Ok)
+                .unwrap_or_else(tempfile::NamedTempFile::new)?
+        }
     };
     file.as_file_mut().set_len(0)?;
     file.as_file_mut().seek(SeekFrom::Start(0))?;
@@ -357,11 +359,12 @@ mod tests {
         ) {
             use std::io::Write;
             let directory = tempfile::tempdir().unwrap();
-            let receipt = directory.path().join("receipt.json");
-            let path = with_rustdoc_cache(|| {
+            let mut command = std::process::Command::new("rustdoc");
+            command.env(if cfg!(windows) { "TEMP" } else { "TMPDIR" }, directory.path());
+            let path = crate::with_command_environment(&command, || with_rustdoc_cache(|| {
                 let mut path = None;
                 for input in [&bytes[..], &bytes[..shorter.min(bytes.len())], &[]] {
-                    with_adapter(&receipt, |file| {
+                    with_adapter(|file| {
                         if let Some(previous) = &path { assert_eq!(file.path(), previous); }
                         path = Some(file.path().to_owned());
                         assert_eq!(file.path().parent(), Some(directory.path()));
@@ -371,7 +374,7 @@ mod tests {
                     }).unwrap();
                 }
                 path.unwrap()
-            });
+            }));
             prop_assert!(!path.exists());
         }
     }

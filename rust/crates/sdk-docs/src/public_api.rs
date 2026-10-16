@@ -51,7 +51,7 @@ fn extract_uncached(
 ) -> Result<Vec<PublicItemSignature>, Error> {
     let value = (*crate::render_cache::json(raw)?).clone();
     let adapted = adapt(value, krate)?;
-    let api = crate::render_cache::with_adapter(json_path, |temp| {
+    let api = crate::render_cache::with_adapter(|temp| {
         {
             let mut writer = std::io::BufWriter::new(temp.as_file_mut());
             serde_json::to_writer(&mut writer, &adapted)?;
