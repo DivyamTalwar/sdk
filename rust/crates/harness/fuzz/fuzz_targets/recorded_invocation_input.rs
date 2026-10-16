@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate as acyclic_harness;
 use acyclic_harness::{
     AgentId,
     conversation::{
