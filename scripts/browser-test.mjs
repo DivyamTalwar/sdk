@@ -1,20 +1,26 @@
 // Headless Chromium qualification over its pushed CDP pipe; no polling.
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync, createReadStream } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 export async function browserTest(module, args) {
   const root = resolve(import.meta.dirname, "..");
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (path === "/") return new Response("<!doctype html><title>Browser qualification</title>", { headers: { "content-type": "text/html" } });
+  const server = createServer((request, response) => {
+    const path = new URL(request.url, "http://localhost").pathname;
+    if (path === "/") { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>Browser qualification</title>"); return; }
     const file = resolve(root, `.${decodeURIComponent(path)}`);
-    if (!file.startsWith(`${root}${sep}`)) return new Response(null, { status: 404 });
-    return new Response(Bun.file(file));
-  } });
+    if (!file.startsWith(`${root}${sep}`) || !existsSync(file)) { response.writeHead(404).end(); return; }
+    response.setHeader("content-type", file.endsWith(".wasm") ? "application/wasm" : "text/javascript");
+    createReadStream(file).pipe(response);
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const profile = await mkdtemp(join(tmpdir(), "acyclic-browser-test-"));
-  const chrome = spawn(process.env.CHROME ?? "/usr/bin/chromium", ["--headless=new", "--no-sandbox", "--remote-debugging-pipe", "--no-first-run", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], windowsHide: true });
+  const executable = [process.env.CHROME, "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find(path => path && existsSync(path));
+  if (!executable) { server.close(); throw new Error("no Chromium executable; set CHROME"); }
+  const chrome = spawn(executable, ["--headless=new", "--no-sandbox", "--remote-debugging-pipe", "--no-first-run", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], windowsHide: true });
   const exited = new Promise(resolve => chrome.once("exit", resolve));
   const pending = new Map(), events = new Map();
   let sequence = 0, buffer = "", errors = "";
@@ -48,7 +54,7 @@ export async function browserTest(module, args) {
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     await send("Page.enable", {}, sessionId);
     const loaded = new Promise(resolve => events.set(`${sessionId}:Page.loadEventFired`, resolve));
-    await send("Page.navigate", { url: server.url.href }, sessionId); await loaded;
+    await send("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/` }, sessionId); await loaded;
     const expression = `import(${JSON.stringify(`/${module}`)}).then(module => module.test(${JSON.stringify(args)}))`;
     const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails));
@@ -56,7 +62,7 @@ export async function browserTest(module, args) {
   } finally {
     clearTimeout(deadline);
     if (chrome.exitCode === null) chrome.kill();
-    await exited; server.stop(true);
+    await exited; server.closeAllConnections(); server.close();
     await rm(profile, { recursive: true, force: true }).catch(error => console.error(`profile cleanup: ${error.message}`));
   }
 }
