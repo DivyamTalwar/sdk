@@ -1,8 +1,18 @@
-use super::{check, id, name, object_arguments};
+use super::{check, id, name};
+use crate::protocol::shape;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
+    if let Some(tools) = body["tools"].as_array() {
+        for tool in tools {
+            check(
+                tool["type"] == "function" && name(&tool["name"], 64, false, b"_-"),
+                "OAR-TOOL-01",
+                errors,
+            );
+        }
+    }
     if body["input"].is_string() {
         return;
     }
@@ -14,6 +24,13 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     let mut reasoning = false;
     for item in items {
         let kind = item["type"].as_str().unwrap_or("message");
+        check(
+            !reasoning
+                || kind == "function_call"
+                || (kind == "message" && item["role"] == "assistant"),
+            "OAR-RSN-02",
+            errors,
+        );
         match kind {
             "message" => {
                 let role = item["role"].as_str().unwrap_or("");
@@ -30,7 +47,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                         } else {
                             matches!(kind, "input_text" | "input_image" | "input_file")
                         };
-                        check(accepted, "OAR-SEQ-03", errors);
+                        check(accepted && shape::content(part), "OAR-SEQ-03", errors);
                     }
                 } else {
                     check(item["content"].is_string(), "OAR-SEQ-01", errors);
@@ -39,10 +56,9 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
             }
             "function_call" => {
                 check(id(&item["call_id"], 64), "OAR-TOOL-03", errors);
-                check(name(&item["name"], 64, false, b"_-"), "OAR-TOOL-01", errors);
-                check(object_arguments(&item["arguments"]), "OAR-TOOL-02", errors);
+                check(shape::RESPONSE_CALL.accepts(item), "OAR-TOOL-02", errors);
                 if let Some(id) = item["call_id"].as_str() {
-                    pending.insert(id);
+                    check(pending.insert(id), "OAR-TOOL-04", errors);
                 }
                 reasoning = false;
             }
@@ -65,7 +81,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     errors,
                 );
                 if body["store"] == false {
-                    check(item["encrypted_content"].is_string(), "OAR-RSN-03", errors);
+                    check(shape::REASONING.accepts(item), "OAR-RSN-03", errors);
                 }
                 reasoning = true;
             }
@@ -74,13 +90,4 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     }
     check(!reasoning, "OAR-RSN-02", errors);
     check(pending.is_empty(), "OAR-TOOL-04", errors);
-    if let Some(tools) = body["tools"].as_array() {
-        for tool in tools {
-            check(
-                tool["type"] == "function" && name(&tool["name"], 64, false, b"_-"),
-                "OAR-TOOL-01",
-                errors,
-            );
-        }
-    }
 }

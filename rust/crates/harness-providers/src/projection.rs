@@ -1,4 +1,5 @@
 pub(crate) mod gemini;
+mod gemini_results;
 pub(crate) mod native_reasoning;
 mod sequence;
 pub(crate) mod text;
@@ -403,7 +404,6 @@ fn project_message<'a>(
             }
         }
     }
-    text::normalize(adapter, &mut ordered);
     match adapter {
         Adapter::Chat => {
             let mut output = Vec::new();

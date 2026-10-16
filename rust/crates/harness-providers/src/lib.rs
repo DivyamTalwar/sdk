@@ -32,6 +32,7 @@ pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
+mod protocol;
 mod reasoning;
 mod registry;
 mod resolved;

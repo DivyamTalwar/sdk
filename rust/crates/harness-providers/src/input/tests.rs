@@ -86,3 +86,6 @@ proptest! {
         }
     }
 }
+
+#[path = "protocol_tests.rs"]
+mod protocol;

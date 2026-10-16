@@ -21,38 +21,30 @@ struct Native<'a> {
     summary: Option<&'a RawValue>,
 }
 
-fn string(value: Option<&RawValue>) -> bool {
-    value.is_some_and(|value| value.get().starts_with('"'))
-}
-
-fn nonempty_string(value: Option<&RawValue>) -> bool {
-    string(value) && value.is_some_and(|value| value.get().len() > 2)
-}
-
 pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
     let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
     if raw.get().as_bytes() != bytes {
         return None;
     }
     let item: Native<'_> = serde_json::from_slice(bytes).ok()?;
-    let accepted = match adapter {
-        // ANT-THK-02 / ANT-THK-03: complete original signed or redacted block.
-        Adapter::Anthropic => match item.kind.as_ref() {
-            "thinking" => string(item.thinking) && nonempty_string(item.signature),
-            "redacted_thinking" => nonempty_string(item.data),
-            _ => false,
-        },
-        // OAR-RSN-03 / OAR-RSN-04: stateless replay needs encrypted content.
-        Adapter::Responses => {
-            item.kind == "reasoning"
-                && nonempty_string(item.id)
-                && nonempty_string(item.encrypted_content)
-                && item
-                    .summary
-                    .is_some_and(|summary| summary.get().starts_with('['))
-        }
-        _ => false,
+    use crate::protocol::shape;
+    let shape = match (adapter, item.kind.as_ref()) {
+        (Adapter::Anthropic, "thinking") => &shape::THINKING,
+        (Adapter::Anthropic, "redacted_thinking") => &shape::REDACTED,
+        (Adapter::Responses, "reasoning") => &shape::REASONING,
+        _ => return None,
     };
+    let accepted = shape.fields.iter().all(|(path, constraint)| {
+        constraint.accepts_raw(match *path {
+            "/id" => item.id,
+            "/thinking" => item.thinking,
+            "/signature" => item.signature,
+            "/data" => item.data,
+            "/encrypted_content" => item.encrypted_content,
+            "/summary" => item.summary,
+            _ => None,
+        })
+    });
     accepted.then_some(raw)
 }
 
@@ -92,6 +84,17 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn escaped_native_strings_share_strict_shape_validation() {
+        let bad = br#"{"type":"thinking","thinking":"\ud800","signature":"signed"}"#;
+        assert!(serde_json::from_slice::<serde_json::Value>(bad).is_err());
+        assert!(validated(Adapter::Anthropic, bad).is_none());
+        // The former prefix-only field check admits the invalid string.
+        let raw: &RawValue = serde_json::from_slice(bad).unwrap();
+        let fields: Native<'_> = serde_json::from_str(raw.get()).unwrap();
+        assert!(fields.thinking.unwrap().get().starts_with('"'));
+    }
+
     #[test]
     fn unsupported_native_shapes_are_not_forged() {
         for raw in [

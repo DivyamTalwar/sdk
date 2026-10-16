@@ -74,6 +74,45 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
         );
         normalize(adapter, &mut parts);
         assert_eq!(serde_json::to_vec(&parts).unwrap(), encoded);
+        let mut messages = Vec::new();
+        for fragment in fragments.iter().filter(|fragment| !fragment.is_empty()) {
+            let item = Item::Json(serde_json::json!({"type":"text", "text":fragment}));
+            let message = if adapter == Adapter::Anthropic {
+                super::wire::Message::Anthropic {
+                    role: "assistant",
+                    content: vec![item],
+                }
+            } else {
+                super::wire::Message::Gemini {
+                    role: "model",
+                    parts: vec![item],
+                }
+            };
+            super::sequence::push(adapter, &mut messages, message).unwrap();
+        }
+        super::sequence::finish(adapter, &mut messages);
+        let joined: String = messages
+            .iter()
+            .flat_map(|message| match message {
+                super::wire::Message::Anthropic {
+                    role: "assistant",
+                    content,
+                } => content.as_slice(),
+                super::wire::Message::Gemini {
+                    role: "model",
+                    parts,
+                } => parts.as_slice(),
+                _ => &[],
+            })
+            .filter_map(|item| match item {
+                Item::Json(value) => value["text"].as_str(),
+                Item::Native(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            joined, actual,
+            "cross-message normalization differs from whole-run normalization"
+        );
     }
 }
 

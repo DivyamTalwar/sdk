@@ -1,4 +1,5 @@
 use super::{check, id, name, text};
+use crate::protocol::shape;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -16,11 +17,19 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         "ANT-SEQ-04",
         errors,
     );
+    check(
+        messages
+            .last()
+            .is_some_and(|message| message["role"] == "user"),
+        "ANT-SEQ-06",
+        errors,
+    );
     let mut pending = BTreeSet::new();
     for message in messages {
         let role = message["role"].as_str().unwrap_or("");
         check(matches!(role, "user" | "assistant"), "ANT-SEQ-01", errors);
         let Some(parts) = message["content"].as_array() else {
+            check(pending.is_empty(), "ANT-TOOL-04", errors);
             check(text(&message["content"]), "ANT-TXT-01", errors);
             continue;
         };
@@ -45,7 +54,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     );
                     check(part["input"].is_object(), "ANT-TOOL-03", errors);
                     if let Some(id) = part["id"].as_str() {
-                        calls.insert(id);
+                        check(calls.insert(id), "ANT-TOOL-07", errors);
                     }
                 }
                 Some("tool_result") => {
@@ -58,9 +67,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                 Some("thinking") => {
                     non_result = true;
                     check(
-                        role == "assistant"
-                            && part["thinking"].is_string()
-                            && part["signature"].is_string(),
+                        role == "assistant" && shape::THINKING.accepts(part),
                         "ANT-THK-02",
                         errors,
                     );
@@ -69,7 +76,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                 Some("redacted_thinking") => {
                     non_result = true;
                     check(
-                        role == "assistant" && part["data"].is_string(),
+                        role == "assistant" && shape::REDACTED.accepts(part),
                         "ANT-THK-02",
                         errors,
                     );

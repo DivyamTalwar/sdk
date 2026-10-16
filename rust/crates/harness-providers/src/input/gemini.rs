@@ -7,6 +7,16 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         return;
     };
     check(!contents.is_empty(), "GEM-SEQ-03", errors);
+    check(
+        contents
+            .first()
+            .is_some_and(|content| content["role"] == "user")
+            && contents
+                .last()
+                .is_some_and(|content| content["role"] == "user"),
+        "GEM-SEQ-05",
+        errors,
+    );
     let mut previous = "";
     let mut pending = Vec::new();
     for content in contents {

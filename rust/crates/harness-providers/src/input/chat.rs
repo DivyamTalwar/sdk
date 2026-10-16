@@ -1,4 +1,5 @@
-use super::{check, id, name, object_arguments};
+use super::{check, id, name};
+use crate::protocol::shape;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -28,18 +29,9 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
             check(role == "assistant", "OAC-SEQ-03", errors);
             for call in calls.iter() {
                 check(id(&call["id"], 40), "OAC-TOOL-04", errors);
-                check(
-                    name(&call["function"]["name"], 64, false, b"_-"),
-                    "OAC-TOOL-03",
-                    errors,
-                );
-                check(
-                    object_arguments(&call["function"]["arguments"]),
-                    "OAC-TOOL-03",
-                    errors,
-                );
+                check(shape::CHAT_CALL.accepts(call), "OAC-TOOL-03", errors);
                 if let Some(id) = call["id"].as_str() {
-                    pending.insert(id);
+                    check(pending.insert(id), "OAC-TOOL-01", errors);
                 }
             }
         }
@@ -52,7 +44,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     "assistant" => matches!(kind, "text" | "refusal"),
                     _ => kind == "text",
                 };
-                check(accepted, "OAC-SEQ-02", errors);
+                check(accepted && shape::content(part), "OAC-SEQ-02", errors);
             }
         } else {
             check(

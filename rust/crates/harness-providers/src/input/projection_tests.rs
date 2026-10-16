@@ -66,13 +66,20 @@ fn transcript(units: &[(u8, u8, String)]) -> Vec<ModelMessage> {
                 },
             },
         }];
-        let call_id = format!("call:{index}");
+        let batch = 1 + usize::from(*source / 4) % 4;
         if *kind == 3 {
-            parts.push(ModelContentPart::ToolCall(
-                ToolCall::new(call_id.clone(), "echo".into(), json!({"text":text})).with_metadata(
-                    json!({"provider_call":{"provider":family,"id":format!("native_{index}")}}),
-                ),
-            ));
+            for ordinal in 0..batch {
+                let call_id = format!("call:{index}:{ordinal}");
+                let native = if ordinal == 0 {
+                    format!("native_{index}")
+                } else {
+                    format!("native_{index}_{ordinal}")
+                };
+                parts.push(ModelContentPart::ToolCall(
+                    ToolCall::new(call_id, "echo".into(), json!({"text":text}))
+                        .with_metadata(json!({"provider_call":{"provider":family,"id":native}})),
+                ));
+            }
         } else {
             parts.push(ModelContentPart::Text { text: text.clone() });
         }
@@ -81,14 +88,16 @@ fn transcript(units: &[(u8, u8, String)]) -> Vec<ModelMessage> {
             content: ModelContent::Parts(parts),
         });
         if *kind == 3 {
-            messages.push(ModelMessage {
-                role: ModelRole::Tool,
-                content: ModelContent::Part(ModelContentPart::ToolResult {
-                    call_id,
-                    name: "echo".into(),
-                    content: ToolResultContent::Json { value: json!(text) },
-                }),
-            });
+            for ordinal in (0..batch).rev() {
+                messages.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: format!("call:{index}:{ordinal}"),
+                        name: "echo".into(),
+                        content: ToolResultContent::Json { value: json!(text) },
+                    }),
+                });
+            }
         }
     }
     messages
@@ -98,7 +107,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn mixed_origin_transcripts_project_to_each_targets_accepted_grammar(
-        units in prop::collection::vec((0u8..5,0u8..4,prop::collection::vec(any::<char>(),0..32).prop_map(|chars|chars.into_iter().collect::<String>())),0..12)
+        units in prop::collection::vec((0u8..5,0u8..32,prop::collection::vec(any::<char>(),0..32).prop_map(|chars|chars.into_iter().collect::<String>())),0..12)
     ) {
         let messages=transcript(&units);
         for adapter in [Adapter::Anthropic,Adapter::Responses,Adapter::Chat,Adapter::Gemini] {

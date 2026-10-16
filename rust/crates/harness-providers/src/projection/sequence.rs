@@ -74,6 +74,44 @@ pub(super) fn push<'a>(
 pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
     match adapter {
         Adapter::Anthropic | Adapter::Gemini => {
+            // N-01: role merging establishes the whole text run. Native parts
+            // remain separate items and are never trimmed or re-encoded.
+            messages.retain_mut(|message| match message {
+                Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } => {
+                    super::text::normalize(adapter, content);
+                    !content.is_empty()
+                }
+                _ => true,
+            });
+            messages.dedup_by(|next, previous| match (previous, next) {
+                (
+                    Message::Anthropic { role: old, content },
+                    Message::Anthropic {
+                        role: new,
+                        content: more,
+                    },
+                )
+                | (
+                    Message::Gemini {
+                        role: old,
+                        parts: content,
+                    },
+                    Message::Gemini {
+                        role: new,
+                        parts: more,
+                    },
+                ) if old == new => {
+                    content.append(more);
+                    true
+                }
+                _ => false,
+            });
+            if messages.first().is_some_and(|first| role(first) != "user") {
+                messages.insert(0, continuation(adapter));
+            }
+            if adapter == Adapter::Gemini {
+                super::gemini_results::order(messages);
+            }
             if messages.is_empty() || messages.last().is_some_and(|last| role(last) != "user") {
                 messages.push(continuation(adapter));
             }

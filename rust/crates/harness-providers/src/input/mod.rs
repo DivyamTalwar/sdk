@@ -25,16 +25,14 @@ fn check(ok: bool, rule: &'static str, errors: &mut Vec<&'static str>) {
     }
 }
 
-fn name(value: &Value, maximum: usize, leading_letter: bool, punctuation: &[u8]) -> bool {
+fn name(value: &Value, maximum: usize, leading_letter: bool, punctuation: &'static [u8]) -> bool {
     value.as_str().is_some_and(|text| {
-        !text.is_empty()
-            && text.len() <= maximum
-            && (!leading_letter
-                || text.as_bytes()[0].is_ascii_alphabetic()
-                || text.starts_with('_'))
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || punctuation.contains(&b))
+        crate::protocol::name::Name {
+            maximum,
+            leading_letter,
+            punctuation,
+        }
+        .accepts(text)
     })
 }
 fn id(value: &Value, maximum: usize) -> bool {
@@ -42,12 +40,6 @@ fn id(value: &Value, maximum: usize) -> bool {
 }
 fn text(value: &Value) -> bool {
     value.as_str().is_some_and(|text| !text.trim().is_empty())
-}
-fn object_arguments(value: &Value) -> bool {
-    value
-        .as_str()
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .is_some_and(|value| value.is_object())
 }
 
 #[cfg(test)]
