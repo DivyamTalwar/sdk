@@ -11,7 +11,7 @@ pub fn tool_result(answer: Value) -> Result<Value> {
 }
 
 pub(super) fn value(answer: Value) -> Result<Value> {
-    match serde::Deserialize::deserialize(&answer)
+    match serde_json::from_value(answer)
         .map_err(|_| Error::Invalid("invalid harness tool outcome".into()))?
     {
         Outcome::Succeeded(value) => Ok(value),
