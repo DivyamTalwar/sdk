@@ -20,9 +20,14 @@ if executable is None:
     sys.exit("Cargo did not produce the Harness test executable")
 
 listed = subprocess.check_output([executable, "--list"], text=True)
-selected = [line.removesuffix(": test") for line in listed.splitlines()
-            if line.endswith(": test") and line.startswith(tuple(sys.argv[1:]))]
-if not selected:
-    sys.exit("No tests matched the qualification filters")
+tests = [line.removesuffix(": test") for line in listed.splitlines()
+         if line.endswith(": test")]
+prefixes = sys.argv[1:]
+if not prefixes:
+    sys.exit("Qualification requires explicit test filters")
+for prefix in prefixes:
+    if not any(name.startswith(prefix) for name in tests):
+        sys.exit(f"No tests matched qualification filter {prefix}")
+selected = [name for name in tests if name.startswith(tuple(prefixes))]
 for name in selected:
     subprocess.run([executable, name, "--exact"], check=True, timeout=9)
