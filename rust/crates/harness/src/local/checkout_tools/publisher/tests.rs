@@ -286,13 +286,13 @@ proptest::proptest! {
         tokio::runtime::Builder::new_current_thread().enable_all().build()
             .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?.block_on(async {
             let (_directory, harness, publisher) = fixture().await?;
-            let ceiling = if allowed { harness.signed.grants().clone() } else { crate::Capabilities::default() };
+            let ceiling = if allowed { harness.signed.capabilities().clone() } else { crate::Capabilities::default() };
             let operation = OperationId::new();
             let (source, _) = publisher.stage_once(operation, &path, b"original", "text/plain", &path, None, None)?.await?;
             let replacement = publisher.stage_at(OperationId::new(), &source, b"replaced", Some(&ceiling), None)?.await;
-            assert_eq!(replacement.is_ok(), allowed, "{replacement:?}");
+            assert_eq!(replacement.is_ok(), allowed, "{:?}", replacement.as_ref().err());
             let observed = publisher.observe_staged_once(operation, 1024, Some(&ceiling), None)?.await;
-            assert_eq!(observed.is_ok(), allowed, "{observed:?}");
+            assert_eq!(observed.is_ok(), allowed, "{:?}", observed.as_ref().err());
             for once in [false, true] {
                 let target = format!("{once}-{path}");
                 let operation = OperationId::new();
@@ -301,7 +301,7 @@ proptest::proptest! {
                 } else {
                     publisher.stage(operation, &target, b"new", "text/plain", &target, Some(&ceiling), None)?.await
                 };
-                assert_eq!(result.is_ok(), allowed, "{result:?}");
+                assert_eq!(result.is_ok(), allowed, "{:?}", result.as_ref().err());
                 if allowed {
                     // A committed reply still needs the current caller's ceiling.
                     let empty = crate::Capabilities::default();
