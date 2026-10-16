@@ -21,6 +21,15 @@ pub fn exercise_broken(data: &[u8]) -> Result<(), std::io::Error> {
 }
 
 fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
+    let suffix: String = data.iter().take(24).map(|byte| char::from(b'a' + byte % 26)).collect();
+    catalog_round_trip(&format!("cmd{suffix}"), &format!("alias{suffix}"), &format!("Theme {suffix}"))?;
+    // Exercise malformed theme inventories too; replacement must be atomic.
+    let mut probe = CompletionMenu::default();
+    probe.set_file("commands/themes.json", Some(b"[\"Theme\"]"))?;
+    probe.refresh(&Editor::new("/theme "));
+    if probe.set_file("commands/themes.json", Some(data)).is_err() {
+        assert_eq!(probe.items().next().unwrap().value, "Theme");
+    }
     let mut editor = semantic_prelude(data, broken)?;
     let mut menu = CompletionMenu::default();
     for (step, chunk) in data.chunks(8).enumerate() {
@@ -119,6 +128,31 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
             assert!(request.range.start <= editor.cursor() && editor.cursor() <= request.range.end);
         }
     }
+    Ok(())
+}
+
+/// Production JSON file parsing preserves aliases, tool flags and theme spelling.
+/// Shared by shrinking properties and the instrumented completion fuzz target.
+pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
+    let mut menu = CompletionMenu::default();
+    let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}]);
+    menu.set_file("commands/catalog.json", Some(&serde_json::to_vec(&definition)?))?;
+    let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
+    menu.refresh(&editor);
+    assert_eq!(menu.items().len(), 1);
+    assert!(menu.items().next().unwrap().tool);
+    assert!(menu.accept(&mut editor, 0));
+    assert_eq!(editor.text(), format!("/{alias} "));
+    menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
+    editor.set_text("/THEME ", 1);
+    menu.refresh(&editor);
+    editor.insert(&theme[..1].to_ascii_lowercase(), 2);
+    menu.refresh(&editor);
+    assert_eq!(menu.items().len(), 1);
+    assert!(menu.accept(&mut editor, 2));
+    assert_eq!(editor.text(), format!("/THEME {theme}"));
+    assert!(editor.undo());
+    assert_eq!(editor.text(), format!("/THEME {}", theme[..1].to_ascii_lowercase()));
     Ok(())
 }
 

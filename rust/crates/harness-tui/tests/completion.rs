@@ -14,6 +14,14 @@ use proptest::prelude::*;
 #[path = "support/completion_sequences.rs"]
 mod sequences;
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn command_and_theme_files_round_trip(name in "cmd[a-z]{1,24}", alias in "sh[a-z]{1,24}", theme in "[A-Z][a-z]{1,24} [A-Z][a-z]{1,24}") {
+        prop_assert!(sequences::catalog_round_trip(&name, &alias, &theme).is_ok());
+    }
+}
+
 #[test]
 fn completion_regression_corpus() {
     for seed in [
