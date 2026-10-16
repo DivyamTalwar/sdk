@@ -80,6 +80,7 @@ where
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -97,7 +98,16 @@ where
                 .map(|history| history as &mut dyn crate::store::HistoryIo);
             self.owner.validate_input_file(reference, io)?;
             self.owner.verify_read_access(&mut history).await?;
-            let bytes = self.context.read_file(reference, io).await?;
+            let bytes = self
+                .context
+                .read_bound_file(
+                    self.context.content_binding(Some(reference.volume())),
+                    reference,
+                    &self.context.scope,
+                    ceiling,
+                    io,
+                )
+                .await?;
             self.owner.validate_input_file(reference, io)?;
             self.owner.verify_read_access(&mut history).await?;
             Ok(bytes)
@@ -123,18 +133,11 @@ impl TaskContext {
 
     /// Reads an immutable file under this task's scope and caller IO limits.
     pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
-        #[cfg(feature = "filesystem")]
-        let original = if io.is_none() {
-            self.preparation_io()?
-        } else {
-            None
-        };
-        #[cfg(feature = "filesystem")]
-        let io = io.or(original.as_ref());
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
             file,
             &self.scope,
+            None,
             io,
         )
         .await
@@ -144,11 +147,12 @@ impl TaskContext {
         &self,
         file: &FileRef,
         scope: &RuntimeScope,
+        grants: &crate::Capabilities,
         io: Option<&ContentIo>,
     ) -> Result<()> {
         crate::executor::with_history_io(io, |work| {
             scope.limits.validate_file(file, work)?;
-            if !read_granted_with_work(&scope.grants, file, work)? {
+            if !read_granted_with_work(grants, file, work)? {
                 return Err(content_error(
                     io,
                     ErrorCode::Unauthorized,
@@ -279,9 +283,26 @@ impl TaskContext {
         binding: Option<&ContentBindings>,
         file: &FileRef,
         scope: &RuntimeScope,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
-        self.authorize_file_read(file, scope, io)?;
+        #[cfg(feature = "filesystem")]
+        let original = if io.is_none() {
+            self.preparation_io()?
+        } else {
+            None
+        };
+        #[cfg(feature = "filesystem")]
+        let io = io.or(original.as_ref());
+        let grants = ceiling.unwrap_or(&scope.grants);
+        if ceiling.is_some() && !grants.is_subset_of(&scope.grants) {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "content caller cannot widen the bound task scope",
+            ));
+        }
+        self.authorize_file_read(file, scope, grants, io)?;
         #[cfg(feature = "filesystem")]
         let created = self.scope.created_reference(file);
         #[cfg(not(feature = "filesystem"))]
@@ -292,8 +313,14 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let (bytes, hold) =
-            verified_content_bytes(reader, file, file.descriptor().byte_length(), io).await?;
+        let (bytes, hold) = verified_content_bytes(
+            reader,
+            file,
+            file.descriptor().byte_length(),
+            Some(grants),
+            io,
+        )
+        .await?;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;

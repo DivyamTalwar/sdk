@@ -121,10 +121,11 @@ where
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.read_file(reference, maximum_bytes, io)
+            self.read_file(reference, maximum_bytes, ceiling, io)
         })
     }
 
@@ -135,7 +136,7 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            drop(self.read_file(reference, maximum_bytes, io).await?);
+            drop(self.read_file(reference, maximum_bytes, None, io).await?);
             if let Some(io) = io {
                 io.remaining()?;
             }
@@ -367,6 +368,7 @@ where
         &self,
         reference: &FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let temporary = PreparationIo::temporary(io)?;
@@ -386,6 +388,7 @@ where
                 reference,
                 maximum_bytes.min(self.maximum_bytes),
                 self.exact_file.is_some(),
+                ceiling,
                 authority_io,
             )
             .await

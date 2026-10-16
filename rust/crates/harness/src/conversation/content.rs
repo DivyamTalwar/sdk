@@ -114,6 +114,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         &'a self,
         _reference: &'a FileRef,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(content_error(
@@ -131,7 +132,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         BoundedContentFuture::new(io, || async move {
-            verified_content_bytes(self, reference, maximum_bytes, io).await?;
+            verified_content_bytes(self, reference, maximum_bytes, None, io).await?;
             Ok(())
         })
     }
@@ -368,6 +369,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         #[cfg(feature = "filesystem")]
@@ -375,12 +377,13 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             return self.bound_reader(reference.volume(), Some(io))?.read(
                 reference,
                 maximum_bytes,
+                ceiling,
                 Some(io),
             );
         }
         reference.validate(&mut None)?;
         if let Some(reader) = self.volumes.get(reference.volume()) {
-            return reader.read(reference, maximum_bytes, io);
+            return reader.read(reference, maximum_bytes, ceiling, io);
         }
         let mount = self
             .mount
@@ -389,7 +392,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         BoundedContentFuture::new(io, || async move {
             let (grant, reader) = mount.mount(reference).await?;
             grant.require_file_read(reference, None)?;
-            let bytes = reader.read(reference, maximum_bytes, io)?.await?;
+            let bytes = reader.read(reference, maximum_bytes, ceiling, io)?.await?;
             Ok(bytes)
         })
     }

@@ -77,6 +77,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .read(
                 &binding.configuration.content,
                 self.admission.limits.render_bytes,
+                None,
                 io,
             )?
             .await?;

@@ -163,7 +163,9 @@ impl ContextManifest {
                 "context manifest exceeds JSON/render bounds".into(),
             ));
         }
-        let bytes = reader.read(reference, limits.render_bytes, None)?.await?;
+        let bytes = reader
+            .read(reference, limits.render_bytes, None, None)?
+            .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         Self::decode(&bytes, limits)
     }

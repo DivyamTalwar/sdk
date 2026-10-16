@@ -412,6 +412,7 @@ impl ToolContext {
         self.task().authorize_file_read(
             file,
             self.effective_scope(),
+            self.effective_scope().grants(),
             Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
         )
     }
@@ -425,7 +426,12 @@ impl ToolContext {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         if let Some(source) = source {
-            task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
+            task.authorize_file_read(
+                source,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                Some(&io),
+            )?;
         }
         let writer = bound_content_writer(
             task.content_binding(source.map(FileRef::volume)),
@@ -583,6 +589,7 @@ impl ToolContext {
             task.content_binding(Some(file.volume())),
             file,
             self.effective_scope(),
+            None,
             io,
         )
         .await

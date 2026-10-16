@@ -463,7 +463,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             None => (
                 reader
-                    .read(file, file.descriptor().byte_length(), None)?
+                    .read(file, file.descriptor().byte_length(), None, None)?
                     .await?,
                 0,
             ),

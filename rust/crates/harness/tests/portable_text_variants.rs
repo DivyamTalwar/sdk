@@ -38,12 +38,13 @@ impl ContentResidencyVerifier for ReaderSpy {
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            let bytes = self.inner.read(file, maximum_bytes, io)?.await?;
+            let bytes = self.inner.read(file, maximum_bytes, ceiling, io)?.await?;
             if self.corrupt.load(Ordering::SeqCst) {
                 let mut corrupted = bytes.as_ref().to_vec();
                 if let Some(first) = corrupted.first_mut() {

@@ -70,6 +70,7 @@ impl ContentResidencyVerifier for ReaderSpy {
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
@@ -80,7 +81,7 @@ impl ContentResidencyVerifier for ReaderSpy {
                     "original native media is unavailable".into(),
                 ));
             }
-            let bytes = self.inner.read(file, maximum_bytes, io)?.await?;
+            let bytes = self.inner.read(file, maximum_bytes, ceiling, io)?.await?;
             if self.corrupt.load(Ordering::SeqCst) {
                 let mut corrupted = bytes.as_ref().to_vec();
                 let first = corrupted
@@ -255,7 +256,7 @@ impl MockAdapter {
         {
             let bytes = self
                 .reader
-                .read(file, file.descriptor().byte_length(), None)?
+                .read(file, file.descriptor().byte_length(), None, None)?
                 .await?;
             file.descriptor().verify(&bytes, &mut None)?;
             return Ok(CapturedPart::Text(
@@ -272,7 +273,7 @@ impl MockAdapter {
         policy.validate(file, Limits::default(), &mut None)?;
         let bytes = self
             .reader
-            .read(file, file.descriptor().byte_length(), None)?
+            .read(file, file.descriptor().byte_length(), None, None)?
             .await?;
         file.descriptor().verify(&bytes, &mut None)?;
         let measured = measure(&bytes, &policy.intent)?;
@@ -301,6 +302,7 @@ impl MockAdapter {
                 .read(
                     &binding.configuration.content,
                     binding.configuration.content.descriptor().byte_length(),
+                    None,
                     None,
                 )?
                 .await?;

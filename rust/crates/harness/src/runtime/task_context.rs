@@ -335,6 +335,12 @@ pub(crate) fn read_granted_with_work(
         io.check_cancellation()?;
     }
     file.validate(work)?;
+    if file.volume().provider().family() == "filesystem"
+        && crate::core::filesystem_scope_label(grants, work)?.is_some()
+    {
+        // The bound filesystem reader applies the policy/capability decision.
+        return Ok(true);
+    }
     if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)?
         || contains_content_grant_with_work(
             grants,

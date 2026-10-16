@@ -19,8 +19,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        self.read_file_with_access(grant.policy_scope(), reference, maximum_bytes, true, io)
-            .await
+        self.read_file_with_access(
+            grant.policy_scope(),
+            reference,
+            maximum_bytes,
+            true,
+            None,
+            io,
+        )
+        .await
     }
 
     /// Resolves a private file and verifies its bytes with optional original IO.
@@ -61,11 +68,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None => io.sdk(workspace.head(io, io.cancellation()).await)?,
         };
         let label = crate::core::filesystem_scope_label(
-            grant.policy_scope(),
+            grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
         let view = self
-            .access_view(&workspace, grant.policy_scope(), generation.id(), label, io)
+            .access_view(
+                &workspace,
+                grant.policy_scope(),
+                generation.id(),
+                label,
+                None,
+                io,
+            )
             .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
@@ -183,11 +197,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = (self).open(&reference, Some(io)).await?;
         let pinned = (self).generation(&workspace, generation, Some(io)).await?;
         let label = crate::core::filesystem_scope_label(
-            grant.policy_scope(),
+            grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
         let view = self
-            .access_view(&workspace, grant.policy_scope(), pinned.id(), label, io)
+            .access_view(
+                &workspace,
+                grant.policy_scope(),
+                pinned.id(),
+                label,
+                None,
+                io,
+            )
             .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         drop(view);

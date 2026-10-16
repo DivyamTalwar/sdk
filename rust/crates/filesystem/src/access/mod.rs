@@ -17,6 +17,7 @@ mod trie;
 
 pub use capability::{
     Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX, VolumeOperation,
+    is_filesystem_capability,
 };
 pub use decision::{Decision, Denial, decide};
 pub use mount::MountMode;

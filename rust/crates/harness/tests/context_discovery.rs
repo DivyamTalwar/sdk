@@ -34,10 +34,11 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         &'a self,
         reference: &'a acyclic_harness::conversation::FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
-        self.inner.read(reference, maximum_bytes, io)
+        self.inner.read(reference, maximum_bytes, ceiling, io)
     }
 
     fn read_private_path<'a, 'io>(

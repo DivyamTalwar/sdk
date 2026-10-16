@@ -115,9 +115,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         guard().await?;
         let scope = request.grant.policy_scope();
-        let label = crate::core::filesystem_scope_label(scope, &mut Some(&mut io.history_io()))?;
+        let label = crate::core::filesystem_scope_label(
+            scope.capabilities(),
+            &mut Some(&mut io.history_io()),
+        )?;
         let view = self
-            .access_view(&workspace, scope, generation.id(), label, io)
+            .access_view(&workspace, scope, generation.id(), label, None, io)
             .await?;
         guard().await?;
         super::super::access::require(&view.0, Action::List, request.path, io)?;

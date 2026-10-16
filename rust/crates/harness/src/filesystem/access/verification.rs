@@ -37,6 +37,44 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     roundtrip::<Policy>(&io, bytes)?;
     roundtrip::<Capability>(&io, bytes)?;
     roundtrip::<FileRef>(&io, bytes)?;
+    roundtrip::<crate::Capabilities>(&io, bytes)?;
+    if let Ok(capabilities) =
+        record::<crate::Capabilities>(&io, bytes, crate::wire::ErrorCode::Storage)
+    {
+        let ceilings = crate::Capabilities::new(
+            capabilities
+                .0
+                .iter()
+                .filter(|label| label.starts_with(acyclic_fs::access::SCOPE_PREFIX)),
+        );
+        let legacy = crate::Capabilities::new(
+            capabilities
+                .0
+                .iter()
+                .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX)),
+        );
+        if ceilings.iter().next().is_some()
+            && legacy
+                .iter()
+                .any(acyclic_fs::access::is_filesystem_capability)
+        {
+            assert!(!legacy.is_subset_of(&capabilities.0));
+            assert!(
+                capabilities
+                    .0
+                    .without(&ceilings)
+                    .iter()
+                    .all(|label| !acyclic_fs::access::is_filesystem_capability(label))
+            );
+            assert!(
+                capabilities
+                    .0
+                    .intersect(&legacy)
+                    .iter()
+                    .all(|label| !acyclic_fs::access::is_filesystem_capability(label))
+            );
+        }
+    }
     assert_eq!(io.owned_bytes()?, 0);
     Ok(())
 }

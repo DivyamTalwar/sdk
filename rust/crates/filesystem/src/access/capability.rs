@@ -9,6 +9,20 @@ pub const DIRECTORY_READ_PREFIX: &str = "directory:read:";
 /// Structured filesystem grants carried in harness signed scopes.
 pub const SCOPE_PREFIX: &str = "filesystem:";
 
+/// Whether a signed-scope label carries filesystem authority.
+#[must_use]
+pub fn is_filesystem_capability(label: &str) -> bool {
+    [
+        SCOPE_PREFIX,
+        FILE_READ_PREFIX,
+        DIRECTORY_READ_PREFIX,
+        VolumeOperation::Read.capability_prefix(),
+        VolumeOperation::Write.capability_prefix(),
+    ]
+    .iter()
+    .any(|prefix| label.starts_with(prefix))
+}
+
 /// Whole-volume content operations in harness signed scopes.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

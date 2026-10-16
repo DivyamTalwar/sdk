@@ -332,6 +332,7 @@ impl DurableContextProvider {
             .read(
                 &revision.context,
                 revision.context.descriptor().byte_length(),
+                None,
                 io,
             )?
             .await?;

@@ -127,7 +127,7 @@ impl TaskContext {
         self.scope.verify_created_write(writer.volume(), io).await?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
-                self.authorize_file_read(source, scope, io)?;
+                self.authorize_file_read(source, scope, scope.grants(), io)?;
                 if source.volume() != writer.volume() || source.path() != path {
                     return Err(content_error(
                         io,

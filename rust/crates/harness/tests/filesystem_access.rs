@@ -216,3 +216,37 @@ fn policy_intersection_preserves_signed_narrowed_grants() -> Result<(), Box<dyn 
     );
     Ok(())
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn set_operations_preserve_filesystem_ceilings(
+        legacy_kind in 0usize..4,
+        parent_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
+        child_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
+    ) {
+        use acyclic_fs::access::{DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation, is_filesystem_capability};
+        let prefix = [FILE_READ_PREFIX, DIRECTORY_READ_PREFIX,
+            VolumeOperation::Read.capability_prefix(), VolumeOperation::Write.capability_prefix()][legacy_kind];
+        let legacy = format!("{prefix}volume");
+        let parent = Capability { layers: vec![vec![grant("src/**")]], expires_at: parent_expiry };
+        let parent = Capabilities::new([legacy.clone(), parent.to_scope_label()?, "task:spawn:child".into()]);
+        let only_legacy = Capabilities::new([legacy.clone(), "task:spawn:child".into()]);
+        proptest::prop_assert!(!only_legacy.is_subset_of(&parent));
+        let denied = Capabilities::new(parent.iter().filter(|label| label.starts_with(SCOPE_PREFIX)));
+        for restricted in [parent.intersect(&only_legacy), parent.without(&denied)] {
+            proptest::prop_assert!(restricted.is_subset_of(&parent));
+            proptest::prop_assert!(restricted.iter().all(|label| !is_filesystem_capability(label)));
+            proptest::prop_assert!(restricted.contains("task:spawn:child"));
+        }
+        let root = parent.iter().find_map(|label| Capability::from_scope_label(label).ok().flatten()).unwrap();
+        let child = root.attenuate(vec![grant("src/private/**")], child_expiry);
+        let child = Capabilities::new([legacy, child.to_scope_label()?, "task:spawn:child".into()]);
+        proptest::prop_assert!(child.is_subset_of(&parent));
+        for intersection in [parent.intersect(&child), child.intersect(&parent)] {
+            proptest::prop_assert!(intersection.is_subset_of(&parent));
+            proptest::prop_assert!(intersection.is_subset_of(&child));
+            proptest::prop_assert!(intersection.iter().any(|label| label.starts_with(SCOPE_PREFIX)));
+        }
+    }
+}

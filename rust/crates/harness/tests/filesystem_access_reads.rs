@@ -359,7 +359,7 @@ async fn legacy_label_cannot_bypass_capability_path_or_expiry() -> Result<(), Bo
         assert_eq!(
             fixture
                 .reader(&scope)?
-                .read(&fixture.file, 4096, None)?
+                .read(&fixture.file, 4096, None, None)?
                 .await
                 .is_ok(),
             allowed
@@ -374,7 +374,7 @@ async fn content_reads_fail_closed_without_a_persisted_policy() -> Result<(), Bo
     assert!(matches!(
         fixture
             .reader(&fixture.scope)?
-            .read(&fixture.file, 4096, None)?
+            .read(&fixture.file, 4096, None, None)?
             .await,
         Err(acyclic_harness::Error::Unauthorized(_))
     ));
@@ -547,7 +547,7 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
     assert_eq!(
         fixture
             .reader(&only)?
-            .read(&fixture.file, 4096, None)?
+            .read(&fixture.file, 4096, None, None)?
             .await?
             .as_ref(),
         b"private"
@@ -569,7 +569,7 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
     assert!(matches!(
         fixture
             .reader(&ambiguous)?
-            .read(&fixture.file, 4096, None)?
+            .read(&fixture.file, 4096, None, None)?
             .await,
         Err(acyclic_harness::Error::Unauthorized(_))
     ));
@@ -587,7 +587,7 @@ proptest! {
             let fixture = Fixture::new().await?;
             fixture.policy(deny, 2).await?;
             let scope = fixture.narrowed(grants_path, expired)?;
-            let allowed = fixture.reader(&scope)?.read(&fixture.file, 4096, None)?.await.is_ok();
+            let allowed = fixture.reader(&scope)?.read(&fixture.file, 4096, None, None)?.await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             let grant = ContentGrant::verify_read(
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.file,
@@ -629,6 +629,10 @@ proptest! {
         policy.layers[0][0].conditions.expires_at = expiry;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&policy)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let mut labels: Vec<String> = serde_json::from_slice(include_bytes!("../fuzz/corpus/filesystem_access/ceiling-set"))?;
+        labels.push(name.clone());
+        acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&labels)?)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         let mut file: serde_json::Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/filesystem_access/file-ref"))?;
         file["path"] = format!("notes/{name}").into();
         let file: FileRef = serde_json::from_value(file)?;
@@ -641,3 +645,6 @@ proptest! {
 
 #[path = "filesystem_access_listing.rs"]
 mod listing;
+
+#[path = "filesystem_access_runtime.rs"]
+mod runtime;

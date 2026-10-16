@@ -42,7 +42,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert_eq!(
         storage
             .content_verifier
-            .read(&committed, 1024, Some(&read_io))?
+            .read(&committed, 1024, None, Some(&read_io))?
             .await?
             .as_ref(),
         b"original"
@@ -188,7 +188,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
     let before_read = work.live_allocation_bytes();
     let bytes = storage
         .content_verifier
-        .read(&file, 1024, Some(&io))?
+        .read(&file, 1024, None, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
     assert!(bytes.matches_meter(&work.runtime_meter()));
@@ -474,7 +474,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     assert_eq!(recovered, staged);
     let content = storage
         .content_verifier
-        .read(&recovered, 1024, Some(&io))?
+        .read(&recovered, 1024, None, Some(&io))?
         .await?;
     assert_eq!(content.as_ref(), b"original");
     drop(content);

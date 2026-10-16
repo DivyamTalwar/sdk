@@ -394,7 +394,7 @@ impl MemoryHarnessStorage {
             return Ok(bytes.into());
         }
         self.content_verifier
-            .read(file, self.maximum_file_bytes, None)?
+            .read(file, self.maximum_file_bytes, None, None)?
             .await
     }
 
@@ -437,7 +437,7 @@ impl MemoryHarnessStorage {
         file: &FileRef,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.delegated_reader(scope)?
-            .read(file, self.maximum_file_bytes, None)?
+            .read(file, self.maximum_file_bytes, None, None)?
             .await
     }
 

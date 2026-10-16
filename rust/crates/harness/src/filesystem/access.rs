@@ -60,6 +60,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         maximum_bytes: u64,
         inherited_reference: bool,
+        ceiling: Option<&crate::Capabilities>,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
         reference.validate(&mut Some(&mut io.history_io()))?;
@@ -69,7 +70,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         {
             return Err(io.invalid("content provider or size limit mismatch"));
         }
-        let label = crate::core::filesystem_scope_label(scope, &mut Some(&mut io.history_io()))?;
+        let label = crate::core::filesystem_scope_label(
+            scope.capabilities(),
+            &mut Some(&mut io.history_io()),
+        )?;
         // A legacy grant is authority for this exact request only. A structured
         // payload is always its ceiling, even when legacy labels are also present.
         if label.is_none() && !inherited_reference {
@@ -90,7 +94,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
         let generation = GenerationId::new(Digest::from_bytes(generation));
         let compiled = self
-            .access_view(&workspace, scope, generation, label, io)
+            .access_view(&workspace, scope, generation, label, ceiling, io)
             .await?;
         require(&compiled.0, Action::Read, reference.path(), io)?;
         drop(compiled);
@@ -120,6 +124,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         scope: &Scope,
         generation: GenerationId,
         label: Option<&str>,
+        ceiling: Option<&crate::Capabilities>,
         io: &'a PreparationIo,
     ) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 2])> {
         let payload = if let Some(label) = label {
@@ -130,7 +135,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             LEGACY_READ
         };
-        let capability = record::<Capability>(io, payload, crate::wire::ErrorCode::Unauthorized)?;
+        let (capability, hold) =
+            record::<Capability>(io, payload, crate::wire::ErrorCode::Unauthorized)?;
+        let mut capability = (capability, [Some(hold), None, None]);
+        let caller = ceiling
+            .map(|grants| {
+                crate::core::filesystem_scope_label(grants, &mut Some(&mut io.history_io()))
+            })
+            .transpose()?
+            .flatten();
+        if let Some(caller) = caller.filter(|caller| Some(*caller) != label) {
+            let payload = caller
+                .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
+                .ok_or_else(|| io.invalid("filesystem capability label is invalid"))?;
+            let (mut additional, hold) =
+                record::<Capability>(io, payload.as_bytes(), crate::wire::ErrorCode::Unauthorized)?;
+            capability.1[1] = Some(hold);
+            let empty = capability.0.layers.is_empty() || additional.layers.is_empty();
+            let count = capability
+                .0
+                .layers
+                .len()
+                .checked_add(additional.layers.len())
+                .and_then(|count| count.checked_add(usize::from(empty)))
+                .ok_or_else(|| io.invalid("filesystem ceiling layer count overflow"))?;
+            let mut history = io.history_io();
+            let mut work = Some(&mut history as &mut dyn crate::store::HistoryIo);
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+            let mut layers = crate::core::reserve_copy_vector(count, &mut quota)?;
+            let hold = io.guard_owned(quota.retained())?;
+            quota.transfer();
+            capability.1[2] = Some(hold);
+            layers.append(&mut capability.0.layers);
+            layers.append(&mut additional.layers);
+            if empty {
+                layers.push(Vec::new());
+            }
+            capability.0.layers = layers;
+            capability.0.expires_at = match (capability.0.expires_at, additional.expires_at) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (left, right) => left.or(right),
+            };
+        }
         let head = io.sdk(
             workspace
                 .checkout(
