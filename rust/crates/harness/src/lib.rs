@@ -72,9 +72,11 @@ pub mod runtime;
 pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
+pub mod task_volume;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tool;
+pub mod tools;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
