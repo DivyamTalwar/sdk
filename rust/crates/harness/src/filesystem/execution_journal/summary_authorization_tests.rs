@@ -51,11 +51,13 @@ async fn publish(
 
 #[tokio::test]
 async fn summary_authentication_binds_the_task_execution_even_in_a_shared_volume() -> Result<()> {
+    use futures::FutureExt;
+    use proptest::prelude::*;
     let fixture = fixture().await?;
     let turn = OperationId::new();
     let first_owner = fixture.running(80).await?;
     let first = super::super::task_runtime::execution_operation(first_owner.task_id(), turn, None)?;
-    let first = fixture
+    let mut first = fixture
         .execution(first_owner, first)?
         .with_turn(first, turn);
     let second_owner = fixture.running(81).await?;
@@ -105,6 +107,33 @@ async fn summary_authentication_binds_the_task_execution_even_in_a_shared_volume
         .execution(fixture.owner(81).await?, operation)?
         .with_turn(operation, turn);
     assert!(!forged.authenticate_summary(&file, None)?.await?);
+    // Arbitrary execution or turn substitutions must be rejected by the real
+    // journal before reaching any asynchronous storage boundary.
+    proptest::test_runner::TestRunner::default()
+        .run(&(any::<[u8; 16]>(), any::<[u8; 16]>()), |(bound, nonce)| {
+            for (bound, turn) in [
+                (OperationId::from_bytes(bound), turn),
+                (operation, OperationId::from_bytes(nonce)),
+            ] {
+                let derived = super::super::task_runtime::execution_operation(
+                    first.owner.as_ref().unwrap().0.task_id(),
+                    turn,
+                    None,
+                )?;
+                if bound != operation || derived != operation {
+                    first.execution = Some((bound, turn));
+                    prop_assert_eq!(
+                        first
+                            .authenticate_summary_with_io(&file, None)
+                            .now_or_never()
+                            .transpose()?,
+                        Some(false)
+                    );
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
     Ok(())
 }
 
