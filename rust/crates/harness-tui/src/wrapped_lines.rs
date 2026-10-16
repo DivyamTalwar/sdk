@@ -52,10 +52,23 @@ fn wrap(line: &Line<'_>, width: u16) -> Vec<Line<'static>> {
         styles.push((text.len(), span.style));
     }
     let layout = Layout::new(&Editor::new(&text), usize::from(width));
-    let mut rows: Vec<_> = layout
+    layout
         .rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        // Prompt layout inserts cursor-only rows at exact-width boundaries,
+        // both before hard newlines and at the end. A transcript has no cursor.
+        .filter(|(index, row)| {
+            !row.cells.is_empty()
+                || index.checked_sub(1).is_none_or(|previous| {
+                    let previous = &layout.rows[previous];
+                    previous.end != row.start
+                        || previous.cells.last().is_none_or(|cell| {
+                            cell.column + cell.width != usize::from(width).max(1)
+                        })
+                })
+        })
+        .map(|(_, row)| {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for cell in &row.cells {
                 let index = styles.partition_point(|(end, _)| *end <= cell.source.start);
@@ -73,14 +86,5 @@ fn wrap(line: &Line<'_>, width: u16) -> Vec<Line<'static>> {
             row.alignment = line.alignment;
             row
         })
-        .collect();
-    // Prompt layout reserves an extra cursor row at an exact-width end. A
-    // transcript has no insertion cursor and must not gain that blank row.
-    if rows.len() > 1
-        && rows.last().is_some_and(|row| row.spans.is_empty())
-        && !text.ends_with('\n')
-    {
-        rows.pop();
-    }
-    rows
+        .collect()
 }

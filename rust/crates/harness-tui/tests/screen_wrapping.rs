@@ -67,6 +67,13 @@ fn crlf_split_across_styles_is_one_line_break() {
     assert_eq!(cache.rows().len(), 2);
     assert_eq!(text(cache.rows()), "firstsecond");
     assert_eq!(cache.rows()[1].spans[0].style.fg, Some(Color::Blue));
+    cache.update(&source, source.len(), 5);
+    assert_eq!(
+        cache.rows().len(),
+        3,
+        "no cursor-only row before a hard break"
+    );
+    assert_eq!(text(cache.rows()), "firstsecond");
 }
 
 proptest! {
