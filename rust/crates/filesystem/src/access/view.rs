@@ -29,17 +29,17 @@ impl AccessView {
     pub fn new_native(
         view: PathTrie,
         custody: crate::NativeAllocation,
-    ) -> Result<Self, crate::NativeTreeMaterializationError> {
+    ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
         let header = custody.work().claim(
             (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
         let view = native_trie(view, custody)?;
-        Ok(Self {
+        Ok(Arc::new(Self {
             current: RwLock::new(Arc::new(view)),
             _custody: Some(header),
-        })
+        }))
     }
 
     /// Publish a freshly authenticated revision, retaining every pinned old view.

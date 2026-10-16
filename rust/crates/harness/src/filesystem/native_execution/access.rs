@@ -15,13 +15,13 @@ struct PolicyOwner<A, O> {
     _custody: NativeAllocation,
 }
 
-async fn compile<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     scope: &Scope,
     context: &crate::runtime::TaskContext,
     generation: GenerationId,
     writable: bool,
-    io: &'a PreparationIo,
+    io: &PreparationIo,
 ) -> Result<(PathTrie, NativeAllocation)> {
     let label =
         crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
@@ -114,7 +114,7 @@ where
             &io,
         )
         .await?;
-        let view = Arc::new(AccessView::new_native(compiled, custody)?);
+        let view = AccessView::new_native(compiled, custody)?;
         let scope = self.scope.copy(&mut Some(&mut io.history_io()))?;
         io.retain_owned(
             (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
