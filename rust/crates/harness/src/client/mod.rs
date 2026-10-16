@@ -30,7 +30,7 @@ mod content;
 mod documents;
 pub use documents::DocumentViews;
 mod usage;
-mod views;
+pub(crate) mod views;
 pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};
 #[cfg(not(target_arch = "wasm32"))]
 mod journal;
@@ -87,3 +87,20 @@ pub struct Changes {
 }
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{connect_local, local_prompt};
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "tui",
+    not(target_arch = "wasm32")
+))]
+pub use local::{local_draft, local_input};
+#[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
+mod native_input;
+#[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+pub use native_input::next_tui_event;
+#[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
+pub use native_input::stdin_jsonl;

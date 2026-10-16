@@ -24,9 +24,9 @@ mod prompt_files;
 #[cfg(feature = "tui")]
 mod prompt_input;
 #[cfg(feature = "tui")]
-mod widget;
-#[cfg(feature = "tui")]
 mod screen;
+#[cfg(feature = "tui")]
+mod widget;
 
 pub use editor::{Editor, Motion};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
@@ -57,3 +57,6 @@ pub use widget::{PromptWidget, Viewport};
 pub use screen::{Screen, ScreenAreas};
 #[cfg(feature = "tui")]
 pub mod term;
+
+#[cfg(feature = "tui")]
+pub use crossterm;

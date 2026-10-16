@@ -1,305 +1,80 @@
-use super::*;
-use acyclic_harness::{OperationId, wire_api::current_protocol};
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
-use futures::{FutureExt as _, executor::block_on, stream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+//! Executable composition uses the real shared ClientViews and Markdown renderer.
+use acyclic_harness::{
+    OperationId,
+    client::ClientViews,
+    model::ModelEvent,
+    tui::{
+        ClientRenderer, PromptInput, Viewport,
+        ratatui::{Terminal, backend::TestBackend},
+    },
+    wire,
+};
 
-#[derive(Default)]
-struct Probe {
-    submit: AtomicUsize,
-    cancel: AtomicUsize,
-    authorize: AtomicUsize,
-    mismatch: bool,
-    events: usize,
-    idle: bool,
+fn picture(renderer: &ClientRenderer) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer.screen().render(
+                frame,
+                &PromptInput::default(),
+                &mut Viewport::default(),
+                0,
+                1000,
+            );
+        })
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
 }
 
-impl HarnessWireApi for Probe {
-    fn acknowledge<'a>(&'a self, _: wire::Acknowledge) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn handshake<'a>(
-        &'a self,
-        request: wire::HandshakeRequest,
-    ) -> BoxProviderFuture<'a, Result<wire::HandshakeResponse>> {
-        async move { negotiate(&request, &wire::CapabilitySet::default()) }.boxed()
-    }
+#[test]
+fn shared_markdown_is_visible_and_snapshot_reset_removes_old_text() {
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let mut views = ClientViews::default();
+    let mut renderer = ClientRenderer::default();
+    views
+        .model_event(
+            &owner,
+            OperationId::from_bytes([1; 16]),
+            ModelEvent::Content {
+                delta: "# Heading\n**streamed answer**".into(),
+            },
+        )
+        .unwrap();
+    renderer.update(&views, &owner);
+    let visible = picture(&renderer);
+    assert!(visible.contains("Heading"));
+    assert!(visible.contains("streamed answer"));
+    assert!(!visible.contains("**streamed"));
+    renderer.update(&ClientViews::default(), &owner);
+    assert!(!picture(&renderer).contains("streamed answer"));
+}
 
-    fn submit<'a>(
-        &'a self,
-        command: wire::CommandEnvelope,
-    ) -> BoxProviderFuture<'a, Result<wire::Admission>> {
-        async move {
-            self.submit.fetch_add(1, Ordering::SeqCst);
-            if self.mismatch {
-                Ok(wire::Admission::default())
-            } else {
-                Err(Error::Indeterminate(OperationId::parse(
-                    &command
-                        .operation
-                        .ok_or_else(|| Error::Invalid("operation".into()))?
-                        .operation_id,
-                )?))
-            }
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Property: the composed cells after arbitrary Unicode delta boundaries
+    // equal the cells obtained by projecting the same complete ClientViews text.
+    #[test]
+    fn composed_markdown_is_independent_of_chunking(chunks in proptest::collection::vec(".{0,12}", 0..6)) {
+        let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
+        let operation = OperationId::from_bytes([1;16]);
+        let mut views = ClientViews::default();
+        let mut live = ClientRenderer::default();
+        live.update(&views, &owner);
+        for chunk in &chunks {
+            views.model_event(&owner, operation, ModelEvent::Content { delta: chunk.clone() }).unwrap();
+            live.update(&views, &owner);
         }
-        .boxed()
+        let mut replayed = ClientRenderer::default();
+        replayed.update(&views, &owner);
+        proptest::prop_assert_eq!(picture(&live), picture(&replayed));
     }
-
-    fn replay<'a>(
-        &'a self,
-        _: wire::ResumeRequest,
-        mode: acyclic_harness::wire_api::ReplayMode,
-    ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
-        async move {
-            if self.idle {
-                return Ok(match mode {
-                    acyclic_harness::wire_api::ReplayMode::Snapshot => Box::pin(stream::empty())
-                        as BoxProviderStream<'static, Result<wire::Delivery>>,
-                    acyclic_harness::wire_api::ReplayMode::Follow => Box::pin(stream::pending()),
-                });
-            }
-            let delivery = wire::Delivery {
-                events: vec![wire::EventEnvelope::default(); self.events],
-                ..wire::Delivery::default()
-            };
-            // A page request must return without waiting for stream completion.
-            Ok(
-                Box::pin(stream::once(async { Ok(delivery) }).chain(stream::pending()))
-                    as BoxProviderStream<'static, Result<wire::Delivery>>,
-            )
-        }
-        .boxed()
-    }
-
-    fn authorize_operation_control<'a>(
-        &'a self,
-        _: &'a acyclic_harness::wire_api::OperationControlRequest,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        self.authorize.fetch_add(1, Ordering::SeqCst);
-        async { Err(Error::Unauthorized("probe denied".into())) }.boxed()
-    }
-
-    fn observe<'a>(
-        &'a self,
-        _: wire::ObserveRequest,
-    ) -> BoxProviderFuture<'a, Result<wire::OperationStatus>> {
-        async { Err(Error::Unsupported("unused".into())) }.boxed()
-    }
-
-    fn watch_operation<'a>(
-        &'a self,
-        _: wire::ObserveRequest,
-    ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::OperationStatus>>>>
-    {
-        Box::pin(async { Err(Error::Unsupported("probe".into())) })
-    }
-    fn cancel<'a>(
-        &'a self,
-        _: wire::CancelRequest,
-    ) -> BoxProviderFuture<'a, Result<wire::CancelResponse>> {
-        self.cancel.fetch_add(1, Ordering::SeqCst);
-        async { Err(Error::Unsupported("must not dispatch".into())) }.boxed()
-    }
-}
-
-fn command() -> wire::client_frame::Frame {
-    wire::client_frame::Frame::Command(wire::CommandEnvelope {
-        protocol: Some(current_protocol()),
-        operation: Some(wire::OperationIdentity {
-            operation_id: OperationId::from_bytes([7; 16]).to_string(),
-            idempotency_key: "unchanged-admission".into(),
-        }),
-        ..wire::CommandEnvelope::default()
-    })
-}
-
-fn resume(
-    api: &impl HarnessWireApi,
-    cursors: Vec<wire::ReplayCursor>,
-) -> Result<Option<wire::server_frame::Frame>> {
-    block_on(dispatch(
-        api,
-        wire::client_frame::Frame::Resume(wire::ResumeRequest {
-            protocol: Some(current_protocol()),
-            cursors,
-        }),
-    ))
-}
-
-#[test]
-fn uncertain_submit_is_not_replayed_and_mismatched_admission_is_rejected() {
-    let api = Probe::default();
-    assert!(matches!(
-        block_on(dispatch(&api, command())),
-        Err(Error::Indeterminate(_))
-    ));
-    assert_eq!(api.submit.load(Ordering::SeqCst), 1);
-    let api = Probe {
-        mismatch: true,
-        ..Probe::default()
-    };
-    assert!(matches!(
-        block_on(dispatch(&api, command())),
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(api.submit.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn denied_control_does_not_call_cancel() {
-    let api = Probe::default();
-    let request = wire::CancelRequest {
-        protocol: Some(current_protocol()),
-        operation_id: OperationId::from_bytes([7; 16]).to_string(),
-        idempotency_key: "cancel-once".into(),
-        owner: Some(wire::Authority {
-            kind: wire::AggregateKind::Task as i32,
-            id: "probe".into(),
-        }),
-        scope: Some(wire::Scope {
-            id: "test-only-untrusted-scope".into(),
-            capabilities: vec!["operation:cancel".into()],
-            issuer: "probe".into(),
-            proof: vec![0; 32],
-            ..wire::Scope::default()
-        }),
-        ..wire::CancelRequest::default()
-    };
-    assert!(matches!(
-        block_on(dispatch(&api, wire::client_frame::Frame::Cancel(request))),
-        Err(Error::Unauthorized(_))
-    ));
-    assert_eq!(api.cancel.load(Ordering::SeqCst), 0);
-    assert_eq!(api.authorize.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn replay_reads_one_delivery_and_renderer_rejects_oversized_pages() -> Result<()> {
-    assert!(matches!(
-        resume(&Probe::default(), vec![])?,
-        Some(wire::server_frame::Frame::Delivery(_))
-    ));
-    let api = Probe {
-        events: MAX_PAGE_EVENTS + 1,
-        ..Probe::default()
-    };
-    assert!(matches!(
-        render(&wire::ServerFrame {
-            frame: resume(&api, vec![])?
-        }),
-        Err(Error::Invalid(_))
-    ));
-    Ok(())
-}
-
-#[test]
-fn next_at_current_cut_finishes_without_waiting_for_a_live_append() {
-    let api = Probe {
-        idle: true,
-        ..Probe::default()
-    };
-    let request = wire::client_frame::Frame::Resume(wire::ResumeRequest {
-        protocol: Some(current_protocol()),
-        cursors: Vec::new(),
-    });
-    let result = dispatch(&api, request)
-        .now_or_never()
-        .expect("finite inspection must not wait on live replay");
-    assert!(matches!(result, Ok(None)));
-}
-
-#[test]
-fn display_escapes_terminal_controls_and_preserves_unknown_outcomes() -> Result<()> {
-    assert_eq!(
-        text("é\n\u{1b}]52;c;secret\u{7}\r"),
-        "é\n\\u{1b}]52;c;secret\\u{7}\\r"
-    );
-    let status = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Status(wire::OperationStatus {
-            state: 999,
-            error: Some(wire::Error {
-                message: "\u{1b}[2J".into(),
-                ..wire::Error::default()
-            }),
-            ..wire::OperationStatus::default()
-        })),
-    };
-    let output = render(&status)?;
-    assert!(output.contains("999"));
-    assert!(!output.contains('\u{1b}'));
-    assert!(matches!(
-        render(&wire::ServerFrame {
-            frame: Some(wire::server_frame::Frame::Error(wire::Error {
-                message: "x".repeat(MAX_FRAME_BYTES + 1),
-                ..wire::Error::default()
-            })),
-        }),
-        Err(Error::Invalid(_))
-    ));
-    Ok(())
-}
-
-#[test]
-fn fixture_enforces_cursors_read_only_access_and_typed_events() -> Result<()> {
-    let api = crate::fixture::WireFixture::load()?;
-    assert!(matches!(resume(&api, vec![]), Err(Error::Conflict(_))));
-    let Some(wire::server_frame::Frame::Delivery(delivery)) =
-        resume(&api, vec![api.start_cursor()])?
-    else {
-        panic!("fixture delivery missing");
-    };
-    assert_eq!(delivery.from_revision, api.start_cursor().revision);
-    assert_eq!(
-        delivery.from_revision.checked_add(1),
-        Some(delivery.through_revision)
-    );
-    assert!(
-        delivery
-            .events
-            .iter()
-            .all(|event| event.revision == delivery.through_revision)
-    );
-    let next = wire::ReplayCursor {
-        authority: delivery.authority.clone(),
-        generation: delivery.generation.clone(),
-        revision: delivery.through_revision,
-    };
-    assert!(resume(&api, vec![next])?.is_none());
-    assert!(matches!(
-        block_on(dispatch(&api, command())),
-        Err(Error::Unsupported(_))
-    ));
-    let mut response = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Delivery(delivery)),
-    };
-    render(&response)?;
-    let Some(wire::server_frame::Frame::Delivery(delivery)) = &mut response.frame else {
-        unreachable!()
-    };
-    delivery
-        .events
-        .first_mut()
-        .expect("fixture event")
-        .event_type = "interaction_opened".into();
-    assert!(matches!(render(&response), Err(Error::Storage(_))));
-    Ok(())
-}
-
-#[test]
-fn scrollback_evicts_by_pages_and_bytes_before_accepting_overflow() -> Result<()> {
-    let mut view = Scrollback::default();
-    assert!(view.page(usize::MAX).is_none());
-    for index in 0..=MAX_DISPLAY_PAGES {
-        view.push(index.to_string())?;
-    }
-    assert_eq!(view.page(0), Some(MAX_DISPLAY_PAGES.to_string().as_str()));
-    assert_eq!(view.page(MAX_DISPLAY_PAGES), None);
-    view.push("x".repeat(MAX_DISPLAY_BYTES))?;
-    assert_eq!(view.page(1), None);
-    assert!(matches!(
-        view.push("x".repeat(MAX_DISPLAY_BYTES + 1)),
-        Err(Error::Invalid(_))
-    ));
-    assert_eq!(view.page(0).map(str::len), Some(MAX_DISPLAY_BYTES));
-    Ok(())
 }

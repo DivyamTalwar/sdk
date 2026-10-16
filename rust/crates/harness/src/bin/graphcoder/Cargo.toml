@@ -1,0 +1,25 @@
+[package]
+name = "graphcoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+autobins = false
+
+[[bin]]
+name = "graphcoder"
+path = "../graphcoder.rs"
+
+[dependencies]
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui"] }
+acyclic-harness-providers = { path = "../../../../harness-providers" }
+clap.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

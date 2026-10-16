@@ -128,7 +128,7 @@ pub struct ClientViews {
     usage_state: BTreeMap<String, Usage>,
 }
 
-pub(super) fn authority_key(authority: &wire::Authority) -> String {
+pub(crate) fn authority_key(authority: &wire::Authority) -> String {
     let kind = wire::AggregateKind::try_from(authority.kind)
         .map_or("AGGREGATE_KIND_UNSPECIFIED", |kind| kind.as_str_name());
     format!("{kind}:{}", authority.id)

@@ -1,11 +1,13 @@
 # Actual Win32 ConPTY transport for test-graphcoder-pty.mjs; never a redirected-stdin substitute.
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
-    [Parameter(Mandatory = $true)][string]$Config,
+    [Parameter(Mandatory = $true)][string]$Workspace,
+    [Parameter(Mandatory = $true)][string]$Catalog,
+    [string]$Model = "scripted/test",
     [int]$DeadlineMilliseconds = 90000
 )
 $ErrorActionPreference = 'Stop'
-if (-not [IO.Path]::IsPathRooted($Binary) -or -not [IO.Path]::IsPathRooted($Config)) {
+if (-not [IO.Path]::IsPathRooted($Binary) -or -not [IO.Path]::IsPathRooted($Workspace)) {
     throw 'ConPTY requires absolute installed binary and configuration paths'
 }
 if ($DeadlineMilliseconds -lt 1000 -or $DeadlineMilliseconds -gt 120000) {
@@ -68,7 +70,7 @@ public static class GraphcoderConPty {
         }
         result.Append('\\', slashes * 2); return result.Append('"').ToString();
     }
-    public static int Run(string binary, string config, int deadline) {
+    public static int Run(string binary, string workspace, string catalog, string model, int deadline) {
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false;
@@ -96,8 +98,8 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
-                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --session " + Quote(config)), IntPtr.Zero, IntPtr.Zero, false,
-                    0x00080000 | 0x00000004, IntPtr.Zero, Path.GetDirectoryName(config), ref startup, out process), "CreateProcessW with real ConPTY");
+                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --catalog " + Quote(catalog) + " --model " + Quote(model)), IntPtr.Zero, IntPtr.Zero, false,
+                    0x00080000 | 0x00000004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);
                 bool restoredOutput = SetStdHandle(-11, parentOutput);
@@ -160,5 +162,5 @@ public static class GraphcoderConPty {
     }
 }
 '@
-try { exit [GraphcoderConPty]::Run($Binary, $Config, $DeadlineMilliseconds) }
+try { exit [GraphcoderConPty]::Run($Binary, $Workspace, $Catalog, $Model, $DeadlineMilliseconds) }
 catch { [Console]::Error.WriteLine($_.Exception.ToString()); exit 125 }
