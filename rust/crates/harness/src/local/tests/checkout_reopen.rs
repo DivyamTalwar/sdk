@@ -291,3 +291,108 @@ proptest::proptest! {
         }
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn arriving_directories_remain_watched_after_creation_and_rename() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checked_commands::call(
+            0,
+            "bash",
+            "mkdir -p sub/deep; printf first > sub/deep/note.txt",
+        ),
+        super::checked_commands::call(1, "bash", "printf created-edit > sub/deep/note.txt"),
+        ScriptedTurn::Text("done".into()),
+        super::checked_commands::call(2, "bash", "mv sub moved"),
+        super::checked_commands::call(3, "bash", "printf renamed-edit > moved/deep/note.txt"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider),
+    ))
+    .await?;
+    let workspace = harness.workspace().unwrap().view().workspace();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    for (path, expected) in [
+        ("/sub/deep/note.txt", b"created-edit".as_slice()),
+        ("/moved/deep/note.txt", b"renamed-edit".as_slice()),
+    ] {
+        run(&harness).await?;
+        let head = workspace
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        let bytes = head
+            .read(path, 1024, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        assert_eq!(bytes.as_ref(), expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checked_commands::call(0, "fs", "status"),
+        ScriptedTurn::Text("done".into()),
+        super::checked_commands::call(1, "fs", "status"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let mut harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    for reconciling in [false, true] {
+        let checkout = harness.workspace().unwrap();
+        let workspace = checkout.view().workspace();
+        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
+            checkout.filesystem.operation_window_store(),
+        );
+        let parent = workspace
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .id();
+        coordinator
+            .begin(workspace.id(), parent, "abandoned-worker", 0, 1)
+            .await
+            .map_err(super::super::storage)?;
+        if reconciling {
+            assert!(
+                coordinator
+                    .claim_reconcile(workspace.id(), 2)
+                    .await
+                    .map_err(super::super::storage)?
+                    .is_some()
+            );
+        }
+        let workspace_id = workspace.id();
+        drop(harness);
+        harness = LocalHarness::open(LocalHarnessConfig::new(
+            directory.path(),
+            (model()?, provider.clone()),
+        ))
+        .await?;
+        run(&harness).await?;
+        assert!(matches!(
+            coordinator
+                .inspect(workspace_id)
+                .await
+                .map_err(super::super::storage)?
+                .phase,
+            acyclic_fs::OperationWindowPhase::Idle
+        ));
+    }
+    Ok(())
+}
