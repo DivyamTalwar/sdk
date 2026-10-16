@@ -24,7 +24,7 @@
     "text": "**normal**",
     "expected": "normal",
     "usage": {
-      "model": "evil‮"
+      "model": "evil\u202e"
     },
     "status_expected": "evil\\u{202e}"
   }

@@ -237,7 +237,7 @@ async fn platform_file_updates_reach_the_shared_client_views() {
     );
     assert_eq!(
         client.session().views().documents["AGGREGATE_KIND_TASK:task"].plans
-            [&Component::new("plan-1").unwrap()],
+            [&PlanName::new("plan-1").unwrap()],
         "current plan"
     );
 }

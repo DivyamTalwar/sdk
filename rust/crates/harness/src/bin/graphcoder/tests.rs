@@ -605,3 +605,6 @@ mod completion_files;
 
 #[path = "tests/hostile_text.rs"]
 mod hostile_text;
+
+#[path = "tests/terminal_input.rs"]
+mod terminal_input;

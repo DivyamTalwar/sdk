@@ -6,7 +6,7 @@ cargo test -p acyclic-harness-tui --features tui --test screen
 # Select Cargo's exact native artifact, even when a newer Loom binary exists.
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py \
-    task_volume::files:: local::tests::task_files:: local::tests::checkout:: \
+    contract::errors::tests:: task_volume::files:: local::tests::task_files:: local::tests::checkout:: \
     local::tests::volume_tools:: local::tests::volumes:: local::tests::checkout_reopen:: \
     local::tests::checkout_reconciliation:: local::tests::reconciliation_interruptions::
 

@@ -43,16 +43,16 @@
   },
   {
     "row": "Hostile diff paths and content remain literal",
-    "path": "x‮",
+    "path": "x\u202e",
     "base": "before\n",
-    "current": "safe\u001b[31m‮\n",
+    "current": "safe\u001b[31m\u202e\n",
     "expected": [
       "x\\u{202e} (modified)",
       "+safe\\u{1b}[31m\\u{202e}"
     ],
     "absent": [
       "\u001b",
-      "‮"
+      "\u202e"
     ]
   }
 ]
