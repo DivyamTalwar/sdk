@@ -419,11 +419,17 @@ pub fn verify_link_isolation(broken: bool) {
             Err(StreamError::Unavailable)
         ));
         let delivery = healthy.try_recv().unwrap().unwrap();
-        assert!(matches!(delivery.item, Received::Record(_)));
+        let Received::Record(record) = &delivery.item else {
+            panic!("healthy route must deliver its record");
+        };
         assert!(
             pool.routes[&3]
                 .progress
-                .consume(delivery.generation, delivery.sequence)
+                .consume_record(
+                    delivery.generation,
+                    delivery.sequence,
+                    *record.commit_id.as_bytes()
+                )
                 .unwrap()
         );
         drop(delivery.credit);

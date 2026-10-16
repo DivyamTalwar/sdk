@@ -78,7 +78,15 @@ impl Pool {
         if route.progress.cancelled() {
             return self.remove(id);
         }
-        let (next, opaque) = route.progress.position()?;
+        let progress::Position {
+            next,
+            opaque,
+            preceding,
+        } = route.progress.subscription()?;
+        if let Kind::Follow(follow) = &mut route.kind {
+            follow.preceding_commit_id =
+                preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
+        }
         route.received = next;
         route.received_opaque = opaque.clone().into();
         route.opened = false;

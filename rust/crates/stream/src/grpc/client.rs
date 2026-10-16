@@ -198,6 +198,17 @@ impl StreamProvider for Client {
         self.session()?.children(request).await
     }
 
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.session()?
+            .follow_records(path, from, Some(preceding), self.acknowledge_deliveries)
+            .await
+    }
+
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
