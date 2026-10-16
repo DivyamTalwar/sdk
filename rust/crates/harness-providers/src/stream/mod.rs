@@ -33,11 +33,22 @@ pub(crate) struct State<'work> {
     budget: budget::Budget<'work>,
 }
 
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn events<'a>(
     adapter: Adapter,
     body: BoxProviderStream<'a, Result<Bytes>>,
     maximum: usize,
     dispatch: ModelDispatch,
+) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    events_named(adapter, body, maximum, dispatch, None)
+}
+
+pub(crate) fn events_named<'a>(
+    adapter: Adapter,
+    body: BoxProviderStream<'a, Result<Bytes>>,
+    maximum: usize,
+    dispatch: ModelDispatch,
+    names: Option<&'a crate::tool_names::Names<'a>>,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
@@ -48,7 +59,9 @@ pub(crate) fn events<'a>(
             for event in deltas { yield event; }
             if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
-        for event in finish(state, adapter)? { yield event; }
+        if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
+        let events = finish(state, adapter)?;
+        for event in events { yield event; }
     })
 }
 
@@ -143,6 +156,27 @@ pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEven
 }
 
 impl<'work> State<'work> {
+    pub(crate) fn restore_names(
+        &mut self,
+        names: &crate::tool_names::Names,
+        mut fund: impl FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        if self
+            .metadata
+            .get("finish_reason")
+            .is_some_and(|reason| reason == "length")
+        {
+            return Ok(());
+        }
+        for call in self.calls.values_mut() {
+            if let Some(name) = names.canonical(&call.name)? {
+                fund(name.len())?;
+                self.budget.string(&mut call.name, name)?;
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         use acyclic_harness::model::json_value_logical_owned_bytes as owned;

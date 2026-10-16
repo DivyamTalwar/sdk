@@ -21,11 +21,12 @@ struct Parser<'work> {
 async fn send(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     dispatch_id: ModelDispatch,
-    key: Option<&str>,
-    account: Option<&str>,
+    auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
 ) -> Result<(crate::HttpResponse, usize)> {
+    let (key, account) = auth;
     let (bytes, nodes) = shape(request.bytes());
     let mut allocation = reserve(
         work,
@@ -34,7 +35,7 @@ async fn send(
         key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
     )?;
     let (url, headers, body) = diagnostic(
-        dispatch::request(provider, request, dispatch_id, key, account),
+        dispatch::request(provider, request, names, dispatch_id, key, account),
         &mut allocation,
     )?;
     let input_bytes = body.len();
@@ -180,15 +181,16 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
+            let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
             let auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
             work.remaining()?;
             let (response, input_bytes) = send(
                 provider,
                 request,
+                &names,
                 dispatch_id,
-                auth.0.as_deref(),
-                auth.1.as_deref(),
+                (auth.0.as_deref(), auth.1.as_deref()),
                 work,
             )
             .await?;
@@ -206,9 +208,9 @@ pub(crate) fn generate<'a>(
                     send(
                         provider,
                         request,
+                        &names,
                         dispatch_id,
-                        Some(&key),
-                        account.as_deref(),
+                        (Some(&key), account.as_deref()),
                         work,
                     )
                     .await?
@@ -228,6 +230,7 @@ pub(crate) fn generate<'a>(
             let adapter = provider.config.adapter;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
+                    let _name_custody = name_custody;
                     let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
@@ -263,6 +266,12 @@ pub(crate) fn generate<'a>(
                     })?;
                     let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
+                    let restored = parser.state.restore_names(&names, |length| {
+                        let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;
+                        parser.allocation.absorb(&mut custody)?;
+                        Ok(())
+                    });
+                    diagnostic(restored, &mut parser.allocation)?;
                     let Parser { state, mut allocation } = parser;
                     let events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;

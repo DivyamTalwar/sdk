@@ -17,22 +17,23 @@ pub(crate) fn generate(
         if request.request_digest() != dispatch.request_digest {
             Err(invalid("model dispatch digest differs from prepared request"))?;
         }
+        let names = crate::tool_names::Names::new(request.request());
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
-        let (response, input_bytes) = send(provider, &request, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
+        let (response, input_bytes) = send(provider, &request, &names, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
         #[cfg(not(target_arch = "wasm32"))]
         let (response, input_bytes) = if response.status == 401 {
             if let Some(login) = &provider.codex_login {
                 // No stream bytes have been read; a rejected credential did not start inference.
                 drop(response);
                 let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
-                send(provider, &request, dispatch, Some(&key), account.as_deref()).await?
+                send(provider, &request, &names, dispatch, Some(&key), account.as_deref()).await?
             } else { (response, input_bytes) }
         } else { (response, input_bytes) };
         drop(auth);
         if !(200..300).contains(&response.status) {
             Err(crate::http_error(response.status))?;
         }
-        let mut events = crate::stream::events(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch);
+        let mut events = crate::stream::events_named(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch, Some(&names));
         while let Some(event) = events.next().await {
             let event = event?;
             if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }
@@ -58,11 +59,12 @@ pub(crate) async fn authenticate<'a>(
 pub(crate) async fn send(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
 ) -> Result<(HttpResponse, usize)> {
-    let (url, headers, body) = self::request(provider, request, dispatch, key, account)?;
+    let (url, headers, body) = self::request(provider, request, names, dispatch, key, account)?;
     let input_bytes = body.len();
     let response = provider
         .transport
@@ -78,11 +80,12 @@ pub(crate) async fn send(
 pub(crate) fn request(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
 ) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
-    let body = projection::body(provider, request.request())?;
+    let body = projection::body_named(provider, request.request(), names)?;
     let mut headers = BTreeMap::from([("accept".into(), "text/event-stream".into())]);
     if let Some(key) = key {
         let (name, value) = match provider.config.adapter {

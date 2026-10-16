@@ -29,6 +29,8 @@ mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 mod native_tests;
+#[path = "tool_name_tests.rs"]
+mod tool_name_tests;
 
 const CHAT: &str = concat!(
     "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"hé\",\"reasoning_content\":\"think\",\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
