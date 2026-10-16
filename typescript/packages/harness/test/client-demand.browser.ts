@@ -139,7 +139,9 @@ try {
     await new Promise<never>(() => {});
   }
   assert(client.pending() === 1, "document restart lost pending intent");
-  const query = await ClientQuery.open(target, "Tasks", null, { files: 2n, segments: 2n, bytes: 8192n });
+  const readerStreams = await WasmStream.openBrowser(databaseName, 64, 65536n);
+  const readerVolume = await TaskVolume.open(readerStreams, "agent/files");
+  const query = await ClientQuery.open(readerVolume, "Tasks", null, { files: 2n, segments: 2n, bytes: 8192n });
   const views = query.views();
   const stop = Promise.withResolvers<void>();
   let received = 0;
@@ -149,7 +151,7 @@ try {
   assert(received === 1 && client.pending() === 0, "live publication or acknowledgement lost");
   assert(new TextDecoder().decode(views.segments(key)![0]) === "queued across document reload", "live view differs from persisted request");
   const cursor = client.cursor();
-  views.free(); query.free(); client.free();
+  views.free(); query.free(); readerVolume.free(); readerStreams.free(); client.free();
   const restored = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
   assert(restored.pending() === 0 && restored.cursor().position === cursor.position, "acknowledged request replayed on reopen");
   restored.free(); outbox.free(); target.free(); streams.free();

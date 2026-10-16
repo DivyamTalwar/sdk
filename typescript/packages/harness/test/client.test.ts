@@ -91,9 +91,15 @@ test("persistent provider files recover pending intent after all handles close",
   const target = await TaskVolume.open(stream, "agent/files");
   const client = await HarnessClient.open(outbox, target, policy);
   expect(client.pending()).toBe(1);
+  const readerStream = await WasmStream.openBrowser(name, 64, 65536n);
+  const readerVolume = await TaskVolume.open(readerStream, "agent/files");
+  const query = await ClientQuery.open(readerVolume, "Tasks", null, queryLimits);
+  const stop = Promise.withResolvers<void>();
+  const followed = query.follow(() => {}, () => stop.resolve(), stop.promise);
   expect(await client.flush()).toBe(1);
-  const query = await ClientQuery.open(target, "Tasks", null, queryLimits);
+  await followed;
   const views = query.views();
   expect(new TextDecoder().decode(views.segments(request("offline.json"))![0])).toBe("queued");
-  views.free(); query.free(); client.free(); outbox.free(); target.free(); stream.free();
+  views.free(); query.free(); readerVolume.free(); readerStream.free();
+  client.free(); outbox.free(); target.free(); stream.free();
 });
