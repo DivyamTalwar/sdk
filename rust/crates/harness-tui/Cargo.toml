@@ -10,9 +10,10 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 [features]
 default = []
 model-checking = ["dep:loom"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-terminal-console"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-terminal-console"]
 
 [dependencies]
+caseless = { version = "0.2.2", optional = true }
 arrayvec = { version = "0.7", optional = true }
 loom = { version = "=0.7.2", optional = true }
 vte = { version = "0.15", optional = true }
