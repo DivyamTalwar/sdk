@@ -64,9 +64,14 @@ fn take_top(area: &mut Rect, height: u16) -> Rect {
 impl Screen<'_> {
     /// Default follow-tail position; a followed layout file may override it.
     pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
-        self.transcript
-            .len()
-            .saturating_sub(usize::from(self.areas(area, input).transcript.height))
+        let height = self.areas(area, input).transcript.height;
+        if self.overlay.is_empty() {
+            self.transcript.len().saturating_sub(usize::from(height))
+        } else {
+            self.overlay
+                .len()
+                .saturating_sub(usize::from(height.saturating_sub(2)))
+        }
     }
 
     /// Compute one layout for both painting and input routing. Prompt growth is
@@ -165,7 +170,12 @@ impl Screen<'_> {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title(self.overlay_title);
-            rows(frame, self.overlay, block.inner(areas.transcript), 0);
+            rows(
+                frame,
+                self.overlay,
+                block.inner(areas.transcript),
+                transcript_scroll,
+            );
             frame.render_widget(block, areas.transcript);
         }
         rows(frame, self.terminal, areas.terminal, 0);

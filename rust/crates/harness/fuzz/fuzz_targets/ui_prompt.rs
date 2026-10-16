@@ -74,9 +74,17 @@ fuzz_target!(|data: &[u8]| {
                         if !value.is_object() {
                             return None;
                         }
-                        value.get("transcript_back").map_or(Some(0), |value| {
-                            value.as_u64().and_then(|rows| usize::try_from(rows).ok())
-                        })
+                        let modal = value.get("open_view").and_then(serde_json::Value::as_str)
+                            == Some("shortcuts");
+                        value
+                            .get(if modal {
+                                "view_back"
+                            } else {
+                                "transcript_back"
+                            })
+                            .map_or(Some(if modal { usize::MAX } else { 0 }), |value| {
+                                value.as_u64().and_then(|rows| usize::try_from(rows).ok())
+                            })
                     });
                 assert_eq!(tui_scroll(&files).ok(), expected);
             }

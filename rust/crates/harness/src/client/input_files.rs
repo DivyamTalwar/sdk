@@ -34,6 +34,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                 ));
             }
             object.remove("view_request");
+            object.remove("view_back");
             files
                 .write_state(CommandFileRoot::Session, "layout.json", &layout)
                 .await?;

@@ -77,3 +77,82 @@ proptest::proptest! {
         })?;
     }
 }
+
+#[tokio::test]
+async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
+    use acyclic_harness::client::{scroll_tui, tui_scroll};
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("help-pages").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut files = CommandSession::open(
+        volume,
+        OperationId::from_bytes([5; 16])
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        64,
+    )
+    .await
+    .unwrap();
+    files
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"transcript_back":12}),
+        )
+        .await
+        .unwrap();
+    handle_tui_input(
+        &mut files,
+        &NoFiles,
+        InputEffect::Submit {
+            text: "/help".into(),
+            queued: false,
+            edit: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(tui_scroll(&files).unwrap(), usize::MAX);
+    let mut renderer = ClientRenderer::default();
+    let screen = renderer.screen_for(&files).unwrap();
+    let input = PromptInput::default();
+    let area = acyclic_harness::tui::ratatui::layout::Rect::new(0, 0, 80, 20);
+    let maximum = screen.tail_scroll(area, &input);
+    let expected: String = screen.overlay[5]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    scroll_tui(&mut files, false, 5, maximum).await.unwrap();
+    assert_eq!(maximum - tui_scroll(&files).unwrap(), 5);
+    let screen = renderer.screen_for(&files).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            screen.render(frame, &input, &mut Viewport::default(), 5, 0);
+        })
+        .unwrap();
+    assert!(
+        super::screen_text(&terminal)
+            .contains(expected.chars().take(40).collect::<String>().as_str())
+    );
+    handle_tui_input(&mut files, &NoFiles, InputEffect::Host(Action::Escape))
+        .await
+        .unwrap();
+    assert_eq!(tui_scroll(&files).unwrap(), 12);
+    assert!(
+        files
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap()
+            .get("view_back")
+            .is_none()
+    );
+}
