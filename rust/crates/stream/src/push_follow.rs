@@ -1,5 +1,7 @@
 //! One push wake bridge for cached provider views, shared with the loom model.
-use crate::{BoxProviderFuture, CommitId, ProviderTask, RecordStream, StreamError, query_sync::watch};
+use crate::{
+    BoxProviderFuture, CommitId, ProviderTask, RecordStream, StreamError, query_sync::watch,
+};
 use futures::{FutureExt as _, StreamExt as _};
 
 pub(crate) fn following<F>(
@@ -9,9 +11,16 @@ pub(crate) fn following<F>(
     anchor: Option<CommitId>,
     refresh: F,
 ) -> RecordStream
-where F: FnMut(u64, Option<CommitId>) -> BoxProviderFuture<'static, Result<RecordStream, StreamError>> + ProviderTask + 'static,
+where
+    F: FnMut(
+            u64,
+            Option<CommitId>,
+        ) -> BoxProviderFuture<'static, Result<RecordStream, StreamError>>
+        + ProviderTask
+        + 'static,
 {
-    let followed = futures::stream::try_unfold((records, wake, next, anchor, refresh),
+    let followed = futures::stream::try_unfold(
+        (records, wake, next, anchor, refresh),
         |(mut records, mut wake, mut next, mut anchor, mut refresh)| async move {
             loop {
                 futures::select_biased! {
@@ -28,9 +37,14 @@ where F: FnMut(u64, Option<CommitId>) -> BoxProviderFuture<'static, Result<Recor
                     },
                 }
             }
-        });
+        },
+    );
     #[cfg(not(target_arch = "wasm32"))]
-    { followed.boxed() }
+    {
+        followed.boxed()
+    }
     #[cfg(target_arch = "wasm32")]
-    { followed.boxed_local() }
+    {
+        followed.boxed_local()
+    }
 }

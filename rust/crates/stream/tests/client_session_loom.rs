@@ -23,5 +23,10 @@ fn cached_follow_registration_has_no_lost_wakeup() {
 
 #[test]
 fn negative_control_missing_publication_push_is_detected() {
-    assert!(std::panic::catch_unwind(|| acyclic_stream::verification::cached_follow_publication_has_no_lost_wakeup(true)).is_err());
+    assert!(
+        std::panic::catch_unwind(|| {
+            acyclic_stream::verification::cached_follow_publication_has_no_lost_wakeup(true)
+        })
+        .is_err()
+    );
 }

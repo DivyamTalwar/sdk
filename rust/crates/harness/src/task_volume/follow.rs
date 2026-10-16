@@ -84,7 +84,7 @@ fn query_id(query: &Query) -> Result<[u8; 32]> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
-    fn cursor(
+    pub(super) fn cursor(
         &self,
         query: &Query,
         generation: Generation,

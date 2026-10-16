@@ -47,7 +47,10 @@ impl StreamProvider for Provider {
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let tail = self.inner.tail(path).await?;
-        Ok(StreamWatermarks { accepted: tail, durable: tail })
+        Ok(StreamWatermarks {
+            accepted: tail,
+            durable: tail,
+        })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await

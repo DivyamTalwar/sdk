@@ -249,13 +249,22 @@ pub fn cached_follow_publication_has_no_lost_wakeup(omit_wake: bool) {
                         Some(anchor) => cache.follow_checked(path, next, anchor).await,
                         None => cache.follow(path, next).await,
                     }
-                }.boxed()
+                }
+                .boxed()
             }
         };
         let initial = block_on(open(1, Some(anchor))).unwrap();
         let writer = thread::spawn(move || {
-            block_on(root.append(AppendRequest { path, records: vec![Bytes::from_static(b"next")], if_tail: Some(1), idempotency_key: None })).unwrap();
-            if !omit_wake { sender.send_replace(()); }
+            block_on(root.append(AppendRequest {
+                path,
+                records: vec![Bytes::from_static(b"next")],
+                if_tail: Some(1),
+                idempotency_key: None,
+            }))
+            .unwrap();
+            if !omit_wake {
+                sender.send_replace(());
+            }
             // Keep the publisher alive through the model's parked-reader state.
             sender
         });
