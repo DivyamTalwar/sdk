@@ -234,6 +234,28 @@ impl Markdown {
         }
     }
 
+    fn following_blocks(
+        &mut self,
+        source: &str,
+        events: &[(Event<'_>, Range<usize>)],
+    ) -> Vec<bool> {
+        #[cfg(test)]
+        {
+            // Charge the full newline-search input and each reverse-sweep event.
+            self.boundary_work += source.len() + events.len();
+        }
+        let newline = source.rfind('\n');
+        let mut next = false;
+        let mut following = vec![false; events.len()];
+        for ((event, range), following) in events.iter().rev().zip(following.iter_mut().rev()) {
+            *following = next;
+            if matches!(event, Event::Start(_)) {
+                next = newline.is_some_and(|newline| range.start <= newline);
+            }
+        }
+        following
+    }
+
     fn parse_tail(&mut self) -> bool {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
@@ -244,12 +266,7 @@ impl Markdown {
         }
         let events = events::parse(&source, &self.references);
         self.seal_leading_definitions(base, &source, &events);
-        let following_blocks = following_blocks(&source, &events);
-        #[cfg(test)]
-        {
-            // Charge the full newline-search input and each reverse-sweep event.
-            self.boundary_work += source.len() + events.len();
-        }
+        let following_blocks = self.following_blocks(&source, &events);
         let mut out = self.state.checkpoint();
         let mut stack = self.context.clone();
         let mut candidate = None;
@@ -627,19 +644,6 @@ fn blank_line(source: &str) -> bool {
         line.chars()
             .all(|character| character == '>' || character.is_ascii_whitespace())
     })
-}
-
-fn following_blocks(source: &str, events: &[(Event<'_>, Range<usize>)]) -> Vec<bool> {
-    let newline = source.rfind('\n');
-    let mut next = false;
-    let mut following = vec![false; events.len()];
-    for ((event, range), following) in events.iter().rev().zip(following.iter_mut().rev()) {
-        *following = next;
-        if matches!(event, Event::Start(_)) {
-            next = newline.is_some_and(|newline| range.start <= newline);
-        }
-    }
-    following
 }
 
 fn options() -> Options {
