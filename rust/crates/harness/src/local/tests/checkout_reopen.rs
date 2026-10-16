@@ -21,7 +21,7 @@ fn commands(commands: &[(&str, &str)]) -> Arc<ScriptedModelProvider> {
         commands
             .iter()
             .enumerate()
-            .map(|(index, (name, command))| super::checkout::call(index, name, command))
+            .map(|(index, (name, command))| super::checked_commands::call(index, name, command))
             .chain([ScriptedTurn::Text("done".into())]),
     )
 }
@@ -123,13 +123,13 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     };
     let provider = scripted([
         write(0, "main file"),
-        super::checkout::call(1, "bash", "cat from-write.txt"),
-        super::checkout::call(2, "fs", "commit -m initial"),
-        super::checkout::call(3, "fs", "checkout -b agents/child"),
+        super::checked_commands::call(1, "bash", "cat from-write.txt"),
+        super::checked_commands::call(2, "fs", "commit -m initial"),
+        super::checked_commands::call(3, "fs", "checkout -b agents/child"),
         write(4, "child file"),
-        super::checkout::call(5, "bash", "cat from-write.txt"),
-        super::checkout::call(6, "fs", "checkout main"),
-        super::checkout::call(7, "bash", "cat from-write.txt"),
+        super::checked_commands::call(5, "bash", "cat from-write.txt"),
+        super::checked_commands::call(6, "fs", "checkout main"),
+        super::checked_commands::call(7, "bash", "cat from-write.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(LocalHarnessConfig::new(
