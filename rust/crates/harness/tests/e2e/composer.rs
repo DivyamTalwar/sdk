@@ -1,4 +1,4 @@
-use super::{TestResult, execution, matchers};
+use super::{TestResult, execution, input_files::FileBytes, matchers};
 use acyclic_harness::{
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope},
     context::{ContextDiscoveryLimits, ContextRoot},
@@ -46,7 +46,7 @@ struct Expectations {
     completions: Option<Vec<String>>,
     mention_files: Option<Vec<String>>,
     #[serde(default)]
-    files: BTreeMap<String, Option<String>>,
+    files: BTreeMap<String, Option<FileBytes>>,
 }
 
 fn maximum_bytes() -> u64 {

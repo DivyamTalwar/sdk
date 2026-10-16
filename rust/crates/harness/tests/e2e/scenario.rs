@@ -1,3 +1,4 @@
+use super::input_files::{FileBytes, InputFile};
 use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
 use acyclic_harness::{
     context::{CompactionPolicy, ModelContextCapacity},
@@ -12,6 +13,10 @@ use std::{collections::BTreeMap, path::Path};
 pub struct Scenario {
     #[serde(default)]
     pub seed: BTreeMap<String, String>,
+    #[serde(default)]
+    pub input_files: Vec<InputFile>,
+    #[serde(default)]
+    pub after_capture: BTreeMap<String, String>,
     #[serde(default)]
     pub kind: Kind,
     pub prompt: Option<String>,
@@ -58,9 +63,9 @@ pub struct Expectations {
     pub requests: Option<Vec<Value>>,
     #[serde(default)]
     pub not_requests: Vec<Value>,
-    pub request_files: Option<Vec<Vec<String>>>,
+    pub request_files: Option<Vec<Vec<FileBytes>>>,
     #[serde(default)]
-    pub files: BTreeMap<String, Option<String>>,
+    pub files: BTreeMap<String, Option<FileBytes>>,
 }
 
 impl Scenario {
@@ -98,7 +103,13 @@ impl Scenario {
 
     pub(super) fn from_value(value: Value) -> Result<Self, String> {
         let forbidden = match value.get("kind").and_then(Value::as_str) {
-            Some("summary") => &["prompt", "max_steps", "discovery"][..],
+            Some("summary") => &[
+                "prompt",
+                "max_steps",
+                "discovery",
+                "input_files",
+                "after_capture",
+            ][..],
             _ => &["instruction"][..],
         };
         for key in forbidden {

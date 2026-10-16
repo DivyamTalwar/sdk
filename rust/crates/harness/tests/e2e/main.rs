@@ -3,6 +3,8 @@ mod composer;
 mod discovery;
 mod drivers;
 mod execution;
+mod input_files;
+mod input_files_tests;
 mod matchers;
 mod notification_history;
 mod notifications;

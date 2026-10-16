@@ -1,5 +1,7 @@
 use super::{
-    TestResult, matchers,
+    TestResult,
+    input_files::FileBytes,
+    matchers,
     scenario::{self, Scenario},
 };
 use acyclic_harness::{
@@ -10,7 +12,7 @@ use acyclic_harness::{
     },
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
-    model::{Model, ModelContent},
+    model::{Model, ModelContent, ModelContentPart},
     test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
@@ -21,10 +23,37 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     let limits = case.execution_limits()?;
     let storage = workspace(&case.seed).await?;
     case.seed.clear();
+    let instruction = case.take_instruction()?;
+    let content = if case.input_files.is_empty() {
+        ModelContent::Text(instruction)
+    } else {
+        let mut parts =
+            Vec::with_capacity(case.input_files.len() + usize::from(!instruction.is_empty()));
+        if !instruction.is_empty() {
+            parts.push(ModelContentPart::Text { text: instruction });
+        }
+        for file in std::mem::take(&mut case.input_files) {
+            let reference = storage
+                .stage(
+                    OperationId::new(),
+                    &file.path,
+                    file.contents.as_bytes(),
+                    &file.media_type,
+                    file.path.rsplit('/').next().unwrap_or(&file.path),
+                )
+                .await?;
+            parts.push(ModelContentPart::File {
+                file: reference,
+                policy: file.policy,
+            });
+        }
+        ModelContent::Parts(parts)
+    };
+    publish(&storage, &case.after_capture).await?;
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
         operation_id: OperationId::new(),
-        input: ModelContent::Text(case.take_instruction()?),
+        input: content,
         selected_context: None,
         max_steps: case.max_steps.unwrap_or(16),
     };
@@ -340,7 +369,7 @@ async fn check_events(
 }
 
 pub(super) async fn check_files(
-    expected: &std::collections::BTreeMap<String, Option<String>>,
+    expected: &std::collections::BTreeMap<String, Option<FileBytes>>,
     storage: &MemoryHarnessStorage,
 ) -> TestResult {
     for (path, expected) in expected {
