@@ -1,9 +1,14 @@
 use super::*;
 
-impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
+impl<F, Fut> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
+        (self.before_effect)().await?;
         let Some(lease) = &self.lease else {
             return Ok(());
         };
@@ -33,22 +38,6 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
         operation_id: OperationId,
         action: &GitFilesystemAction,
     ) -> Result<GitFilesystemResult, Self::Error> {
-        self.execute_guarded(operation_id, action, &|| self.validate())
-            .await
-    }
-}
-
-impl WorkspaceGitExecutor<'_> {
-    pub(super) async fn execute_guarded<F, Fut>(
-        &self,
-        operation_id: OperationId,
-        action: &GitFilesystemAction,
-        before_effect: &F,
-    ) -> Result<GitFilesystemResult, Error>
-    where
-        F: Fn() -> Fut + Send + Sync,
-        Fut: Future<Output = Result<(), Error>> + Send,
-    {
         match action {
             GitFilesystemAction::CaptureCommit {
                 workspace_tree,
@@ -321,7 +310,7 @@ impl WorkspaceGitExecutor<'_> {
                             .map(|receipt| receipt.value)
                             .map_err(|failure| Error::from(failure.error))
                     },
-                    before_effect,
+                    &|| self.validate(),
                 )
                 .await?;
                 let options = ApplyOptions {
@@ -352,7 +341,7 @@ impl WorkspaceGitExecutor<'_> {
                                 ))
                             },
                         )
-                    }, before_effect).await?;
+                    }, &|| self.validate()).await?;
                     let has_markers = candidate.resolutions.values().any(|resolution| {
                         matches!(resolution, acyclic_fs::MergeResolution::Text(text)
                                 if acyclic_fs::text_merge::has_conflict_markers(text))

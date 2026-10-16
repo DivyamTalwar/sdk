@@ -53,6 +53,7 @@ where
     let (ignore, merge_drivers) = git_policy(workspace.view).await?;
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
+        before_effect: &before_effect,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),
@@ -71,19 +72,22 @@ where
         before_effect().await?;
         return Ok(output);
     }
-    let command = execute(
-        &workspace,
-        args,
-        tree,
-        patch.as_deref(),
-        &GuardedGitExecutor {
-            inner: &executor,
-            root: workspace.root,
-            source_root_identity: workspace.checkout,
-            before_effect,
-        },
-    )
-    .await?;
+    let command = if let Some(identity) = workspace.checkout {
+        execute(
+            &workspace,
+            args,
+            tree,
+            patch.as_deref(),
+            &RootMaterializingGitExecutor {
+                inner: &executor,
+                root: workspace.root,
+                source_root_identity: identity,
+            },
+        )
+        .await?
+    } else {
+        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
+    };
     Ok(Output {
         command,
         switched: executor.switched_workspace()?,

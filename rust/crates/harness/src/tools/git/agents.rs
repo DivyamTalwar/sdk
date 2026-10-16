@@ -1,7 +1,11 @@
 //! Read a registered agent's published view through the repository binding.
 use super::*;
 
-impl WorkspaceGitExecutor<'_> {
+impl<F, Fut> WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     pub(super) async fn diff_agent(
         &self,
         branch: &str,

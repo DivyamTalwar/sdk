@@ -49,7 +49,9 @@ use path::workspace_path_argument;
 
 use crate::Error;
 /// Executes the full git facade against a managed lazy workspace.
-pub(crate) struct WorkspaceGitExecutor<'a> {
+pub(crate) struct WorkspaceGitExecutor<'a, F> {
+    /// Revalidates task ownership before every effect.
+    pub before_effect: &'a F,
     /// Shared local filesystem.
     pub fs: &'a LocalFs,
     /// Durable compatibility and lineage store.
@@ -83,16 +85,16 @@ fn committed(
         TransactionCommit::Committed(generation)
         | TransactionCommit::AlreadyCommitted(generation) => generation,
         TransactionCommit::Conflict { .. } => {
-            return Err(WorkspaceGitExecutor::error(
-                "Git transaction raced with another workspace writer",
+            return Err(Error::Conflict(
+                "Git transaction raced with another workspace writer".into(),
             ));
         }
         TransactionCommit::Fenced => {
-            return Err(WorkspaceGitExecutor::error("Git transaction was fenced"));
+            return Err(Error::Conflict("Git transaction was fenced".into()));
         }
         TransactionCommit::IdempotencyConflict => {
-            return Err(WorkspaceGitExecutor::error(
-                "Git transaction retry identity was reused",
+            return Err(Error::Conflict(
+                "Git transaction retry identity was reused".into(),
             ));
         }
     };
@@ -115,7 +117,7 @@ mod materialize;
 mod resolve;
 mod restore;
 pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_git_command};
-pub(crate) use materialize::GuardedGitExecutor;
+pub(crate) use materialize::RootMaterializingGitExecutor;
 pub(crate) use materialize::publish_checkout_transition;
 
 mod run;
