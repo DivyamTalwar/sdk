@@ -73,6 +73,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-auth"
+version = "0.2.0"
+dependencies = [
+ "acyclic-contract-derive",
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "protoc-bin-vendored",
+ "syn 3.0.6",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ts-rs",
+]
+
+[[package]]
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [
@@ -421,6 +437,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-manifest"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "ts-rs",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
@@ -554,6 +591,7 @@ dependencies = [
  "hyper-util",
  "indexed_db_futures",
  "js-sys",
+ "loom",
  "pin-project-lite",
  "proptest",
  "prost",
@@ -630,6 +668,7 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-manifest",
  "acyclic-objects",
  "axum",
  "bytes",
