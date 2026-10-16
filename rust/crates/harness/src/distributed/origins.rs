@@ -23,10 +23,10 @@ pub(super) fn path(
         })?;
     }
     let length = writer.position() as usize;
-    stream_path(
-        std::str::from_utf8(&buffer[..length]).expect("ASCII origin path"),
-        work,
-    )
+    let text = std::str::from_utf8(&buffer[..length]).map_err(|_| {
+        guarded_boundary(work, wire::ErrorCode::Invalid, "origin path is not UTF-8")
+    })?;
+    stream_path(text, work)
 }
 
 pub(super) fn event_path(
@@ -50,44 +50,61 @@ pub(super) fn event_path(
 
 // The locator and its canonical source are one atomic StreamProvider commit.
 // A locator is never authority without the matching immutable commit identity.
-pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider>(
-    client: &Arc<P>,
-    stream: &Stream<P>,
-    record: OwnedBytes,
+pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider, const N: usize>(
+    (stream, client): (&Stream<P>, &Arc<P>),
+    input: [OwnedBytes; N],
+    retained_request: u64,
     tail: u64,
     key: StreamIdempotencyKey,
     operation: OperationId,
     path: StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
-    let mut quota = CodecQuota::new(work, 0)?;
-    let mut sequence = crate::core::reserve_copy_vector(8, &mut quota)?;
-    if let Some(io) = quota.work().as_deref_mut() {
-        io.copy_bytes(8)?;
-    }
-    sequence.extend_from_slice(&tail.to_le_bytes());
-    quota.transfer();
-    let (sequence, retained) = operations::owned_bytes_from_retained_vec(sequence, quota.work())?;
+    let mut quota = CodecQuota::from_retained(work, retained_request);
+    let (sequence, retained) = {
+        let mut sequence_quota = CodecQuota::new(quota.work(), 0)?;
+        let mut bytes = crate::core::reserve_copy_vector(8, &mut sequence_quota)?;
+        if let Some(io) = sequence_quota.work().as_deref_mut() {
+            io.copy_bytes(8)?;
+        }
+        bytes.extend_from_slice(&tail.to_le_bytes());
+        sequence_quota.transfer();
+        operations::owned_bytes_from_retained_vec(bytes, sequence_quota.work())?
+    };
     quota.adopt(retained)?;
+    let expected = if FENCE || !cfg!(all(test, acyclic_harness_loom, acyclic_loom)) {
+        (tail != 0).then_some(tail)
+    } else {
+        // Negative control: re-fence a stale intent using today's source tail.
+        // Every mutation still needs a condition under the SDK contract.
+        operations::tail_optional_with_work(client, stream.path(), quota.work()).await?
+    };
     let mut request = commit_request(key, 0, quota.work());
-    request.1.reserve(1, &mut request.0.conditions)?;
+    request.1.reserve(2, &mut request.0.conditions)?;
     request.1.reserve(2, &mut request.0.mutations)?;
-    if FENCE || !cfg!(all(test, acyclic_harness_loom, acyclic_loom)) {
-        add_condition(
-            &mut request,
-            if tail == 0 {
-                CommitCondition::Absent {
-                    path: stream.path().clone(),
-                }
-            } else {
-                CommitCondition::Tail {
-                    path: stream.path().clone(),
-                    expected: tail,
-                }
+    add_condition(
+        &mut request,
+        match expected {
+            Some(expected) => CommitCondition::Tail {
+                path: stream.path().clone(),
+                expected,
             },
-        )?;
-    }
-    add_record(&mut request, stream.path().clone(), record.clone())?;
+            None => CommitCondition::Absent {
+                path: stream.path().clone(),
+            },
+        },
+    )?;
+    add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
+    let mut records = Vec::new();
+    request.1.reserve(N, &mut records)?;
+    records.extend(input.iter().cloned());
+    request
+        .0
+        .mutations
+        .push(acyclic_stream::CommitMutation::Append {
+            path: stream.path().clone(),
+            records,
+        });
     add_record(&mut request, path.clone(), sequence.clone())?;
     let (outcome, retained) = commit(request, client, Some(operation), None).await?;
     quota.adopt(retained)?;
@@ -100,21 +117,32 @@ pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider>(
         let CommittedMutation::Append(append) = mutation else {
             continue;
         };
-        if append.end.checked_sub(append.start) != Some(1)
-            || append.tail != append.end
-            || append.records.len() != 1
-            || append.records[0].sequence != append.start
-            || append.records[0].commit_id != envelope.commit_id
+        if append.tail != append.end
+            || append.records.iter().enumerate().any(|(offset, record)| {
+                append.start.checked_add(offset as u64) != Some(record.sequence)
+                    || record.commit_id != envelope.commit_id
+            })
         {
             continue;
         }
         if append.path == *stream.path()
             && append.start == tail
-            && append.records[0].value == record
+            && append.end.checked_sub(append.start) == Some(N as u64)
+            && append.records.len() == N
+            && append
+                .records
+                .iter()
+                .zip(&input)
+                .all(|(record, original)| record.value == *original)
         {
             canonical = Some(append);
         }
-        if append.path == path && append.records[0].value == sequence {
+        if append.path == path
+            && append.start == 0
+            && append.end == 1
+            && append.records.len() == 1
+            && append.records[0].value == sequence
+        {
             indexed = true;
         }
     }

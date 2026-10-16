@@ -26,17 +26,52 @@ async fn append_source(
     let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), COORDINATOR_PATH)?;
     if let Some(path) = origins::event_path(&event, &mut None)? {
         let (retry, _) = stream_key(key.len(), format_args!("{key}"), &mut None)?;
-        origins::append_origin::<true, _>(
-            client,
-            &stream,
-            OwnedBytes::from(bytes),
-            revision - 1,
-            retry,
-            event.operation_id(),
-            path,
-            &mut None,
-        )
-        .await?;
+        // Deliberately permit a second indexed origin only in this adversarial
+        // fixture. Production requires absence and can never publish one.
+        if let Ok(index_tail) = client.inner.tail(path.clone()).await {
+            let request = acyclic_stream::CommitRequest {
+                conditions: vec![
+                    acyclic_stream::CommitCondition::Tail {
+                        path: stream.path().clone(),
+                        expected: revision - 1,
+                    },
+                    acyclic_stream::CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: index_tail,
+                    },
+                ],
+                mutations: vec![
+                    acyclic_stream::CommitMutation::Append {
+                        path: stream.path().clone(),
+                        records: vec![bytes.into()],
+                    },
+                    acyclic_stream::CommitMutation::Append {
+                        path,
+                        records: vec![(revision - 1).to_le_bytes().to_vec().into()],
+                    },
+                ],
+                idempotency_key: retry,
+            };
+            assert!(matches!(
+                client.commit(request).await?,
+                acyclic_stream::CommitOutcome::Committed(_)
+            ));
+        } else {
+            assert!(matches!(
+                origins::append_origin::<true, _, 1>(
+                    (&stream, client),
+                    [OwnedBytes::from(bytes)],
+                    0,
+                    revision - 1,
+                    retry,
+                    event.operation_id(),
+                    path,
+                    &mut None,
+                )
+                .await?,
+                AppendOutcome::Committed(_)
+            ));
+        }
     } else {
         stream
             .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)

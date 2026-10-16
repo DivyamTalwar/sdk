@@ -413,10 +413,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     custody.adopt(path.as_str().len() as u64)?;
                 }
                 let appended = if let Some(path) = origin {
-                    origins::append_origin::<true, _>(
-                        &self.client,
-                        &self.stream.0,
-                        record,
+                    origins::append_origin::<true, _, 1>(
+                        (&self.stream.0, &self.client),
+                        [record],
+                        0,
                         self.revision,
                         stream_key,
                         operation_id,

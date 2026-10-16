@@ -284,11 +284,11 @@ fn host_publication_cannot_cross_lease_release_or_cancellation() {
 fn origin_model<const FENCE: bool>() {
     loom::model(|| {
         let client = Arc::new(MemoryStream::default());
-        let operation = OperationId::from_bytes([140; 16]);
         let writers: Vec<_> = (0..2)
             .map(|writer| {
                 let client = Arc::clone(&client);
                 thread::spawn(move || {
+                    let operation = OperationId::from_bytes([140 + writer as u8; 16]);
                     let stream = Stream::new(Arc::clone(&client), COORDINATOR_PATH).unwrap();
                     let event = SchedulerEvent::Declared {
                         spec: Box::new(spec(operation, 0).unwrap()),
@@ -298,10 +298,10 @@ fn origin_model<const FENCE: bool>() {
                     let (key, _) = stream_key(key.len(), format_args!("{key}"), &mut None).unwrap();
                     // Only storage exclusion is under test: canonical decoding is
                     // exercised by ordinary tests against the same publication.
-                    block_on(origins::append_origin::<FENCE, _>(
-                        &client,
-                        &stream,
-                        OwnedBytes::from_static(b"event"),
+                    block_on(origins::append_origin::<FENCE, _, 1>(
+                        (&stream, &client),
+                        [OwnedBytes::from_static(b"event")],
+                        0,
                         0,
                         key,
                         operation,
@@ -314,15 +314,10 @@ fn origin_model<const FENCE: bool>() {
         for writer in writers {
             let _ = writer.join().unwrap();
         }
-        let path = origins::path(operation, "declared", None, &mut None).unwrap();
-        assert_eq!(
-            block_on(client.tail(path)).unwrap(),
-            1,
-            "stale writer published an origin"
-        );
         assert_eq!(
             block_on(client.tail(StreamPath::new(COORDINATOR_PATH).unwrap())).unwrap(),
-            1
+            1,
+            "stale writer published an origin"
         );
     });
 }
@@ -331,7 +326,7 @@ fn origin_model<const FENCE: bool>() {
 fn origin_publication_fences_competing_writers() {
     origin_model::<true>();
     let error = std::panic::catch_unwind(origin_model::<false>)
-        .expect_err("same detector must reject omission of the real publication condition");
+        .expect_err("same detector must reject re-fencing a stale publication");
     let message = error
         .downcast_ref::<String>()
         .map(String::as_str)
