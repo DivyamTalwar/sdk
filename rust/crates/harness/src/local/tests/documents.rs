@@ -70,7 +70,7 @@ proptest::proptest! {
                     ("plans/release notes.md", format!("- [ ] Scratch plan {text}")),
                 ] {
                     publisher.stage_once(OperationId::new(), path, body.as_bytes(),
-                        "text/markdown", path, None)?.await?;
+                        "text/markdown", path.rsplit('/').next().unwrap(), None)?.await?;
                 }
                 let cut = harness.task_files().snapshot(&Query::File(FileKey::Goal), 1).await?;
                 harness.task_files().write(cut.generation,
