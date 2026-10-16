@@ -33,8 +33,9 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
     }
     .configure_metadata(&mut command)
     .map_err(profile_error)?;
-    command.manifest_path(root.join("Cargo.toml"));
-    let resolved = sdk_docs::rustdoc_profiles::execute_metadata(&command)
+    let resolved = command
+        .manifest_path(root.join("Cargo.toml"))
+        .exec()
         .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
     let canonical_root = root.canonicalize().map_err(io_error)?;
     for name in missing {

@@ -17,7 +17,7 @@ fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
         )
         .unwrap();
         init_git(&fixture.root, "original registry owner authority");
-        let result = sdk_docs::command(&*cargo)
+        let result = Command::new(&*cargo)
             .env("CARGO_HOME", fixture_cargo_home(&fixture))
             .current_dir(&fixture.root)
             .args([

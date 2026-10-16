@@ -59,7 +59,7 @@ fn source_digest(files: &BTreeMap<String, String>) -> String {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let output = sdk_docs::command(runtime::git())
+    let output = Command::new(runtime::git())
         .current_dir(root)
         .args(args)
         .output()
@@ -307,7 +307,7 @@ fn git_revision(root: &Path) -> String {
             return revision.to_owned();
         }
     }
-    let output = sdk_docs::command(runtime::git())
+    let output = Command::new(runtime::git())
         .current_dir(root)
         .args(["rev-parse", "HEAD"])
         .output()
@@ -368,7 +368,7 @@ fn invoke(command: &mut Command) -> std::process::Output {
 }
 
 fn drift_command(fixture: &Fixture) -> Command {
-    let mut command = sdk_docs::command(runtime::binary("sdk-generation"));
+    let mut command = Command::new(runtime::binary("sdk-generation"));
     command.args([
         "drift",
         "--root",
@@ -413,7 +413,7 @@ fn generate_command(
     channel: &str,
     skip_scenarios: bool,
 ) -> Command {
-    let mut command = sdk_docs::command(runtime::binary("sdk-generation"));
+    let mut command = Command::new(runtime::binary("sdk-generation"));
     command.env("PATH", runtime::path());
     command.env("RUSTC", runtime::rustc());
     command.args([
@@ -475,7 +475,7 @@ fn generated_span_fixture_pair() -> (Fixture, Fixture) {
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
     ));
     let _ = fs::remove_dir_all(&second_root);
-    let clone = sdk_docs::command(runtime::git())
+    let clone = Command::new(runtime::git())
         .args([
             "clone",
             "--quiet",
@@ -578,7 +578,7 @@ fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
-        sdk_docs::command(runtime::binary("sdk-generation"))
+        Command::new(runtime::binary("sdk-generation"))
             .args([
                 "generate",
                 "--root",
@@ -598,7 +598,7 @@ fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
-        sdk_docs::command(runtime::binary("sdk-generation"))
+        Command::new(runtime::binary("sdk-generation"))
             .args([
                 "drift",
                 "--root",
@@ -776,7 +776,7 @@ fn run_historical_generate_mode_with_authority(
     automatic_config: Option<(&Path, bool)>,
 ) -> std::process::Output {
     let path = fixture_path(support);
-    let mut command = sdk_docs::command(runtime::binary("sdk-generation"));
+    let mut command = Command::new(runtime::binary("sdk-generation"));
     command
         .env("PATH", path)
         .env("CARGO_HOME", fixture_cargo_home(fixture))

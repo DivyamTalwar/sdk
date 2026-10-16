@@ -93,25 +93,11 @@ pub fn load_metadata(
 ) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
     context.configure_metadata(&mut command)?;
-    command.no_deps().manifest_path(manifest.as_ref());
-    execute_metadata(&command)
+    command
+        .no_deps()
+        .manifest_path(manifest.as_ref())
+        .exec()
         .map_err(|error| ProfileError::InvalidRustdoc(format!("cargo metadata failed: {error}")))
-}
-
-/// Runs configured Cargo metadata with captured output and scoped child settings.
-pub fn execute_metadata(query: &MetadataCommand) -> cargo_metadata::Result<Metadata> {
-    let mut command = query.cargo_command();
-    crate::child::configure(&mut command);
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(cargo_metadata::Error::CargoMetadata {
-            stderr: String::from_utf8(output.stderr)?,
-        });
-    }
-    let stdout = std::str::from_utf8(&output.stdout)?;
-    MetadataCommand::parse(
-        crate::metadata_output::json_line(stdout).ok_or(cargo_metadata::Error::NoJson)?,
-    )
 }
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";

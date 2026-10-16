@@ -191,7 +191,7 @@ pub(super) fn metadata(fixture: &Fixture) -> cargo_metadata::Metadata {
         .no_deps()
         .other_options(vec!["--locked".into()])
         .manifest_path(fixture.root.join("Cargo.toml"));
-    sdk_docs::rustdoc_profiles::execute_metadata(&command).unwrap()
+    command.exec().unwrap()
 }
 
 pub(super) fn project(
