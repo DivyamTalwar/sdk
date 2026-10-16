@@ -4,8 +4,8 @@ use crate::{
     conversation::Limits,
     runtime::{RuntimeScope, ToolContext},
     task_volume::{
-        ChildFile, ChildRequest, ChildState, Component, Control, FileKey, FileQuerySource,
-        FileValue, Query, TaskFiles,
+        ChildFile, ChildRequest, ChildState, ChildStatus, Component, Control, FileKey,
+        FileQuerySource, FileValue, Query, TaskFiles,
     },
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -215,9 +215,13 @@ async fn access<P: StreamProvider + ?Sized>(
                 }
             }
             let mut active = Vec::new();
+            let archived = json!(ChildState::Archived);
+            let cancelled = json!(ChildState::Cancelled);
             for (reference, files) in children {
                 let status = status(&reference, &files)?;
-                if status.get("state") != Some(&json!(ChildState::Archived)) {
+                let terminal = status.get("state") == Some(&archived)
+                    || status.get("state") == Some(&cancelled);
+                if !terminal || status.get("settled") != Some(&Value::Bool(true)) {
                     active.push(status);
                 }
             }
@@ -335,7 +339,7 @@ async fn access<P: StreamProvider + ?Sized>(
 
 fn status(reference: &Component, files: &[FileValue]) -> Result<Value> {
     let mut state = ChildState::Running;
-    let mut execution = Value::Null;
+    let mut execution = None;
     // Requests and inbox files are immutable and cannot be deleted. Their
     // cardinality therefore detects every input accepted since a settled turn.
     let inputs = files
@@ -362,16 +366,19 @@ fn status(reference: &Component, files: &[FileValue]) -> Result<Value> {
                 file: ChildFile::Status,
                 ..
             } => {
-                execution = serde_json::from_slice(&file.bytes).map_err(storage)?;
+                execution = Some(ChildStatus::parse(&file.bytes).map_err(storage)?);
             }
             _ => {}
         }
     }
-    let settled = matches!(
-        state,
-        ChildState::Cancelled | ChildState::Archived | ChildState::Interrupted
-    ) || (execution.get("settled") == Some(&Value::Bool(true))
-        && execution.get("inputs").and_then(Value::as_u64) == Some(inputs));
+    let settled = execution.is_some_and(|execution| {
+        execution.settled
+            && execution.state == state
+            && (matches!(
+                state,
+                ChildState::Cancelled | ChildState::Archived | ChildState::Interrupted
+            ) || execution.inputs == inputs)
+    });
     Ok(json!({"reference":reference,"state":state,"settled":settled,"execution":execution}))
 }
 

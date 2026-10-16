@@ -167,7 +167,7 @@ proptest! {
 
 #[tokio::test]
 async fn terminal_child_is_read_only_and_stale_controls_cannot_replace_it() {
-    use crate::task_volume::{ChildFile, Component, Control};
+    use crate::task_volume::{ChildFile, ChildState, ChildStatus, Component, Control};
     let agent = AgentId::from_bytes([1; 16]);
     let volume = volume(agent);
     let (verifier, scope) = authority(
@@ -201,6 +201,19 @@ async fn terminal_child_is_read_only_and_stale_controls_cannot_replace_it() {
             .unwrap();
         let request = FileValue::new(key(ChildFile::Request), b"work".to_vec());
         let running = files.write(snapshot.generation, &request).await.unwrap();
+        let status = ChildStatus {
+            task: crate::TaskId::from_bytes([7; 16]),
+            state: ChildState::Running,
+            settled: false,
+            inputs: 1,
+        };
+        let status_file =
+            |status| FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap());
+        let running = files
+            .inner
+            .append(running, &status_file(status))
+            .await
+            .unwrap();
         let control = FileValue::new(key(ChildFile::Control), terminal.bytes().to_vec());
         let frozen = files.write(running, &control).await.unwrap();
         assert_eq!(files.write(frozen, &control).await.unwrap(), frozen);
@@ -222,13 +235,58 @@ async fn terminal_child_is_read_only_and_stale_controls_cannot_replace_it() {
                 Err(Error::ImmutableConflict(_))
             ));
         }
+        let terminal_status = ChildStatus {
+            state: ChildState::Running.apply(terminal),
+            settled: true,
+            ..status
+        };
+        for invalid in [
+            ChildStatus {
+                settled: true,
+                ..status
+            },
+            ChildStatus {
+                settled: false,
+                ..terminal_status
+            },
+            ChildStatus {
+                task: crate::TaskId::from_bytes([8; 16]),
+                ..terminal_status
+            },
+            ChildStatus {
+                inputs: 2,
+                ..terminal_status
+            },
+        ] {
+            assert!(
+                files
+                    .inner
+                    .append(frozen, &status_file(invalid))
+                    .await
+                    .is_err()
+            );
+        }
+        let acknowledged = status_file(terminal_status);
+        let frozen = files.inner.append(frozen, &acknowledged).await.unwrap();
+        assert_eq!(
+            files.inner.append(frozen, &acknowledged).await.unwrap(),
+            frozen
+        );
+        assert!(
+            files
+                .inner
+                .append(frozen, &status_file(status))
+                .await
+                .is_err()
+        );
         let snapshot = files
             .observe(Query::Child(reference), None, 16)
             .await
             .unwrap()
             .snapshot
             .unwrap();
-        assert_eq!(snapshot.files.len(), 2);
+        assert_eq!(snapshot.files.len(), 3);
         assert!(snapshot.files.contains(&control));
+        assert!(snapshot.files.contains(&acknowledged));
     }
 }

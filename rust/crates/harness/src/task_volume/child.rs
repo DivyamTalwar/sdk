@@ -2,6 +2,38 @@
 use super::{Component, Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// Harness acknowledgement of a child's execution state.
+/// Results remain in the named task's ordinary completion and chunk files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildStatus {
+    /// Current or most recently settled turn.
+    pub task: crate::TaskId,
+    /// Lifecycle state reached by the worker.
+    pub state: ChildState,
+    /// All effects of the current turn have stopped or completed.
+    pub settled: bool,
+    /// Immutable request/inbox files included in this turn.
+    pub inputs: u64,
+}
+
+impl ChildStatus {
+    /// Decodes a status acknowledgement; terminal and interrupted workers must
+    /// acknowledge quiescence before reporting those states.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let status: Self = serde_json::from_slice(bytes).map_err(|_| Error::InvalidSegment)?;
+        if status.inputs == 0
+            || (matches!(
+                status.state,
+                ChildState::Cancelled | ChildState::Archived | ChildState::Interrupted
+            ) && !status.settled)
+        {
+            return Err(Error::InvalidSegment);
+        }
+        Ok(status)
+    }
+}
+
 pub(crate) fn child_scope(
     parent: &crate::runtime::RuntimeScope,
     tools: Option<&[String]>,
@@ -290,6 +322,20 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn execution_status_round_trips_and_requires_quiescent_terminal_states(
+            task in any::<[u8;16]>(), inputs in 1u64..u64::MAX, selected in 0usize..5, settled in any::<bool>(),
+        ) {
+            let states = [ChildState::Running, ChildState::Paused, ChildState::Interrupted,
+                ChildState::Cancelled, ChildState::Archived];
+            let state = states[selected];
+            let status = ChildStatus { task: crate::TaskId::from_bytes(task), state, settled, inputs };
+            let decoded = ChildStatus::parse(&serde_json::to_vec(&status).unwrap());
+            let terminal = matches!(state, ChildState::Interrupted | ChildState::Cancelled | ChildState::Archived);
+            prop_assert_eq!(decoded.is_ok(), !terminal || settled);
+            if let Ok(decoded) = decoded { prop_assert_eq!(decoded, status); }
+        }
+
         #[test]
         fn child_tool_selection_is_attenuation_with_unchanged_numeric_limits(
             parent_tools in prop::collection::btree_set("[a-z]{1,5}", 0..10),

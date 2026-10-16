@@ -57,6 +57,64 @@ fn limits() -> Limits {
     }
 }
 
+async fn acknowledge(files: &TaskFiles<MemoryStream>, state: ChildState) {
+    let snapshot = files
+        .observe(Query::Child(Component::new("worker").unwrap()), None, 16)
+        .await
+        .unwrap()
+        .snapshot
+        .unwrap();
+    let previous = snapshot.files.iter().find_map(|file| match &file.key {
+        FileKey::Child {
+            file: ChildFile::Status,
+            ..
+        } => Some(ChildStatus::parse(&file.bytes).unwrap()),
+        _ => None,
+    });
+    let inputs = if matches!(state, ChildState::Cancelled | ChildState::Archived) {
+        previous.map(|status| status.inputs)
+    } else {
+        None
+    }
+    .unwrap_or_else(|| {
+        snapshot
+            .files
+            .iter()
+            .filter(|file| {
+                matches!(
+                    &file.key,
+                    FileKey::Child {
+                        file: ChildFile::Request | ChildFile::Inbox(_),
+                        ..
+                    }
+                )
+            })
+            .count() as u64
+    });
+    let status = ChildStatus {
+        task: previous
+            .map(|status| status.task)
+            .unwrap_or(crate::TaskId::from_bytes([7; 16])),
+        state,
+        settled: true,
+        inputs,
+    };
+    files
+        .inner
+        .append(
+            snapshot.generation,
+            &FileValue::new(
+                FileKey::Child {
+                    reference: Component::new("worker").unwrap(),
+                    file: ChildFile::Status,
+                },
+                serde_json::to_vec(&status).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+}
+
 async fn call(
     files: &TaskFiles<MemoryStream>,
     command: Value,
@@ -112,6 +170,21 @@ async fn spawn_and_send_replay_the_same_files_and_archive_remains_inspectable() 
     .await
     .unwrap();
     assert_eq!(archived["state"], json!(ChildState::Archived));
+    assert_eq!(archived["settled"], false);
+    assert_eq!(
+        call(&files, json!({"command":"list"}), operation)
+            .await
+            .unwrap(),
+        json!({"agents":[archived]})
+    );
+    acknowledge(&files, ChildState::Archived).await;
+    let archived = call(
+        &files,
+        json!({"command":"status","reference":"worker"}),
+        operation,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         call(
             &files,
@@ -176,6 +249,11 @@ async fn wait_follows_the_existing_snapshot_cut_and_sees_control_without_polling
     )
     .await
     .unwrap();
+    assert!(matches!(
+        futures::poll!(&mut waiter),
+        std::task::Poll::Pending
+    ));
+    acknowledge(&files, ChildState::Interrupted).await;
     let result = waiter.await.unwrap();
     assert_eq!(result["state"], json!(ChildState::Interrupted));
     assert_eq!(result["settled"], true);
@@ -261,26 +339,7 @@ async fn new_inbox_files_make_a_previously_settled_status_pending() {
     )
     .await
     .unwrap();
-    let snapshot = files
-        .observe(Query::Children, None, 16)
-        .await
-        .unwrap()
-        .snapshot
-        .unwrap();
-    files
-        .inner
-        .append(
-            snapshot.generation,
-            &FileValue::new(
-                FileKey::Child {
-                    reference: Component::new("worker").unwrap(),
-                    file: ChildFile::Status,
-                },
-                serde_json::to_vec(&json!({"settled":true,"inputs":1,"text":"done"})).unwrap(),
-            ),
-        )
-        .await
-        .unwrap();
+    acknowledge(&files, ChildState::Running).await;
     assert_eq!(
         call(
             &files,
@@ -324,6 +383,11 @@ async fn new_inbox_files_make_a_previously_settled_status_pending() {
     )
     .await
     .unwrap();
+    assert!(matches!(
+        futures::poll!(&mut waiter),
+        std::task::Poll::Pending
+    ));
+    acknowledge(&files, ChildState::Cancelled).await;
     assert_eq!(waiter.await.unwrap()["state"], json!(ChildState::Cancelled));
 }
 

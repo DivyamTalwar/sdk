@@ -1,5 +1,5 @@
 #![no_main]
-use acyclic_harness::task_volume::{ChildRequest, Control, FileKey, Query};
+use acyclic_harness::task_volume::{ChildRequest, ChildStatus, Control, FileKey, Query};
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     if let Ok(command) =
         serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(bytes)
@@ -9,6 +9,12 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(&encoded)
                 .unwrap(),
             command
+        );
+    }
+    if let Ok(status) = ChildStatus::parse(bytes) {
+        assert_eq!(
+            ChildStatus::parse(&serde_json::to_vec(&status).unwrap()).unwrap(),
+            status
         );
     }
     if let Ok(request) = ChildRequest::parse(bytes, 65536) {

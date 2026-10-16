@@ -3,7 +3,7 @@
 mod child;
 mod query;
 pub(crate) use child::child_scope;
-pub use child::{ChildFile, ChildRequest, ChildState, Control};
+pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
 pub use query::Query;
 mod files;
 mod follow;
@@ -387,11 +387,35 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
             reference: reference.clone(),
             file: ChildFile::Control,
         };
-        if let Some(previous) = index.files.get(&control_key) {
-            let state = ChildState::Running.apply(Control::parse(&previous.bytes)?);
-            if matches!(state, ChildState::Archived | ChildState::Cancelled) && previous != file {
+        let control = index.files.get(&control_key);
+        let state = match control {
+            Some(control) => ChildState::Running.apply(Control::parse(&control.bytes)?),
+            None => ChildState::Running,
+        };
+        let terminal = matches!(state, ChildState::Archived | ChildState::Cancelled);
+        if matches!(child_file, ChildFile::Status) {
+            let status = ChildStatus::parse(&file.bytes)?;
+            if status.state != state {
                 return Err(Error::ImmutableConflict(control_key));
             }
+            if let Some(previous) = index.files.get(&file.key) {
+                let previous = ChildStatus::parse(&previous.bytes)?;
+                if status.inputs < previous.inputs
+                    || (terminal
+                        && (status.task != previous.task || status.inputs != previous.inputs))
+                {
+                    return Err(Error::ImmutableConflict(file.key.clone()));
+                }
+                // The first quiescent terminal acknowledgement freezes this
+                // status too. No later result or input binding can replace it.
+                if matches!(previous.state, ChildState::Archived | ChildState::Cancelled)
+                    && index.files.get(&file.key) != Some(file)
+                {
+                    return Err(Error::ImmutableConflict(file.key.clone()));
+                }
+            }
+        } else if terminal && control != Some(file) {
+            return Err(Error::ImmutableConflict(control_key));
         }
         if matches!(child_file, ChildFile::Control) {
             Control::parse(&file.bytes)?;

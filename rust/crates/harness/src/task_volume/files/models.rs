@@ -231,3 +231,86 @@ fn concurrent_child_controls_use_the_running_child_cut() {
         "conflicting child controls both committed",
     );
 }
+
+fn child_completion_race(broken: bool) {
+    use crate::task_volume::{ChildFile, ChildState, ChildStatus, Control};
+    let files = files();
+    let reference = Component::new("worker").unwrap();
+    let key = |file| FileKey::Child {
+        reference: reference.clone(),
+        file,
+    };
+    let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
+        .unwrap()
+        .snapshot
+        .unwrap();
+    let cut = loom::future::block_on(Box::pin(files.write(
+        snapshot.generation,
+        &FileValue::new(key(ChildFile::Request), b"work".to_vec()),
+    )))
+    .unwrap();
+    let running = ChildStatus {
+        task: crate::TaskId::from_bytes([7; 16]),
+        state: ChildState::Running,
+        settled: false,
+        inputs: 1,
+    };
+    let status =
+        |status| FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap());
+    let cut = loom::future::block_on(Box::pin(files.inner.append(cut, &status(running)))).unwrap();
+    let cancelled = FileValue::new(key(ChildFile::Control), Control::Cancel.bytes().to_vec());
+    let writer = files.clone();
+    let write = cancelled.clone();
+    let controller = loom::thread::spawn(move || {
+        loom::future::block_on(Box::pin(writer.write(cut, &write))).is_ok()
+    });
+    let writer = files.clone();
+    let completion = status(ChildStatus {
+        settled: true,
+        ..running
+    });
+    let write = completion.clone();
+    let worker = loom::thread::spawn(move || {
+        loom::future::block_on(Box::pin(writer.inner.append(cut, &write))).is_ok()
+    });
+    assert_ne!(controller.join().unwrap(), worker.join().unwrap());
+    let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
+        .unwrap()
+        .snapshot
+        .unwrap();
+    let cut =
+        loom::future::block_on(Box::pin(files.write(snapshot.generation, &cancelled))).unwrap();
+    if broken {
+        // Negative control: a worker loses the terminal control in its cached
+        // view but retains the current publication cut. All real append locks,
+        // validation and provider commit conditions still execute below.
+        let mut index = loom::future::block_on(Box::pin(files.inner.index.lock()));
+        index.files.remove(&cancelled.key);
+    }
+    let late = loom::future::block_on(Box::pin(files.inner.append(cut, &completion)));
+    assert!(
+        late.is_err(),
+        "terminal control allowed a late running status"
+    );
+    let acknowledged = status(ChildStatus {
+        state: ChildState::Cancelled,
+        settled: true,
+        ..running
+    });
+    let cut = loom::future::block_on(Box::pin(files.inner.append(cut, &acknowledged))).unwrap();
+    let changed = status(ChildStatus {
+        inputs: 2,
+        state: ChildState::Cancelled,
+        settled: true,
+        ..running
+    });
+    assert!(loom::future::block_on(Box::pin(files.inner.append(cut, &changed))).is_err());
+}
+
+#[test]
+fn child_completion_is_fenced_by_control_until_a_frozen_quiescent_acknowledgement() {
+    check(
+        child_completion_race,
+        "terminal control allowed a late running status",
+    );
+}
