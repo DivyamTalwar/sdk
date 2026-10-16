@@ -103,6 +103,7 @@ dependencies = [
  "bytes",
  "futures",
  "libfuzzer-sys",
+ "prost",
  "rmcp",
  "serde",
  "serde_json",
