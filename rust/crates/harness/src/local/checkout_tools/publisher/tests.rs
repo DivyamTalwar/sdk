@@ -129,6 +129,40 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
 }
 
 #[tokio::test]
+async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() -> Result<()> {
+    let (_directory, mut fixture, publisher) = fixture().await?;
+    drop(publisher);
+    let mut workspace = Arc::try_unwrap(fixture.workspace.take().expect("fixture workspace"))
+        .map_err(|_| Error::Conflict("fixture workspace is still shared".into()))?;
+    assert!(matches!(
+        workspace.mount_options(workspace.view().workspace()).await,
+        Err(Error::FilesystemAccessConfiguration("native mount owner"))
+    ));
+    let issuer = AuthorityIssuer::new("publisher", [17; 32], fixture.verifier.audience().clone());
+    let agent = fixture.signed.agent().expect("fixture agent");
+    workspace.mount_authority = Some((Arc::new(issuer), agent));
+    let options = workspace
+        .mount_options(workspace.view().workspace())
+        .await?;
+    let view = options
+        .require_access_view()
+        .map_err(storage)?
+        .current()
+        .map_err(storage)?;
+    assert_eq!(
+        view.volume(),
+        uuid::Uuid::from_bytes(workspace.view().workspace().id().volume_id().into_bytes())
+            .to_string()
+    );
+    assert_eq!(view.subject().1, agent.to_string());
+    assert!(
+        view.decide(acyclic_fs::access::Action::Read, "file", 0)
+            .allowed()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
     let (directory, harness, publisher) = fixture().await?;
     let (file, _) = publisher

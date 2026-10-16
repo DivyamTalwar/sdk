@@ -54,8 +54,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         else {
             return Ok(None);
         };
+        let receipt_identity = if internal_class.is_some() {
+            expected_path
+                .ok_or_else(|| io.invalid("internal upload recovery requires its original path"))?
+        } else {
+            key.as_str()
+        };
         let receipt_path =
-            content_identity_path_io(key.as_str(), true, ".system/harness-uploads/", Some(io))?;
+            content_identity_path_io(receipt_identity, true, ".system/harness-uploads/", Some(io))?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
         const RECORD_BYTES: u64 = 6

@@ -64,46 +64,9 @@ where
                             .map(crate::store::HistoryWork::new)?,
                     ))
                     .await?;
-                let (_identity_hold, key, path) = {
-                    let before = io.owned_bytes()?;
-                    let (key, path) =
-                        self.stage_identity_with_io(operation_id, idempotency_key, Some(&io))?;
-                    let retained = io.owned_since(before)?;
-                    let _identity_hold = io.guard_owned(retained)?;
-                    (_identity_hold, key, path)
-                };
-                crate::executor::with_history_io(Some(&io), |work| {
-                    ContentGrant::authorize_volume(
-                        &self.verifier,
-                        &self.scope,
-                        &self.volume,
-                        VolumeOperation::Read,
-                        io.remaining()?.bytes_encoded,
-                        work,
-                    )
-                })?;
                 let file = self
-                    .host
-                    .content_for_operation_record_io(
-                        super::super::PublicationLookup {
-                            volume: &self.volume,
-                            key: &key,
-                            expected_path: Some(&path),
-                            maximum_bytes: self.maximum_payload_bytes,
-                            internal_class: Some(InternalContentClass::Execution),
-                            scope: &self.scope,
-                            ceiling: None,
-                        },
-                        Some(&io),
-                    )
-                    .await?
-                    .ok_or_else(|| {
-                        canonical_boundary(
-                            Some(&io),
-                            crate::wire::ErrorCode::NotFound,
-                            "original staged payload was not published",
-                        )
-                    })?;
+                    .staged_ref_with_io(operation_id, idempotency_key, Some(&io))
+                    .await?;
                 owner
                     .verify_read_access(&mut Some(
                         &mut crate::filesystem::PreparationIo::from_native_work(work)

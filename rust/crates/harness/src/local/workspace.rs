@@ -41,9 +41,21 @@ pub(super) type View = LazyWorkspace<
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
     pub(super) fresh: bool,
-    view: View,
+    pub(super) view: View,
+    pub(super) mount_directory: PathBuf,
+    pub(super) mounted: Option<
+        Arc<
+            acyclic_fs::native_mount::LazyMount<
+                LocalAuthorityBackend,
+                LocalObjectBackend,
+                NativeDemandSource,
+                LocalCoreStateStore,
+            >,
+        >,
+    >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
+    pub(super) mount_authority: Option<(Arc<AuthorityIssuer>, AgentId)>,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
     // Lock order: view state -> coordinator -> command-local cache or native
     // completion, then task-file index -> provider visibility -> provider state.
@@ -51,9 +63,11 @@ pub struct LocalWorkspace {
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
-    context_line: String,
+    pub(super) context_line: String,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -66,6 +80,58 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) async fn mount_options(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<acyclic_fs::MountOptions> {
+        let (issuer, agent) = self
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        crate::filesystem::owner_mount_options(workspace, issuer, Some(*agent), true, &work)
+            .await
+            .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
+    }
+
+    pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
+        let primary = self.mounts.named(None)?.1;
+        let mut mounts = mounts::owner(
+            path,
+            &primary.view.volume,
+            None,
+            self.mounts
+                .mounts()
+                .filter(|(relative, _)| !relative.is_empty())
+                .map(|(_, mount)| {
+                    (
+                        mount.view.name.clone(),
+                        mount.view.volume.clone(),
+                        mount.view.source.clone(),
+                    )
+                }),
+        )?;
+        #[cfg(target_os = "linux")]
+        volumes::link(path, &mut mounts)?;
+        #[cfg(not(target_os = "linux"))]
+        {
+            let (issuer, agent) = self
+                .mount_authority
+                .as_ref()
+                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+            volumes::attach(
+                &self.filesystem,
+                &self.store,
+                path,
+                &mut mounts,
+                (issuer, *agent),
+            )
+            .await?;
+        }
+        Ok(Arc::new(mounts))
+    }
     #[cfg(test)]
     pub(super) async fn current(
         &self,
@@ -278,23 +344,27 @@ pub(super) async fn open(
     }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
+    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
+        view.workspace().id(),
+        Arc::clone(&mounts),
+    )));
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,
         view,
+        mount_directory: directory.join("task-views"),
+        mounted: None,
         filesystem: filesystem.clone(),
         store,
+        mount_authority: authority.map(|(issuer, agent)| (Arc::new(issuer.clone()), agent)),
         identity: acyclic_fs::NativeRootIdentity::from_bytes(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
-        state: StateArc::new(AsyncMutex::new(super::checkout_tools::State {
-            active: None,
-            watcher: None,
-            mounts: Arc::clone(&mounts),
-            initialized: false,
-        })),
+        state,
         context_line,
         mounts,
     })

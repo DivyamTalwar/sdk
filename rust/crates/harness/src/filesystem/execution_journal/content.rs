@@ -23,6 +23,55 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(crate) async fn staged_ref_with_io(
+        &self,
+        operation: OperationId,
+        key: &str,
+        io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        let (_identity_hold, key, path) = {
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (key, path) = self.stage_identity_with_io(operation, key, io)?;
+            let hold = io
+                .map(|io| io.guard_owned(io.owned_since(before)?))
+                .transpose()?;
+            (hold, key, path)
+        };
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::authorize_volume(
+                &self.verifier,
+                &self.scope,
+                &self.volume,
+                VolumeOperation::Read,
+                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
+                work,
+            )
+        })?;
+        self.host
+            .content_for_operation_record_io(
+                super::super::PublicationLookup {
+                    volume: &self.volume,
+                    key: &key,
+                    expected_path: Some(&path),
+                    maximum_bytes: self.maximum_payload_bytes,
+                    internal_class: Some(InternalContentClass::Execution),
+                    scope: &self.scope,
+                    ceiling: None,
+                },
+                io,
+            )
+            .await?
+            .ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "original staged payload was not published",
+                )
+            })
+    }
+
     pub(super) fn stage_identity_with_io(
         &self,
         operation_id: OperationId,
