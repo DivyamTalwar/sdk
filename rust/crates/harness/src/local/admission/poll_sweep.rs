@@ -190,30 +190,28 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
-        // This cancellation fixture supplies an explicit immutable catalog, as
-        // before; per-turn instruction discovery is covered by local context tests.
-        let manifest =
-            crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?;
-        let bytes = manifest.encode(Limits::default())?;
-        let digest = blake3::hash(&bytes);
-        let context_manifest = FilesystemContentPublisher::new(
+        let publisher = FilesystemContentPublisher::new(
             files.clone(),
             &self.volumes[2],
             &verifier,
             &signed,
             Limits::default().file_bytes,
             None,
-        )?
-        .stage_once(
-            OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
-            &format!("inputs/context/{digest}.json"),
-            &bytes,
-            "application/json",
-            "context-manifest.json",
-            None,
-        )?
-        .await?
-        .0;
+        )?;
+        let bytes = crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?
+            .encode(Limits::default())?;
+        let digest = blake3::hash(&bytes);
+        let context_manifest = publisher
+            .stage_once(
+                OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
+                &format!("inputs/context/{digest}.json"),
+                &bytes,
+                "application/json",
+                "context-manifest.json",
+                None,
+            )?
+            .await?
+            .0;
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -232,8 +230,8 @@ impl Fixture {
             provider: self.provider.clone(),
             context_manifest: Some(context_manifest),
             context_read_observer: None,
-            #[cfg(feature = "native-execution")]
-            checkout_context: false,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -246,6 +244,8 @@ impl Fixture {
             admission: StateArc::new(Mutex::new(())),
             #[cfg(feature = "native-execution")]
             workspace: None,
+            #[cfg(feature = "native-execution")]
+            checkout_context: false,
         })
     }
 
