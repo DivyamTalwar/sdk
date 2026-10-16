@@ -36,12 +36,35 @@ pub(super) fn assert_catalog_matches(fixture: &Fixture, data: &sdk_docs::DocsDat
 }
 
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
+    copy_tree_inner(source, destination, false);
+}
+
+pub(super) fn copy_profile_output(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_name() == ".profile-build" {
+            // Compilers have finished, and drift/project only read these files.
+            // Mutable receipts, manifests and retained sources stay private.
+            copy_tree_inner(&entry.path(), &target, true);
+        } else if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn copy_tree_inner(source: &Path, destination: &Path, immutable: bool) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
         let target = destination.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
+            copy_tree_inner(&entry.path(), &target, immutable);
+        } else if immutable {
+            fs::hard_link(entry.path(), target).unwrap();
         } else {
             fs::copy(entry.path(), target).unwrap();
         }

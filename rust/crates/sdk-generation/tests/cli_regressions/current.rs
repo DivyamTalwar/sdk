@@ -854,7 +854,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         .unwrap(),
         vec!["demo", "relocation-helper"]
     );
-    super::replay::copy_tree(&fixture.output, &relocated.output);
+    super::replay::copy_profile_output(&fixture.output, &relocated.output);
     super::replay::copy_tree(&fixture.root.join("target"), &relocated.root.join("target"));
     super::replay::relocate_receipts(&fixture, &relocated);
     std::thread::scope(|scope| {
@@ -955,11 +955,19 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         paths
     };
+    let original_dependencies = dependency_paths(&fixture);
     assert_ne!(
-        dependency_paths(&fixture),
+        original_dependencies,
         dependency_paths(&relocated),
         "raw Rustdoc must retain the relocated dependency artifacts"
     );
+    for original in original_dependencies {
+        let relocated = super::paths::rebase(&original, fixture.output.to_str().unwrap(),
+            relocated.output.to_str().unwrap(), cfg!(windows)).unwrap();
+        assert_eq!(sdk_file_identity::stamp(Path::new(&original)).unwrap(),
+            sdk_file_identity::stamp(Path::new(&relocated)).unwrap(),
+            "completed compiler artifacts share their native file identity");
+    }
     let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
     assert_eq!(
         fs::read(fixture.output.join(path)).unwrap(),
