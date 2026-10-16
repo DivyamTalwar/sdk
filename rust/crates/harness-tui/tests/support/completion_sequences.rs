@@ -38,7 +38,10 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
     )?;
     // Exercise malformed theme inventories too; replacement must be atomic.
     let mut probe = CompletionMenu::default();
-    probe.set_file("commands/base.json", Some(br#"[{"name":"theme","action":{"kind":"theme"}}]"#))?;
+    probe.set_file(
+        "commands/base.json",
+        Some(br#"[{"name":"theme","action":{"kind":"theme"}}]"#),
+    )?;
     probe.set_file("commands/themes.json", Some(b"[\"Theme\"]"))?;
     probe.refresh(&Editor::new("/theme "));
     let before: Vec<_> = probe.items().cloned().collect();

@@ -206,7 +206,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "request settings must be a JSON object".into(),
             ));
         }
-        let mut value = self.state(CommandFileRoot::Config, "settings.json")?.unwrap_or_else(|| json!({}));
+        let mut value = self
+            .state(CommandFileRoot::Config, "settings.json")?
+            .unwrap_or_else(|| json!({}));
         value
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("shared settings must be an object".into()))?

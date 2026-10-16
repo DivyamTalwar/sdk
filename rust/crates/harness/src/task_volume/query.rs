@@ -7,7 +7,12 @@ use std::sync::Arc;
 pub enum Query {
     /// Active command inbox plus a bounded recent outcome window. Historical
     /// request/claim/result files remain addressable by exact file queries.
-    CommandSession { session: Component, recent: u32 },
+    CommandSession {
+        /// UI session whose settings, inbox and outcomes are selected.
+        session: Component,
+        /// Maximum number of completed outcomes retained in the active view.
+        recent: u32,
+    },
     /// One ordinary UI/config directory.
     UiDirectory(Component),
     /// One UI session's requests and immutable execution records.

@@ -34,7 +34,8 @@ proptest! {
             let mut reopened = CommandSession::open(volume, session_id(), 32_768, 16).await.unwrap();
             prop_assert!(reopened.take_request().is_none());
             prop_assert_eq!(reopened.output_page(0).unwrap().unwrap()["ok"]["index"].as_u64(), Some(count as u64 - 1));
-            prop_assert!(reopened.consume(&first.unwrap(), |_, _, _| async { panic!("archived effect resent") }).await.unwrap().is_none());
+            let replay = reopened.consume(&first.unwrap(), |_, _, _| async { panic!("archived effect resent") }).await.unwrap();
+            prop_assert!(replay.is_none());
             Ok(())
         })?;
     }
@@ -55,7 +56,8 @@ proptest! {
             let saved: Value = serde_json::from_slice(&result.bytes).unwrap();
             prop_assert!(saved.get("ok").is_some() || saved["completed"] == true && saved["output_omitted"] == true);
             let mut reopened = CommandSession::open(volume, session_id(), 8192, 16).await.unwrap();
-            prop_assert!(reopened.consume(&request, |_, _, _| async { panic!("completed output overflow resent effect") }).await.unwrap().is_none());
+            let replay = reopened.consume(&request, |_, _, _| async { panic!("completed output overflow resent effect") }).await.unwrap();
+            prop_assert!(replay.is_none());
             Ok(())
         })?;
     }
@@ -87,7 +89,7 @@ proptest! {
         futures::executor::block_on(async {
             let volume = volume().await.unwrap();
             let mut left = CommandSession::open(volume.clone(), uuid::Uuid::from_u128(seed), 32_768, 32).await.unwrap();
-            let mut right = CommandSession::open(volume.clone(), uuid::Uuid::from_u128(seed ^ 1), 32_768, 32).await.unwrap();
+            let right = CommandSession::open(volume.clone(), uuid::Uuid::from_u128(seed ^ 1), 32_768, 32).await.unwrap();
             left.submit("/quit", &DeniedReader).await.unwrap_err(); // stale cut follows right's bootstrap before retry
             left.submit("/quit", &DeniedReader).await.unwrap();
             prop_assert!(left.exit_requested().unwrap());
