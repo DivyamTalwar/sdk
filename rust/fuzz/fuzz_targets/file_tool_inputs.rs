@@ -6,19 +6,17 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
     if let Ok(input) = serde_json::from_slice::<ReadFileInput>(bytes) {
-        let encoded = serde_json::to_vec(&input).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ReadFileInput>(&encoded).unwrap(),
-            input
-        );
+        let restored = serde_json::to_vec(&input)
+            .ok()
+            .and_then(|encoded| serde_json::from_slice::<ReadFileInput>(&encoded).ok());
+        assert_eq!(restored.as_ref(), Some(&input));
     }
     if let Ok(metadata) = serde_json::from_slice::<FileRef>(bytes) {
         if metadata.validate(&mut None).is_ok() {
-            let encoded = serde_json::to_vec(&metadata).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<FileRef>(&encoded).unwrap(),
-                metadata
-            );
+            let restored = serde_json::to_vec(&metadata)
+                .ok()
+                .and_then(|encoded| serde_json::from_slice::<FileRef>(&encoded).ok());
+            assert_eq!(restored.as_ref(), Some(&metadata));
         }
     }
 });
