@@ -311,6 +311,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             provider,
             prepared.request(),
             &crate::tool_names::Names::new(prepared.request()),
+            &provider.reasoning_origin(None, None),
         )?)
         .unwrap();
         for message in &history {

@@ -4,15 +4,29 @@ mod accounting;
 mod adapter;
 mod alloy;
 mod alloy_spec;
-mod call_ids;
 mod catalog;
+#[cfg(not(target_arch = "wasm32"))]
+mod codex;
+#[cfg(not(target_arch = "wasm32"))]
+mod codex_count;
+#[cfg(not(target_arch = "wasm32"))]
+mod credential_file;
+mod model_spec;
+#[cfg(not(target_arch = "wasm32"))]
+mod refresh;
+#[cfg(not(target_arch = "wasm32"))]
+mod usage_snapshot;
+#[cfg(not(target_arch = "wasm32"))]
+pub use codex::CodexLogin;
+mod call_ids;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod codex_dispatch_tests;
 mod counting;
 mod credentials;
 mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
-mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
