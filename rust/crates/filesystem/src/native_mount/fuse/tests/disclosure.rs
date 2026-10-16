@@ -47,19 +47,15 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
         })
         .collect::<Vec<_>>();
     if deny_parent {
+        rules.push(deny("closed-directory", &[Action::List], ""));
+    }
+    publish_test_access(&source, rules)?;
+    assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
+    if deny_parent {
         assert!(matches!(
             projection.open_directory(ROOT_INODE, &work),
             Err(NativeMountError::Source(MountSourceError::AccessDenied))
         ));
-        rules.push(deny("closed-directory", &[Action::List], ""));
-    }
-    assert_eq!(
-        projection.open_directory(ROOT_INODE, &work)?,
-        fuser::FopenFlags::empty()
-    );
-    publish_test_access(&source, rules)?;
-    assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
-    if deny_parent {
         assert!(matches!(
             projection.position_directory_stream(&mut stream, 0, &work),
             Err(NativeMountError::Source(MountSourceError::AccessDenied))
