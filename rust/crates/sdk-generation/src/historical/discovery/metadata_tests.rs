@@ -25,15 +25,6 @@ fn metadata(root: &Path) -> Metadata {
 
 proptest! {
     #[test]
-    fn archive_metadata_keys_bind_every_observed_input(value in ".{0,24}", axis in 0usize..7) {
-        let fields = ["ownerFiles", "ownerConfig", "cwdConfig", "cwdWorkspace", "producerFiles", "cwd", "lockSelection"];
-        let original = fields.iter().map(|field| ((*field).to_owned(), "original".to_owned())).collect::<BTreeMap<_,_>>();
-        let mut changed = original.clone();
-        changed.insert(fields[axis].into(), format!("changed:{value}"));
-        let key = |inputs: &BTreeMap<String,String>| owner_metadata_context(Path::new("owner"), inputs, BTreeMap::new(), &BTreeMap::new()).unwrap();
-        prop_assert_ne!(key(&original), key(&changed));
-    }
-    #[test]
     fn owner_metadata_key_binds_source_config_tools_environment_and_location(
         value in ".{0,24}", axis in 0u8..8,
     ) {

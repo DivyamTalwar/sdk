@@ -315,10 +315,8 @@ pub fn imported_metadata(
             .join("Cargo.toml");
         let config = producer_config(root, Some(captured), &archive.package)?;
         let lock = manifest.with_file_name("Cargo.lock");
-        let metadata = archive_metadata(
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata(
             &manifest,
-            cargo,
-            &archive.resolution_lock,
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(cargo),
                 lock_selection: producer_lock_selection(config.as_deref(), &lock, Some(captured)),

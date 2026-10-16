@@ -106,7 +106,10 @@ pub(super) fn configure(command: &mut Command) {
     // Debug symbol files and incremental compiler state are unused fixtures.
     command
         .env("CARGO_PROFILE_DEV_DEBUG", "0")
-        .env("CARGO_PROFILE_DEV_INCREMENTAL", "false");
+        .env("CARGO_PROFILE_DEV_INCREMENTAL", "false")
+        // Private fixtures do not inherit this checkout's static-CRT flags.
+        // Resolver/lock configuration is still discovered by the real Cargo.
+        .env("CARGO_ENCODED_RUSTFLAGS", "");
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());

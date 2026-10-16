@@ -425,15 +425,6 @@ fn owner_metadata(
     {
         return query();
     }
-    closed_owner_metadata(root, cargo, source, query)
-}
-
-fn closed_owner_metadata(
-    root: &Path,
-    cargo: &Path,
-    source: &impl Serialize,
-    mut query: impl FnMut() -> Result<Metadata, String>,
-) -> Result<Metadata, String> {
     let Ok(workspace) = workspace_inputs(root) else {
         return query();
     };
@@ -522,7 +513,7 @@ fn workspace_inputs(root: &Path) -> Result<BTreeMap<String, Option<String>>, Str
 
 fn owner_metadata_context(
     root: &Path,
-    source: &impl Serialize,
+    source: &RegistryOwnerSource,
     environment: BTreeMap<std::ffi::OsString, std::ffi::OsString>,
     workspace: &BTreeMap<String, Option<String>>,
 ) -> Result<String, String> {
@@ -532,63 +523,6 @@ fn owner_metadata_context(
         &format!("owner-metadata:{}", crate::sha256_bytes(&input)),
         environment,
     ))
-}
-
-pub(super) fn archive_metadata(
-    manifest: &Path,
-    cargo: &Path,
-    lock: &ResolutionLock,
-    context: sdk_docs::rustdoc_profiles::CargoExecutionContext<'_>,
-) -> Result<Metadata, String> {
-    if !crate::file_cache::is_resolved_cargo(cargo) {
-        return sdk_docs::rustdoc_profiles::load_metadata(manifest, context)
-            .map_err(|e| e.to_string());
-    }
-    let root = manifest
-        .parent()
-        .ok_or("archive manifest has no parent")?
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let observe = || {
-        let producer = match lock {
-            ResolutionLock::SeparateDocsProducer { producer, .. } => verify_producer_resolution(
-                root.parent().ok_or("archive owner has no source root")?,
-                root.file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or("invalid archive owner path")?,
-                producer,
-            )?,
-            _ => BTreeMap::new(),
-        };
-        Ok::<_, String>((
-            crate::imported_source_file_hashes(&root, &root.join("target"))
-                .map_err(|e| e.to_string())?,
-            cargo_discovery_inputs(&root, cargo)?,
-            cargo_discovery_inputs(&cwd, cargo)?,
-            workspace_inputs(&cwd)?,
-            producer,
-            cwd.clone(),
-        ))
-    };
-    let before = observe()?;
-    let mut query =
-        || sdk_docs::rustdoc_profiles::load_metadata(manifest, context).map_err(|e| e.to_string());
-    let metadata = if before
-        .1
-        .config_sha256
-        .values()
-        .chain(before.2.config_sha256.values())
-        .any(Option::is_some)
-    {
-        query()?
-    } else {
-        closed_owner_metadata(&root, cargo, &(&before, lock), &mut query)?
-    };
-    if observe()? != before {
-        return Err("archive Cargo discovery inputs changed during inspection".into());
-    }
-    Ok(metadata)
 }
 
 #[cfg(test)]
