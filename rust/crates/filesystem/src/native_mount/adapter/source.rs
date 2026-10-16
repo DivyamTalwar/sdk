@@ -134,7 +134,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.config.profile, self.config.limits)?;
         let observation = self
             .checkout
             .observe(

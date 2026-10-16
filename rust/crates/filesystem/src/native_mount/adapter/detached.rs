@@ -104,7 +104,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
         let mut state = await_lock(
             self.state.lock(),
             inputs.carrier,
@@ -502,6 +502,7 @@ where
                 Some(&self.cancellation),
             )
             .await?;
+            require_attribute_root(metadata, state.metadata)?;
             state
                 .file
                 .set_attributes(metadata, logical_bytes, work, cancellation)

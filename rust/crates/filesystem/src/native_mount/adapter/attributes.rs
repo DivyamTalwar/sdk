@@ -1,3 +1,16 @@
+fn require_attribute_root(
+    requested: FileMetadata,
+    current: FileMetadata,
+) -> Result<(), MountSourceError> {
+    // Native setattr edits scalar metadata. An attribute-tree root is an SDK
+    // object identity, not a native attribute; replacing it would bypass the
+    // named-attribute owner and could erase the volume policy.
+    if requested.named_attributes != current.named_attributes {
+        return Err(MountSourceError::AccessDenied);
+    }
+    Ok(())
+}
+
 impl<A, O> CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -50,6 +63,7 @@ where
             if lookup.node.file_id != file {
                 return Err(MountSourceError::Stale);
             }
+            require_attribute_root(metadata, lookup.metadata)?;
             candidate
                 .checkout
                 .set_attributes(

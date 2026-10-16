@@ -45,7 +45,7 @@ where
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
         let mut candidate = self
             .checkout
             .file_candidate(
@@ -443,6 +443,11 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
+            let current = candidate
+                .checkout
+                .read_metadata(self.file_id, work, cancellation)
+                .await?;
+            require_attribute_root(metadata, current)?;
             candidate
                 .checkout
                 .set_attributes(self.file_id, metadata, logical_bytes, work, cancellation)
