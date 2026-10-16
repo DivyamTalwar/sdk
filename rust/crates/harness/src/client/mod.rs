@@ -60,6 +60,7 @@ pub use query::ClientQuery;
 mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod query_subscription;
+mod session_views;
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{QuerySubscription, query_error};
 #[cfg(feature = "test-support")]

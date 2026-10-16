@@ -1,4 +1,5 @@
-pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
+/// Decodes a canonical record and validates its commit identity.
+pub fn record(value: wire::Record) -> Result<Record, StreamError> {
     Ok(Record {
         sequence: value.sequence,
         value: value.value.into(),
