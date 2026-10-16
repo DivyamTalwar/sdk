@@ -187,8 +187,8 @@ proptest! {
         chunks in any::<bool>(), selection in 0..4_u8,
     ) {
         let case = generated_case(records, chunks, selection);
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-        prop_assert!(runtime.block_on(super::task_queries::run(case)).is_ok());
+        let result = futures::executor::block_on(super::task_queries::run(case));
+        prop_assert!(result.is_ok(), "{result:?}");
     }
 }
 
