@@ -106,7 +106,10 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
                 .task_host()
                 .workflow_slot(first.task_id(), None, &mut None)
                 .await?
-                .is_some_and(|(_, slot)| slot.waiting_command.is_some())
+                .is_some_and(
+                    |(phase, slot)| phase == crate::scheduler::OperationPhase::Running
+                        && slot.input.is_some()
+                )
         );
         let answer = first.follow_result(&results, task).await.map_err(storage)?;
         assert_eq!(

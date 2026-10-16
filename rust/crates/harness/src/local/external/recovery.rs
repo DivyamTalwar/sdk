@@ -2,13 +2,13 @@ use crate::Result;
 
 // A published result is not the workflow's settlement acknowledgement. Finish
 // retained work before replying or attempting to fill the next input slot.
-pub(super) async fn recover_before_delivery(
+pub(super) async fn recover_before_delivery<F: Future<Output = Result<()>>>(
     initial: bool,
     answered: bool,
-    recovery: impl Future<Output = Result<()>>,
+    recovery: impl FnOnce() -> F,
 ) -> Result<()> {
     if !initial || answered {
-        recovery.await?;
+        recovery().await?;
     }
     Ok(())
 }

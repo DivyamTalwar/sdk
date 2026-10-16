@@ -92,7 +92,7 @@ impl LocalHarness {
             recovery::recover_before_delivery(
                 matches!(request.action, ExternalAction::Attach { .. }),
                 !cached.files.is_empty(),
-                Box::pin(self.advance(task_id, &commands)),
+                || Box::pin(self.advance(task_id, &commands)),
             )
             .await?;
             if let Some(file) = cached.files.first() {
