@@ -1,5 +1,9 @@
 use super::*;
 
+pub(super) fn authorization_changed(authorized: GenerationId, observed: GenerationId) -> bool {
+    authorized != observed
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Opens an authored private or immutable checkout.
     pub async fn checkout<W: crate::facade::FsWork>(
@@ -108,7 +112,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     cancellation,
                 )
                 .await?;
-            let stale = current.generation_id() != generation.id;
+            let stale = authorization_changed(generation.id, current.generation_id());
             let checkout = if stale {
                 drop(current);
                 self.checkout_accounted(

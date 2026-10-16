@@ -1,17 +1,18 @@
-//! Models the production transaction admission and authority CAS together.
-use super::*;
-use crate::{Fs, WorkCounters};
+//! Models the production admission predicate and authority CAS together.
+use super::checkout::authorization_changed;
+use crate::{
+    AppendOutcome, AsyncAuthorityStore, AuthorityId, AuthorityWork, CancellationToken, Digest,
+    Epoch, GenerationId, GuardedAppend, Head, MemoryAuthorityStore, OperationId, ProposedCommit,
+    PublicationPermit, WorkBudget,
+};
 use std::{
     future::Future,
     task::{Context, Poll, Waker},
 };
 
-type ModelTransaction = Transaction<crate::MemoryAuthorityStore, crate::MemoryObjectStore>;
+const AUTHORITY: AuthorityId = AuthorityId::from_bytes([1; 16]);
 
 fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
-    // Build SDK futures in the same short heap frame used by native callbacks.
-    // Keeping them in this driver would exhaust Loom's coroutine stack before
-    // the modeled authority locks can run.
     match crate::heap_future::in_heap(create)
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
@@ -21,89 +22,66 @@ fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
     }
 }
 
-fn commit(transaction: &mut ModelTransaction) -> bool {
+fn head(store: &MemoryAuthorityStore) -> Head {
     let cancel = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    ready(|| store.head(AUTHORITY, &mut work)).unwrap()
+}
+
+fn publish(store: &MemoryAuthorityStore, expected: Head, operation: u8) -> bool {
+    let cancel = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
     matches!(
-        ready(|| transaction.commit::<WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-            |_| std::future::ready(Ok(crate::OperationReceipt {
-                value: (),
-                work: WorkCounters::UNCHARGED,
-            })),
+        ready(|| store.compare_and_append(
+            GuardedAppend {
+                authority_id: AUTHORITY,
+                epoch: expected.epoch,
+                expected,
+                commit: ProposedCommit {
+                    operation_id: OperationId::from_bytes([operation; 16]),
+                    fingerprint: Digest::from_bytes([operation; 32]),
+                    payload: bytes::Bytes::from_static(b"generation"),
+                },
+                permit: PublicationPermit::Unrestricted,
+            },
+            &mut work,
+            None::<&mut ()>
         ))
-        .unwrap()
-        .value,
-        TransactionCommit::Committed(_)
+        .unwrap(),
+        AppendOutcome::Committed(_)
     )
 }
 
 fn model(check_base: bool) {
     loom::model(move || {
-        // Only authority state is shared mutable publication state. Its real
-        // backend mutex uses crate::sync; immutable objects keep their ordinary
-        // store. No test lock wraps an uninstrumented publication algorithm.
-        let fs = Fs::new(
-            crate::MemoryAuthorityStore::default(),
-            crate::MemoryObjectStore::default(),
-            crate::EmbeddedCapabilities::MEMORY,
-        );
+        // The real backend mutex uses crate::sync. The bounded model removes
+        // filesystem codecs, not the admission check or either CAS lock phase.
+        let store = loom::sync::Arc::new(MemoryAuthorityStore::default());
         let cancel = CancellationToken::new();
-        let workspace =
-            ready(|| fs.create_workspace("access-write", WorkBudget::UNBOUNDED, &cancel))
-                .unwrap()
-                .value;
-        let authorized = ready(|| workspace.head(WorkBudget::UNBOUNDED, &cancel))
-            .unwrap()
-            .value;
-        let mut revocation = ready(|| {
-            workspace.begin_transaction(
-                IdempotencyKey::from_bytes([1; 16]),
-                WorkBudget::UNBOUNDED,
-                &cancel,
-            )
-        })
-        .unwrap()
-        .value;
-        ready(|| {
-            revocation.checkout.write_access_policy(
-                br#"{"schema_version":1,"version":2,"layers":[]}"#,
-                crate::NamedAttributeWriteMode::Create,
-                WorkBudget::UNBOUNDED,
-                &cancel,
-            )
-        })
-        .unwrap();
-        let revoker = loom::thread::spawn(move || commit(&mut revocation));
-        let key = IdempotencyKey::from_bytes([2; 16]);
-        let mut write = if check_base {
-            ready(|| {
-                workspace.begin_transaction_at(&authorized, key, WorkBudget::UNBOUNDED, &cancel)
-            })
-            .unwrap()
-            .value
-        } else {
-            // Negative control: the deleted pinned constructor paired Exact's
-            // old root with the newly observed head and skipped the stale flag.
-            let checkout = ready(|| {
-                workspace.checkout(
-                    GenerationSelector::Exact(authorized.id()),
-                    CheckoutMode::tracking_transaction(),
-                    WorkBudget::UNBOUNDED,
-                    &cancel,
-                )
-            })
-            .unwrap()
-            .value;
-            Transaction::from_checkout(&workspace, checkout, key, false)
-        };
-        ready(|| write.write_text("/target", "new")).unwrap();
-        let published = commit(&mut write);
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
+            .unwrap();
+        let authorized = head(&store);
+        let revocation = loom::sync::Arc::clone(&store);
+        let revoker = loom::thread::spawn(move || publish(&revocation, authorized, 2));
+        let observed = head(&store);
+        // Only identity equality reaches the production admission predicate.
+        // Commit digests name the two distinct generations in this model.
+        let stale = authorization_changed(
+            GenerationId::new(authorized.digest),
+            GenerationId::new(observed.digest),
+        );
+        // Negative control reproduces the old Exact constructor's missing fence.
+        let published = (!check_base || !stale) && publish(&store, observed, 3);
         let revoked = revoker
             .join()
             .expect("revocation completes without deadlock");
+        assert!(published || revoked, "neither publication made progress");
+        assert_eq!(
+            head(&store).sequence.get(),
+            u64::from(published) + u64::from(revoked),
+            "authority publication was torn or lost"
+        );
         assert!(
             !(published && revoked),
             "write crossed its authorization generation"
