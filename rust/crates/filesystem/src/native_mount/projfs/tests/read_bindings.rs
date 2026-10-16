@@ -60,13 +60,30 @@ async fn native_access_projfs_cached_opens_require_current_list_authority()
 }
 
 fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
+    // Persisted policy validation is storage I/O, distinct from the two native
+    // metadata probes this regression checks. Measure the shared authorization
+    // cost rather than hiding it in an increased host-probe allowance.
+    let before = work.receipt().backend_read_operations;
+    assert!(
+        authorize_open(
+            runtime.source.as_ref(),
+            &windows_path("read.txt"),
+            false,
+            work
+        )
+        .is_ok()
+    );
+    let authorization_reads = work.receipt().backend_read_operations - before;
     let before = work.receipt().backend_read_operations;
     assert_eq!(notify(runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
     assert_eq!(
         notify(runtime, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION),
         HR_OK
     );
-    assert_eq!(work.receipt().backend_read_operations - before, 2);
+    assert_eq!(
+        work.receipt().backend_read_operations - before - authorization_reads,
+        2
+    );
     assert!(lock_recover(&runtime.metadata_baselines).is_empty());
 }
 

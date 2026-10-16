@@ -116,7 +116,7 @@ where
 }
 
 impl TaskContext {
-    pub(super) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+    pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
         self.output_content
             .as_ref()
             .filter(|binding| {
@@ -283,7 +283,7 @@ impl TaskContext {
         Ok(())
     }
 
-    pub(super) async fn read_bound_file(
+    pub(crate) async fn read_bound_file(
         &self,
         binding: Option<&ContentBindings>,
         file: &FileRef,
