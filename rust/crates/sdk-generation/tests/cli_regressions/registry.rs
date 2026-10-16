@@ -395,12 +395,18 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         &output.join(".rustdoc"),
         &[("demo-a", 4), ("demo-b", 4), ("demo-c", 4)],
     );
-    let executions: Value = serde_json::from_slice(&fs::read(output.join("sdk-docs-scenario-executions.v1.json")).unwrap()).unwrap();
+    let executions: Value = serde_json::from_slice(
+        &fs::read(output.join("sdk-docs-scenario-executions.v1.json")).unwrap(),
+    )
+    .unwrap();
     let executions = executions.as_array().unwrap();
     assert_eq!(executions.len(), 3);
     for (row, owner) in executions.iter().zip(["demo-a", "demo-b", "demo-c"]) {
         assert_eq!(row["example"]["package"], owner);
-        assert_eq!(row["stdoutSha256"], hash_bytes(b"archive-example-executed\n"));
+        assert_eq!(
+            row["stdoutSha256"],
+            hash_bytes(b"archive-example-executed\n")
+        );
         assert_eq!(row["stderrSha256"], hash_bytes(b""));
     }
     let data: Value =
@@ -609,48 +615,42 @@ fn historical_source_help_and_flag_contract_are_explicit() {
     let text = output_message(&help);
     assert!(text.contains("--historical-archives DIR"));
     assert!(text.contains("--historical-source git|registry-archives"));
-    let missing_frontier = Command::new(&binary)
-        .args([
-            "generate",
-            "--root",
-            "missing-root",
-            "--output",
-            "missing-output",
-            "--version",
-            "1.0.0",
-            "--execute-profiles",
-            "--channel",
-            "release",
-            "--historical-source",
-            "registry-archives",
-            "--historical-archives",
-            "missing-archives",
-        ])
-        .output()
-        .unwrap();
+    let missing_frontier = invoke(Command::new(&binary).args([
+        "generate",
+        "--root",
+        "missing-root",
+        "--output",
+        "missing-output",
+        "--version",
+        "1.0.0",
+        "--execute-profiles",
+        "--channel",
+        "release",
+        "--historical-source",
+        "registry-archives",
+        "--historical-archives",
+        "missing-archives",
+    ]));
     assert!(!missing_frontier.status.success());
     assert!(output_message(&missing_frontier).contains("requires a complete registry corpus"));
     for (mode, expected) in [
         ("registry-archives", "requires --historical-archives"),
         ("unverified", "unknown historical source"),
     ] {
-        let rejected = Command::new(&binary)
-            .args([
-                "generate",
-                "--root",
-                "missing",
-                "--output",
-                "missing",
-                "--version",
-                "1.0.0",
-                "--execute-profiles",
-                "--channel",
-                "release",
-                "--historical-source",
-                mode,
-            ])
-            .output()
-            .unwrap();
+        let rejected = invoke(Command::new(&binary).args([
+            "generate",
+            "--root",
+            "missing",
+            "--output",
+            "missing",
+            "--version",
+            "1.0.0",
+            "--execute-profiles",
+            "--channel",
+            "release",
+            "--historical-source",
+            mode,
+        ]));
         assert!(!rejected.status.success());
         assert!(output_message(&rejected).contains(expected));
     }
