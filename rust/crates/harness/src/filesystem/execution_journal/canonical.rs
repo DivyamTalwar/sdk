@@ -390,7 +390,16 @@ where
             crate::executor::with_history_io(io, |work| {
                 limits.validate_file(&summary.output, work)
             })?;
-            let bytes = self.load(&summary.output, io)?.await?;
+            let verifier = self.input_verifier.as_ref().ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "canonical summary reader is not bound",
+                )
+            })?;
+            let bytes = verifier
+                .read(&summary.output, self.maximum_payload_bytes, io)?
+                .await?;
             if let Some(io) = io {
                 io.check_cancellation()?;
             }
