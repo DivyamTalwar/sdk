@@ -17,6 +17,7 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
+use tower::Layer as _;
 
 #[derive(Clone)]
 struct Host {
@@ -51,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(request)
         },
     );
-    let routes = tonic::service::Routes::new(tonic_web::enable(service)).into_axum_router();
+    let routes = tonic::service::Routes::new(tonic_web::GrpcWebLayer::new().layer(service)).into_axum_router();
     let app = Router::new()
         .route("/v1/stream/session", get(upgrade))
         .route(
