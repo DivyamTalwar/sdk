@@ -8,7 +8,7 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
         return;
     }
     let mut text = BTreeMap::<(String, u64, bool), Vec<u8>>::new();
-    let mut output = BTreeMap::<(String, String), Vec<u8>>::new();
+    let mut output = BTreeMap::<(crate::task_volume::Component, String), Vec<u8>>::new();
     for file in files.files().values() {
         let FileKey::Task { task, file: kind } = &file.key else {
             continue;
@@ -28,7 +28,7 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
                 ..
             } => {
                 output
-                    .entry((owner, call.as_str().to_owned()))
+                    .entry((task.clone(), call.as_str().to_owned()))
                     .or_default()
                     .extend_from_slice(&file.bytes);
             }
@@ -70,10 +70,10 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
             u128::from(turn).to_be_bytes(),
         ));
     }
-    for ((owner, call), bytes) in output {
+    for ((task, call), bytes) in output {
         let authority = crate::wire::Authority {
             kind: crate::wire::AggregateKind::Task as i32,
-            id: owner.trim_start_matches("AGGREGATE_KIND_TASK:").to_owned(),
+            id: task.as_str().to_owned(),
         };
         views.tool_output(&authority, &call, &String::from_utf8_lossy(&bytes));
     }
