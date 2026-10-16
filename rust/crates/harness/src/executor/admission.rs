@@ -59,12 +59,11 @@ impl ModelEventAdmission {
                 .map(|_| ())
             })?;
         }
-        let ModelEvent::ToolCall(crate::model::ToolCall { call_id, name, .. }) = event else {
+        let ModelEvent::ToolCall(call) = event else {
             return Ok(None);
         };
-        with_history_io(io, |work| {
-            ToolInvocation::validate_identity(call_id, Some(name), work)
-        })?;
+        crate::tool::validate_model_call_recorded(call, limits, io)?;
+        let call_id = &call.call_id;
         if self.calls.len() >= limits.tool_calls_per_step {
             return Err(stock_boundary(
                 io,
@@ -166,3 +165,7 @@ impl ModelEventAdmission {
 #[cfg(test)]
 #[path = "reasoning_admission_tests.rs"]
 mod reasoning_tests;
+
+#[cfg(test)]
+#[path = "recorded_admission_tests.rs"]
+mod recorded_tests;
