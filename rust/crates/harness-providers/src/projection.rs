@@ -1,3 +1,4 @@
+pub(crate) mod arguments;
 pub(crate) mod gemini;
 pub(crate) mod native_reasoning;
 mod wire;
@@ -355,16 +356,17 @@ fn project_message<'a>(
             }) => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
+                let arguments = arguments::Arguments(arguments);
                 let mut call = match adapter {
                     Adapter::Anthropic => {
                         json!({"type":"tool_use","id":call_id,"name":name,"input":arguments})
                     }
                     Adapter::Responses => {
                         json!({"type":"function_call","call_id":call_id,"name":name,
-                        "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?})
+                        "arguments":serde_json::to_string(&arguments).map_err(|e| invalid(e.to_string()))?})
                     }
                     Adapter::Chat => json!({"id":call_id,"type":"function","function":{"name":name,
-                        "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}}),
+                        "arguments":serde_json::to_string(&arguments).map_err(|e| invalid(e.to_string()))?}}),
                     Adapter::Gemini => {
                         json!({"functionCall":{"id":call_id,"name":name,"args":arguments}})
                     }
