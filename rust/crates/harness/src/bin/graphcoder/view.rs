@@ -44,8 +44,7 @@ pub async fn run(
         },
     ));
     let mut input = PromptInput::default();
-    // TODO(#495): feed command/workspace snapshot and follow files into
-    // input.completion.set_file; clear_files on query reset before its snapshot.
+    let mut completions = client::local_completions(&local, &mut input).await?;
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
@@ -62,7 +61,9 @@ pub async fn run(
             let scroll = screen.tail_scroll(frame.area(), &input);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
         })?;
-        let Some(event) = client::next_tui_event(&mut client, &mut events).await? else {
+        let Some(event) =
+            client::next_tui_event(&mut client, &mut events, &mut completions, &mut input).await?
+        else {
             renderer.update(client.session().views(), &authority);
             continue;
         };

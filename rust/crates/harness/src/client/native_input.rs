@@ -19,10 +19,13 @@ pub fn stdin_jsonl() -> BoxStream<'static, Result<String>> {
 pub async fn next_tui_event<S: super::ClientStateStore>(
     client: &mut super::HarnessClient<S>,
     input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
+    completions: &mut crate::tui_files::CompletionFiles,
+    prompt: &mut crate::tui::PromptInput,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     let delivery = tokio::select! {
         event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         delivery = client.read_delivery() => delivery?,
+        change = completions.next(prompt) => { change?; return Ok(None); },
     };
     let delivery = delivery.ok_or_else(|| {
         Error::Conflict("live replay ended; reconnect from the committed cursor".into())

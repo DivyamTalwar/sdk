@@ -409,3 +409,45 @@ proptest::proptest! {
         }
     }
 }
+
+#[tokio::test]
+async fn completion_popup_follows_real_task_volume_publications() {
+    use acyclic_harness::{
+        task_volume::{FileKey, Query, TaskVolume, Write},
+        tui::{Editor, Screen},
+        tui_files::CompletionFiles,
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    let volume = TaskVolume::open(
+        std::sync::Arc::new(MemoryStream::default()),
+        StreamPath::new("composer").unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut input = PromptInput::new(Editor::new("@新"));
+    let mut files = CompletionFiles::observe(&volume, &mut input, None, 8)
+        .await
+        .unwrap();
+    assert!(!input.completion.active(&input.editor));
+    let cut = volume.snapshot(&Query::Inputs, 8).await.unwrap().generation;
+    volume
+        .append(
+            cut,
+            &Write::new(
+                FileKey::parse("workspace/新しい.rs").unwrap(),
+                b"source".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+    files.next(&mut input).await.unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
+        })
+        .unwrap();
+    assert!(screen_text(&terminal).contains("新しい.rs"));
+    assert!(input.completion.accept(&mut input.editor, 1));
+    assert_eq!(input.editor.text(), "@新しい.rs ");
+}

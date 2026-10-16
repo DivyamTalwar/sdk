@@ -99,7 +99,7 @@ pub use local::{connect_local, local_prompt};
     feature = "tui",
     not(target_arch = "wasm32")
 ))]
-pub use local::{local_draft, local_input};
+pub use local::{local_completions, local_draft, local_input};
 #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
 mod native_input;
 #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]

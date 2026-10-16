@@ -22,4 +22,5 @@ tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-stream = { path = "../../../../stream", default-features = false }
 proptest.workspace = true

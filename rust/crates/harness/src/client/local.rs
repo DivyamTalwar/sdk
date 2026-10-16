@@ -62,3 +62,13 @@ pub async fn local_draft(_local: &LocalHarness, _input: &crate::tui::PromptInput
         "TODO #495: prompt draft/history volume binding".into(),
     ))
 }
+
+/// Follow the local host's ordinary command/workspace files into the prompt.
+#[cfg(feature = "tui")]
+pub async fn local_completions(
+    local: &LocalHarness,
+    input: &mut crate::tui::PromptInput,
+) -> Result<crate::tui_files::CompletionFiles> {
+    // TODO(#495): take this resident query bound from the followed client settings.
+    crate::tui_files::CompletionFiles::observe(local.task_files(), input, None, 4096).await
+}
