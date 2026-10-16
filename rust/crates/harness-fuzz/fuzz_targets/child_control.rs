@@ -1,6 +1,39 @@
 #![no_main]
 use acyclic_harness::task_volume::{ChildRequest, ChildStatus, Control, FileKey, FileValue, Query};
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        use acyclic_harness::workflow::{MachineStatus, ResumableMachine};
+        let machine = acyclic_harness::filesystem::ChildAgentMachine::new();
+        let initial = value.get("initial").unwrap_or(&value);
+        if let Ok(state) = machine.initialize(initial) {
+            let encoded = serde_json::to_vec(initial).unwrap();
+            assert_eq!(
+                machine
+                    .initialize(&serde_json::from_slice(&encoded).unwrap())
+                    .unwrap(),
+                state
+            );
+            let waiting = machine
+                .transition(&state, &serde_json::Value::Null)
+                .unwrap();
+            assert_eq!(waiting.status, MachineStatus::Suspended);
+            if let Some(input) = value.get("input")
+                && let Ok(active) = machine.transition(&waiting.state, input)
+            {
+                assert_eq!(active.status, MachineStatus::Suspended);
+                if let Some(result) = value.get("model_result")
+                    && let Ok(next) = machine.transition(&active.state, result)
+                {
+                    assert_eq!(next.status, MachineStatus::Suspended);
+                    let encoded = serde_json::to_vec(&next.state).unwrap();
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+                        next.state
+                    );
+                }
+            }
+        }
+    }
     let record = acyclic_stream::Record {
         sequence: 1,
         value: bytes.to_vec().into(),

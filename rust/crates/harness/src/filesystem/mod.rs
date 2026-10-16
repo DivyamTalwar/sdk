@@ -630,6 +630,8 @@ mod tests;
 
 mod stock_turn;
 pub use stock_turn::StockTurnMachine;
+mod child_agent;
+pub use child_agent::ChildAgentMachine;
 
 use crate::executor::{stock_boundary, stock_string_copy};
 

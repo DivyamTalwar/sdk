@@ -31,7 +31,9 @@ pub(super) async fn open(
 )> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
+    let child = Arc::new(crate::filesystem::ChildAgentMachine::new());
     let definition = stock.definition()?;
+    let child_definition = child.definition()?;
     let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
     let mut grants = vec![
         "model:generate".to_owned(),
@@ -46,6 +48,11 @@ pub(super) async fn open(
         "mail:send".to_owned(),
         "fork:publish".to_owned(),
         "project:merge".to_owned(),
+        format!(
+            "task:spawn:{}@{}",
+            child_definition.identity().name,
+            child_definition.identity().version
+        ),
         format!(
             "task:spawn:{}@{}",
             definition.identity().name,
@@ -114,9 +121,11 @@ pub(super) async fn open(
     )?);
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
+    tasks.register(child_definition)?;
     tasks.register(fork)?;
     let mut machines = MachineRegistry::default();
     machines.register(stock, &mut None)?;
+    machines.register(child, &mut None)?;
     machines.register(preparation, &mut None)?;
     let runtime = LocalTaskRuntime::open(
         config.stream,

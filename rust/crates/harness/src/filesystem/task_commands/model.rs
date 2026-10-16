@@ -26,7 +26,8 @@ where
         let task = admission.task_id();
         let context = Arc::clone(context);
         let turn = workflow.operation_id;
-        let stock = admission.task.name == "acyclic.stock_turn";
+        let stock = admission.task.name == "acyclic.stock_turn"
+            || super::super::child_agent::is_child(admission);
         let mut command: ModelTaskCommand = mail::decode_command(payload, io)?;
         let binding = self.model.as_ref().ok_or_else(|| {
             boundary(
