@@ -98,3 +98,131 @@ async fn discovery_wakes_for_another_database_opener() {
     written.expect("append");
     assert_eq!(received.as_str(), "remote");
 }
+
+#[wasm_bindgen_test]
+async fn follow_pushes_every_record_after_its_initial_snapshot() {
+    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
+        .await
+        .expect("open");
+    append(&provider, "events").await.expect("seed");
+    let mut records = provider
+        .follow(StreamPath::new("events").expect("path"), 1)
+        .await
+        .expect("follow");
+    let receive = async {
+        for sequence in 1..=3 {
+            let record = records.next().await.expect("follow ended").expect("record");
+            assert_eq!(record.sequence, sequence);
+            assert_eq!(record.value.as_ref(), b"delta");
+        }
+    };
+    let write = provider.append(AppendRequest {
+        path: StreamPath::new("events").expect("path"),
+        records: vec![OwnedBytes::from_static(b"delta"); 3],
+        if_tail: Some(1),
+        idempotency_key: None,
+    });
+    let ((), written) = futures::join!(receive, write);
+    assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
+}
+
+#[wasm_bindgen_test]
+async fn follow_wakes_for_another_database_opener() {
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("writer");
+    append(&writer, "events").await.expect("seed");
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reader");
+    let mut records = reader
+        .follow(StreamPath::new("events").expect("path"), 1)
+        .await
+        .expect("follow");
+    let (record, written) = futures::join!(records.next(), append(&writer, "events"));
+    assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
+    assert_eq!(record.expect("ended").expect("record").sequence, 1);
+}
+
+#[wasm_bindgen_test]
+async fn follow_recovers_its_cache_without_exposing_rejected_records() {
+    let provider = BrowserStream::open(
+        &name(),
+        BrowserStreamLimits {
+            commands: 2,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("open");
+    append(&provider, "events").await.expect("seed");
+    let mut records = provider
+        .follow(StreamPath::new("events").expect("path"), 1)
+        .await
+        .expect("follow");
+    assert_eq!(
+        provider
+            .fork(ForkRequest {
+                source: StreamPath::new("missing").expect("path"),
+                destination: StreamPath::new("rejected").expect("path"),
+                at_tail: None,
+                idempotency_key: None,
+            })
+            .await,
+        Err(StreamError::NotFound)
+    );
+    let (record, written) = futures::join!(records.next(), append(&provider, "events"));
+    assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
+    assert_eq!(record.expect("ended").expect("record").sequence, 1);
+    assert_eq!(
+        append(&provider, "events").await,
+        Err(StreamError::Capacity)
+    );
+    let pending = Box::pin(records.next());
+    let refreshed = Box::pin(provider.tail(StreamPath::new("events").expect("path")));
+    match futures::future::select(pending, refreshed).await {
+        futures::future::Either::Left(_) => panic!("rejected record was published"),
+        futures::future::Either::Right((tail, mut pending)) => {
+            assert_eq!(tail, Ok(2));
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn browser_append_follow_latency() {
+    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
+        .await
+        .expect("open");
+    append(&provider, "latency").await.expect("seed");
+    let mut records = provider
+        .follow(StreamPath::new("latency").expect("path"), 1)
+        .await
+        .expect("follow");
+    let performance = web_sys::window()
+        .expect("window")
+        .performance()
+        .expect("performance");
+    let mut measured = Vec::new();
+    for sequence in 1..=40 {
+        let started = performance.now();
+        let receive = async {
+            let record = records.next().await.expect("ended").expect("record");
+            assert_eq!(record.sequence, sequence);
+            assert_eq!(record.value.as_ref(), b"value");
+            performance.now() - started
+        };
+        let (elapsed, written) = futures::join!(receive, append(&provider, "latency"));
+        assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
+        if sequence > 8 {
+            measured.push(elapsed);
+        }
+    }
+    measured.sort_by(f64::total_cmp);
+    console_log!(
+        "browser_append_follow samples=32 p50_ms={} p99_ms={}",
+        measured[15],
+        measured[31]
+    );
+}

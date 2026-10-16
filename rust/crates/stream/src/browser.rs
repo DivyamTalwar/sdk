@@ -408,39 +408,22 @@ impl StreamProvider for BrowserStream {
         if from > self.tail(path.clone()).await? {
             return Err(StreamError::OutOfRange);
         }
-        // Durable polling is the wakeup transport. It observes publication even
+        let changed = self.inner.publications.changed.subscribe()?;
         Ok(stream::try_unfold(
-            (self.clone(), path, memory::HistoryCursor::at(from)),
-            |(provider, path, mut cursor)| async move {
-                loop {
-                    let record = provider
-                        .with_provider(async |memory| {
-                            memory.next_follow_record(&path, &mut cursor).await
-                        })
-                        .await?;
-                    if let Some(record) = record {
-                        return Ok(Some((record, (provider, path, cursor))));
-                    }
-                    poll_delay().await?;
-                }
+            (self.clone(), path, memory::HistoryCursor::at(from), changed),
+            |(provider, path, mut cursor, mut changed)| async move {
+                let record = changed
+                    .next(async || {
+                        provider
+                            .with_provider(async |memory| {
+                                memory.next_follow_record(&path, &mut cursor).await
+                            })
+                            .await
+                    })
+                    .await?;
+                Ok(Some((record, (provider, path, cursor, changed))))
             },
         )
         .boxed_local())
     }
-}
-
-async fn poll_delay() -> Result<(), StreamError> {
-    let timer = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("setTimeout"))
-        .map_err(backend)?
-        .dyn_into::<js_sys::Function>()
-        .map_err(backend)?;
-    let promise = js_sys::Promise::new(&mut |resolve, reject| {
-        if let Err(error) = timer.call2(&JsValue::UNDEFINED, &resolve, &JsValue::from_f64(100.0)) {
-            let _ = reject.call1(&JsValue::UNDEFINED, &error);
-        }
-    });
-    wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(backend)?;
-    Ok(())
 }

@@ -69,6 +69,9 @@ rustls-platform-verifier = { workspace = true, optional = true }
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
+[target.'cfg(acyclic_stream_loom)'.dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
+
 [dev-dependencies]
 proptest.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
@@ -87,6 +90,7 @@ tracing-subscriber.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
 getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+web-sys = { workspace = true, features = ["Performance"] }
 
 [lints]
 workspace = true

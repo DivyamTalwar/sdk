@@ -1,0 +1,20 @@
+[package]
+name = "acyclic-stream-publication-models"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+loom = "0.7.2"
+thiserror = "2.0"
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[[test]]
+name = "publication"
+path = "publication.rs"
+
+[workspace]
+members = ["."]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_stream_loom)'] }

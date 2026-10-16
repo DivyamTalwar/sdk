@@ -1,5 +1,42 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+    #[test]
+    fn child_index_matches_creation_order_across_snapshot_and_follow(
+        writes in proptest::collection::vec((0_u8..16, proptest::prelude::any::<bool>()), 0..64),
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
+            let provider = MemoryStream::default();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut expected = Vec::new();
+            let split = writes.len() / 2;
+            for &(id, nested) in &writes[..split] {
+                let child = format!("agents/{id}");
+                let path = if nested { format!("{child}/leaf") } else { child.clone() };
+                append(&provider, &path).await.expect("append");
+                if seen.insert(child.clone()) { expected.push(child); }
+            }
+            let mut children = provider.children(ChildrenRequest {
+                parent: Some(StreamPath::new("agents").expect("parent")), limit: 1,
+            }).await.expect("children");
+            for path in expected {
+                assert_eq!(children.next().await.expect("ended").expect("child").path.as_str(), path);
+            }
+            for &(id, nested) in &writes[split..] {
+                let child = format!("agents/{id}");
+                let path = if nested { format!("{child}/leaf") } else { child.clone() };
+                append(&provider, &path).await.expect("append");
+                if seen.insert(child.clone()) {
+                    assert_eq!(children.next().await.expect("ended").expect("child").path.as_str(), child);
+                } else { assert!(futures::poll!(children.next()).is_pending()); }
+            }
+            assert!(futures::poll!(children.next()).is_pending());
+        });
+    }
+}
+
 #[tokio::test]
 async fn children_replays_every_page_then_pushes_new_paths_once() -> Result<(), StreamError> {
     let provider = MemoryStream::default();
