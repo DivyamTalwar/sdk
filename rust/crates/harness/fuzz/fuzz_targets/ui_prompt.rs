@@ -1,6 +1,6 @@
 #![no_main]
 use acyclic_harness::{
-    client::{CommandSession, PromptFiles, restore_tui_prompt},
+    client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt},
     task_volume::{FileKey, Query, TaskVolume, Write},
     tui::{ClientRenderer, Editor, InputKeymap, PromptInput},
 };
@@ -91,6 +91,25 @@ fuzz_target!(|data: &[u8]| {
                 assert!(projected.history().entries().is_empty());
                 assert_eq!(projected.keymap, InputKeymap::default());
                 return;
+            }
+            files
+                .write_state(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    &serde_json::json!({"open_view":"shortcuts"}),
+                )
+                .await
+                .unwrap();
+            if expected_keymap.is_some() && notifications.is_none() {
+                let help = renderer.screen_for(&files).unwrap();
+                assert!(!help.overlay.is_empty());
+                for row in help.overlay {
+                    assert!(
+                        row.spans
+                            .iter()
+                            .all(|span| !span.content.chars().any(char::is_control))
+                    );
+                }
             }
             refreshed.unwrap();
             assert_eq!(projected.editor.text(), input.editor.text());

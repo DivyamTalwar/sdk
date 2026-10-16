@@ -27,13 +27,16 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
             let object = layout
                 .as_object_mut()
                 .ok_or_else(|| Error::Invalid("layout must be an object".into()))?;
-            if object.remove("open_view").is_some() {
-                object.remove("view_request");
-                files
-                    .write_state(CommandFileRoot::Session, "layout.json", &layout)
-                    .await?;
+            if object.remove("open_view").is_none() {
+                // TODO(#495): route the remaining empty-input escape ladder to the owner.
+                return Err(Error::Unsupported(
+                    "This action is unavailable in this session".into(),
+                ));
             }
-            // TODO(#495): route the remaining empty-input escape ladder to the owner.
+            object.remove("view_request");
+            files
+                .write_state(CommandFileRoot::Session, "layout.json", &layout)
+                .await?;
         }
         InputEffect::Quit => {
             files
