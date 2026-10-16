@@ -5,6 +5,8 @@ impl LocalStream {
         maximum: usize,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
+        #[cfg(feature = "test-support")]
+        describe_commit(&request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {

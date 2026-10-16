@@ -6,14 +6,14 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
-tokio::task_local! { static CURRENT: Context; }
+tokio::task_local! { static CURRENT: Option<Context>; }
 
 /// A submitted operation paused before execution or acknowledgement.
 pub struct Boundary {
     /// Stable phase, independent of executor poll counts.
     pub name: &'static str,
     /// Owning operation, including its stream's tracing span.
-    pub detail: String,
+    pub detail: Arc<str>,
     release: Option<oneshot::Sender<()>>,
 }
 
@@ -28,6 +28,7 @@ impl Boundary {
 struct State {
     cancelled: bool,
     trace: Vec<String>,
+    ready_reads: usize,
 }
 
 struct Inner {
@@ -47,7 +48,8 @@ pub struct Schedule(Arc<Inner>);
 pub(crate) struct Context {
     schedule: Schedule,
     owned: bool,
-    detail: Arc<Mutex<String>>,
+    // Never nested with the schedule-state lock; cloned before sends/callbacks.
+    detail: Arc<Mutex<Arc<str>>>,
 }
 
 pub(crate) struct Active(pub(crate) Context);
@@ -78,11 +80,11 @@ impl Schedule {
     pub async fn scope<F: Future>(&self, future: F) -> F::Output {
         CURRENT
             .scope(
-                Context {
+                Some(Context {
                     schedule: self.clone(),
                     owned: false,
-                    detail: Arc::new(Mutex::new(String::new())),
-                },
+                    detail: Arc::new(Mutex::new(Arc::from(""))),
+                }),
                 future,
             )
             .await
@@ -106,6 +108,11 @@ impl Schedule {
         }
     }
 
+    /// Counts the actual ready read calls, without inventing suspension points.
+    pub fn ready_reads(&self) -> usize {
+        self.0.state.lock().unwrap().ready_reads
+    }
+
     /// Original submissions and their completion trace, including cancellation.
     pub fn trace(&self) -> Vec<String> {
         self.0.state.lock().unwrap().trace.clone()
@@ -114,7 +121,7 @@ impl Schedule {
 
 impl Context {
     pub(crate) fn current() -> Option<Self> {
-        CURRENT.try_with(Clone::clone).ok()
+        CURRENT.try_with(Clone::clone).ok().flatten()
     }
 
     pub(crate) fn accept(&self, kind: &'static str) -> Active {
@@ -139,34 +146,19 @@ impl Context {
 
     async fn pause(&self, name: &'static str) {
         let (release, waiting) = oneshot::channel();
+        let detail = self.detail.lock().unwrap().clone();
         self.schedule
             .0
             .events
             .send(Boundary {
                 name,
-                detail: self.detail.lock().unwrap().clone(),
+                detail,
                 release: Some(release),
             })
             .unwrap();
         waiting
             .await
             .expect("driver dropped an accepted operation's barrier");
-    }
-
-    pub(crate) fn blocking(&self, name: &'static str) {
-        let (release, waiting) = oneshot::channel();
-        self.schedule
-            .0
-            .events
-            .send(Boundary {
-                name,
-                detail: self.detail.lock().unwrap().clone(),
-                release: Some(release),
-            })
-            .unwrap();
-        waiting
-            .blocking_recv()
-            .expect("driver dropped an accepted native I/O barrier");
     }
 }
 
@@ -180,7 +172,8 @@ pub async fn boundary(name: &'static str) {
 /// Names the original storage operation without exposing its payload.
 pub fn describe(detail: impl FnOnce() -> String) {
     if let Some(context) = Context::current() {
-        *context.detail.lock().unwrap() = detail();
+        let detail = detail();
+        *context.detail.lock().unwrap() = detail.into();
     }
 }
 
@@ -195,7 +188,7 @@ where
     };
     let active = context.accept("task");
     let owned = active.0.clone();
-    tokio::spawn(CURRENT.scope(owned.clone(), async move {
+    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
         let _active = active;
         owned.pause("task:submitted").await;
         let result = future.await;
@@ -214,11 +207,63 @@ where
         return tokio::task::spawn_blocking(work);
     };
     let active = context.accept("blocking");
-    tokio::task::spawn_blocking(move || {
+    let owned = active.0.clone();
+    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
         let _active = active;
-        context.blocking("blocking:submitted");
-        let result = work();
-        context.blocking("blocking:completed");
+        owned.pause("blocking:submitted").await;
+        let result = CURRENT.sync_scope(None, || {
+            let _inline = crate::InlineBlocking::enter();
+            work()
+        });
+        owned.pause("blocking:completed").await;
         result
-    })
+    }))
+}
+
+pub(crate) fn submit(job: crate::NativeJob) -> oneshot::Receiver<()> {
+    let context = Context::current().expect("explicit test scope");
+    let active = context.accept("native");
+    let owned = active.0.clone();
+    let terminal = job.test_terminal();
+    let (done, waiting) = oneshot::channel();
+    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
+        let _active = active;
+        owned.pause("native:submitted").await;
+        CURRENT.sync_scope(None, || {
+            let _inline = crate::InlineBlocking::enter();
+            if let Some(waker) = job.run() {
+                waker.wake();
+            }
+        });
+        std::future::poll_fn(|cx| terminal.test_poll_completion(cx.waker())).await;
+        owned.pause("native:completed").await;
+        let _ = done.send(());
+    }));
+    waiting
+}
+
+/// Observes actual blocking reads; an immediately ready read is one atomic poll.
+pub async fn observe_read<F: Future>(read: F) -> F::Output {
+    let Some(context) = Context::current() else {
+        return read.await;
+    };
+    let mut read = std::pin::pin!(read);
+    let first = std::future::poll_fn(|cx| std::task::Poll::Ready(read.as_mut().poll(cx))).await;
+    match first {
+        std::task::Poll::Ready(output) => {
+            context.schedule.0.state.lock().unwrap().ready_reads += 1;
+            output
+        }
+        std::task::Poll::Pending => {
+            context.pause("stream:read:blocked").await;
+            let output = read.await;
+            context.pause("stream:read:completed").await;
+            output
+        }
+    }
+}
+
+/// Runs the deliberately uninstrumented variant used by negative controls.
+pub async fn untracked<F: Future>(future: F) -> F::Output {
+    CURRENT.scope(None, future).await
 }

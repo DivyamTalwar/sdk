@@ -22,8 +22,6 @@ pub(crate) enum NativeJob {
         health: Option<Arc<FileHealth>>,
     },
     Task {
-        #[cfg(feature = "test-support")]
-        test_active: Option<crate::testing::Active>,
         operation: Box<dyn FnOnce() + Send>,
         meter: Option<Arc<dyn NativeReadMeter>>,
         terminal: Arc<dyn TaskTerminal>,
@@ -34,6 +32,15 @@ pub(crate) enum NativeJob {
 }
 
 impl NativeJob {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_terminal(&self) -> Arc<dyn TaskTerminal> {
+        match self {
+            Self::Read { state, .. } => state.clone(),
+            Self::Write { state, .. } => state.clone(),
+            Self::Task { terminal, .. } => terminal.clone(),
+        }
+    }
+
     pub(crate) fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
             Self::Task { meter, .. } => meter.as_ref(),
@@ -141,18 +148,12 @@ impl NativeJob {
             }),
             Self::Task {
                 operation,
-                #[cfg(feature = "test-support")]
-                test_active,
                 meter,
                 terminal,
                 _allocation,
                 health,
                 completion,
             } => {
-                #[cfg(feature = "test-support")]
-                if let Some(active) = &test_active {
-                    active.0.blocking("native:submitted");
-                }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
                 drop((_allocation, meter, health));
                 if let Err(panic) = result {
@@ -160,10 +161,6 @@ impl NativeJob {
                 }
                 if let Some(completion) = completion {
                     completion.complete();
-                }
-                #[cfg(feature = "test-support")]
-                if let Some(active) = &test_active {
-                    active.0.blocking("native:completed");
                 }
                 terminal.publish()
             }

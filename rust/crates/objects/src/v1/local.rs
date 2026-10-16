@@ -253,6 +253,8 @@ impl ObjectsProvider for LocalObjects {
         query: wire::PutObjectHeader,
         body: OwnedBytes,
     ) -> Result<wire::ObjectInfo, Error> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| format!("objects put {}", query.object_key));
         self.mutate(move |core| block_on(core.put(query, body)))
             .await
     }
@@ -262,6 +264,10 @@ impl ObjectsProvider for LocalObjects {
         input: ObjectsNativeRequest<(wire::PutObjectHeader, OwnedBytes)>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("objects put {}", input.data().0.object_key)
+        });
         super::native_input_meter(&meter, &input)?;
         super::native_future(&Arc::clone(&meter), async move {
             let input = input;
@@ -277,6 +283,8 @@ impl ObjectsProvider for LocalObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| format!("objects get {}", query.object_key));
         // The detached read retains the store root until physical completion.
         let core = self.core.clone();
         let body_io = self.body_io.clone();
@@ -294,6 +302,10 @@ impl ObjectsProvider for LocalObjects {
         maximum_bytes: u64,
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("objects get {}", input.data().object_key)
+        });
         super::native_input_meter(&meter, &input)?;
         super::native_future(&Arc::clone(&meter), async move {
             let input = input;

@@ -16,11 +16,14 @@ mod schedule;
 use model::{Effect, ModelEffects};
 use schedule::{Exit, Schedule, check_cut, drive};
 mod coverage;
+mod read_contention;
+mod seed;
+use seed::Seed;
 
 type Harness = LocalHarness;
 const PROMPT: &str = "recover the original run input";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scenario {
     Text,
     EffectAndContinuation,
@@ -46,7 +49,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new(scenario: Scenario) -> Result<Self> {
+    async fn new(scenario: Scenario, seed: Option<&Seed>) -> Result<Self> {
         let (schedule, events) = Schedule::new();
         let directory = if cfg!(target_os = "linux") {
             tempfile::tempdir_in("/dev/shm")
@@ -54,12 +57,8 @@ impl Fixture {
             tempfile::tempdir()
         }
         .map_err(storage)?;
-        let fs = Fs::local(LocalOptions::new(directory.path().join("filesystem")))
-            .await
-            .map_err(storage)?;
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let files = FilesystemHost::new(fs, &reference, None)?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = |name| {
             VolumeRef::new(
@@ -76,8 +75,15 @@ impl Fixture {
             volume("journal".into())?,
             volume("tasks".into())?,
         ];
-        for volume in &volumes {
-            files.create_volume(volume).await?;
+        let root = directory.path().join("filesystem");
+        if let Some(seed) = seed {
+            seed.restore(&root)?;
+        } else {
+            let fs = Fs::local(LocalOptions::new(root)).await.map_err(storage)?;
+            let files = FilesystemHost::new(fs, &reference, None)?;
+            for volume in &volumes {
+                files.create_volume(volume).await?;
+            }
         }
         let turns = match scenario {
             Scenario::Text => vec![ScriptedTurn::Text("done".into())],
@@ -153,12 +159,18 @@ impl Fixture {
         }
         let (runtime, signed) = runtime::open(runtime::Configuration {
             files: files.clone(),
+            #[cfg(feature = "native-execution")]
+            workspace: None,
             stream: stream.clone(),
             task_volume: &self.volumes[3],
             issuer: &self.issuer,
             verifier: &verifier,
             agent: AgentId::from_bytes([1; 16]),
-            project: &self.volumes[0],
+            project: if matches!(self.scenario, Scenario::EffectAndContinuation) {
+                &self.volumes[1]
+            } else {
+                &self.volumes[0]
+            },
             scratch: &self.volumes[1],
             journal: &self.volumes[2],
             tools: &tools,
@@ -176,14 +188,6 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
-        // The continuation's ordinary GOAL.md path must be reachable through
-        // its selected writer. This scenario selects the private goal volume.
-        let runtime = match self.scenario {
-            Scenario::EffectAndContinuation => {
-                runtime.with_output_volume(&self.volumes[1], None)?
-            }
-            Scenario::Text => runtime,
-        };
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
                 stream.clone(),
@@ -197,7 +201,7 @@ impl Fixture {
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
-            runtime: Arc::new(runtime),
+            runtime,
             project: self.volumes[0].clone(),
             scratch: self.volumes[1].clone(),
             journal: self.volumes[2].clone(),
@@ -270,14 +274,18 @@ impl Fixture {
 struct Coverage {
     points: Vec<&'static str>,
     unadmitted: bool,
+    ready_reads: usize,
+    admission_submission: Option<usize>,
+    admission_committed: bool,
 }
 
 async fn case(
     scenario: Scenario,
     cut: Option<usize>,
     baseline: &[&'static str],
+    seed: Option<&Seed>,
 ) -> Result<Coverage> {
-    let fixture = Fixture::new(scenario).await?;
+    let fixture = Fixture::new(scenario, seed).await?;
     let result: Result<Coverage> = Box::pin(async {
         let harness = fixture.open().await?;
         fixture.initialize(&harness).await?;
@@ -341,6 +349,7 @@ async fn case(
                 assert!(reopened.head_is_terminal(Some(current)).await?);
             }
         }
+        let admission_committed = current.is_some() && !unadmitted;
         let (root, output) = if let Some(current) = current {
             let root = crate::runtime::task_id_for_admission(current.root);
             (root, reopened.resume(root).await?)
@@ -363,26 +372,32 @@ async fn case(
         let reopened = fixture.open().await?;
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
-        Ok(Coverage { points, unadmitted })
+        Ok(Coverage {
+            points,
+            unadmitted,
+            ready_reads: schedule.ready_reads(),
+            admission_submission: schedule.admission_submission(),
+            admission_committed,
+        })
     })
     .await;
     result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())))
 }
 
 fn sweep(scenarios: &[Scenario]) -> Result<()> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(storage)?;
+    let seed = runtime.block_on(Seed::new())?;
     let mut schedules = Vec::new();
     for &scenario in scenarios {
-        let baseline = runtime
-            .block_on(Box::pin(case(scenario, None, &[])))?
-            .points;
-        coverage::check_boundaries(scenario, &baseline)?;
+        let observed = runtime.block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?;
+        let baseline = observed.points;
+        coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
         assert!(!baseline.is_empty());
         eprintln!(
             "{scenario:?}: {} deterministic cancellation points",
@@ -398,9 +413,16 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         })
         .collect();
     for (scenario, baseline) in &schedules {
-        coverage::check_cuts(*scenario, baseline.len(), 1..=baseline.len())?;
+        coverage::check_cuts(
+            *scenario,
+            baseline.len(),
+            cuts.iter()
+                .filter(|(candidate, _, _)| candidate == scenario)
+                .map(|(_, _, cut)| *cut),
+        )?;
     }
     let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
     let completed = AtomicUsize::new(0);
     let unadmitted = AtomicUsize::new(0);
     std::thread::scope(|scope| {
@@ -415,17 +437,23 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                         .build()
                         .map_err(storage)?;
                     loop {
+                        if failed.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&(scenario, baseline, cut)) = cuts.get(index) else {
                             return Ok(());
                         };
                         let coverage = runtime
-                            .block_on(Box::pin(case(scenario, Some(cut), baseline)))
+                            .block_on(Box::pin(case(scenario, Some(cut), baseline, Some(&seed))))
                             .map_err(|error| {
-                                Error::Storage(format!(
+                                let error = Error::Storage(format!(
                                     "{scenario:?} cut {cut}/{}: {error:?}",
                                     baseline.len()
-                                ))
+                                ));
+                                eprintln!("{error:?}");
+                                failed.store(true, Ordering::Relaxed);
+                                error
                             })?;
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
@@ -455,4 +483,40 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
 #[test]
 fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
     sweep(&[Scenario::Text, Scenario::EffectAndContinuation])
+}
+
+#[test]
+fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    let observed = runtime.block_on(case(Scenario::Text, None, &[], None))?;
+    let baseline = observed.points;
+    coverage::check_boundaries(Scenario::Text, &baseline, observed.ready_reads)?;
+    let cut: usize = serde_json::from_slice(
+        &std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/local/admission/poll_sweep/coverage/admission_cut.json"),
+        )
+        .map_err(storage)?,
+    )
+    .map_err(storage)?;
+    assert_eq!(
+        observed.admission_submission,
+        Some(cut),
+        "named admission submission moved"
+    );
+    assert_eq!(
+        baseline[cut - 1],
+        "task:submitted",
+        "named admission cut moved"
+    );
+    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, None))?;
+    assert_eq!(recovered.points.len(), cut);
+    assert!(
+        recovered.admission_committed,
+        "submitted admission did not commit while draining"
+    );
+    Ok(())
 }

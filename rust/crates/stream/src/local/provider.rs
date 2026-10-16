@@ -283,20 +283,7 @@ async fn commit(
     deadline: Option<u64>,
 ) -> Result<CommitOutcome, StreamError> {
     #[cfg(feature = "test-support")]
-    acyclic_native_runtime::testing::describe(|| {
-        format!(
-            "commit {:?}: {:?}",
-            request.idempotency_key,
-            request
-                .mutations
-                .iter()
-                .map(|mutation| match mutation {
-                    crate::CommitMutation::Append { path, .. } => path.as_str(),
-                    crate::CommitMutation::Fork { destination, .. } => destination.as_str(),
-                })
-                .collect::<Vec<_>>()
-        )
-    });
+    describe_commit(&request);
     let span = obs::OperationSpan::new(tracing::info_span!(
         "acyclic.stream.commit",
         items = request.mutations.len(),
@@ -318,4 +305,22 @@ async fn commit(
             .await
     })
     .await
+}
+
+#[cfg(feature = "test-support")]
+fn describe_commit(request: &CommitRequest) {
+    acyclic_native_runtime::testing::describe(|| {
+        format!(
+            "commit {:?}: {:?}",
+            request.idempotency_key,
+            request
+                .mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    crate::CommitMutation::Append { path, .. } => path.as_str(),
+                    crate::CommitMutation::Fork { destination, .. } => destination.as_str(),
+                })
+                .collect::<Vec<_>>()
+        )
+    });
 }

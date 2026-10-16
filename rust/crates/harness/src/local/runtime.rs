@@ -2,6 +2,8 @@ use super::*;
 
 pub(super) struct Configuration<'a> {
     pub files: Arc<LocalFilesystem>,
+    #[cfg(feature = "native-execution")]
+    pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
     pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
@@ -20,7 +22,7 @@ pub(super) struct Configuration<'a> {
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
-pub(super) async fn open(config: Configuration<'_>) -> Result<(LocalTaskRuntime, Scope)> {
+pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let definition = stock.definition()?;
@@ -99,7 +101,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(LocalTaskRuntime,
     let mut machines = MachineRegistry::default();
     machines.register(stock, &mut None)?;
     machines.register(preparation, &mut None)?;
-    let runtime = FilesystemTaskRuntime::open(
+    let runtime = LocalTaskRuntime::open(
         config.stream,
         config.files.clone(),
         config.journal,
@@ -112,7 +114,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(LocalTaskRuntime,
         config.session_limits,
         config.concurrency,
         config.limits.file_bytes,
-        config.clock,
+        config.clock.clone(),
         None,
         &[creation],
         &crate::durable_tool::ResumableToolRegistry::default(),
@@ -120,5 +122,25 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(LocalTaskRuntime,
     )
     .await?
     .with_output_volume(config.project, None)?;
-    Ok((runtime, signed))
+    #[cfg(feature = "native-execution")]
+    let runtime = match config.workspace {
+        Some(workspace) => {
+            let tools = Arc::new(
+                checkout_tools::CheckoutTools::new(workspace, config.project, config.clock).await?,
+            );
+            let publisher = checkout_tools::publisher::CheckoutPublisher::new(
+                tools.clone(),
+                config.files,
+                config.project,
+                config.verifier,
+                &signed,
+                config.limits.file_bytes,
+            );
+            runtime
+                .with_content_publisher(Arc::new(publisher))?
+                .with_workspace_tools(tools)?
+        }
+        None => runtime,
+    };
+    Ok((Arc::new(runtime), signed))
 }

@@ -369,34 +369,35 @@ impl LocalStream {
 
     /// Observes accepted publications without joining their durability wait.
     async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        #[cfg(feature = "test-support")]
-        acyclic_native_runtime::testing::boundary("stream:read:dispatch").await;
-        self.check_available()?;
-        let result = {
+        let read = async {
+            self.check_available()?;
             let _visibility = self.inner.visibility.read().await;
             self.check_available()?;
-            read.await
+            Ok(read.await)
         };
         #[cfg(feature = "test-support")]
-        acyclic_native_runtime::testing::boundary("stream:read:completed").await;
-        Ok(result)
+        return acyclic_native_runtime::testing::observe_read(read).await;
+        #[cfg(not(feature = "test-support"))]
+        read.await
     }
 
-    /// Runs one read under shared visibility, then returns its result once
+    /// Runs one read under shared visibility, then joins its durable watermark.
     async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        #[cfg(feature = "test-support")]
-        acyclic_native_runtime::testing::boundary("stream:read:dispatch").await;
-        self.check_available()?;
-        let (result, required) = {
-            let _visibility = self.inner.visibility.read().await;
+        let read = async {
             self.check_available()?;
-            let required = self.inner.required()?;
-            (read.await, required)
+            let (result, required) = {
+                let _visibility = self.inner.visibility.read().await;
+                self.check_available()?;
+                let required = self.inner.required()?;
+                (read.await, required)
+            };
+            self.await_durable(required).await?;
+            Ok(result)
         };
-        self.await_durable(required).await?;
         #[cfg(feature = "test-support")]
-        acyclic_native_runtime::testing::boundary("stream:read:completed").await;
-        Ok(result)
+        return acyclic_native_runtime::testing::observe_read(read).await;
+        #[cfg(not(feature = "test-support"))]
+        read.await
     }
 
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

@@ -223,6 +223,8 @@ impl LocalHarness {
             let verifier = issuer.verifier(&mut None)?;
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),
+                #[cfg(feature = "native-execution")]
+                workspace: workspace.as_ref().map(Arc::clone),
                 stream: stream.clone(),
                 task_volume: &task_volume,
                 issuer: &issuer,
@@ -238,37 +240,9 @@ impl LocalHarness {
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
                 concurrency: config.concurrency,
-                #[cfg(feature = "native-execution")]
-                clock: config.clock.clone(),
-                #[cfg(not(feature = "native-execution"))]
                 clock: config.clock,
             })
             .await?;
-            #[cfg(feature = "native-execution")]
-            let runtime = match workspace.as_ref() {
-                Some(workspace) => {
-                    let tools = Arc::new(
-                        checkout_tools::CheckoutTools::new(
-                            workspace.clone(),
-                            &owner.project,
-                            config.clock,
-                        )
-                        .await?,
-                    );
-                    let publisher = checkout_tools::publisher::CheckoutPublisher::new(
-                        tools.clone(),
-                        files.clone(),
-                        &owner.project,
-                        &verifier,
-                        &signed,
-                        config.limits.file_bytes,
-                    );
-                    runtime
-                        .with_content_publisher(Arc::new(publisher))?
-                        .with_workspace_tools(tools)?
-                }
-                None => runtime,
-            };
             let task_files = Arc::new(
                 crate::task_volume::TaskFiles::open(
                     stream,
@@ -282,7 +256,7 @@ impl LocalHarness {
             Ok(Self {
                 files,
                 task_files,
-                runtime: Arc::new(runtime),
+                runtime,
                 project: owner.project.clone(),
                 scratch,
                 journal,

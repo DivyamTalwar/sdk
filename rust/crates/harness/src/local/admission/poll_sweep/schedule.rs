@@ -12,8 +12,9 @@ struct State {
     active: usize,
     trace: Vec<String>,
     points: Vec<&'static str>,
-    publication: String,
+    publication: Arc<str>,
     cancelled_at: Option<String>,
+    admission_submission: Option<usize>,
 }
 
 pub(super) struct Schedule {
@@ -41,7 +42,7 @@ impl Schedule {
     }
     pub fn describe(&self, publication: impl FnOnce() -> String) {
         let publication = publication();
-        self.state.lock().unwrap().publication = publication.clone();
+        self.state.lock().unwrap().publication = publication.clone().into();
         acyclic_native_runtime::testing::describe(|| publication);
     }
     pub fn failure(&self) -> String {
@@ -49,7 +50,7 @@ impl Schedule {
         state
             .cancelled_at
             .clone()
-            .unwrap_or_else(|| state.publication.clone())
+            .unwrap_or_else(|| state.publication.to_string())
     }
     pub fn dispatch(self: &Arc<Self>, label: &'static str) -> Active {
         let mut state = self.state.lock().unwrap();
@@ -62,8 +63,11 @@ impl Schedule {
         Active(self.clone())
     }
     pub fn drained(&self) -> Vec<String> {
-        let state = self.state.lock().unwrap();
-        assert_eq!(state.active, 0, "external effects remain active");
+        assert_eq!(
+            self.state.lock().unwrap().active,
+            0,
+            "external effects remain active"
+        );
         let trace = self.io.trace();
         let cancel = trace.iter().position(|record| record == "CANCEL").unwrap();
         assert!(
@@ -76,6 +80,12 @@ impl Schedule {
     }
     pub fn recover(&self) {
         self.state.lock().unwrap().cancelled = false;
+    }
+    pub fn admission_submission(&self) -> Option<usize> {
+        self.state.lock().unwrap().admission_submission
+    }
+    pub fn ready_reads(&self) -> usize {
+        self.io.ready_reads()
     }
     pub fn points(&self) -> Vec<&'static str> {
         self.state.lock().unwrap().points.clone()
@@ -100,16 +110,23 @@ pub(super) async fn drive<F: Future>(
     schedule: &Schedule,
     events: &mut UnboundedReceiver<Boundary>,
 ) -> (Exit<F::Output>, usize) {
-    let mut future = Box::pin(schedule.io.scope(future));
+    let mut future = Box::pin(schedule.io.scope(tokio::task::unconstrained(future)));
     let mut hit = 0;
     loop {
         tokio::select! {
-            output = &mut future => return (Exit::Completed(output), hit),
+            output = &mut future => {
+                drop(future);
+                drain(schedule, events).await;
+                return (Exit::Completed(output), hit);
+            },
             event = events.recv() => {
                 let event = event.expect("provider lost its push driver");
                 hit += 1;
                 {
                     let mut state = schedule.state.lock().unwrap();
+                    if event.name == "task:submitted" && event.detail.contains("append harness/v3/coordinator/events ") {
+                        state.admission_submission.get_or_insert(hit);
+                    }
                     state.points.push(event.name);
                     state.publication = event.detail.clone();
                 }
@@ -124,16 +141,20 @@ pub(super) async fn drive<F: Future>(
                     // Cancel the caller first, then release and drain those owners.
                     drop(future);
                     event.release();
-                    loop {
-                        tokio::select! {
-                            _ = schedule.io.drained() => break,
-                            event = events.recv() => event.unwrap().release(),
-                        }
-                    }
+                    drain(schedule, events).await;
                     return (Exit::Cancelled, hit);
                 }
                 event.release();
             }
+        }
+    }
+}
+
+async fn drain(schedule: &Schedule, events: &mut UnboundedReceiver<Boundary>) {
+    loop {
+        tokio::select! {
+            _ = schedule.io.drained() => break,
+            event = events.recv() => event.unwrap().release(),
         }
     }
 }
