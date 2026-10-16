@@ -231,6 +231,7 @@ impl super::ClientViews {
         maximum_bytes: usize,
     ) -> Result<()> {
         let view = FileQueryView::from_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
+        super::task_projection::project(self, &view);
         self.queries
             .insert((view.cursor.volume, view.cursor.query), view);
         Ok(())
@@ -238,9 +239,17 @@ impl super::ClientViews {
 
     /// Updates the same shared views consumed by terminal, headless and browser renderers.
     pub fn query_change(&mut self, change: Change) -> Result<bool> {
-        self.queries
-            .get_mut(&(change.cursor.volume, change.cursor.query))
+        let key = (change.cursor.volume, change.cursor.query);
+        let mut view = self
+            .queries
+            .get(&key)
             .ok_or_else(|| Error::Conflict("file query snapshot is missing".into()))?
-            .apply(change)
+            .clone();
+        let changed = view.apply(change)?;
+        if changed {
+            super::task_projection::project(self, &view);
+        }
+        self.queries.insert(key, view);
+        Ok(changed)
     }
 }

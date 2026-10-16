@@ -55,6 +55,10 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .map(OperationId::parse)
         .transpose()?
         .unwrap_or_else(OperationId::new);
+    if args.prompt.is_none() && args.input_format != InputFormat::Jsonl {
+        view::run(local, operation, args.inline).await?;
+        return Ok(0);
+    }
     let (mut connection, target) = client::connect_local(local.clone(), operation).await?;
     if let Some(prompt) = args.prompt {
         let command = client::local_prompt(&local, operation, &prompt).await?;
@@ -77,7 +81,6 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .await?
         .exit_code());
     }
-    view::run(local, connection, target, args.inline).await?;
     Ok(0)
 }
 

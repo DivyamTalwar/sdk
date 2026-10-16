@@ -43,3 +43,28 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
     client.publish_delivery(delivery, |_| Ok(())).await?;
     Ok(None)
 }
+
+/// Multiplex terminal input with authorized file publications.
+#[cfg(all(feature = "tui", feature = "filesystem-local"))]
+pub async fn next_file_tui_event(
+    client: &mut super::TaskFileClient,
+    input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
+    completions: &mut crate::tui_files::CompletionFiles,
+    prompt: &mut crate::tui::PromptInput,
+    commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
+) -> Result<Option<crate::tui::key_event::InputEvent>> {
+    tokio::select! {
+        event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
+        change = client.next_change() => { change?; Ok(None) },
+        update = documents.next() => {
+            client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
+            Ok(None)
+        },
+        change = commands.observe_change() => { change?; Ok(None) },
+        change = completions.read_change() => {
+            completions.apply_change(change?, prompt)?;
+            Ok(None)
+        },
+    }
+}

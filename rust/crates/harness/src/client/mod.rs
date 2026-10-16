@@ -27,8 +27,8 @@ pub use session::{
 mod transport;
 pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
 mod content;
-mod documents;
 mod document_files;
+mod documents;
 pub use document_files::document_files;
 pub use documents::DocumentViews;
 mod usage;
@@ -53,7 +53,10 @@ mod notifications;
 pub use notifications::*;
 mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
+mod task_files;
+pub use task_files::TaskFileClient;
 mod file_query;
+mod task_projection;
 pub use file_query::FileQueryView;
 #[cfg(feature = "tui")]
 mod plan_panel;
@@ -126,7 +129,9 @@ pub use native_input::stdin_jsonl;
 #[cfg(feature = "tui")]
 mod input_files;
 #[cfg(feature = "tui")]
-pub use input_files::{apply_tui_input, handle_tui_input, restore_tui_prompt, save_tui_draft};
+pub use input_files::{
+    apply_tui_input, file_tui_input, handle_tui_input, restore_tui_prompt, save_tui_draft,
+};
 #[cfg(feature = "tui")]
 mod prompt_files;
 #[cfg(feature = "tui")]
@@ -136,3 +141,11 @@ pub use prompt_files::PromptFiles;
 mod scroll_files;
 #[cfg(feature = "tui")]
 pub use scroll_files::{scroll_tui, tui_scroll};
+
+#[cfg(all(
+    feature = "terminal",
+    feature = "tui",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
+pub use native_input::next_file_tui_event;

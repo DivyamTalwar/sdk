@@ -128,3 +128,26 @@ pub async fn save_tui_draft<P: StreamProvider + ?Sized>(
     }
     Ok(())
 }
+
+/// Publish prompt actions and transcript offsets through their authorized files.
+pub async fn file_tui_input<P: StreamProvider + ?Sized>(
+    files: &mut CommandSession<P>,
+    reader: &dyn ContentResidencyVerifier,
+    effect: InputEffect,
+    page_rows: usize,
+    maximum_scroll: usize,
+) -> Result<()> {
+    if let InputEffect::Host(
+        action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
+    ) = effect
+    {
+        return super::scroll_tui(
+            files,
+            action == crate::tui::Action::TranscriptUp,
+            page_rows,
+            maximum_scroll,
+        )
+        .await;
+    }
+    handle_tui_input(files, reader, effect).await
+}

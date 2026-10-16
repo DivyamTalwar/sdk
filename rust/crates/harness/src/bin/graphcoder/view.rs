@@ -1,5 +1,5 @@
 use acyclic_harness::{
-    client::{self, FileClientState, HarnessClient},
+    OperationId, client,
     local::LocalHarness,
     tui::{
         self, PromptBox, PromptInput, Viewport,
@@ -7,19 +7,20 @@ use acyclic_harness::{
         ratatui::{Terminal, backend::CrosstermBackend},
         term::{Environment, ScreenMode, Tty},
     },
-    wire,
 };
 use futures::StreamExt;
 use std::{sync::Arc, time::Instant};
 
 pub async fn run(
     local: Arc<LocalHarness>,
-    mut client: HarnessClient<FileClientState>,
-    target: wire::ObserveRequest,
+    operation: OperationId,
     inline: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let authority = target.owner.ok_or("client target has no owner")?;
-    let mut commands = client::local_ui(&local, &target.operation_id, &authority).await?;
+    let authority = local.client_owner();
+    let mut client =
+        client::TaskFileClient::observe(local.task_files(), &authority, 4096, 65_536).await?;
+    let reader = local.client_reader()?;
+    let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let mut tty = Tty::open()?;
     tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
@@ -51,9 +52,8 @@ pub async fn run(
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
-    client.replay().await?;
     let mut documents = client::local_documents(&local, &authority).await?;
-    renderer.update(client.session().views(), &authority);
+    renderer.update(client.views(), &authority);
     loop {
         if commands.exit_requested()? {
             return Ok(());
@@ -65,7 +65,7 @@ pub async fn run(
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let back = client::tui_scroll(&commands)?;
         let mut maximum_scroll = 0;
-        renderer.configure(client.session().views(), &authority, &commands)?;
+        renderer.configure(client.views(), &authority, &commands)?;
         let size = terminal.size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;
@@ -74,7 +74,7 @@ pub async fn run(
             let scroll = maximum_scroll.saturating_sub(back);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
         })?;
-        let Some(event) = client::next_tui_event(
+        let Some(event) = client::next_file_tui_event(
             &mut client,
             &mut events,
             &mut completions,
@@ -84,7 +84,7 @@ pub async fn run(
         )
         .await?
         else {
-            renderer.update(client.session().views(), &authority);
+            renderer.update(client.views(), &authority);
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -95,14 +95,14 @@ pub async fn run(
             now,
         );
         for effect in effects {
-            client
-                .tui_input(
-                    &mut commands,
-                    effect,
-                    usize::from(areas.transcript.height),
-                    maximum_scroll,
-                )
-                .await?;
+            client::file_tui_input(
+                &mut commands,
+                reader.as_ref(),
+                effect,
+                usize::from(areas.transcript.height),
+                maximum_scroll,
+            )
+            .await?;
         }
         prompt_files.save(&mut commands, &mut input).await?;
     }
