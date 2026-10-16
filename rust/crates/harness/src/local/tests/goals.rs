@@ -246,7 +246,13 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
         ScriptedTurn::Text("root".into()),
         ScriptedTurn::Text("recovered".into()),
     ]);
-    let config = || volume_config(directory.path(), project.clone(), provider.clone());
+    let config = || -> Result<LocalHarnessConfig> {
+        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
+        config.goal_continuations = Some(GoalContinuationPolicy {
+            max_continuations: 1,
+        });
+        Ok(config)
+    };
     let harness = LocalHarness::open(config()?).await?;
     let root = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
@@ -264,7 +270,7 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
             "Continue the active goal in GOAL.md.\n\noriginal objective",
         )
         .await?;
-    write_goal(&harness, "---\nstatus: done\n---\nchanged objective").await?;
+    write_goal(&harness, "changed objective").await?;
     // Negative control: rebuilding from the edited file reproduces the old failure.
     assert!(matches!(
         harness
