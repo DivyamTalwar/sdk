@@ -22,6 +22,12 @@ pub fn fuzz_local_owner_input(bytes: &[u8]) {
 #[cfg(feature = "filesystem")]
 pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest) {
     crate::external_executor::fuzz_command(request);
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    crate::external_executor::fuzz_request_record(request);
 }
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,

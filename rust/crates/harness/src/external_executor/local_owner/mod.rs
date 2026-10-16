@@ -11,6 +11,7 @@ mod bootstrap;
 mod credential;
 mod provider;
 mod registry;
+mod request_feed;
 mod server;
 
 pub(super) use bootstrap::binding;
@@ -43,12 +44,16 @@ impl Address {
 
 #[cfg(feature = "test-support")]
 pub(crate) fn fuzz_input(bytes: &[u8]) {
+    request_feed::fuzz_bytes(bytes);
     let _ = Address::from_bytes(bytes);
     let _ = super::volume::decode::<PathBuf>(bytes);
     if let Ok(text) = std::str::from_utf8(bytes) {
         let _ = credential::verify(&[0; 32], text);
     }
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) use request_feed::fuzz_request;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;

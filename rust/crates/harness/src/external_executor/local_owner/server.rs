@@ -1,6 +1,6 @@
 //! The surviving local owner serves the SDK Streams API, never harness RPCs.
 use super::*;
-use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskVolume};
+use crate::task_volume::{Component, FileKey, FileValue, TaskFile, TaskVolume};
 use acyclic_stream::grpc::Service as StreamService;
 use fs2::FileExt as _;
 use futures::StreamExt as _;
@@ -238,46 +238,19 @@ pub(super) async fn drive(
     instance: uuid::Uuid,
 ) -> Result<()> {
     let (requests, _) = harness.external_volumes();
-    let mut observation = requests
-        .observe(Query::Root, None, acyclic_stream::MAX_ITEMS as usize)
-        .await
-        .map_err(storage)?;
-    let initial = futures::stream::iter(
-        observation
-            .snapshot
-            .take()
-            .map(|snapshot| snapshot.files)
-            .unwrap_or_default()
-            .into_iter()
-            .map(Ok),
-    );
-    let followed = observation.changes.filter_map(|change| async move {
-        match change {
-            Ok(change) => change.file.map(Ok),
-            Err(error) => Some(Err(error)),
-        }
-    });
-    let files = initial.chain(followed);
-    tokio::pin!(files);
+    let mut files =
+        request_feed::follow(harness.task_stream().as_ref(), requests.path().clone()).await?;
     let stopping = stopped(&stop, instance);
     tokio::pin!(stopping);
     loop {
-        let file = tokio::select! {
+        let request = tokio::select! {
             biased;
             result = &mut stopping => return result,
             file = files.next() => match file {
-                Some(file) => file.map_err(storage)?,
+                Some(request) => request?,
                 None => return Err(Error::Storage("local request follow ended".into())),
             }
         };
-        let FileKey::Task {
-            task,
-            file: TaskFile::Request(_),
-        } = &file.key
-        else {
-            continue;
-        };
-        let request = super::super::ExternalRequest::from_file(task, &file).map_err(storage)?;
         harness.external_request(&request).await?;
     }
 }

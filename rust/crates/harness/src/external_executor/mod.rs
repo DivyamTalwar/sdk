@@ -60,6 +60,13 @@ pub use intake::RequestConsumer;
 ))]
 pub(crate) use local_owner::fuzz_input as fuzz_local_owner_input;
 #[cfg(all(
+    feature = "test-support",
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use local_owner::fuzz_request as fuzz_request_record;
+#[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
     not(target_arch = "wasm32")
