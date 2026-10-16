@@ -2,9 +2,6 @@ use super::*;
 use crate::{WorkBudget, WorkCounters};
 use std::sync::Arc;
 
-#[path = "arc_layout.rs"]
-mod arc_layout;
-
 /// Original SDK demand context with its current cancellation and resource scope.
 #[derive(Clone)]
 pub struct NativeMaterializationWork {
@@ -47,7 +44,7 @@ impl NativeMaterializationWork {
     /// Complete Arc allocation retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
         const {
-            match arc_layout::allocation_bytes(std::alloc::Layout::new::<
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
                 crate::demand::NativeDemandReadMeter,
             >()) {
                 Ok(bytes) => bytes as u64,

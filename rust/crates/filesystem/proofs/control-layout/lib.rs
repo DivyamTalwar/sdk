@@ -1,4 +1,4 @@
-#[path = "../../src/materializer/arc_layout.rs"]
+#[path = "../../src/arc_layout.rs"]
 mod arc_layout;
 
 #[cfg(kani)]
@@ -21,4 +21,17 @@ fn complete_arc_layout() {
     assert_eq!(result.is_ok(), expected <= isize::MAX as usize);
     let Ok(bytes) = result else { return };
     assert_eq!(bytes, expected);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(1)]
+fn missing_weak_counter_is_detected() {
+    use std::alloc::Layout;
+
+    let payload = Layout::new::<usize>();
+    let complete = arc_layout::allocation_bytes(payload).unwrap();
+    let (missing_weak, _) = Layout::new::<usize>().extend(payload).unwrap();
+    assert_eq!(complete, 3 * std::mem::size_of::<usize>());
+    assert_ne!(missing_weak.pad_to_align().size(), complete);
 }
