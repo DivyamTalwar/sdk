@@ -17,6 +17,7 @@ mod schedule;
 use model::{Effect, ModelEffects};
 use schedule::{Exit, Schedule, check_cut, drive};
 mod coverage;
+mod invariants;
 mod read_contention;
 mod seed;
 use seed::Seed;
@@ -320,6 +321,7 @@ impl Fixture {
 }
 
 struct Coverage {
+    observations: invariants::Observations,
     points: Vec<&'static str>,
     unadmitted: bool,
     ready_reads: usize,
@@ -450,7 +452,12 @@ async fn case(
             use crate::conversation::ContentResidencyVerifier;
             assert_eq!(reader.read(summary, 32, None)?.await?.as_ref(), b"summary");
         }
+        let observations = invariants::observe(&reopened, &fixture, root).await?;
+        observations
+            .check(scenario)
+            .map_err(|reason| Error::Invalid(reason.into()))?;
         Ok(Coverage {
+            observations,
             points,
             unadmitted,
             ready_reads: schedule.ready_reads(),
