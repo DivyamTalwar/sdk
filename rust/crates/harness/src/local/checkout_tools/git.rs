@@ -31,9 +31,9 @@ impl CheckoutTools {
             }
         }
         if !relative.is_empty() {
-            if !read_only && !matches!(parsed.arguments[0].as_str(), "merge" | "discard") {
+            if !read_only && parsed.arguments[0] != "merge" {
                 return Err(Error::Unsupported(
-                    "--volume supports diff, log, show, status, merge and discard".into(),
+                    "--volume supports diff, log, show, status and merge".into(),
                 ));
             }
             let source = mount

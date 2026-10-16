@@ -24,7 +24,7 @@ pub enum InteractionRejection {
 pub enum Error {
     /// Logical task-file storage or publication failure.
     #[error(transparent)]
-    TaskFiles(#[from] crate::task_volume::Error),
+    TaskFiles(Box<crate::task_volume::Error>),
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -330,7 +330,9 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
-            Self::TaskFiles(error) => match error {
+            Self::TaskFiles(error) => match error.as_ref() {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error.code(),
                 crate::task_volume::Error::FenceConflict => ErrorCode::Unauthorized,
                 crate::task_volume::Error::Conflict(_)
                 | crate::task_volume::Error::ImmutableConflict(_)
@@ -411,6 +413,12 @@ impl Error {
                 | Self::Indeterminate(_)
                 | Self::TaskFailed { .. }
         )
+    }
+}
+
+impl From<crate::task_volume::Error> for Error {
+    fn from(error: crate::task_volume::Error) -> Self {
+        Self::TaskFiles(Box::new(error))
     }
 }
 

@@ -7,7 +7,9 @@ use acyclic_fs::{
 
 mod mounts;
 pub(super) mod volumes;
-pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex, lock_owned};
+#[cfg(test)]
+pub(super) use crate::sync::owned::lock_owned;
+pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
