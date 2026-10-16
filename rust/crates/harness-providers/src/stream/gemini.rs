@@ -1,10 +1,6 @@
 use super::{ModelEvent, Result, State, Value, invalid, string, text};
 
-pub(super) fn parse(
-    state: &mut State,
-    value: &Value,
-    dispatch: acyclic_harness::model::ModelDispatch,
-) -> Result<Vec<ModelEvent>> {
+pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
     state.usage(&value["usageMetadata"])?;
     if let Some(id) = value.get("responseId") {
         state.budget.member(&mut state.metadata, "id", id)?;
@@ -28,15 +24,9 @@ pub(super) fn parse(
             }
             if let Some(function) = part.get("functionCall") {
                 let index = (state.calls.len() + state.thinking.len()) as u64;
-                let call_index = state.calls.len();
                 let (call, budget) = state.call(index)?;
                 if let Some(id) = function["id"].as_str() {
                     budget.string(&mut call.id, id)?;
-                } else {
-                    budget.formatted(
-                        &mut call.id,
-                        format_args!("{}-{}-{call_index}", dispatch.operation_id, dispatch.step),
-                    )?;
                 }
                 budget.string(&mut call.name, string(&function["name"])?)?;
                 match function.get("args") {

@@ -104,7 +104,7 @@ pub(crate) fn body_named<'a>(
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
     let target = provider.reasoning_origin(provider.key.as_deref(), None);
-    let call_ids = crate::call_ids::CallIds::new(request);
+    let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini_signature = None;

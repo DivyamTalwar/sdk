@@ -84,17 +84,7 @@ fn recognized_stream_errors_match_http_classes_across_providers() {
     ] {
         let encoded = event.to_string();
         let mut state = crate::stream::State::new(4096);
-        let error = crate::stream::parse(
-            &mut state,
-            adapter,
-            &encoded,
-            acyclic_harness::model::ModelDispatch {
-                operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
-                step: 0,
-                request_digest: [0; 32],
-            },
-        )
-        .unwrap_err();
+        let error = crate::stream::parse(&mut state, adapter, &encoded).unwrap_err();
         assert!(error.to_string().contains(&status.to_string()));
         assert_eq!(code(error), code(crate::http_error(status)));
     }

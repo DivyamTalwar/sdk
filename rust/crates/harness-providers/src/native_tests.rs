@@ -118,6 +118,8 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
                 match &event {
                     ModelEvent::ToolCall(call) => {
                         calls += 1;
+                        assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                        assert_eq!(call.metadata["provider_call"]["id"], "call");
                         assert_eq!(call.arguments, json!({"value":1}));
                     }
                     ModelEvent::Completed { metadata } => {

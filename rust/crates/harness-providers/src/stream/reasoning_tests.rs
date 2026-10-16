@@ -44,7 +44,7 @@ fn scenario(
                 "{{\"type\":\"content_block_start\",\"index\":{index},\"content_block\":{raw}}}"
             ),
         };
-        parse(&mut state, adapter, &event, parser_dispatch())?;
+        parse(&mut state, adapter, &event)?;
         if *reasoning {
             native.push(raw);
         }
@@ -53,12 +53,11 @@ fn scenario(
                 &mut state,
                 adapter,
                 &json!({"type":"content_block_stop","index":index}).to_string(),
-                parser_dispatch(),
             )?;
         }
     }
     state.terminal = true;
-    Ok((finish(state, adapter)?, native, provider))
+    Ok((finish(state, adapter, parser_dispatch())?, native, provider))
 }
 
 fn projection(provider: &crate::ResolvedModel, events: Vec<ModelEvent>) -> Result<Vec<u8>> {
@@ -175,11 +174,10 @@ fn signed_multiline_fixture_keeps_the_original_native_block_after_durable_replay
             &mut state,
             Adapter::Anthropic,
             frame.strip_prefix("data: ").unwrap(),
-            parser_dispatch(),
         )
         .unwrap();
     }
-    let events = finish(state, Adapter::Anthropic).unwrap();
+    let events = finish(state, Adapter::Anthropic, parser_dispatch()).unwrap();
     let block = events
         .iter()
         .find_map(|event| match event {

@@ -90,9 +90,10 @@ fn chunks(input: &str, width: usize) -> acyclic_stream::BoxProviderStream<'stati
 #[tokio::test]
 async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Result<()> {
     for (adapter, fixture) in fixtures() {
+        let dispatch = parser_dispatch();
         for width in [1, 7, 1024] {
             let events: Vec<_> =
-                stream::events(adapter, chunks(fixture, width), 4096, parser_dispatch())
+                stream::events(adapter, chunks(fixture, width), 4096, dispatch)
                     .try_collect()
                     .await?;
             let visible: Vec<_> = events
@@ -114,11 +115,16 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             );
             assert_eq!(
                 *visible[2],
-                ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                    "call".into(),
-                    "echo".into(),
-                    json!({"value":1})
-                ))
+                ModelEvent::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        dispatch.tool_call_id(0),
+                        "echo".into(),
+                        json!({"value":1})
+                    )
+                    .with_metadata(
+                        json!({"provider_call":{"provider":stream::family(adapter),"id":"call"}})
+                    )
+                )
             );
             if matches!(
                 adapter,
