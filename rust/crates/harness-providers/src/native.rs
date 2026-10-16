@@ -32,6 +32,7 @@ impl AsRef<[u8]> for RequestBody {
 async fn send(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     dispatch_id: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
@@ -45,7 +46,7 @@ async fn send(
         key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
     )?;
     let (url, headers, body) = diagnostic(
-        dispatch::request(provider, request, dispatch_id, key, account),
+        dispatch::request(provider, request, names, dispatch_id, key, account),
         &mut allocation,
     )?;
     let input_bytes = body.len();
@@ -195,11 +196,13 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
+            let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
             let auth = dispatch::authenticate(provider).await?;
             work.remaining()?;
             let (response, input_bytes) = send(
                 provider,
                 request,
+                &names,
                 dispatch_id,
                 auth.0.as_deref(),
                 auth.1.as_deref(),
@@ -215,6 +218,7 @@ pub(crate) fn generate<'a>(
             let adapter = provider.config.adapter;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
+                    let _name_custody = name_custody;
                     let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
@@ -231,7 +235,8 @@ pub(crate) fn generate<'a>(
                         let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                         parser.allocation.absorb(&mut admission)?;
                         work.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::UNCHARGED })?;
-                        let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data, dispatch_id), &mut parser.allocation)?;
+                        let mut events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data, dispatch_id), &mut parser.allocation)?;
+                        for event in &mut events { names.restore_native(event, &mut parser.allocation, work)?; }
                         let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                         drop(frame);
                         let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
@@ -252,7 +257,8 @@ pub(crate) fn generate<'a>(
                     let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
                     let Parser { state, mut allocation } = parser;
-                    let events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
+                    let mut events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
+                    for event in &mut events { names.restore_native(event, &mut allocation, work)?; }
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                     let retained = events.iter().try_fold(slots, |bytes, event| {
                         bytes.checked_add(event.logical_owned_bytes()?).ok_or_else(|| invalid("provider retained capacity overflow"))

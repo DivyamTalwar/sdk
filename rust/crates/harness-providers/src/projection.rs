@@ -36,7 +36,8 @@ pub(crate) fn count(
     prepared: &PreparedModelRequest,
 ) -> Result<ModelTokenCount> {
     let request = prepared.request();
-    let mut fixed = body(provider, request)?;
+    let names = crate::tool_names::Names::new(request);
+    let mut fixed = body_named(provider, request, &names)?;
     let body_bytes = encoded_len(&fixed)?;
     let field = match provider.config.adapter {
         Adapter::Responses => "input",
@@ -63,6 +64,7 @@ pub(crate) fn count(
             encoded_len(&Value::Array(project_message(
                 provider.config.adapter,
                 message,
+                &names,
             )?))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -103,7 +105,16 @@ pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
     Ok(count.0)
 }
 
+#[cfg(test)]
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
+    body_named(provider, request, &crate::tool_names::Names::new(request))
+}
+
+pub(crate) fn body_named(
+    provider: &ResolvedModel,
+    request: &ModelRequest,
+    names: &crate::tool_names::Names,
+) -> Result<Value> {
     let adapter = provider.config.adapter;
     let mut messages = Vec::new();
     let mut system = Vec::new();
@@ -113,7 +124,7 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         {
             system.push(text_content(&message.content)?);
         } else {
-            for mut projected in project_message(adapter, message)? {
+            for mut projected in project_message(adapter, message, names)? {
                 // A tool batch is one model turn, followed by one result turn.
                 if adapter == Adapter::Gemini
                     && messages
@@ -153,14 +164,14 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
             }
         }
     }
-    let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {
-        Adapter::Anthropic => json!({"name":tool.name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":tool.name,"description":tool.description,
+    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
             "parameters":tool.input_schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":tool.name,
+        Adapter::Chat => json!({"type":"function","function":{"name":name,
             "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":tool.name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }).collect();
+        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+    }) }).collect::<Result<_>>()?;
     let max = request
         .max_output_tokens
         .unwrap_or(provider.context_output());
@@ -255,7 +266,11 @@ fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
     Ok(())
 }
 
-fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value>> {
+fn project_message(
+    adapter: Adapter,
+    message: &ModelMessage,
+    names: &crate::tool_names::Names,
+) -> Result<Vec<Value>> {
     let role = match message.role {
         ModelRole::System => "system",
         ModelRole::User => "user",
@@ -278,6 +293,7 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
                 arguments,
                 metadata,
             }) => {
+                let name = names.wire(name)?;
                 if adapter == Adapter::Anthropic {
                     if let Some(thinking) = metadata["anthropic_thinking"].as_array() {
                         calls.extend(thinking.iter().cloned());
@@ -314,6 +330,7 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
                 name,
                 content,
             } => {
+                let name = names.wire(name)?;
                 let text = result_text(content)?;
                 results.push(match adapter {
                     Adapter::Anthropic => json!({"type":"tool_result","tool_use_id":call_id,"content":text}),

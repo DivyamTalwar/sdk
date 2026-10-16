@@ -18,6 +18,7 @@ mod sse;
 mod stream;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+mod tool_names;
 
 pub use adapter::Adapter;
 pub use catalog::default_catalog;
