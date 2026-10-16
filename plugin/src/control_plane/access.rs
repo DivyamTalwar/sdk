@@ -68,9 +68,11 @@ mod tests {
             .map_err(display)?
             .current()
             .map_err(display)?;
-        let now = acyclic_stream::SystemUnixMillisClock;
-        let now = acyclic_stream::UnixMillisClock::now_unix_millis(&now) / 1000;
-        assert!(view.decide(Action::Read, "secrets/key", now).allowed);
+        let now = || {
+            acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
+                / 1000
+        };
+        assert!(view.decide(Action::Read, "secrets/key", now()).allowed);
         assert_eq!(
             view.volume(),
             uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string()
@@ -133,9 +135,9 @@ mod tests {
                 .map_err(display)?
                 .current()
                 .map_err(display)?;
-            assert!(!view.decide(Action::Read, "secrets/key", now).allowed);
-            assert!(!view.decide(Action::List, "secrets/key", now).allowed);
-            assert!(view.decide(Action::Read, "public/key", now).allowed);
+            assert!(!view.decide(Action::Read, "secrets/key", now()).allowed);
+            assert!(!view.decide(Action::List, "secrets/key", now()).allowed);
+            assert!(view.decide(Action::Read, "public/key", now()).allowed);
             assert_eq!(view.policy_version(), policy.version);
         }
         Ok(())
