@@ -4,7 +4,8 @@ use super::{
     TaskVolume,
 };
 use crate::{
-    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},
+    AgentId,
+    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AuthorityVerifier, Scope},
 };
 use acyclic_stream::{StreamPath, StreamProvider};
@@ -143,6 +144,11 @@ fn authorize_open(
             "task files require a private volume and finite file bound".into(),
         ));
     }
+    if !owns_volume(volume, scope.agent()) {
+        return Err(crate::Error::Unauthorized(
+            "task files require the owning agent".into(),
+        ));
+    }
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         ContentGrant::authorize_volume(
             verifier,
@@ -154,4 +160,8 @@ fn authorize_open(
         )?;
     }
     Ok(())
+}
+
+fn owns_volume(volume: &VolumeRef, agent: Option<AgentId>) -> bool {
+    matches!(volume.owner(), VolumeOwner::Agent(owner) if agent == Some(*owner))
 }
