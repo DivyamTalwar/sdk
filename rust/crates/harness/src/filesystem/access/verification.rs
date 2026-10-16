@@ -107,3 +107,29 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod facts {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn unknown_facts_are_rejected_regardless_of_value(value in "[a-z]{1,16}", selector in 0u8..6) {
+            let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new()).unwrap();
+            let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY).unwrap();
+            prop_assert!(require_authenticated_facts(&policy, &io).is_ok());
+            let rule = &mut policy.layers[0][0];
+            rule.effect = acyclic_fs::access::Effect::Deny;
+            match selector {
+                0 => rule.principal.group = Some(value),
+                1 => { rule.principal.attributes.insert(value.clone(), value); },
+                2 => rule.conditions.role = Some(value),
+                3 => rule.conditions.tag = Some(value),
+                4 => rule.conditions.relation = Some(acyclic_fs::access::Relation::SelfTask),
+                _ => rule.resource.lineage_root = Some(value),
+            }
+            prop_assert!(matches!(require_authenticated_facts(&policy, &io), Err(Error::FilesystemAccessConfiguration(_))));
+        }
+    }
+}

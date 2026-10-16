@@ -521,6 +521,24 @@ impl PathTrie {
         self.valid_until
     }
 
+    /// Conservative proof for an adapter that cannot enforce individual paths.
+    /// Every reachable automaton state must permit every requested action.
+    /// This uses the compiled decisions, including capability intersections.
+    #[must_use]
+    pub fn allows_every_path(&self, actions: &[Action], now: u64) -> bool {
+        self.states.iter().enumerate().all(|(state, _)| {
+            actions
+                .iter()
+                .all(|action| self.decision(state, *action, now).allowed)
+        })
+    }
+
+    /// Whether moving between generations can change this view's decisions.
+    #[must_use]
+    pub const fn generation_sensitive(&self) -> bool {
+        self.generation_sensitive
+    }
+
     /// Prepare an entire path, streaming native name keys without temporary strings.
     /// Native lookups can retain parents and use `PreparedPath::child` to scan
     /// only new components; hot checks use `PreparedPath::decide`.

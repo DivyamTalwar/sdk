@@ -715,3 +715,41 @@ mod publication;
 
 #[path = "filesystem_access_write_ceilings.rs"]
 mod write_ceilings;
+
+#[tokio::test]
+async fn unsupported_authenticated_facts_never_remove_a_principal_dependent_deny()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let reader = fixture.reader(&fixture.scope)?;
+    let context =
+        context::content_context(reader, None, fixture.scope.capabilities().clone()).await?;
+    for selector in 0..6 {
+        let mut policy: Policy =
+            serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+        policy.version = 2 + selector;
+        let mut deny = policy.layers[0][0].clone();
+        deny.id = "principal-dependent-deny".into();
+        deny.effect = Effect::Deny;
+        match selector {
+            0 => deny.principal.group = Some("restricted".into()),
+            1 => {
+                deny.principal
+                    .attributes
+                    .insert("restricted".into(), "true".into());
+            }
+            2 => deny.conditions.role = Some("restricted".into()),
+            3 => deny.conditions.tag = Some("restricted".into()),
+            4 => deny.conditions.relation = Some(Relation::SameTaskTree),
+            _ => deny.resource.lineage_root = Some("restricted".into()),
+        }
+        policy.layers[0].push(deny);
+        fixture.publish_policy(policy).await?;
+        assert!(matches!(
+            context.read_file(&fixture.file, None).await,
+            Err(acyclic_harness::Error::FilesystemAccessConfiguration(
+                "unauthenticated principal facts"
+            ))
+        ));
+    }
+    Ok(())
+}

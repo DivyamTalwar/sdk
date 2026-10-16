@@ -13,7 +13,7 @@ pub const INITIAL_POLICY: &[u8] = include_bytes!("access/initial.json");
 const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
 const LEGACY_WRITE: &[u8] = include_bytes!("access/legacy-write.json");
 
-pub(in crate::filesystem) fn capability_payload<'a>(
+pub(crate) fn capability_payload<'a>(
     label: Option<&'a str>,
     operation: VolumeOperation,
     io: &PreparationIo,
@@ -30,8 +30,41 @@ pub(in crate::filesystem) fn capability_payload<'a>(
     }
 }
 
-pub(in crate::filesystem) fn access_now() -> u64 {
+pub(crate) fn access_now() -> u64 {
     acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000
+}
+
+pub(crate) fn require_unrestricted(
+    view: &PathTrie,
+    actions: &[Action],
+    surface: &'static str,
+) -> Result<()> {
+    if view.allows_every_path(actions, access_now()) {
+        Ok(())
+    } else {
+        Err(Error::FilesystemAccessConfiguration(surface))
+    }
+}
+
+fn require_authenticated_facts(policy: &Policy, io: &PreparationIo) -> Result<()> {
+    for rule in policy.layers.iter().flatten() {
+        io.charge(WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+        if rule.principal.group.is_some()
+            || !rule.principal.attributes.is_empty()
+            || rule.conditions.role.is_some()
+            || rule.conditions.tag.is_some()
+            || rule.conditions.relation.is_some()
+            || rule.resource.lineage_root.is_some()
+        {
+            return Err(Error::FilesystemAccessConfiguration(
+                "unauthenticated principal facts",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::filesystem) fn require(
@@ -176,7 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 // Scope is immutable and authenticated by the owning verifier/grant constructor.
 // The caller checks its request-specific legacy authority before using this view.
-pub(in crate::filesystem) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     scope: &Scope,
     generation: Option<GenerationId>,
@@ -258,6 +291,7 @@ pub(in crate::filesystem) async fn access_view<'a, A: AsyncAuthorityStore, O: As
         let bytes_hold = io.guard_bytes(&bytes.bytes)?;
         let bytes = (bytes, bytes_hold);
         let policy = record::<Policy>(io, &bytes.0.bytes, crate::wire::ErrorCode::Storage)?;
+        require_authenticated_facts(&policy.0, io)?;
         let policy_generation = head.0.generation_id();
         let (selected, latest) = io.sdk(
             head.0

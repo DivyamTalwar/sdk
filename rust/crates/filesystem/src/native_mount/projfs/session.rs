@@ -171,17 +171,15 @@ impl ProjFsSession {
         );
         let root_name = HSTRING::from(runtime.root.as_os_str());
         let mut mapping = PRJ_NOTIFICATION_MAPPING {
-            NotificationBitMask: FILE_NOTIFICATIONS,
+            NotificationBitMask: open_notifications(request.writable),
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
             ..Default::default()
         };
-        if request.writable {
-            options.NotificationMappings = &raw mut mapping;
-            options.NotificationMappingsCount = 1;
-        }
+        options.NotificationMappings = &raw mut mapping;
+        options.NotificationMappingsCount = 1;
         if warm.is_none() {
             (&mut &*work).attempt_io(WriteOperations.delta(1), || {
                 // SAFETY: the authenticated empty root and GUID remain resident.

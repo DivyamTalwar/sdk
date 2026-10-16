@@ -256,3 +256,37 @@ async fn native_access_projfs_vetoes_host_rename_delete_and_hardlink()
     session.stop()?;
     Ok(())
 }
+
+#[tokio::test]
+async fn native_access_cached_opens_recheck_read_in_every_mount_mode()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    let source = windows_checkout_source().await?;
+    let work = setup_work()?;
+    let path = windows_path("cached.txt");
+    for writable in [false, true] {
+        assert_ne!(open_notifications(writable).0 & PRJ_NOTIFY_FILE_OPENED.0, 0);
+        publish_test_access(&source, vec![])?;
+        authorize_open(source.as_ref(), &path, false, &work)?;
+        // No content/hydration callback is needed by this cached-open path.
+        publish_test_access(
+            &source,
+            vec![deny("revoke-read", &[Action::Read], "cached.txt")],
+        )?;
+        assert!(matches!(
+            authorize_open(source.as_ref(), &path, false, &work),
+            Err(MountSourceError::AccessDenied)
+        ));
+        authorize_open(source.as_ref(), &path, true, &work)?;
+        publish_test_access(
+            &source,
+            vec![deny("revoke-list", &[Action::List], "cached.txt")],
+        )?;
+        assert!(matches!(
+            authorize_open(source.as_ref(), &path, false, &work),
+            Err(MountSourceError::AccessDenied)
+        ));
+    }
+    Ok(())
+}

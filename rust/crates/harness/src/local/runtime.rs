@@ -126,7 +126,13 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     let runtime = match config.workspace {
         Some(workspace) => {
             let tools = Arc::new(
-                checkout_tools::CheckoutTools::new(workspace, config.project, config.clock).await?,
+                checkout_tools::CheckoutTools::new(
+                    workspace,
+                    config.project,
+                    config.clock,
+                    &signed,
+                )
+                .await?,
             );
             let publisher = checkout_tools::publisher::CheckoutPublisher::new(
                 tools.clone(),

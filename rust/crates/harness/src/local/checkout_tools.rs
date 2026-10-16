@@ -18,6 +18,7 @@ mod tests;
 
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
+    signed: Scope,
     read_grant: String,
     write_grant: String,
     capture_options: acyclic_fs::CaptureOptions,
@@ -58,6 +59,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        signed: &Scope,
     ) -> Result<Self> {
         let (active, pending) = workspace.selected_view().await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
@@ -69,6 +71,7 @@ impl CheckoutTools {
             None
         };
         Ok(Self {
+            signed: signed.clone(),
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
@@ -77,6 +80,76 @@ impl CheckoutTools {
             clock,
             state: StateArc::new(AsyncMutex::new(State { active, watcher })),
         })
+    }
+}
+
+impl CheckoutTools {
+    async fn require_access(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        ceiling: &Capabilities,
+        surface: &'static str,
+    ) -> Result<()> {
+        use crate::filesystem::{PreparationIo, access};
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let label = crate::core::filesystem_scope_label(self.signed.capabilities(), &mut None)?;
+        let payload = match label {
+            Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
+            None => include_bytes!("../filesystem/access/legacy-checkout.json"),
+        };
+        let compiled =
+            access::access_view(workspace, &self.signed, None, payload, Some(ceiling), &io).await?;
+        if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
+            return Err(Error::FilesystemAccessConfiguration(surface));
+        }
+        access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
+    }
+
+    async fn require_repository_access(
+        &self,
+        selected: acyclic_fs::WorkspaceId,
+        ceiling: &Capabilities,
+    ) -> Result<()> {
+        let state = acyclic_fs::GitCompatStore::load(
+            &self.workspace.store,
+            self.workspace.view().workspace().id(),
+        )
+        .await
+        .map_err(storage)?;
+        let Some(state) = state else {
+            return Ok(());
+        };
+        // A raw facade cannot safely recover an opaque pending filesystem action.
+        if state.pending.is_some() {
+            return Err(Error::FilesystemAccessConfiguration("local fs facade"));
+        }
+        let mut workspaces = std::collections::BTreeSet::new();
+        workspaces.extend(state.branches.values().map(|branch| branch.workspace_id));
+        workspaces.extend(state.commits.values().flat_map(|commit| {
+            [
+                commit.tree.workspace_id(),
+                commit.workspace_tree.workspace_id(),
+            ]
+        }));
+        workspaces.extend(state.stash.iter().map(|tree| tree.workspace_id()));
+        if let Some((_, pending)) = state.checkout_reconciliation {
+            workspaces.insert(pending.workspace_id);
+        }
+        workspaces.remove(&selected);
+        for id in workspaces {
+            let workspace = acyclic_fs::WorkspaceResolver::resolve(
+                &(
+                    self.workspace.filesystem.clone(),
+                    acyclic_fs::WorkspaceGraph::new(self.workspace.store.clone()),
+                ),
+                id,
+            )
+            .await
+            .map_err(storage)?;
+            self.require_access(&workspace, ceiling, "local fs facade")
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -140,14 +213,31 @@ impl ToolExecutor for CheckoutTools {
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let result = serialized(&self.state, async |mut state| {
-                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                    Error::Unauthorized("checkout command has no execution owner".into())
-                })?;
-                owner.verify_owner(None)?.await?;
                 let view = state
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
+                self.require_access(
+                    view.workspace(),
+                    context.effective_scope().grants(),
+                    if invocation.name == "fs" {
+                        "local fs facade"
+                    } else {
+                        "local bash"
+                    },
+                )
+                .await?;
+                if invocation.name == "fs" {
+                    self.require_repository_access(
+                        view.workspace().id(),
+                        context.effective_scope().grants(),
+                    )
+                    .await?;
+                }
+                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                    Error::Unauthorized("checkout command has no execution owner".into())
+                })?;
+                owner.verify_owner(None)?.await?;
                 if reconciliation::recover(&self.workspace, view, &|| async {
                     owner.verify_owner(None)?.await
                 })

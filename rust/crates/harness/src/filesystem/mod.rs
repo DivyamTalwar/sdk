@@ -122,8 +122,8 @@ pub use mailbox_machine::MailboxModelMachine;
 pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeMountedVolume, NativePreparationRoot,
-    NativeViewPublicationError, NativeVolumeView,
+    BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountedVolume, NativePreparationRoot,
+    NativeViewPublicationError, NativeVolumeView, authenticated_mount_options,
 };
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,

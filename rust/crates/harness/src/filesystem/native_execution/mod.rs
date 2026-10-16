@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
 };
 mod access;
+pub use access::{NativeAccessAuthority, authenticated_mount_options};
 mod allocation;
 mod completion;
 pub(super) mod journal;

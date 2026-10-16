@@ -1,40 +1,106 @@
 use super::*;
 
-async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutPublisher)> {
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let model = Model::new(
-        "scripted".into(),
-        "publication".into(),
-        "1".into(),
-        serde_json::Value::Null,
+struct Fixture {
+    files: Arc<LocalFilesystem>,
+    project: VolumeRef,
+    verifier: AuthorityVerifier,
+    signed: Scope,
+    workspace: Option<Arc<LocalWorkspace>>,
+    _state: tempfile::TempDir,
+}
+
+fn temporary_directory() -> Result<tempfile::TempDir> {
+    // Keep real native I/O and durability calls; Linux's memory-backed temporary
+    // directory avoids making logical publication tests depend on disk latency.
+    #[cfg(target_os = "linux")]
+    if Path::new("/dev/shm").is_dir() {
+        return tempfile::tempdir_in("/dev/shm").map_err(storage);
+    }
+    tempfile::tempdir().map_err(storage)
+}
+
+async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
+    let directory = temporary_directory()?;
+    let state = temporary_directory()?;
+    let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        state.path().join("filesystem"),
+    ))
+    .await
+    .map_err(storage)?;
+    let provider = crate::resources::ProviderRef::new(
+        "publisher".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
     )?;
-    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model, provider),
-    )?)
-    .await?;
-    let tools = Arc::new(
-        CheckoutTools::new(
-            harness
-                .workspace
-                .as_ref()
-                .ok_or_else(|| Error::NotFound("checkout".into()))?
-                .clone(),
-            &harness.project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+    let project = VolumeRef::new(
+        provider.clone(),
+        "project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("publisher".into()),
+        &mut None,
+    )?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let identity = work.root_identity(directory.path())?.to_bytes();
+    let workspace = Arc::new(
+        workspace::open(
+            &filesystem,
+            &project,
+            directory.path(),
+            state.path(),
+            Some(identity),
+            acyclic_fs::OperationId::new(),
+            false,
         )
         .await?,
     );
-    let publisher = CheckoutPublisher::new(
-        tools,
-        harness.files.clone(),
-        &harness.project,
-        &harness.verifier,
-        &harness.signed,
-        harness.limits.file_bytes,
+    let files = FilesystemHost::new(filesystem, &provider, None)?;
+    let issuer = AuthorityIssuer::new(
+        "publisher",
+        [17; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "publisher".into(),
+        },
     );
-    Ok((directory, harness, publisher))
+    let verifier = issuer.verifier(&mut None)?;
+    let signed = issuer.issue(
+        "publisher",
+        &Capabilities::new([
+            project.capability(VolumeOperation::Read, &mut None)?,
+            project.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let tools = Arc::new(
+        CheckoutTools::new(
+            workspace.clone(),
+            &project,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &signed,
+        )
+        .await?,
+    );
+    let publisher =
+        CheckoutPublisher::new(tools, files.clone(), &project, &verifier, &signed, 65536);
+    Ok((
+        directory,
+        Fixture {
+            files,
+            project,
+            verifier,
+            signed,
+            workspace: Some(workspace),
+            _state: state,
+        },
+        publisher,
+    ))
 }
 
 #[tokio::test]
@@ -71,6 +137,7 @@ async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> 
         workspace.clone(),
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
+        &harness.signed,
     )
     .await?;
     assert_eq!(
@@ -352,4 +419,130 @@ proptest::proptest! {
         let mut other = operation; other[0] ^= 1;
         proptest::prop_assert_ne!(first, publication_operation(OperationId::from_bytes(other), &path));
     }
+}
+
+#[tokio::test]
+async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() -> Result<()> {
+    use acyclic_fs::access::{Action, Capability, Generations, Grant, Policy, ResourcePattern};
+    let (directory, fixture, publisher) = fixture().await?;
+    std::fs::create_dir(directory.path().join("secrets")).map_err(storage)?;
+    std::fs::write(
+        directory.path().join("secrets/key"),
+        b"must not be disclosed",
+    )
+    .map_err(storage)?;
+    let tools = publisher.tools.clone();
+    let all = Capabilities::new(
+        fixture
+            .signed
+            .capabilities()
+            .iter()
+            .chain(["tool:call:bash", "tool:call:fs"]),
+    );
+    tools
+        .require_access(tools.workspace.view().workspace(), &all, "local bash")
+        .await?;
+    let restricted = Capability {
+        layers: vec![vec![Grant {
+            actions: Action::ALL.into_iter().collect(),
+            resource: ResourcePattern {
+                lineage_root: None,
+                volume: None,
+                generations: Generations::All,
+                path: "public/**".into(),
+            },
+        }]],
+        expires_at: None,
+    };
+    let label = restricted
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let restricted = Capabilities::new(all.iter().chain([label.as_str()]));
+    async fn execute(tools: Arc<CheckoutTools>, grants: Capabilities) -> Result<()> {
+        let mut bindings = crate::runtime::Bindings::local();
+        bindings.scope = RuntimeScope::new(grants, crate::conversation::Limits::default())?;
+        bindings.tasks.register(crate::runtime::TaskDefinition::live("raw-policy", "1", move |task, name: String| {
+            let tools = tools.clone();
+            async move {
+                let context = ToolContext::new(Arc::new(task), OperationId::new(), "policy-call", None)?;
+                let invocation = ToolInvocation { operation_id: context.operation_id(), call_id: context.call_id().into(),
+                    name: name.clone(), arguments: serde_json::json!({"command": if name == "bash" { "cat secrets/key" } else { "grep secret" }}) };
+                Ok::<_, Error>(matches!(tools.execute(invocation, Some(context)).await,
+                    Err(Error::FilesystemAccessConfiguration(_))))
+            }
+        })?)?;
+        let runtime = bindings.build(None)?;
+        let definition = runtime.task::<String, bool>("raw-policy@1")?;
+        for name in ["bash", "fs"] {
+            assert_eq!(
+                runtime
+                    .spawn(&definition, name.into())
+                    .await?
+                    .result()
+                    .await?,
+                crate::Outcome::Succeeded(true)
+            );
+        }
+        Ok(())
+    }
+    execute(tools.clone(), restricted).await?;
+    let mut policy: Policy =
+        serde_json::from_slice(crate::filesystem::access::INITIAL_POLICY).map_err(storage)?;
+    policy.version += 1;
+    let mut deny = policy.layers[0][0].clone();
+    deny.id = "deny-secret".into();
+    deny.effect = acyclic_fs::access::Effect::Deny;
+    deny.actions = [Action::Read].into_iter().collect();
+    deny.resource.path = "secrets/**".into();
+    policy.layers[0].push(deny);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut checkout = tools
+        .workspace
+        .view()
+        .workspace()
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    checkout
+        .write_access_policy(
+            &serde_json::to_vec(&policy).map_err(storage)?,
+            acyclic_fs::NamedAttributeWriteMode::Replace,
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?;
+    checkout
+        .commit(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    },
+                ))
+            },
+        )
+        .await
+        .map_err(storage)?;
+    execute(tools, all).await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("secrets/key")).map_err(storage)?,
+        b"must not be disclosed"
+    );
+    Ok(())
 }

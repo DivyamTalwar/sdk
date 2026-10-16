@@ -8,7 +8,7 @@ use acyclic_fs::{
 struct PolicyOwner<A, O> {
     workspace: Workspace<A, O>,
     scope: Scope,
-    context: Arc<crate::runtime::TaskContext>,
+    ceiling: Option<(crate::Capabilities, NativeAllocation)>,
     generation: GenerationId,
     writable: bool,
     view: Arc<AccessView>,
@@ -18,7 +18,7 @@ struct PolicyOwner<A, O> {
 async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     scope: &Scope,
-    context: &crate::runtime::TaskContext,
+    ceiling: &crate::Capabilities,
     generation: GenerationId,
     writable: bool,
     io: &PreparationIo,
@@ -35,7 +35,7 @@ async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         scope,
         if writable { None } else { Some(generation) },
         payload,
-        Some(context.scope().grants()),
+        Some(ceiling),
         io,
     )
     .await?;
@@ -105,41 +105,107 @@ where
         {
             return Err(io.invalid("native access differs from its selected generation"));
         }
-        let (compiled, custody) = compile(
+        bind_mount_options(
             workspace,
-            self.scope,
-            context,
             generation,
+            NativeAccessAuthority {
+                verifier: self.verifier,
+                scope: self.scope,
+                ceiling: context.scope().grants(),
+            },
             self.writable,
-            &io,
+            work,
         )
-        .await?;
-        let view = AccessView::new_native(compiled, custody)?;
-        let scope = self.scope.copy(&mut Some(&mut io.history_io()))?;
-        io.retain_owned(
-            (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
-        )?;
-        io.allocation_attempt(
-            (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
-        )?;
-        let retained = io.owned_bytes()?;
-        let refresh = Arc::new(PolicyOwner {
-            workspace: workspace.clone(),
-            scope,
-            context: Arc::clone(context),
-            generation,
-            writable: self.writable,
-            view: Arc::clone(&view),
-            _custody: io.into_native_custody(retained)?,
-        });
-        Ok((if self.writable {
-            acyclic_fs::MountOptions::read_write()
-        } else {
-            acyclic_fs::MountOptions::read_only()
-        })
-        .access_view(view)
-        .access_refresh(refresh))
+        .await
     }
+}
+
+/// Authenticated identity and caller ceiling for an owned native mount.
+pub struct NativeAccessAuthority<'a> {
+    /// Verifies the complete presented scope.
+    pub verifier: &'a AuthorityVerifier,
+    /// Signed, attenuable filesystem capability.
+    pub scope: &'a Scope,
+    /// Original caller's authority ceiling.
+    pub ceiling: &'a crate::Capabilities,
+}
+
+/// Compile persisted policy and retain the same authenticated refresh owner.
+pub async fn authenticated_mount_options<A, O>(
+    workspace: &Workspace<A, O>,
+    generation: GenerationId,
+    authority: NativeAccessAuthority<'_>,
+    writable: bool,
+    work: &NativeMaterializationWork,
+) -> Result<acyclic_fs::MountOptions>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let io = PreparationIo::from_native_work(work)?;
+    authority
+        .verifier
+        .verify(authority.scope, &mut Some(&mut io.history_io()))?;
+    if crate::core::filesystem_scope_label(
+        authority.scope.capabilities(),
+        &mut Some(&mut io.history_io()),
+    )?
+    .is_none()
+    {
+        return Err(io.invalid("workspace mount requires an exact signed filesystem capability"));
+    }
+    bind_mount_options(workspace, generation, authority, writable, work).await
+}
+
+async fn bind_mount_options<A, O>(
+    workspace: &Workspace<A, O>,
+    generation: GenerationId,
+    authority: NativeAccessAuthority<'_>,
+    writable: bool,
+    work: &NativeMaterializationWork,
+) -> Result<acyclic_fs::MountOptions>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let io = PreparationIo::from_native_work(work)?;
+    let (compiled, custody) = compile(
+        workspace,
+        authority.scope,
+        authority.ceiling,
+        generation,
+        writable,
+        &io,
+    )
+    .await?;
+    let view = AccessView::new_native(compiled, custody)?;
+    let scope = authority.scope.copy(&mut Some(&mut io.history_io()))?;
+    io.retain_owned(
+        (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
+    )?;
+    io.allocation_attempt(
+        (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
+    )?;
+    let ceiling = (authority.ceiling != authority.scope.capabilities())
+        .then(|| crate::Capabilities::copy(authority.ceiling.iter(), work))
+        .transpose()?;
+    let retained = io.owned_bytes()?;
+    let refresh = Arc::new(PolicyOwner {
+        workspace: workspace.clone(),
+        scope,
+        ceiling,
+        generation,
+        writable,
+        view: Arc::clone(&view),
+        _custody: io.into_native_custody(retained)?,
+    });
+    Ok((if writable {
+        acyclic_fs::MountOptions::read_write()
+    } else {
+        acyclic_fs::MountOptions::read_only()
+    })
+    .access_view(view)
+    .access_refresh(refresh))
 }
 
 impl<A, O> NativeMountCallbackGuard for PolicyOwner<A, O>
@@ -162,7 +228,9 @@ where
             let (view, custody) = compile(
                 &self.workspace,
                 &self.scope,
-                &self.context,
+                self.ceiling
+                    .as_ref()
+                    .map_or(self.scope.capabilities(), |(grants, _)| grants),
                 self.generation,
                 self.writable,
                 &io,

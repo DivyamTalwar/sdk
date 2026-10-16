@@ -155,7 +155,7 @@ pub(super) unsafe fn notification(
     {
         return HR_OK;
     }
-    let work = match runtime.native_work(true) {
+    let work = match runtime.native_work(notification != PRJ_NOTIFICATION_FILE_OPENED) {
         Ok(work) => work,
         Err(error) => {
             let status = native_hresult(&error);
@@ -166,16 +166,16 @@ pub(super) unsafe fn notification(
             return status;
         }
     };
-    if !runtime.writable {
-        return HR_NOT_SUPPORTED;
-    }
     if notification == PRJ_NOTIFICATION_FILE_OPENED {
-        if let Err(error) = runtime
-            .source
-            .authorize_with_meter(&[(crate::access::Action::List, &path)], &work)
-        {
+        if let Err(error) = authorize_open(runtime.source.as_ref(), &path, is_directory, &work) {
             return source_hresult(&error);
         }
+        if !runtime.writable {
+            return HR_OK;
+        }
+    }
+    if !runtime.writable {
+        return HR_NOT_SUPPORTED;
     }
     let file_id = file_id(data);
     // SAFETY: ProjFS passes these names as null or NUL-terminated strings
@@ -598,6 +598,28 @@ pub(super) fn callbacks() -> PRJ_CALLBACKS {
             operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS
         ))),
         CancelCommandCallback: Some(cancel),
+    }
+}
+
+pub(super) fn open_notifications(writable: bool) -> PRJ_NOTIFY_TYPES {
+    if writable {
+        FILE_NOTIFICATIONS
+    } else {
+        PRJ_NOTIFY_FILE_OPENED
+    }
+}
+
+pub(super) fn authorize_open(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    directory: bool,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    use crate::access::Action;
+    if directory {
+        source.authorize_with_meter(&[(Action::List, path)], work)
+    } else {
+        source.authorize_with_meter(&[(Action::List, path), (Action::Read, path)], work)
     }
 }
 

@@ -62,7 +62,9 @@ pub struct MountOptions {
 }
 
 impl MountOptions {
-    pub(super) fn require_access_view(
+    /// Bound policy/capability owner for preparation and inspection. Native
+    /// operations additionally fence this view against current persisted policy.
+    pub fn require_access_view(
         &self,
     ) -> Result<&Arc<crate::access::AccessView>, MountLifecycleError> {
         self.access_view

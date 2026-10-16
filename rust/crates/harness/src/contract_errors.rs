@@ -51,6 +51,9 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// A raw filesystem adapter cannot enforce this effective access view.
+    #[error("filesystem access configuration unsupported on {0}")]
+    FilesystemAccessConfiguration(&'static str),
     /// A bound approval resolved without permission to execute.
     #[error("interaction {0}")]
     InteractionRejected(InteractionRejection),
@@ -334,7 +337,9 @@ impl Error {
         match self {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
+            Self::Unsupported(_)
+            | Self::GoalBlocked(_)
+            | Self::FilesystemAccessConfiguration(_) => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
