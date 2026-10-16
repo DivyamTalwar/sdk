@@ -6,9 +6,16 @@ async fn comparison_peak(
     selected: GenerationId,
     original: GenerationId,
     tracked: bool,
+    ceiling: u64,
 ) -> Result<u64, WorkspaceError> {
     let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut accounting = KernelAccounting::standalone(
+        WorkBudget {
+            peak_allocation_bytes: ceiling,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
     let (mut selected, path) = workspace
         .open_read_path(
             GenerationSelector::Exact(selected),
@@ -56,6 +63,29 @@ async fn comparison_peak(
         .peak_allocation_bytes)
 }
 
+async fn minimum_ceiling(
+    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    selected: GenerationId,
+    original: GenerationId,
+    tracked: bool,
+    upper: u64,
+) -> Result<u64, WorkspaceError> {
+    let (mut low, mut high) = (0, upper);
+    while low < high {
+        let candidate = low + (high - low) / 2;
+        if comparison_peak(workspace, selected, original, tracked, candidate)
+            .await
+            .is_ok()
+        {
+            high = candidate;
+        } else {
+            low = candidate + 1;
+        }
+    }
+    comparison_peak(workspace, selected, original, tracked, low).await?;
+    Ok(low)
+}
+
 #[tokio::test]
 async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -79,10 +109,12 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
         .head(WorkBudget::UNBOUNDED, &cancellation)
         .await?
         .value;
-    let broken_peak = comparison_peak(&workspace, selected.id(), original.id(), false).await?;
-    let owned_peak = comparison_peak(&workspace, selected.id(), original.id(), true).await?;
-    assert!(owned_peak > broken_peak, "{owned_peak} <= {broken_peak}");
-    // The old implementation admitted this ceiling despite retaining more bytes.
+    let upper = comparison_peak(&workspace, selected.id(), original.id(), true, u64::MAX).await?;
+    // Probe/cache capacities adapt to the allowance. Find actual admitted floors,
+    // rather than assuming the unbounded peak is a lower bound at smaller budgets.
+    let broken = minimum_ceiling(&workspace, selected.id(), original.id(), false, upper).await?;
+    let owned = minimum_ceiling(&workspace, selected.id(), original.id(), true, upper).await?;
+    assert!(owned > broken, "{owned} <= {broken}");
     let denied = selected
         .read_range_if_unchanged(
             &original,
@@ -92,7 +124,7 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
                 length: 0,
             },
             WorkBudget {
-                peak_allocation_bytes: broken_peak,
+                peak_allocation_bytes: broken,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
@@ -106,7 +138,7 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
                 counter: "peak_allocation_bytes", ..
             }))
         )),
-        "original checkout escaped the live allocation ceiling: {denied:?}"
+        "original checkout escaped the live allocation ceiling ({broken} < {owned}): {denied:?}"
     );
     let admitted = selected
         .read_range_if_unchanged(
@@ -117,13 +149,13 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
                 length: 0,
             },
             WorkBudget {
-                peak_allocation_bytes: owned_peak,
+                peak_allocation_bytes: owned,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
         )
         .await?;
     assert!(admitted.value.bytes.is_empty());
-    assert!(admitted.work.peak_allocation_bytes <= owned_peak);
+    assert!(admitted.work.peak_allocation_bytes <= owned);
     Ok(())
 }
