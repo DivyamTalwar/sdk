@@ -85,7 +85,7 @@ proptest! {
         prop_assert!(PreparedModelRequest::prepare(wrong_projection, limits, None).is_err());
         let mut conflicting = input;
         conflicting.tools = vec![definition.clone()];
-        definition.input_schema = json!(false);
+        definition.description.push_str(" changed");
         conflicting.history_tools = vec![definition];
         prop_assert!(PreparedModelRequest::prepare(conflicting, limits, None).is_err());
     }
@@ -164,7 +164,7 @@ async fn inherited_pinned_history_keeps_schemas_without_advertising_them() -> Re
         corrupted.history_tools.clear();
         assert!(PreparedModelRequest::prepare(corrupted, limits, None).is_err());
         child.history_tools = inherited.request().history_tools.clone();
-        child.history_tools[0].input_schema = json!(false);
+        child.history_tools[0].description.push_str(" changed");
         assert!(
             PreparedModelRequest::inherit(child, &prefix, &reader, limits, None)
                 .await
