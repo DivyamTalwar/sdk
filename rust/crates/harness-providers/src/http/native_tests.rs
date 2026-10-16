@@ -19,6 +19,9 @@ fn check_retention(input: Vec<u8>, broken: bool) {
     let mut body = body(source, (!broken).then_some(&work)).unwrap();
     let received = futures::executor::block_on(body.next()).unwrap().unwrap();
     assert_eq!(received, expected);
+    if !broken {
+        assert_eq!(work.receipt().source_bytes_read, expected.len() as u64);
+    }
     let clone = received.clone();
     drop((body, received));
     assert!(

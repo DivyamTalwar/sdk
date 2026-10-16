@@ -27,7 +27,14 @@ impl<S: Stream<Item = Result<Bytes>> + Unpin> Stream for Body<S> {
                 // SSE may suspend at any frame with the remainder still resident.
                 let result = owner
                     .work()
-                    .claim(bytes.len() as u64, 0, WorkCounters::UNCHARGED)
+                    .claim(
+                        bytes.len() as u64,
+                        0,
+                        WorkCounters {
+                            source_bytes_read: bytes.len() as u64,
+                            ..WorkCounters::UNCHARGED
+                        },
+                    )
                     .map_err(acyclic_harness::Error::from)
                     .and_then(|custody| super::owned_bytes::owned(bytes, custody));
                 Poll::Ready(Some(result))

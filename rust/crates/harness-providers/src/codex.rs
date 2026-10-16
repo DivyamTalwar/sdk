@@ -145,7 +145,6 @@ impl CodexLogin {
                         .map_err(|_| invalid("cannot allocate Codex refresh response"))?;
                 }
                 io.charge(WorkCounters {
-                    source_bytes_read: chunk.len() as u64,
                     bytes_copied: chunk.len() as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
