@@ -46,6 +46,7 @@ pub struct FileQueryView {
     files: BTreeMap<FileKey, FileValue>,
     rows: BTreeMap<FileKey, Arc<[String]>>,
     goal: GoalFileView,
+    progress: Option<super::GoalProgress>,
     cursor: Cursor,
     bytes: usize,
     maximum_files: usize,
@@ -102,6 +103,7 @@ impl FileQueryView {
             query,
             rows,
             goal: GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes),
+            progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
             cursor,
             bytes,
@@ -128,6 +130,10 @@ impl FileQueryView {
     /// Borrows parsed goal state; rendering never reparses the file.
     pub fn goal(&self) -> &GoalFileView {
         &self.goal
+    }
+
+    pub(super) fn progress(&self) -> Option<&super::GoalProgress> {
+        self.progress.as_ref()
     }
 
     /// Borrows cached rows; iteration and clipping never parse or format a file.
@@ -214,10 +220,16 @@ impl FileQueryView {
             if key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
             }
+            if key == FileKey::RequestHead {
+                self.progress = None;
+            }
             self.files.remove(&key);
             self.rows.remove(&key);
         }
         for file in change.file.into_iter().chain(change.files) {
+            if file.key == FileKey::RequestHead && self.files.get(&file.key) != Some(&file) {
+                self.progress = super::GoalProgress::from_file(Some(&file));
+            }
             if file.key == FileKey::Goal && self.files.get(&file.key) != Some(&file) {
                 self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
             }
@@ -297,24 +309,4 @@ impl super::ClientViews {
             .ok_or_else(|| Error::Conflict("file query snapshot is missing".into()))?
             .apply(change)
     }
-}
-
-pub(super) fn serialize_goals<S: serde::Serializer>(
-    queries: &BTreeMap<([u8; 32], [u8; 32]), FileQueryView>,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    #[derive(serde::Serialize)]
-    struct ObservedGoal<'a> {
-        cursor: &'a Cursor,
-        goal: &'a GoalFileView,
-    }
-    serializer.collect_seq(
-        queries
-            .values()
-            .filter(|view| view.query.matches(&FileKey::Goal))
-            .map(|view| ObservedGoal {
-                cursor: view.cursor(),
-                goal: view.goal(),
-            }),
-    )
 }

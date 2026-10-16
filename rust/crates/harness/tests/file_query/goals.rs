@@ -93,7 +93,7 @@ async fn goal_state_follows_ordinary_file_publications_and_exports()
     Ok(())
 }
 
-fn cut(query: &Query, volume: [u8; 32], position: u64) -> Cursor {
+pub(super) fn cut(query: &Query, volume: [u8; 32], position: u64) -> Cursor {
     Cursor {
         volume,
         epoch: uuid::Uuid::from_bytes([1; 16]),
@@ -106,7 +106,7 @@ fn cut(query: &Query, volume: [u8; 32], position: u64) -> Cursor {
     }
 }
 
-fn snapshot(cursor: Cursor, bytes: &Option<Vec<u8>>) -> Snapshot {
+pub(super) fn snapshot(cursor: Cursor, bytes: &Option<Vec<u8>>) -> Snapshot {
     Snapshot {
         files: bytes
             .as_ref()
@@ -123,7 +123,7 @@ fn snapshot(cursor: Cursor, bytes: &Option<Vec<u8>>) -> Snapshot {
     }
 }
 
-fn change(cursor: Cursor, file: Option<FileValue>, removed: Vec<FileKey>) -> Change {
+pub(super) fn change(cursor: Cursor, file: Option<FileValue>, removed: Vec<FileKey>) -> Change {
     Change {
         cursor,
         file,

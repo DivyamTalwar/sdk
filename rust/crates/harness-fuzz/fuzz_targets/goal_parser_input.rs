@@ -91,6 +91,48 @@ pub fn check(data: &[u8]) -> Result<()> {
         (Some(GoalFileView::Invalid { .. }), Err(_)) => {}
         _ => panic!("client goal differs from the shared parser"),
     }
+    let request = Query::File(FileKey::RequestHead);
+    let request_cursor = Cursor {
+        volume: [3; 32],
+        query: *blake3::hash(&serde_json::to_vec(&request).unwrap()).as_bytes(),
+        ..cursor.clone()
+    };
+    views.query_snapshot(
+        request,
+        Snapshot {
+            generation: Generation {
+                volume: request_cursor.volume,
+                epoch: request_cursor.epoch,
+                position: request_cursor.position,
+                commit: request_cursor.commit,
+            },
+            cursor: request_cursor.clone(),
+            files: vec![FileValue::new(FileKey::RequestHead, data.to_vec())],
+        },
+        1,
+        LIMIT as usize,
+    )?;
+    views.bind_goal_sources(
+        (cursor.volume, cursor.query),
+        (request_cursor.volume, request_cursor.query),
+    )?;
+    let combined = views.goal_view(cursor.volume, cursor.query).unwrap();
+    assert_eq!(combined.request_cursor, Some(&request_cursor));
+    if let Some(progress) = combined.progress {
+        let raw: serde_json::Value = serde_json::from_slice(data).unwrap();
+        assert_eq!(raw["automatic_turns"], progress.continuations);
+        assert_eq!(
+            raw["operation"],
+            serde_json::to_value(progress.operation).unwrap()
+        );
+        assert_eq!(raw["root"], serde_json::to_value(progress.root).unwrap());
+    }
+    serde_json::to_value(combined).unwrap();
+    if let Ok(path) = std::str::from_utf8(data) {
+        if let Ok(key) = FileKey::parse(path) {
+            assert_eq!(FileKey::parse(&key.path()).unwrap(), key);
+        }
+    }
     if let Ok(view) = view {
         let state = state?;
         assert_eq!(state.status, view.status);

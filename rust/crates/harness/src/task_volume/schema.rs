@@ -206,6 +206,8 @@ impl From<InputPath> for String {
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
+    /// Existing host request head, selected from its authorized journal volume.
+    RequestHead,
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
     /// Editable command definitions and workspace files followed by UI queries.
@@ -294,6 +296,7 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            ["inputs", "current.json"] => return Ok(Self::RequestHead),
             ["commands" | "workspace" | "config", ..] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
@@ -359,6 +362,7 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::RequestHead => "inputs/current.json".into(),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
@@ -387,7 +391,8 @@ impl FileKey {
     pub(super) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Goal
+            Self::RequestHead
+                | Self::Goal
                 | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {

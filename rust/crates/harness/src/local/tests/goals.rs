@@ -18,7 +18,12 @@ struct Case {
     tasks: usize,
     calls: usize,
     final_goal: Option<String>,
+    panel: Vec<String>,
 }
+
+mod files;
+#[cfg(feature = "tui")]
+mod rendering;
 
 #[tokio::test]
 async fn local_goal_scenarios_follow_ordinary_frames_and_files() -> Result<()> {
@@ -29,28 +34,18 @@ async fn local_goal_scenarios_follow_ordinary_frames_and_files() -> Result<()> {
 }
 
 async fn run(case: Case) -> Result<()> {
+    assert!(
+        !case.panel.is_empty(),
+        "scenario must declare rendering expectations"
+    );
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
-    let mut script = Vec::new();
-    for (index, write) in case.writes.iter().enumerate() {
-        if let Some(text) = write {
-            script.push(ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("goal-{index}"),
-                    name: "write".into(),
-                    arguments: json!({"path":"GOAL.md", "text":text,
-                        "media_type":"text/markdown", "display_name":"GOAL.md"}),
-                }),
-                ScriptedEvent::Event(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ]));
-        }
-        script.push(ScriptedTurn::Text(format!("settle-{index}")));
-    }
+    let script = script(&case);
     let provider = scripted(script);
+    let files = files::Files::default();
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
+        let mut config =
+            volume_config(directory.path(), project.clone(), provider.clone())?.tool(files.tool()?);
         config.goal_continuations = if case.enabled == Some(false) {
             None
         } else {
@@ -61,6 +56,7 @@ async fn run(case: Case) -> Result<()> {
         Ok(config)
     };
     let harness = LocalHarness::open(config()?).await?;
+    files.bind(&harness)?;
     let stream = crate::test_support::local_task_stream(&harness);
     let operation = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
@@ -162,6 +158,27 @@ async fn run(case: Case) -> Result<()> {
     assert_eq!(provider.requests().len(), case.calls, "{}", case.name);
     assert_eq!(admitted.len(), case.tasks);
     Ok(())
+}
+
+fn script(case: &Case) -> Vec<ScriptedTurn> {
+    let mut script = Vec::new();
+    for (index, write) in case.writes.iter().enumerate() {
+        if let Some(text) = write {
+            script.push(ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall {
+                    call_id: format!("goal-{index}"),
+                    name: "fs_write".into(),
+                    arguments: json!({"path":"GOAL.md", "text":text,
+                        "media_type":"text/markdown", "display_name":"GOAL.md"}),
+                }),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]));
+        }
+        script.push(ScriptedTurn::Text(format!("settle-{index}")));
+    }
+    script
 }
 
 #[tokio::test]

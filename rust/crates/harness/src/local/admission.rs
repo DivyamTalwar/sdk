@@ -7,7 +7,7 @@ use crate::{
     runtime::TaskStateProvider,
 };
 
-mod record;
+use crate::goal::request_head as record;
 use record::Turn;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
