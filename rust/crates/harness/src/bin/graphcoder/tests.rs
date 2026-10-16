@@ -246,3 +246,101 @@ fn follow_tail_keeps_new_output_visible_after_the_screen_fills() {
     assert!(visible.contains("message 99"));
     assert!(!visible.contains("message 0"));
 }
+
+#[test]
+fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
+    use acyclic_harness::tui::{
+        Editor, PromptHistory, Screen,
+        key_event::{KeyCode, KeyEvent, KeyModifiers},
+    };
+    let mut input = PromptInput::new(Editor::new("draft"));
+    let mut history = PromptHistory::default();
+    history.push("first 日本語".into());
+    history.push("second prompt".into());
+    input.replace_history(history);
+    input.key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        0,
+        78,
+    );
+    input.committed_text("日本語", 1);
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    let mut viewport = Viewport::default();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 1);
+        })
+        .unwrap();
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(visible.contains("first 日本語"));
+    input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 2, 78);
+    assert_eq!(input.editor.text(), "draft");
+    input.editor.select_all();
+    input.committed_text("日本語\n👩‍💻", 3);
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 3);
+        })
+        .unwrap();
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(visible.contains("日本語"));
+    assert!(visible.contains("👩‍💻"));
+    assert!(!visible.contains("[Pasted"));
+    assert!(viewport.cursor.is_some());
+}
+
+#[test]
+fn composed_message_edit_recording_and_attachment_indicators_survive_layout() {
+    use acyclic_harness::tui::{
+        Editor, Screen,
+        key_event::{KeyCode, KeyEvent, KeyModifiers},
+    };
+    let mut input = PromptInput::new(Editor::new("live draft"));
+    input.images = 2;
+    input.recording = true;
+    input.edit_message("earlier".into(), "message being edited");
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    let mut viewport = Viewport::default();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 0);
+        })
+        .unwrap();
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(visible.contains("Editing message"));
+    assert!(visible.contains("message being edited"));
+    input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 1, 78);
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 1);
+        })
+        .unwrap();
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(visible.contains("live draft"));
+    assert!(visible.contains("2 images attached"));
+    assert!(visible.contains("REC"));
+}
