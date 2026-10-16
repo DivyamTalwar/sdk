@@ -177,10 +177,12 @@ impl Fixture {
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_: WorkBudget| {
-                    std::future::ready(Ok::<_, acyclic_fs::FsError>(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: Default::default(),
-                    }))
+                    std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                        acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: Default::default(),
+                        },
+                    ))
                 },
             )
             .await?;
