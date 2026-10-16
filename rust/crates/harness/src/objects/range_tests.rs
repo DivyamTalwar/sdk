@@ -82,7 +82,8 @@ proptest! {
             prop_assert_eq!(selected.as_ref(), &bytes[offset as usize..(offset + length) as usize]);
             let forged = decoded.with_version(format!("wrong-{}", file.version())).unwrap();
             prop_assert!(store.read_range(&forged,
-                acyclic_fs::ByteRange {offset, length}, None).unwrap().await.is_err());
+                acyclic_fs::ByteRange {offset, length}, None).unwrap().await.is_err(),
+                "a changed representation identity must refuse the interval");
             for range in [
                 acyclic_fs::ByteRange {offset: bytes.len() as u64 + 1, length: 0},
                 acyclic_fs::ByteRange {offset: u64::MAX, length: 1},
