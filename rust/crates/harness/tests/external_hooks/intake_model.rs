@@ -142,7 +142,7 @@ fn model(broken: bool) {
     );
 }
 
-fn consumer<'a>(
+pub(super) fn consumer<'a>(
     fixture: &'a Fixture,
     payloads: &'a dyn SchedulerPayloadStore,
 ) -> RequestConsumer<
@@ -160,7 +160,11 @@ fn consumer<'a>(
     )
 }
 
-async fn publish(fixture: &Fixture, folder: &Component, native: &ExternalRequest) -> FileValue {
+pub(super) async fn publish(
+    fixture: &Fixture,
+    folder: &Component,
+    native: &ExternalRequest,
+) -> FileValue {
     let file = native.to_file(folder.clone()).unwrap();
     let snapshot = fixture
         .requests
@@ -178,7 +182,7 @@ async fn publish(fixture: &Fixture, folder: &Component, native: &ExternalRequest
 // Model only intake and its retained slot. Full worker execution and result
 // publication are exercised by intake.rs and session_runtime.rs. Preparing the
 // real slot with the host's lease API introduces no competing worker effects.
-async fn claim(fixture: &Fixture, task: TaskId) -> LeaseFence {
+pub(super) async fn claim(fixture: &Fixture, task: TaskId) -> LeaseFence {
     let worker = Worker {
         id: "native-model".into(),
         available: ResourceRequest::default(),
@@ -209,7 +213,7 @@ async fn claim(fixture: &Fixture, task: TaskId) -> LeaseFence {
     }
 }
 
-async fn suspend(fixture: &Fixture, task: TaskId, fence: &LeaseFence, revision: u64) {
+pub(super) async fn suspend(fixture: &Fixture, task: TaskId, fence: &LeaseFence, revision: u64) {
     fixture
         .runtime
         .task_host()

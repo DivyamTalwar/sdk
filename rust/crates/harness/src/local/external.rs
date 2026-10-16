@@ -7,6 +7,10 @@ use crate::{
 use acyclic_stream::StreamPath;
 use serde_json::Value;
 
+mod recovery;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
+
 impl LocalHarness {
     fn external_volumes(
         &self,
@@ -84,6 +88,13 @@ impl LocalHarness {
                 .snapshot(&Query::File(key), 1)
                 .await
                 .map_err(storage)?;
+            let commands = RequestCommands::new(&self.runtime, &requests, &results);
+            recovery::recover_before_delivery(
+                matches!(request.action, ExternalAction::Attach { .. }),
+                !cached.files.is_empty(),
+                Box::pin(self.advance(task_id, &commands)),
+            )
+            .await?;
             if let Some(file) = cached.files.first() {
                 return crate::external_executor::volume::decode(&file.bytes).map_err(storage);
             }
@@ -108,7 +119,6 @@ impl LocalHarness {
             )
             .accept(&task, &file)
             .await?;
-            let commands = RequestCommands::new(&self.runtime, &requests, &results);
             Box::pin(self.advance(task_id, &commands)).await?;
             request.follow_result(&results, task).await.map_err(storage)
         })

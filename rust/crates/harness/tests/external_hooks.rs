@@ -38,6 +38,9 @@ mod lifecycle_recovery;
 #[path = "external_hooks/publication_model.rs"]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod publication_model;
+#[path = "external_hooks/recovery_model.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod recovery_model;
 
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 #[path = "external_hooks/client.rs"]
