@@ -19,6 +19,7 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
+    maximum_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<OwnedSourceChunk>, FsError> {
@@ -49,7 +50,7 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let Some((value, length)) = value else {
             return Ok(None);
         };
-        if length > volume.config.limits.maximum_read_bytes {
+        if length > maximum_bytes.min(volume.config.limits.maximum_read_bytes) {
             return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
         }
         let read = read_blob_range_with_accounting(
@@ -337,7 +338,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let metadata = self
                 .read_metadata_with_accounting(file, &mut accounting, cancellation)
                 .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                self.volume.config.limits.maximum_read_bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)
@@ -460,7 +469,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 cancellation,
             )
             .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                self.volume.config.limits.maximum_read_bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)

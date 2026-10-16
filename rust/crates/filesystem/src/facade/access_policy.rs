@@ -1,22 +1,26 @@
 use super::*;
-use crate::access::POLICY_METADATA_KEY;
+use crate::access::{MAXIMUM_POLICY_RECORD_BYTES, POLICY_METADATA_KEY};
 use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
 fn policy_name(
     maximum_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Owned<AttributeName>, FsError> {
-    let mut bytes = Owned::<Vec<u8>>::allocate(POLICY_METADATA_KEY.len(), accounting)?;
     let copied = WorkCounters {
         bytes_copied: POLICY_METADATA_KEY.len() as u64,
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(copied)?;
+    let mut bytes = Owned::<Vec<u8>>::allocate(POLICY_METADATA_KEY.len(), accounting)?;
     bytes.value.extend_from_slice(POLICY_METADATA_KEY);
     accounting.record_completed(copied)?;
-    let name = AttributeName::new(AttributeClass::PosixXattr, bytes.value, maximum_bytes)
-        .map_err(|error| CanonicalDecodeError::Invariant(error.into()))?;
-    Ok(Owned::new(name, bytes.allocation, bytes.bytes))
+    match AttributeName::new(AttributeClass::PosixXattr, bytes.value, maximum_bytes) {
+        Ok(name) => Ok(Owned::new(name, bytes.allocation, bytes.bytes)),
+        Err(error) => {
+            retire_allocation(bytes.allocation, bytes.bytes, accounting)?;
+            Err(CanonicalDecodeError::Invariant(error.into()).into())
+        }
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
@@ -44,6 +48,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     &self.volume,
                     metadata,
                     &name.value,
+                    MAXIMUM_POLICY_RECORD_BYTES,
                     &mut accounting,
                     cancellation,
                 )
@@ -86,7 +91,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     metadata,
                     &name.value,
                     Some((bytes, mode)),
-                    self.volume.config.limits.maximum_read_bytes,
+                    MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes),
                     &mut accounting,
                     cancellation,
                 )
