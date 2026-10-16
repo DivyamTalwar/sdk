@@ -232,7 +232,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 Some(waiting),
                 work,
             )
-            .await
+            .await?;
+        Ok(())
     }
 
     /// Delivers owner-authorized input into the exact retained workflow slot.
