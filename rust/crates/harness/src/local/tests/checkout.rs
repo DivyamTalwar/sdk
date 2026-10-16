@@ -388,14 +388,14 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         .executor(
             harness.project(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
-            Arc::clone(&harness.task_files().inner),
+            Arc::new(harness.task_files().clone()),
         )
         .await?;
     let second = workspace
         .executor(
             harness.project(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
-            Arc::clone(&harness.task_files().inner),
+            Arc::new(harness.task_files().clone()),
         )
         .await?;
     for (executor, command) in [(first, "checkout -b shared-binding"), (second, "status")] {

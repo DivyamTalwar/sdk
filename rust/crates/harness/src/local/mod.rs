@@ -55,6 +55,7 @@ pub(crate) type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -262,6 +263,7 @@ impl LocalHarness {
             Ok(Self {
                 files,
                 runtime,
+                task_files,
                 project: owner.project.clone(),
                 scratch,
                 journal,
@@ -280,6 +282,12 @@ impl LocalHarness {
                 workspace,
             })
         })
+    }
+
+    /// Authorized file writes and snapshot/follow over this agent's private task volume.
+    #[must_use]
+    pub fn task_files(&self) -> &crate::task_volume::TaskFiles<LocalStream> {
+        &self.task_files
     }
 
     /// Durable content and project host.

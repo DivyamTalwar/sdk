@@ -29,7 +29,7 @@ proptest! {
             let actual: BTreeSet<_> = original.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
             prop_assert_eq!(actual, left.union(&right).cloned().collect::<BTreeSet<_>>());
         } else {
-            prop_assert_eq!(merged.definitions(None).unwrap(), before);
+            prop_assert_eq!(original.definitions(None).unwrap(), before);
         }
     }
 

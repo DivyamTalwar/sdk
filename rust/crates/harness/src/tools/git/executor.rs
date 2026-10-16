@@ -344,7 +344,7 @@ where
                     }, &|| self.validate()).await?;
                     let has_markers = candidate.resolutions.values().any(|resolution| {
                         matches!(resolution, acyclic_fs::MergeResolution::Text(text)
-                                if acyclic_fs::text_merge::has_conflict_markers(text))
+                                if acyclic_fs::text_merge::has_conflict_markers(&text))
                     });
                     let outcome = plan
                         .apply_candidate(options, &candidate, self.permit)
