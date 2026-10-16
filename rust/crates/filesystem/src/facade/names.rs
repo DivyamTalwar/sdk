@@ -55,9 +55,10 @@ pub(super) fn name_fold_equal(
     Ok(equal)
 }
 
-pub(super) fn folded_binding_collision<'a>(
+pub(super) fn folded_binding_match<'a>(
     target: &LogicalName,
     folded_target: &[u8],
+    include_exact: bool,
     allowed: &[FileId],
     entries: impl Iterator<Item = &'a crate::kernel::TreeEntry>,
     accounting: &mut KernelAccounting<'_>,
@@ -65,8 +66,9 @@ pub(super) fn folded_binding_collision<'a>(
     let mut found = None;
     for entry in entries {
         let folded = name_fold_key(&entry.name, accounting)?;
-        let collision =
-            entry.name != *target && !allowed.contains(&entry.file_id) && folded.0 == folded_target;
+        let collision = (include_exact || entry.name != *target)
+            && !allowed.contains(&entry.file_id)
+            && folded.0 == folded_target;
         let bytes = folded.0.capacity() as u64;
         retire_name_owned(folded, bytes, accounting)?;
         if collision {
@@ -541,22 +543,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
-                &mut *accounting,
-                |context, bytes| {
+                (
+                    &mut *self,
+                    parent_components,
+                    target,
+                    allowed_file_ids,
+                    &mut *accounting,
+                ),
+                |(_, _, _, _, context), bytes| {
                     frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
                     Ok::<(), FsError>(())
                 },
-                |accounting| async move {
+                |(this, parent_components, target, allowed_file_ids, accounting)| async move {
                     let allocation = accounting.claim_owned(0, 0)?;
                     let mut parent = (
-                        NamespacePath::new(Vec::new(), self.volume.config.limits)
+                        NamespacePath::new(Vec::new(), this.volume.config.limits)
                             .map_err(name_path_error)?,
                         allocation,
                     );
                     for name in parent_components {
                         let next = parent.0.child_with_accounting(
                             name,
-                            self.volume.config.limits,
+                            this.volume.config.limits,
                             accounting,
                             cancellation,
                         )?;
@@ -568,9 +576,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     let mut found = None;
                     loop {
                         accounting.check()?;
-                        let page = self
-                            .list_directory_with_accounting(
+                        this.synchronize_live_with_accounting(accounting, cancellation)
+                            .await?;
+                        let (lookup, _allocation) = this
+                            .lookup_no_follow_at_current_with_accounting(
                                 &parent.0,
+                                accounting,
+                                cancellation,
+                                false,
+                            )
+                            .await?;
+                        let page = this
+                            .list_directory_record_with_accounting(
+                                lookup.record.ok_or(FsError::NotFound)?,
                                 after
                                     .as_ref()
                                     .map(|owned| &owned.0)
@@ -580,9 +598,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                                 cancellation,
                             )
                             .await?;
-                        if let Some(name) = folded_binding_collision(
+                        if let Some(name) = folded_binding_match(
                             target,
                             &folded_target.0,
+                            unique,
                             allowed_file_ids,
                             page.0.entries.iter(),
                             accounting,
@@ -629,7 +648,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     Ok(found)
                 },
             )?;
-            let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
+            let mut future = future;
             let result = future.as_mut().await;
             drop(future);
             let mut frame_custody =

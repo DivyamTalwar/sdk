@@ -320,33 +320,8 @@ async fn require_nfc_volume_rejects_non_normalized_names() -> TestResult {
 #[tokio::test]
 async fn full_case_fold_legacy_alias_collisions_fail_closed() -> TestResult {
     let cancel = CancellationToken::new();
-    let (_, mut checkout) = fixture(config(), &cancel).await?;
-    let first = create(
-        &mut checkout,
-        "Straße",
-        OwnedBytes::from_static(b"first"),
-        &cancel,
-    )
-    .await?;
-    let second = create(
-        &mut checkout,
-        "STRASSE",
-        OwnedBytes::from_static(b"second"),
-        &cancel,
-    )
-    .await?;
-    let mut fillers = Vec::new();
-    for index in 0..255 {
-        fillers.push(AuthoredMutation::CreateFile {
-            path: path(&format!("Sa{index:03}"))?,
-            bytes: OwnedBytes::new(),
-            metadata: FileMetadata::default(),
-        });
-    }
-    checkout
-        .apply_authored_transaction(fillers, B, &cancel)
-        .await?;
-    checkout.volume.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    let (mut checkout, [first, second]) =
+        crate::facade::test_fixtures::legacy_folded_checkout().await?;
     let before = checkout_state(&checkout);
     for (name, expected) in [("Straße", first), ("STRASSE", second)] {
         assert_eq!(
@@ -387,5 +362,62 @@ async fn full_case_fold_legacy_alias_collisions_fail_closed() -> TestResult {
         })
     ));
     assert_eq!(checkout_state(&checkout), before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn nested_alias_listing_preserves_directory_observations() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(folded_config(), &cancel).await?;
+    for components in [vec!["Stra\u{df}e"], vec!["Stra\u{df}e", "\u{39f}\u{3a3}"]] {
+        seed.create(
+            AuthoredMutation::CreateDirectory {
+                path: path_parts(&components)?,
+                metadata: FileMetadata::default(),
+            },
+            B,
+            &cancel,
+        )
+        .await?;
+    }
+    seed.create(
+        AuthoredMutation::CreateFile {
+            path: path_parts(&["Stra\u{df}e", "\u{39f}\u{3a3}", "leaf"])?,
+            bytes: OwnedBytes::from_static(b"body"),
+            metadata: FileMetadata::default(),
+        },
+        B,
+        &cancel,
+    )
+    .await?;
+    commit(&mut seed, &cancel).await?;
+    let mut reader = open_checkout(&volume, tracking(), &cancel).await?;
+    let alias = path_parts(&["STRASSE", "\u{3bf}\u{3c3}"])?;
+    let listed = reader
+        .list_directory(&alias, None, 1, B, &cancel)
+        .await?
+        .value;
+    assert_eq!(listed.entries.len(), 1);
+    assert_eq!(listed.entries[0].name.as_bytes(), b"leaf");
+    assert!(!listed.has_more);
+    let mut writer = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    writer
+        .create(
+            AuthoredMutation::CreateFile {
+                path: path_parts(&["Stra\u{df}e", "\u{39f}\u{3a3}", "new"])?,
+                bytes: OwnedBytes::from_static(b"new"),
+                metadata: FileMetadata::default(),
+            },
+            B,
+            &cancel,
+        )
+        .await?;
+    commit(&mut writer, &cancel).await?;
+    assert!(matches!(
+        reader.rebase_head(8, B, &cancel).await?.value,
+        RebaseDecision::Conflicted { conflicts, .. }
+        if conflicts.iter().any(|conflict|
+            matches!(conflict.region, DependencyRegion::DirectoryRange { .. }))
+    ));
     Ok(())
 }

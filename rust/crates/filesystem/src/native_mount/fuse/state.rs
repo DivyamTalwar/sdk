@@ -116,7 +116,7 @@ impl ProjectionState {
         &mut self,
         inode: u64,
         name: ChildName,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<FuseOwned<MountPath>, NativeMountError> {
         if let Some(key) = name.folded {
             self.by_inode
                 .get_mut(&inode)
@@ -124,8 +124,10 @@ impl ProjectionState {
                 .binding_mut(&key)
                 .ok_or(libc::ESTALE)?
                 .spelled = (*key != *name.spelled).then_some(name.spelled);
+            Ok(key)
+        } else {
+            Ok(name.spelled)
         }
-        Ok(())
     }
 
     pub(super) fn child_path(
@@ -230,7 +232,7 @@ impl ProjectionState {
         };
         for binding in entry.bindings.iter() {
             work.charge(Items.delta(1))?;
-            if *binding.path == *path {
+            if binding.native_path() == path {
                 continue;
             }
             if let Some(stamp) = binding.verified
@@ -335,26 +337,23 @@ impl ProjectionState {
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-        name: &ChildName,
+        name: ChildName,
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
+        let folded = name.folded.is_some();
+        let key = self.retain_spelling(inode, name)?;
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
-        if name.folded.is_some() {
+        if folded {
             return Ok(Duration::ZERO);
         }
         let Some(entry) = self.by_inode.get(&inode) else {
             return Ok(Duration::ZERO);
         };
-        let admitted = self.admissible(
-            source,
-            name.key(),
-            Some(entry.lookup.node.file_id),
-            stamp,
-            work,
-        )?;
+        let admitted =
+            self.admissible(source, &key, Some(entry.lookup.node.file_id), stamp, work)?;
         if let Some(entry) = self.by_inode.get_mut(&inode)
-            && let Some(binding) = entry.binding_mut(name.key())
+            && let Some(binding) = entry.binding_mut(&key)
         {
             hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }

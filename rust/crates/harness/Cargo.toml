@@ -13,6 +13,11 @@ documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [[test]]
+name = "tui-completion"
+path = "tests/tui_completion.rs"
+required-features = ["tui"]
+
+[[test]]
 name = "main"
 path = "tests/main.rs"
 
@@ -60,6 +65,10 @@ required-features = ["filesystem-local"]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "filesystem_access"
+path = "tests/filesystem_access.rs"
 
 [[test]]
 name = "client_journal_model"
