@@ -125,7 +125,7 @@ fn unused_definitions_never_parse_or_highlight_finalized_fences() {
         .lines()
         .get(1)
         .and_then(|line| line.spans.first())
-        .map(|span| span.text.as_ptr());
+        .and_then(|span| span.text.allocation());
     let highlighted = code::HIGHLIGHTED.get();
     let before = markdown.parsed_bytes;
     for index in 0..100 {
@@ -139,7 +139,7 @@ fn unused_definitions_never_parse_or_highlight_finalized_fences() {
             .lines()
             .get(1)
             .and_then(|line| line.spans.first())
-            .map(|span| span.text.as_ptr())
+            .and_then(|span| span.text.allocation())
     );
 }
 
@@ -378,7 +378,7 @@ fn indented_code_retains_lines_and_defers_blank_lines() {
                 .lines()
                 .get(1)
                 .and_then(|line| line.spans.first())
-                .map(|span| span.text.as_ptr())
+                .and_then(|span| span.text.allocation())
         };
         let first = pointer(&markdown);
         assert!(first.is_some());

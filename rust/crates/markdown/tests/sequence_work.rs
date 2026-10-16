@@ -3,7 +3,12 @@ use std::{collections::HashSet, sync::Arc};
 
 fn retained(markdown: &Markdown) -> (usize, usize) {
     let mut targets = HashSet::new();
+    let mut texts = HashSet::new();
+    let mut text_metadata = 0;
     let mut bytes = markdown.source.capacity() + markdown.visibility.retained();
+    let (state_bytes, state_metadata) = markdown.state.text_retained(&mut texts);
+    bytes += state_bytes;
+    text_metadata += state_metadata;
     bytes += markdown
         .context
         .iter()
@@ -11,7 +16,9 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         .sum::<usize>();
     for line in &markdown.lines {
         for span in &line.spans {
-            bytes += span.text.capacity();
+            let (payload, metadata) = span.text.retained(&mut texts);
+            bytes += payload;
+            text_metadata += metadata;
             if let Some(target) = &span.link
                 && targets.insert(Arc::as_ptr(target).cast::<u8>())
             {
@@ -20,6 +27,9 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         }
     }
     for cache in &markdown.cached {
+        let (payload, metadata) = cache.state.text_retained(&mut texts);
+        bytes += payload;
+        text_metadata += metadata;
         bytes += cache.template.source.capacity();
         bytes += cache
             .template
@@ -44,9 +54,10 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
     let (table_payload, table_metadata) = markdown
         .table
         .as_ref()
-        .map_or((0, 0), |table| table.retained(&mut targets));
+        .map_or((0, 0), |table| table.retained(&mut targets, &mut texts));
     bytes += table_payload;
-    let metadata = table_metadata
+    let metadata = text_metadata
+        + table_metadata
         + markdown.inline.as_ref().map_or(0, inline::Inline::retained)
         + markdown.context.capacity() * std::mem::size_of::<Container>()
         + markdown.lines.capacity() * std::mem::size_of::<Line>()

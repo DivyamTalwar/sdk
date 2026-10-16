@@ -27,10 +27,11 @@ fn full(source: &str, width: u16) -> Vec<Line> {
 }
 
 fn bounded(lines: &[Line], input: usize, rows: usize, width: u16) -> usize {
+    let mut seen = std::collections::HashSet::new();
     let retained: usize = lines
         .iter()
         .flat_map(|line| &line.spans)
-        .map(|span| span.text.capacity())
+        .map(|span| span.text.retained(&mut seen).0)
         .sum();
     let bound = 12 * (input + rows * usize::from(width.max(1)));
     assert!(

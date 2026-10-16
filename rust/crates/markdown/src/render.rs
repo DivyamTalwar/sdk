@@ -90,11 +90,10 @@ impl Renderer {
     pub(crate) fn checkpoint(&self) -> Self {
         #[cfg(test)]
         crate::work::copy(
-            self.line
-                .spans
-                .iter()
-                .map(|span| span.text.len())
-                .sum::<usize>()
+            self.line.spans.len() * std::mem::size_of::<crate::Span>()
+                + self.styles.len() * std::mem::size_of::<(Style, Option<Arc<str>>)>()
+                + self.lists.len() * std::mem::size_of::<Option<u64>>()
+                + self.prefixes.len() * std::mem::size_of::<String>()
                 + self.prefixes.iter().map(String::len).sum::<usize>(),
         );
         Self {
@@ -110,6 +109,23 @@ impl Renderer {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn text_retained(
+        &self,
+        seen: &mut std::collections::HashSet<usize>,
+    ) -> (usize, usize) {
+        let (mut payload, mut metadata) = (0, self.lines.capacity() * std::mem::size_of::<Line>());
+        for line in std::iter::once(&self.line).chain(&self.lines) {
+            metadata += line.spans.capacity() * std::mem::size_of::<crate::Span>();
+            for span in &line.spans {
+                let (bytes, nodes) = span.text.retained(seen);
+                payload += bytes;
+                metadata += nodes;
+            }
+        }
+        (payload, metadata)
+    }
+
     pub(crate) fn flush(&mut self) {
         if !self.line.spans.is_empty() {
             self.lines.push(std::mem::take(&mut self.line));
@@ -123,8 +139,6 @@ impl Renderer {
             }
             let text = part.trim_end_matches(['\r', '\n']);
             if self.new_link && self.link.is_some() && !text.is_empty() {
-                #[cfg(test)]
-                crate::work::copy(text.len());
                 self.line.push_new(text, self.style, self.link.as_ref());
                 self.new_link = false;
             } else {

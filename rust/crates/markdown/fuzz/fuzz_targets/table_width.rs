@@ -54,11 +54,12 @@ fuzz_target!(|data: &[u8]| {
         let mut one_shot = Markdown::with_width(width);
         one_shot.push(source);
         assert_eq!(consumer, one_shot.lines());
+        let mut seen = std::collections::HashSet::new();
         let retained: usize = streamed
             .lines()
             .iter()
             .flat_map(|line| &line.spans)
-            .map(|span| span.text.capacity())
+            .map(|span| span.text.retained(&mut seen).0)
             .sum();
         assert!(retained <= 12 * (source.len() + (rows + 1) * usize::from(width.max(1))));
         for line in streamed.lines() {

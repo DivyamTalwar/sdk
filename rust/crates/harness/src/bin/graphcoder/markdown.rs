@@ -6,21 +6,21 @@ use ratatui::{
     text::{Line as TuiLine, Span},
 };
 
-/// Borrow display text; the Markdown stream retains its cached lines.
+/// Borrow contiguous text and preserve grapheme sequences across shared chunks.
 pub fn lines(source: &[Line]) -> impl Iterator<Item = TuiLine<'_>> {
     source.iter().map(|line| {
         TuiLine::from(
             line.spans
                 .iter()
-                .map(|span| Span::styled(terminal_text(&span.text), style(span.style)))
+                .map(|span| Span::styled(terminal_text(span.text.as_str()), style(span.style)))
                 .collect::<Vec<_>>(),
         )
     })
 }
 
-fn terminal_text(text: &str) -> std::borrow::Cow<'_, str> {
+fn terminal_text(text: std::borrow::Cow<'_, str>) -> std::borrow::Cow<'_, str> {
     if !text.chars().any(char::is_control) {
-        return text.into();
+        return text;
     }
     let mut escaped = String::new();
     for character in text.chars() {

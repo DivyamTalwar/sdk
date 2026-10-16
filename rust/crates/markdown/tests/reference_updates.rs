@@ -66,7 +66,7 @@ fn batch_replacements_preserve_unchanged_line_allocations() {
             .iter()
             .flat_map(|line| &line.spans)
             .find(|span| span.text == "unaffected")
-            .map(|span| span.text.as_ptr())
+            .and_then(|span| span.text.allocation())
     };
     let before = pointer(&markdown);
     assert!(before.is_some());

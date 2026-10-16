@@ -13,6 +13,7 @@ mod stream_code;
 mod stream_table;
 mod style;
 mod table;
+mod text;
 mod visibility;
 #[cfg(test)]
 mod work;
@@ -25,6 +26,7 @@ use std::{
     ops::Range,
 };
 pub use style::{Color, Line, Span, Style};
+pub use text::Text;
 
 /// Disposable incremental presentation of one append-only Markdown stream.
 /// Completed leaves and fence lines remain behind a parser checkpoint, including
@@ -177,19 +179,8 @@ impl Markdown {
                     self.plain_spaces += appended.len();
                 } else {
                     if let Some(span) = line.spans.last_mut() {
-                        #[cfg(test)]
-                        {
-                            work::copy(self.plain_spaces + visible.len());
-                            if self.plain_spaces > span.text.capacity() - span.text.len() {
-                                work::copy(span.text.len());
-                            }
-                        }
                         span.text
                             .extend(std::iter::repeat_n(' ', self.plain_spaces));
-                        #[cfg(test)]
-                        if visible.len() > span.text.capacity() - span.text.len() {
-                            work::copy(span.text.len());
-                        }
                         span.text.push_str(visible);
                     }
                     self.plain_spaces = appended.len() - visible.len();

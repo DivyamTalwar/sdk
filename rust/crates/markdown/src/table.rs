@@ -97,7 +97,7 @@ impl Table {
                     cells
                         .iter()
                         .flat_map(|cell| &cell.spans)
-                        .map(|span| span.text.len() + std::mem::size_of::<crate::Span>())
+                        .map(|_| std::mem::size_of::<crate::Span>())
                         .sum(),
                 );
                 row(cells.clone(), index == 0, widths, &self.alignments)
@@ -123,7 +123,7 @@ pub(super) fn width(line: &Line) -> usize {
     if let [span] = line.spans.as_slice() {
         #[cfg(test)]
         crate::work::scan(span.text.len());
-        UnicodeWidthStr::width(span.text.as_str())
+        UnicodeWidthStr::width(span.text.as_str().as_ref())
     } else {
         let text = cell_text(line);
         #[cfg(test)]
@@ -138,7 +138,7 @@ fn cell_text(line: &Line) -> String {
     crate::work::copy(length);
     let mut text = String::with_capacity(length);
     for span in &line.spans {
-        text.push_str(&span.text);
+        text.push_str(span.text.as_str().as_ref());
     }
     text
 }

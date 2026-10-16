@@ -273,7 +273,11 @@ fn parsed_table(
 
 #[cfg(test)]
 impl Stream {
-    pub(super) fn retained(&self, targets: &mut HashSet<*const u8>) -> (usize, usize) {
+    pub(super) fn retained(
+        &self,
+        targets: &mut HashSet<*const u8>,
+        texts: &mut HashSet<usize>,
+    ) -> (usize, usize) {
         let mut payload = self.header.capacity();
         let mut metadata = (self.widths.capacity() + self.displayed.capacity())
             * std::mem::size_of::<usize>()
@@ -284,7 +288,9 @@ impl Stream {
             for cell in row {
                 metadata += cell.spans.capacity() * std::mem::size_of::<Span>();
                 for span in &cell.spans {
-                    payload += span.text.capacity();
+                    let (bytes, nodes) = span.text.retained(texts);
+                    payload += bytes;
+                    metadata += nodes;
                     if let Some(target) = &span.link
                         && targets.insert(std::sync::Arc::as_ptr(target).cast::<u8>())
                     {

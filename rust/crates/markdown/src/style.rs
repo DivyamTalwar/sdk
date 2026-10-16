@@ -27,7 +27,7 @@ pub struct Style {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Span {
     /// Visible text, with Markdown delimiters removed.
-    pub text: String,
+    pub text: crate::Text,
     /// Presentation attributes.
     pub style: Style,
     /// Link target, retained independently of the visible label.
@@ -46,8 +46,6 @@ impl Line {
         if text.is_empty() {
             return;
         }
-        #[cfg(test)]
-        crate::work::copy(text.len());
         if let Some(last) = self.spans.last_mut()
             && last.style == style
             && match (&last.link, link) {
@@ -56,10 +54,6 @@ impl Line {
                 _ => false,
             }
         {
-            #[cfg(test)]
-            if last.text.capacity() - last.text.len() < text.len() {
-                crate::work::copy(last.text.len());
-            }
             last.text.push_str(text);
         } else {
             self.push_new(text, style, link);

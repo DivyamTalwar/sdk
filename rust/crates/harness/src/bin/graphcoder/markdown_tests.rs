@@ -39,6 +39,35 @@ fn adapter_maps_all_attributes_and_borrows_text() {
 }
 
 #[test]
+fn shared_chunks_preserve_grapheme_display_width() {
+    for (prefix, suffix, width) in [
+        ("❤", "\u{fe0f}xx", 4),
+        ("👩", "\u{200d}💻xx", 4),
+        ("e", "\u{301}xx", 3),
+        ("👨", "\u{200d}👩\u{200d}👧\u{200d}👦xx", 4),
+    ] {
+        let mut text = acyclic_markdown::Text::from(prefix);
+        let snapshot = text.clone();
+        text.push_str(suffix);
+        let source = [Line {
+            spans: vec![MarkdownSpan {
+                text,
+                ..MarkdownSpan::default()
+            }],
+        }];
+        let converted: Vec<_> = lines(&source).collect();
+        let line = converted.first().expect("one line");
+        assert_eq!(line.width(), width);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(
+            line.spans.first().map(|span| span.content.as_ref()),
+            Some(format!("{prefix}{suffix}").as_str())
+        );
+        assert_eq!(snapshot.as_str(), prefix);
+    }
+}
+
+#[test]
 fn streamed_markdown_renders_to_a_ratatui_buffer_and_wraps() {
     let mut markdown = Markdown::default();
     for delta in [
