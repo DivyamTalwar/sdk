@@ -190,21 +190,6 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
-        let publisher = FilesystemContentPublisher::new(
-            files.clone(),
-            &self.volumes[2],
-            &verifier,
-            &signed,
-            Limits::default().file_bytes,
-            None,
-        )?;
-        let context_manifest = crate::local::turn::default_manifest(
-            publisher.as_ref(),
-            &tools,
-            Limits::default(),
-            None,
-        )
-        .await?;
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -221,7 +206,9 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context_manifest,
+            context_manifest: None,
+            context_read_observer: None,
+            checkout_context: false,
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
