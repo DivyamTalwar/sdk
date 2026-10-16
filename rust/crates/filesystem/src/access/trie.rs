@@ -8,6 +8,8 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod reachability;
+
 #[derive(Clone, Copy)]
 struct Outcome {
     rule: Option<usize>,

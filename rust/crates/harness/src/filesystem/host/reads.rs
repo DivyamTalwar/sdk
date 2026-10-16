@@ -120,10 +120,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         let reference = if let Some(mut staged) = staged {
-            if staged.0.volume() != volume
-                || staged.0.path() != path
-                || staged.0.version() != "pending"
-            {
+            if staged.0.volume() != volume || staged.0.path() != path {
                 return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Storage,

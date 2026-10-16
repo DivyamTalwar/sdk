@@ -8,12 +8,39 @@ impl CheckoutTools {
         ceiling: &Capabilities,
         surface: &'static str,
     ) -> Result<()> {
+        let (_, primary) = self.workspace.mounts.named(None)?;
+        self.require_volume_access(workspace, &primary.view.volume, ceiling, surface)
+            .await?;
+        for (_, mount) in self.workspace.mounts.mounts() {
+            if let Some(source) = &mount.view.source {
+                self.require_volume_access(
+                    source.workspace.workspace(),
+                    &mount.view.volume,
+                    ceiling,
+                    surface,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn require_volume_access(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        volume: &VolumeRef,
+        ceiling: &Capabilities,
+        surface: &'static str,
+    ) -> Result<()> {
         use crate::filesystem::{PreparationIo, access};
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        if crate::core::filesystem_scope_label(ceiling, &mut None)?.is_none()
-            && (!ceiling.contains(&self.read_grant) || !ceiling.contains(&self.write_grant))
-        {
-            return Err(Error::FilesystemAccessConfiguration(surface));
+        for grants in [ceiling, self.signed.capabilities()] {
+            if crate::core::filesystem_scope_label(grants, &mut None)?.is_none()
+                && (!grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
+                    || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?))
+            {
+                return Err(Error::FilesystemAccessConfiguration(surface));
+            }
         }
         let label = crate::core::filesystem_scope_label(self.signed.capabilities(), &mut None)?;
         let payload = match label {

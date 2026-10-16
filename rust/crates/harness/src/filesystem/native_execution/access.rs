@@ -130,6 +130,60 @@ pub struct NativeAccessAuthority<'a> {
     pub ceiling: &'a crate::Capabilities,
 }
 
+/// Bind a host owner's exact-volume grant through the shared policy compiler.
+pub async fn owner_mount_options<A, O>(
+    workspace: &Workspace<A, O>,
+    issuer: &crate::core::AuthorityIssuer,
+    agent: Option<crate::AgentId>,
+    writable: bool,
+    work: &NativeMaterializationWork,
+) -> Result<acyclic_fs::MountOptions>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+    let capability = Capability {
+        layers: vec![vec![Grant {
+            actions: if writable {
+                Action::ALL.into_iter().collect()
+            } else {
+                [Action::List, Action::Read, Action::ReadHistory]
+                    .into_iter()
+                    .collect()
+            },
+            resource: ResourcePattern {
+                lineage_root: None,
+                volume: Some(
+                    uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string(),
+                ),
+                generations: Generations::All,
+                path: "**".into(),
+            },
+        }]],
+        expires_at: None,
+    };
+    let grants = crate::Capabilities::new([capability
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]);
+    let scope = issuer.issue("native-volume", &grants, agent, None, &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let generation = workspace.head(work, work.cancellation()).await?.id();
+    authenticated_mount_options(
+        workspace,
+        generation,
+        NativeAccessAuthority {
+            verifier: &verifier,
+            scope: &scope,
+            ceiling: &grants,
+        },
+        writable,
+        work,
+    )
+    .await
+    .map(|options| options.native_context(work, None, Some(work)))
+}
+
 /// Compile persisted policy and retain the same authenticated refresh owner.
 pub async fn authenticated_mount_options<A, O>(
     workspace: &Workspace<A, O>,

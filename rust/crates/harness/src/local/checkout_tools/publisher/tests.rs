@@ -5,6 +5,7 @@ struct Fixture {
     project: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     workspace: Option<Arc<LocalWorkspace>>,
     _state: tempfile::TempDir,
 }
@@ -42,6 +43,14 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         VolumeOwner::Project("publisher".into()),
         &mut None,
     )?;
+    let agent = crate::AgentId::from_bytes([1; 16]);
+    let private = VolumeRef::new(
+        provider.clone(),
+        "task-files".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
@@ -52,11 +61,14 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         workspace::open(
             &filesystem,
             &project,
+            &private,
             directory.path(),
             state.path(),
             Some(identity),
             acyclic_fs::OperationId::new(),
             false,
+            false,
+            None,
         )
         .await?,
     );
@@ -75,17 +87,28 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         &Capabilities::new([
             project.capability(VolumeOperation::Read, &mut None)?,
             project.capability(VolumeOperation::Write, &mut None)?,
+            private.capability(VolumeOperation::Read, &mut None)?,
+            private.capability(VolumeOperation::Write, &mut None)?,
         ]),
-        Some(crate::AgentId::from_bytes([1; 16])),
+        Some(agent),
         None,
         &mut None,
     )?;
+    let stream = Arc::new(
+        LocalStream::open(state.path().join("stream"), Default::default())
+            .await
+            .map_err(storage)?,
+    );
+    let task_files = Arc::new(
+        crate::task_volume::TaskFiles::open(stream, &private, &verifier, &signed, 65536).await?,
+    );
     let tools = Arc::new(
         CheckoutTools::new(
             workspace.clone(),
             &project,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &signed,
+            task_files.clone(),
         )
         .await?,
     );
@@ -97,6 +120,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
             project,
             verifier,
             signed,
+            task_files,
             workspace: Some(workspace),
             _state: state,
         },
@@ -139,13 +163,14 @@ async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> 
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
+        Arc::clone(&harness.task_files),
     )
     .await?;
     assert_eq!(
         workspace
             .selection_reads
             .load(std::sync::atomic::Ordering::Relaxed),
-        before + 1,
+        before,
         "open reloaded Git state after selecting the checkout"
     );
     Ok(())
@@ -364,7 +389,7 @@ proptest::proptest! {
             // replacement reference. stage_at must reject the earlier head.
             std::fs::write(_directory.path().join("user-sibling.txt"), b"user edit").map_err(storage)?;
             let fresh = serialized(&publisher.tools.state, async |mut state| {
-                let State { active, watcher } = &mut *state;
+                let State { active, watcher, .. } = &mut *state;
                 let view = active.as_ref().unwrap_or_else(|| publisher.tools.workspace.view());
                 publisher.tools.capture(view, watcher, OperationId::new(), 0, PublicationPermit::Unrestricted).await?;
                 let host = harness.files.for_workspace(&harness.project, view.workspace().clone())?;
@@ -631,6 +656,32 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
     assert_eq!(
         std::fs::read(directory.path().join("secrets/key")).map_err(storage)?,
         b"must not be disclosed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> {
+    let (_directory, harness, publisher) = fixture().await?;
+    let workspace = publisher.tools.workspace.clone();
+    let before = workspace
+        .selection_reads
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(before, 1, "initial binding must select the checkout once");
+    CheckoutTools::new(
+        workspace.clone(),
+        &harness.project,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        &harness.signed,
+        Arc::clone(&harness.task_files),
+    )
+    .await?;
+    assert_eq!(
+        workspace
+            .selection_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before,
+        "another binding reloaded the already selected checkout"
     );
     Ok(())
 }

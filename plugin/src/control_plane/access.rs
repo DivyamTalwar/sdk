@@ -1,9 +1,6 @@
 //! Host-managed mounts use the service-authenticated route, never request claims.
 use super::*;
-use acyclic_harness::{
-    Capabilities,
-    core::{AggregateKind, Authority, AuthorityIssuer},
-};
+use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 
 pub(super) async fn root_workspace(fs: &LocalFs, name: &str) -> Result<LocalWorkspace, String> {
     let mut operation = [0; 16];
@@ -28,31 +25,12 @@ pub(super) async fn mount_options(
     workspace: &LocalWorkspace,
     agent: &str,
 ) -> Result<MountOptions, String> {
-    use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
-    use acyclic_harness::filesystem::{NativeAccessAuthority, authenticated_mount_options};
     use ring::rand::SecureRandom as _;
     acyclic_fs::initialize_native_mount_services().map_err(display)?;
     acyclic_native_runtime::initialize_native_io_services().map_err(display)?;
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| display(cause))?;
-    // The private service catalog authorizes this exact route. Its capability
-    // names only this workspace, and the persisted volume policy still limits it.
-    let capability = Capability {
-        layers: vec![vec![Grant {
-            actions: Action::ALL.into_iter().collect(),
-            resource: ResourcePattern {
-                lineage_root: None,
-                volume: Some(
-                    uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string(),
-                ),
-                generations: Generations::All,
-                path: "**".into(),
-            },
-        }]],
-        expires_at: None,
-    };
-    let grants = Capabilities::new([capability.to_scope_label().map_err(display)?]);
     let mut key = [0; 32];
     ring::rand::SystemRandom::new()
         .fill(&mut key)
@@ -66,33 +44,10 @@ pub(super) async fn mount_options(
         },
     );
     key.fill(0);
-    let verifier = issuer.verifier(&mut None).map_err(display)?;
-    let scope = issuer
-        .issue("native-route", &grants, None, None, &mut None)
-        .map_err(display)?;
-    let generation = workspace
-        .head(&work, &cancellation)
+    acyclic_harness::filesystem::owner_mount_options(workspace, &issuer, None, true, &work)
         .await
-        .map_err(display)?
-        .id();
-    authenticated_mount_options(
-        workspace,
-        generation,
-        NativeAccessAuthority {
-            verifier: &verifier,
-            scope: &scope,
-            ceiling: &grants,
-        },
-        true,
-        &work,
-    )
-    .await
-    .map(|options| {
-        options
-            .publication(acyclic_fs::MountPublication::Manual)
-            .native_context(&work, None, Some(&work))
-    })
-    .map_err(display)
+        .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
+        .map_err(display)
 }
 
 #[cfg(test)]
