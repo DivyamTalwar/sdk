@@ -345,6 +345,26 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
                 .await
         })
     }
+    fn file_publication_condition(
+        &self,
+    ) -> BoxFuture<'_, Result<(acyclic_stream::CommitCondition, Option<u64>)>> {
+        Box::pin(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.native_custody.is_some() {
+                return Err(Error::Unsupported(
+                    "task file publication requires ordinary execution".into(),
+                ));
+            }
+            let condition = self
+                .owner
+                .condition(crate::distributed::JournalWrite::Fresh, &mut None)
+                .await?;
+            Ok((
+                condition,
+                self.owner.admission().run_limits.deadline_epoch_ms,
+            ))
+        })
+    }
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -400,8 +420,8 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
 }
 
-mod context;
 mod content;
+mod context;
 mod dispatch;
 mod execution;
 mod interactions;

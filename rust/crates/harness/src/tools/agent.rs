@@ -118,6 +118,11 @@ impl ToolExecutor for AgentExecutor {
                 "agent call differs from its task authority".into(),
             ));
         }
+        if context.task().owned_mailbox.is_none() {
+            return Err(Error::Unauthorized(
+                "agent requires an execution owner".into(),
+            ));
+        }
         if context.task().harness.task_files.is_none() {
             return Err(Error::Unsupported("agent task files are not bound".into()));
         }
@@ -150,6 +155,7 @@ impl ToolExecutor for AgentExecutor {
                 invocation.operation_id,
                 context.effective_scope().limits(),
                 false,
+                context.task().owned_mailbox.as_deref(),
             )
             .await
             .and_then(|value| {
@@ -185,6 +191,7 @@ impl ToolExecutor for AgentExecutor {
                 invocation.operation_id,
                 context.effective_scope().limits(),
                 true,
+                context.task().owned_mailbox.as_deref(),
             )
             .await
             .map(|result| result.map(|value| ToolResult { value }))
@@ -198,6 +205,7 @@ async fn access<P: StreamProvider + ?Sized>(
     operation: crate::OperationId,
     limits: Limits,
     reconcile_only: bool,
+    owner: Option<&dyn crate::runtime::OwnedTaskMailbox>,
 ) -> Result<Option<Value>> {
     let maximum_bytes = usize::try_from(limits.render_bytes).map_err(invalid)?;
     let (reference, write, wait) = match command {
@@ -311,10 +319,16 @@ async fn access<P: StreamProvider + ?Sized>(
                 return Ok(None);
             }
         } else {
-            files
-                .write(snapshot.generation, &file)
-                .await
-                .map_err(storage)?;
+            match owner {
+                Some(owner) => {
+                    let (condition, deadline) = owner.file_publication_condition().await?;
+                    files
+                        .write_if(snapshot.generation, &file, condition, deadline)
+                        .await
+                }
+                None => files.write(snapshot.generation, &file).await,
+            }
+            .map_err(storage)?;
         }
         values.retain(|previous| previous.key != file.key);
         values.push(file);

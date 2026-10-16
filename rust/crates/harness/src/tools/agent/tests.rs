@@ -126,6 +126,7 @@ async fn call(
         operation,
         limits(),
         false,
+        None,
     )
     .await
     .map(|result| result.unwrap())
@@ -278,6 +279,7 @@ async fn reconciliation_does_not_reapply_a_superseded_control() {
         operation,
         limits(),
         true,
+        None,
     )
     .await
     .unwrap();
@@ -302,7 +304,8 @@ async fn reconciliation_does_not_reapply_a_superseded_control() {
             serde_json::from_value(pause).unwrap(),
             operation,
             limits(),
-            true
+            true,
+            None,
         )
         .await
         .unwrap()
@@ -413,7 +416,8 @@ async fn agent_file_access_retains_the_callers_file_and_snapshot_bounds() {
             serde_json::from_value(spawn.clone()).unwrap(),
             operation,
             restricted,
-            false
+            false,
+            None,
         )
         .await
         .is_err()
@@ -441,7 +445,8 @@ async fn agent_file_access_retains_the_callers_file_and_snapshot_bounds() {
             },
             operation,
             restricted,
-            false
+            false,
+            None,
         )
         .await
         .is_err()

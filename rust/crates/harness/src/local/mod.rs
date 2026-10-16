@@ -184,9 +184,13 @@ impl LocalHarness {
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
             let stream = Arc::new(
-                LocalStream::open(directory.join("stream"), Default::default())
-                    .await
-                    .map_err(storage)?,
+                LocalStream::open_with_clock(
+                    directory.join("stream"),
+                    Default::default(),
+                    config.clock.clone(),
+                )
+                .await
+                .map_err(storage)?,
             );
             let issuer = AuthorityIssuer::new(
                 "acyclic.local",

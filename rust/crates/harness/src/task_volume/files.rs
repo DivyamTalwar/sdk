@@ -67,6 +67,19 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
+    pub(crate) async fn write_if(
+        &self,
+        expected: Generation,
+        file: &FileValue,
+        condition: acyclic_stream::CommitCondition,
+        deadline: Option<u64>,
+    ) -> super::Result<Generation> {
+        authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
+        self.inner
+            .append_if(expected, file, vec![condition], deadline)
+            .await
+    }
+
     /// Captures an atomic snapshot and push follow, or resumes a durable cursor.
     pub async fn observe(
         &self,

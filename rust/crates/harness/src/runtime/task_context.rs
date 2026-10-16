@@ -16,6 +16,9 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
+    fn file_publication_condition(
+        &self,
+    ) -> BoxFuture<'_, Result<(acyclic_stream::CommitCondition, Option<u64>)>>;
     fn send<'a>(
         &'a self,
         recipient: TaskId,

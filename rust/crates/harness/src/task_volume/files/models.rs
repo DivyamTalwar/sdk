@@ -247,81 +247,244 @@ fn concurrent_child_controls_use_the_running_child_cut() {
     );
 }
 
-fn child_completion_race(broken: bool) {
-    use crate::task_volume::{ChildFile, ChildState, ChildStatus, Control};
+fn child_file(file: crate::task_volume::ChildFile, bytes: Vec<u8>) -> FileValue {
+    FileValue::new(
+        FileKey::Child {
+            reference: Component::new("worker").unwrap(),
+            file,
+        },
+        bytes,
+    )
+}
+
+fn child_status(status: crate::task_volume::ChildStatus) -> FileValue {
+    child_file(
+        crate::task_volume::ChildFile::Status,
+        serde_json::to_vec(&status).unwrap(),
+    )
+}
+
+fn running_child(
+    settled: bool,
+) -> (
+    Arc<TaskFiles<MemoryStream>>,
+    super::super::Generation,
+    crate::task_volume::ChildStatus,
+) {
+    use crate::task_volume::{ChildFile, ChildState, ChildStatus};
     let files = files();
-    let reference = Component::new("worker").unwrap();
-    let key = |file| FileKey::Child {
-        reference: reference.clone(),
-        file,
-    };
-    let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
-        .unwrap()
-        .snapshot
-        .unwrap();
+    let snapshot =
+        loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
     let cut = loom::future::block_on(Box::pin(files.write(
         snapshot.generation,
-        &FileValue::new(key(ChildFile::Request), b"work".to_vec()),
+        &child_file(ChildFile::Request, b"work".to_vec()),
     )))
     .unwrap();
     let running = ChildStatus {
         task: crate::TaskId::from_bytes([7; 16]),
         state: ChildState::Running,
-        settled: false,
+        settled,
         inputs: 1,
     };
-    let status =
-        |status| FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap());
-    let cut = loom::future::block_on(Box::pin(files.inner.append(cut, &status(running)))).unwrap();
-    let cancelled = FileValue::new(key(ChildFile::Control), Control::Cancel.bytes().to_vec());
+    let cut =
+        loom::future::block_on(Box::pin(files.inner.append(cut, &child_status(running)))).unwrap();
+    (files, cut, running)
+}
+
+fn child_completion_race(broken: bool) {
+    use crate::task_volume::{ChildFile, ChildStatus, Control};
+    let (files, cut, running) = running_child(false);
+    let cancelled = child_file(ChildFile::Control, Control::Cancel.bytes().to_vec());
     let writer = reopen(&files);
     let write = cancelled.clone();
     let controller = loom::thread::spawn(move || {
         loom::future::block_on(Box::pin(writer.write(cut, &write))).is_ok()
     });
-    let completion = status(ChildStatus {
+    let completion = child_status(ChildStatus {
         settled: true,
         ..running
     });
-    let completed = loom::future::block_on(Box::pin(files.inner.append(cut, &completion))).is_ok();
-    assert_ne!(controller.join().unwrap(), completed);
-    let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
-        .unwrap()
-        .snapshot
-        .unwrap();
-    let cut =
-        loom::future::block_on(Box::pin(files.write(snapshot.generation, &cancelled))).unwrap();
-    if broken {
-        // Negative control: a worker loses the terminal control in its cached
-        // view but retains the current publication cut. All real append locks,
-        // validation and provider commit conditions still execute below.
-        let mut index = loom::future::block_on(Box::pin(files.inner.index.lock()));
-        index.files.remove(&cancelled.key);
-    }
-    let late = loom::future::block_on(Box::pin(files.inner.append(cut, &completion)));
-    assert!(
-        late.is_err(),
-        "terminal control allowed a late running status"
+    let (cancelled, completed) = if broken {
+        // Negative control: lose a terminal control from a cache while using
+        // its fresh cut. The actual validation, locks and provider still run.
+        assert!(controller.join().unwrap());
+        let snapshot =
+            loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
+        loom::future::block_on(Box::pin(files.inner.index.lock()))
+            .files
+            .remove(&cancelled.key);
+        (
+            true,
+            loom::future::block_on(Box::pin(
+                files.inner.append(snapshot.generation, &completion),
+            ))
+            .is_ok(),
+        )
+    } else {
+        let completed =
+            loom::future::block_on(Box::pin(files.inner.append(cut, &completion))).is_ok();
+        (controller.join().unwrap(), completed)
+    };
+    assert_ne!(
+        cancelled, completed,
+        "conflicting child completion and control both committed"
     );
-    let acknowledged = status(ChildStatus {
-        state: ChildState::Cancelled,
-        settled: true,
-        ..running
-    });
-    let cut = loom::future::block_on(Box::pin(files.inner.append(cut, &acknowledged))).unwrap();
-    let changed = status(ChildStatus {
-        inputs: 2,
-        state: ChildState::Cancelled,
-        settled: true,
-        ..running
-    });
-    assert!(loom::future::block_on(Box::pin(files.inner.append(cut, &changed))).is_err());
+    let snapshot =
+        loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
+    let observed = snapshot
+        .files
+        .iter()
+        .find(|file| {
+            matches!(
+                file.key,
+                FileKey::Child {
+                    file: ChildFile::Status,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        observed,
+        &if completed {
+            completion
+        } else {
+            child_status(running)
+        }
+    );
+}
+
+fn child_terminal_freeze(broken: bool) {
+    use crate::task_volume::{ChildFile, ChildState, ChildStatus, Control};
+    // These are exactly the two successful race outcomes above: the original
+    // running status or its settled replacement. Exhaust the serial suffix for
+    // each, outside the concurrent prefix's scheduling state space.
+    for settled in [false, true] {
+        let (files, cut, running) = running_child(settled);
+        let cancelled = child_file(ChildFile::Control, Control::Cancel.bytes().to_vec());
+        let cut = loom::future::block_on(Box::pin(files.write(cut, &cancelled))).unwrap();
+        if broken {
+            loom::future::block_on(Box::pin(files.inner.index.lock()))
+                .files
+                .remove(&cancelled.key);
+        }
+        let completion = child_status(ChildStatus {
+            settled: true,
+            ..running
+        });
+        assert!(
+            loom::future::block_on(Box::pin(files.inner.append(cut, &completion))).is_err(),
+            "terminal control allowed a late running status"
+        );
+        let acknowledged = child_status(ChildStatus {
+            state: ChildState::Cancelled,
+            settled: true,
+            ..running
+        });
+        let cut = loom::future::block_on(Box::pin(files.inner.append(cut, &acknowledged))).unwrap();
+        let changed = child_status(ChildStatus {
+            inputs: 2,
+            state: ChildState::Cancelled,
+            settled: true,
+            ..running
+        });
+        assert!(loom::future::block_on(Box::pin(files.inner.append(cut, &changed))).is_err());
+    }
 }
 
 #[test]
 fn child_completion_is_fenced_by_control_until_a_frozen_quiescent_acknowledgement() {
     check(
         child_completion_race,
+        "conflicting child completion and control both committed",
+    );
+    check(
+        child_terminal_freeze,
         "terminal control allowed a late running status",
+    );
+}
+
+fn parent_cancellation_race(broken: bool) {
+    use crate::task_volume::ChildFile;
+    use acyclic_stream::{AppendOutcome, AppendRequest, CommitCondition};
+    let files = files();
+    let provider = files.inner.provider.clone();
+    let parent = StreamPath::new("parent-owner").unwrap();
+    let seed = loom::future::block_on(Box::pin(provider.append(AppendRequest {
+        path: parent.clone(),
+        records: vec![b"running".to_vec().into()],
+        if_tail: Some(0),
+        idempotency_key: None,
+    })))
+    .unwrap();
+    assert!(matches!(seed, AppendOutcome::Committed(_)));
+    let condition = CommitCondition::Tail {
+        path: parent.clone(),
+        expected: 1,
+    };
+    let snapshot =
+        loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
+    let cancel = loom::thread::spawn(move || {
+        let result = loom::future::block_on(Box::pin(provider.append(AppendRequest {
+            path: parent,
+            records: vec![b"cancelled".to_vec().into()],
+            if_tail: Some(1),
+            idempotency_key: None,
+        })))
+        .unwrap();
+        assert!(matches!(result, AppendOutcome::Committed(_)));
+    });
+    let request = |reference| {
+        FileValue::new(
+            FileKey::Child {
+                reference: Component::new(reference).unwrap(),
+                file: ChildFile::Request,
+            },
+            b"work".to_vec(),
+        )
+    };
+    let first = request("first");
+    let result = if broken {
+        loom::future::block_on(Box::pin(files.write(snapshot.generation, &first)))
+    } else {
+        loom::future::block_on(Box::pin(files.write_if(
+            snapshot.generation,
+            &first,
+            condition.clone(),
+            None,
+        )))
+    };
+    cancel.join().unwrap();
+    let snapshot =
+        loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
+    if result.is_ok() {
+        assert_eq!(snapshot.files, vec![first]);
+    } else {
+        assert!(matches!(result, Err(Error::FenceConflict)));
+        assert!(snapshot.files.is_empty());
+    }
+    let late = request("late");
+    let result = if broken {
+        // Negative control: omit the same owner condition from the real commit.
+        loom::future::block_on(Box::pin(files.write(snapshot.generation, &late)))
+    } else {
+        loom::future::block_on(Box::pin(files.write_if(
+            snapshot.generation,
+            &late,
+            condition,
+            None,
+        )))
+    };
+    assert!(
+        matches!(result, Err(Error::FenceConflict)),
+        "cancelled parent published a late child request"
+    );
+}
+
+#[test]
+fn parent_cancellation_fences_child_file_publication() {
+    check(
+        parent_cancellation_race,
+        "cancelled parent published a late child request",
     );
 }
