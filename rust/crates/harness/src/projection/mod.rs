@@ -3,6 +3,10 @@
 mod artifacts;
 pub(crate) use artifacts::{read_tool_call, read_value};
 mod attachments;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod custody_tests;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod recorded_invocation_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
