@@ -70,7 +70,7 @@ impl Cursor {
 }
 
 impl CheckoutTools {
-    pub(super) async fn capture(
+    pub(in crate::local) async fn capture(
         &self,
         view: &workspace::View,
         slot: &mut Option<Cursor>,

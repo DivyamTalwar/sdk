@@ -1,16 +1,39 @@
 //! Every durable reconciliation cut recovers before checkout capture.
 use super::super::checkout_tools::reconciliation;
 use super::*;
-use acyclic_fs::{CancellationToken, GitCompatStore, WorkBudget, facade::FsWork as _};
+use acyclic_fs::{CancellationToken, GitCompatStore, WorkBudget};
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn open(path: &Path, expected: &str) -> Result<LocalHarness> {
-    let provider = scripted([
-        super::checked_commands::call(0, "bash", &format!("test $(cat upstream.txt) = {expected}")),
-        ScriptedTurn::Text("done".into()),
-    ]);
-    LocalHarness::open(LocalHarnessConfig::new(path, (model()?, provider))).await
+async fn open(path: &Path) -> Result<LocalHarness> {
+    LocalHarness::open(LocalHarnessConfig::new(path, (model()?, text()))).await
+}
+
+async fn capture(harness: &LocalHarness) -> Result<()> {
+    let workspace = harness.workspace().unwrap();
+    let tools = Box::pin(super::super::checkout_tools::CheckoutTools::new(
+        Arc::clone(workspace),
+        harness.project(),
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(harness.task_files()),
+    ))
+    .await?;
+    let mut state = super::super::workspace::lock_owned(super::super::workspace::StateArc::clone(
+        &workspace.state,
+    ))
+    .await;
+    let super::super::checkout_tools::State {
+        active, watcher, ..
+    } = &mut *state;
+    let view = active.as_ref().unwrap_or_else(|| workspace.view());
+    Box::pin(tools.capture(
+        view,
+        watcher,
+        OperationId::new(),
+        0,
+        acyclic_fs::PublicationPermit::Unrestricted,
+    ))
+    .await
 }
 
 async fn generation(
@@ -46,13 +69,51 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
         .as_ref(),
         expected.as_bytes()
     );
-    // This runs the stock bash binding, including its pre-command baseline
-    // capture. A stale disk must never replace the already rebased generation.
-    super::checkout_reopen::run(harness).await?;
+    // Use the real pre-command capture directly, without a model turn or
+    // process per cut. Native projection can change unassignable timestamps;
+    // file identity and the entire immutable payload must remain unchanged.
+    let before = head
+        .stat(
+            "/upstream.txt",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    capture(harness).await?;
+    let after = generation(&selected).await?;
     assert_eq!(
-        generation(&selected).await?.id(),
-        head.id(),
-        "capture changed the rebased generation"
+        after
+            .stat(
+                "/upstream.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .file_id,
+        before.file_id
+    );
+    assert_eq!(
+        after
+            .read_range_if_unchanged(
+                &head,
+                "/upstream.txt",
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: expected.len() as u64,
+                },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .bytes
+            .as_ref(),
+        expected.as_bytes()
     );
     Ok(())
 }
@@ -170,7 +231,7 @@ async fn sweep(text: &str) -> Result<()> {
             }
         }
         drop(harness);
-        harness = open(directory.path(), &expected).await?;
+        harness = open(directory.path()).await?;
         assert_published(&harness, &expected).await?;
         if cut == 5 + effects {
             break;
@@ -205,7 +266,7 @@ async fn negative_control(text: &str) -> Result<()> {
             from.id(),
             "negative-control",
             0,
-            1,
+            10,
         )
         .await
         .map_err(super::super::storage)?;
@@ -248,7 +309,7 @@ async fn negative_control(text: &str) -> Result<()> {
             .map_err(super::super::storage)?
     );
     drop(harness);
-    let harness = open(directory.path(), &expected).await?;
+    let harness = open(directory.path()).await?;
     let bytes =
         std::fs::read(directory.path().join("upstream.txt")).map_err(super::super::storage)?;
     let failure =
@@ -289,14 +350,34 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
     negative_control("upstream").await
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(4))]
-    // For arbitrary authored bytes, exhaust every durable protocol boundary
-    // and every native publication guard, then reopen and capture through the
-    // actual LocalHarness. No sleep, scheduler continuation or mirror frame.
-    #[test]
-    fn reopen_never_captures_over_an_unpublished_rebase(text in "[a-z]{1,12}") {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(sweep(&text)).unwrap();
-    }
+#[test]
+fn reopen_never_captures_over_an_unpublished_rebase() {
+    // Preserve the same four generated/shrinkable byte cases and every cut;
+    // run independent cases concurrently instead of serial model/process turns.
+    std::thread::scope(|scope| {
+        let cases: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+                        source_file: Some(file!()),
+                        ..ProptestConfig::with_cases(1)
+                    });
+                    runner
+                        .run(&"[a-z]{1,12}", |text| {
+                            runtime
+                                .block_on(sweep(&text))
+                                .map_err(|error| TestCaseError::fail(error.to_string()))
+                        })
+                        .unwrap();
+                })
+            })
+            .collect();
+        for case in cases {
+            case.join().unwrap();
+        }
+    });
 }

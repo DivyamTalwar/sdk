@@ -47,22 +47,29 @@ fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant>
     );
     let scope = issuer.issue(
         "owner",
-        &Capabilities::new([
-            volume.capability(operation, &mut None)?,
-            volume.directory_read_capability("", &mut None)?,
-        ]),
+        &Capabilities::new([volume.capability(operation, &mut None)?]),
         Some(AgentId::from_bytes([1; 16])),
         None,
         &mut None,
     )?;
-    let grant = ContentGrant::verify(
-        &issuer.verifier(&mut None)?,
-        &scope,
-        &volume,
-        operation,
-        u64::MAX,
-        &mut None,
-    )?;
+    let grant = if operation == VolumeOperation::Read {
+        ContentGrant::verify_directory_read(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            volume,
+            "",
+            &mut None,
+        )?
+    } else {
+        ContentGrant::verify(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            volume,
+            operation,
+            u64::MAX,
+            &mut None,
+        )?
+    };
     Ok(grant)
 }
 
