@@ -70,6 +70,10 @@ path = "tests/accounting_reconciliation.rs"
 required-features = ["memory"]
 
 [[test]]
+name = "accounting_layout"
+path = "tests/accounting_layout.rs"
+
+[[test]]
 name = "workspace_reads"
 path = "tests/workspace_reads.rs"
 required-features = ["memory"]

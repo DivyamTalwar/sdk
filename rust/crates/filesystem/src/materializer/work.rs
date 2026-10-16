@@ -29,9 +29,9 @@ macro_rules! demand_calls {
     )*};
 }
 impl NativeMaterializationWork {
-    /// Bytes retained by the original shared ledger.
+    /// Complete Arc allocation retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
-        std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64
+        std::mem::size_of::<([usize; 2], crate::demand::NativeDemandReadMeter)>() as u64
     }
     /// Admits the original ledger before sharing it.
     pub fn new(
