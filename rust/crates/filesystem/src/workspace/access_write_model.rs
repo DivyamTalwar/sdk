@@ -3,14 +3,16 @@ use super::*;
 use crate::{Fs, WorkCounters};
 use std::{
     future::Future,
-    pin::pin,
     task::{Context, Poll, Waker},
 };
 
 type ModelTransaction = Transaction<crate::MemoryAuthorityStore, crate::MemoryObjectStore>;
 
-fn ready<F: Future>(future: F) -> F::Output {
-    match pin!(future)
+fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
+    // Build SDK futures in the same short heap frame used by native callbacks.
+    // Keeping them in this driver would exhaust Loom's coroutine stack before
+    // the modeled authority locks can run.
+    match crate::heap_future::in_heap(create)
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
     {
@@ -20,12 +22,13 @@ fn ready<F: Future>(future: F) -> F::Output {
 }
 
 fn commit(transaction: &mut ModelTransaction) -> bool {
+    let cancel = CancellationToken::new();
     matches!(
-        ready(transaction.commit::<WorkspaceError, _, _>(
+        ready(|| transaction.commit::<WorkspaceError, _, _>(
             None,
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            &cancel,
             |_| std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
                 work: WorkCounters::UNCHARGED,
@@ -48,46 +51,55 @@ fn model(check_base: bool) {
             crate::EmbeddedCapabilities::MEMORY,
         );
         let cancel = CancellationToken::new();
-        let workspace = ready(fs.create_workspace("access-write", WorkBudget::UNBOUNDED, &cancel))
+        let workspace =
+            ready(|| fs.create_workspace("access-write", WorkBudget::UNBOUNDED, &cancel))
+                .unwrap()
+                .value;
+        let authorized = ready(|| workspace.head(WorkBudget::UNBOUNDED, &cancel))
             .unwrap()
             .value;
-        let authorized = ready(workspace.head(WorkBudget::UNBOUNDED, &cancel))
-            .unwrap()
-            .value;
-        let mut revocation = ready(workspace.begin_transaction(
-            IdempotencyKey::new(),
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        ))
+        let mut revocation = ready(|| {
+            workspace.begin_transaction(
+                IdempotencyKey::from_bytes([1; 16]),
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+        })
         .unwrap()
         .value;
-        ready(revocation.checkout.write_access_policy(
-            br#"{"schema_version":1,"version":2,"layers":[]}"#,
-            crate::NamedAttributeWriteMode::Create,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        ))
+        ready(|| {
+            revocation.checkout.write_access_policy(
+                br#"{"schema_version":1,"version":2,"layers":[]}"#,
+                crate::NamedAttributeWriteMode::Create,
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+        })
         .unwrap();
         let revoker = loom::thread::spawn(move || commit(&mut revocation));
-        let key = IdempotencyKey::new();
+        let key = IdempotencyKey::from_bytes([2; 16]);
         let mut write = if check_base {
-            ready(workspace.begin_transaction_at(&authorized, key, WorkBudget::UNBOUNDED, &cancel))
-                .unwrap()
-                .value
+            ready(|| {
+                workspace.begin_transaction_at(&authorized, key, WorkBudget::UNBOUNDED, &cancel)
+            })
+            .unwrap()
+            .value
         } else {
             // Negative control: the deleted pinned constructor paired Exact's
             // old root with the newly observed head and skipped the stale flag.
-            let checkout = ready(workspace.checkout(
-                GenerationSelector::Exact(authorized.id()),
-                CheckoutMode::tracking_transaction(),
-                WorkBudget::UNBOUNDED,
-                &cancel,
-            ))
+            let checkout = ready(|| {
+                workspace.checkout(
+                    GenerationSelector::Exact(authorized.id()),
+                    CheckoutMode::tracking_transaction(),
+                    WorkBudget::UNBOUNDED,
+                    &cancel,
+                )
+            })
             .unwrap()
             .value;
             Transaction::from_checkout(&workspace, checkout, key, false)
         };
-        ready(write.write_text("/target", "new")).unwrap();
+        ready(|| write.write_text("/target", "new")).unwrap();
         let published = commit(&mut write);
         let revoked = revoker
             .join()
