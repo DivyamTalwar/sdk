@@ -169,18 +169,26 @@ impl Transport for Endpoint {
                 (guard, receiver, source, incoming),
                 |(guard, mut receiver, mut source, incoming)| async move {
                     loop {
-                        match select(receiver.recv(), source.next()).await {
-                            Either::Left((Some(frame), _)) => {
+                        let event = {
+                            let received = receiver.recv();
+                            futures::pin_mut!(received);
+                            match select(received, source.next()).await {
+                                Either::Left((frame, _)) => Either::Left(frame),
+                                Either::Right((frame, _)) => Either::Right(frame),
+                            }
+                        };
+                        match event {
+                            Either::Left(Some(frame)) => {
                                 return Ok(Some((frame?, (guard, receiver, source, incoming))));
                             }
-                            Either::Left((None, _)) => {
+                            Either::Left(None) => {
                                 return Err(incoming
                                     .borrow_mut()
                                     .terminal
                                     .take()
                                     .unwrap_or(StreamError::Unavailable));
                             }
-                            Either::Right((Some(frame), _)) => {
+                            Either::Right(Some(frame)) => {
                                 let bytes = frame.encode_to_vec();
                                 if bytes.len() > MAX_COMMAND_BYTES
                                     || guard.socket.buffered_amount() as usize + bytes.len()
@@ -193,7 +201,7 @@ impl Transport for Endpoint {
                                     .send_with_u8_array(&bytes)
                                     .map_err(|_| StreamError::Unavailable)?;
                             }
-                            Either::Right((None, _)) => return Ok(None),
+                            Either::Right(None) => return Ok(None),
                         }
                     }
                 },
