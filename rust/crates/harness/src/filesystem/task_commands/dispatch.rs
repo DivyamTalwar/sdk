@@ -211,6 +211,7 @@ where
         context: &TaskContext,
         command: &WorkflowCommand,
         payload: Value,
+        mail_after: Option<u64>,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<bool> {
         mail::require_native_observer(io)?;
@@ -246,36 +247,8 @@ where
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 let input: MailReceiveTaskCommand = mail::decode_command(payload, io)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                let child = context
-                    .owned_mailbox
-                    .as_ref()
-                    .is_some_and(|owner| super::super::child_agent::is_child(owner.admission().0));
-                #[cfg(target_arch = "wasm32")]
-                let child = super::super::child_agent::is_child(
-                    &self.runtime.admission_observed(task, io).await?,
-                );
-                let after = if child {
-                    let owner = context.owned_mailbox.as_ref().ok_or_else(|| {
-                        super::super::task_runtime::observed::boundary(
-                            io,
-                            crate::wire::ErrorCode::Unauthorized,
-                            "child receive has no original owner",
-                        )
-                    })?;
-                    let (bound, fence) = owner.task_binding();
-                    if bound != task {
-                        return Err(super::super::task_runtime::observed::boundary(
-                            io,
-                            crate::wire::ErrorCode::Unauthorized,
-                            "child receive owner differs",
-                        ));
-                    }
-                    self.child_mail_after(task, fence, command, io).await?
-                } else {
-                    input.after
-                };
-                self.wait_mail(task, after, io).await
+                self.wait_mail(task, mail_after.unwrap_or(input.after), io)
+                    .await
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = mail::decode_command(payload, io)?;
