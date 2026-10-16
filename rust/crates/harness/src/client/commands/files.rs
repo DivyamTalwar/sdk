@@ -10,12 +10,14 @@ impl CommandCatalog {
         }
         let specs: Vec<CommandSpec> = serde_json::from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("invalid command catalog: {error}")))?;
-        let mut names = BTreeSet::new();
+        let mut names = name_index::NameIndex::default();
         let mut commands = BTreeMap::new();
-        for spec in specs {
+        for mut spec in specs {
+            spec.name.make_ascii_lowercase();
+            for alias in &mut spec.aliases { alias.make_ascii_lowercase(); }
             for name in std::iter::once(&spec.name).chain(&spec.aliases) {
                 validate_name(name)?;
-                if !names.insert(name.clone()) {
+                if names.insert(name, &spec.name).is_some() {
                     return Err(Error::Conflict("duplicate command or alias".into()));
                 }
             }
@@ -64,6 +66,7 @@ impl CommandCatalog {
         }
         Ok(Self {
             commands,
+            names,
             themes: Vec::new(),
         })
     }

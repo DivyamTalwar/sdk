@@ -7,7 +7,7 @@ use std::sync::Arc;
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -176,6 +176,13 @@ impl TaskFile {
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
+    /// Ordinary user/config/session files, authorized by their containing volume.
+    Ui {
+        /// Caller-bound config, session or task settings directory.
+        directory: Component,
+        /// Bounded canonical file name, such as commands.json or layout.json.
+        name: Component,
+    },
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
     /// Ordinary editable Markdown in the private volume's plans folder.
@@ -262,6 +269,7 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            [".ui", directory, name] => return Ok(Self::Ui { directory: id(directory)?, name: id(name)? }),
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
                 return Ok(Self::Plan(id(name
@@ -324,6 +332,7 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::Ui { directory, name } => format!(".ui/{}/{}", directory.as_str(), name.as_str()),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
@@ -334,6 +343,7 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
+            Self::Ui { .. } => Owner::Caller,
             Self::Goal | Self::Plan(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
@@ -350,7 +360,7 @@ impl FileKey {
     pub(super) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Goal
+            Self::Ui { .. } | Self::Goal
                 | Self::Plan(_)
                 | Self::Task {
                     file: TaskFile::Status,

@@ -170,8 +170,51 @@ async fn aliases_are_reserved_against_prompts_and_skills() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn syntax_oracle_detects_classification_and_bound_mutants() {
+    use proptest::test_runner::{Config, TestRunner};
+    for mutation in ["slash", "bound"] {
+        let mut runner = TestRunner::new(Config { cases: 32, ..Config::default() });
+        let result = runner.run(&"[a-zA-Z0-9 λ]{1,80}", |text| {
+            let input = format!("/{text}");
+            let maximum = if mutation == "bound" { input.len() as u64 - 1 } else { 1024 };
+            // Deliberate bugs: forward slash commands as chat, or bypass the
+            // caller's byte allowance. The shared fuzz oracle must reject both.
+            let broken = if mutation == "slash" { Ok(None) }
+                else { command_syntax::split(&input, u64::MAX) };
+            prop_assert!(command_oracle::accepts(&input, maximum, &broken));
+            Ok(())
+        });
+        assert!(result.is_err(), "oracle missed {mutation} mutation");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn case_does_not_change_command_arguments(index in 0_usize..30, text in "[a-zA-Z0-9 @:/_-]{1,80}") {
+        let catalog = CommandCatalog::builtins().unwrap();
+        let spec = catalog.commands().nth(index).unwrap();
+        let arguments = match spec.arguments {
+            CommandArguments::None => String::new(),
+            CommandArguments::Word => " MixedCase-Model".into(),
+            _ => format!(" {text}"),
+        };
+        let expected = futures::executor::block_on(catalog.resolve(&format!("/{}{arguments}", spec.name), &DeniedReader, 1024)).unwrap();
+        for name in std::iter::once(&spec.name).chain(&spec.aliases) {
+            let upper = name.to_ascii_uppercase();
+            let actual = futures::executor::block_on(catalog.resolve(&format!("/{upper}{arguments}"), &DeniedReader, 1024)).unwrap();
+            prop_assert_eq!(actual, expected.clone());
+            prop_assert_eq!(catalog.complete(&upper).map(|s| &s.name).collect::<Vec<_>>(), catalog.complete(name).map(|s| &s.name).collect::<Vec<_>>());
+            prop_assert_eq!(catalog.complete_input(&format!("/{upper}")), catalog.complete_input(&format!("/{name}")));
+        }
+    }
+
+    #[test]
+    fn parser_matches_independent_oracle(input in ".{0,128}", maximum in 0_u64..256) {
+        prop_assert!(command_oracle::accepts(&input, maximum, &command_syntax::split(&input, maximum)));
+    }
 
     // Canonical formatting round-trips every accepted slash split, including
     // Unicode whitespace and empty command names/arguments.

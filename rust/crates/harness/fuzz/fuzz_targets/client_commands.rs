@@ -12,6 +12,8 @@ use libfuzzer_sys::fuzz_target;
 
 #[path = "../../src/client/commands/syntax.rs"]
 mod syntax;
+#[path = "../command_oracle.rs"]
+mod command_oracle;
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
@@ -54,6 +56,9 @@ fuzz_target!(|input: &[u8]| {
     };
     let maximum = input.len() as u64;
     let result = syntax::split(input, maximum);
+    assert!(command_oracle::accepts(input, maximum, &result));
+    let bounded = maximum.saturating_sub(1);
+    assert!(command_oracle::accepts(input, bounded, &syntax::split(input, bounded)));
     if input.is_empty() {
         assert!(result.is_err());
     } else if let Some((name, arguments)) = result.expect("positive exact input bound") {

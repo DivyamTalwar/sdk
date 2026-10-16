@@ -25,6 +25,12 @@ mod client_command_parity;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../src/client/commands/syntax.rs"]
 mod command_syntax;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/name_index.rs"]
+mod command_name_index;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../fuzz/command_oracle.rs"]
+mod command_oracle;
 
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,

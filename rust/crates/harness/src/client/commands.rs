@@ -15,6 +15,9 @@ mod presentation;
 pub use presentation::*;
 mod files;
 mod syntax;
+mod name_index;
+mod session;
+pub use session::CommandSession;
 pub use files::*;
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
@@ -292,6 +295,8 @@ pub enum CommandResolution {
 #[derive(Clone, Debug, Serialize)]
 pub struct CommandCatalog {
     commands: BTreeMap<String, CommandSpec>,
+    #[serde(skip)]
+    names: name_index::NameIndex,
     themes: Vec<String>,
 }
 
@@ -381,7 +386,7 @@ impl CommandCatalog {
                             if entry.kind != PrivateDirectoryEntryKind::File {
                                 return Err(Error::Invalid("command entry is not a file".into()));
                             }
-                            let name = format!("{namespace}{stem}");
+                            let name = format!("{namespace}{stem}").to_ascii_lowercase();
                             validate_name(&name)?;
                             if !names.insert(name.clone()) {
                                 return Err(Error::Conflict(format!("duplicate command: {name}")));
@@ -404,12 +409,9 @@ impl CommandCatalog {
                                             "duplicate command: {name}"
                                         )));
                                     }
+                                } else {
+                                    return Err(Error::Conflict(format!("reserved command: {name}")));
                                 }
-                            }
-                            if catalog.lookup(&name).is_some_and(|spec| {
-                                !matches!(spec.action, CommandAction::Prompt { .. })
-                            }) {
-                                return Err(Error::Conflict(format!("reserved command: {name}")));
                             }
                             source.validate(&mut None)?;
                             let prefix = reader
@@ -442,6 +444,7 @@ impl CommandCatalog {
                             if description.trim().is_empty() || description.contains('\0') {
                                 return Err(Error::Invalid("invalid command description".into()));
                             }
+                            let _ = catalog.names.insert(&name, &name);
                             catalog.commands.insert(
                                 name.clone(),
                                 CommandSpec {
@@ -458,7 +461,7 @@ impl CommandCatalog {
             }
         }
         for skill in discover_skills(reader, skill_roots, "SKILL.md", &mut work).await? {
-            let name = skill.name.clone();
+            let name = skill.name.to_ascii_lowercase();
             let spec = CommandSpec {
                 name: name.clone(),
                 aliases: Vec::new(),
@@ -469,6 +472,7 @@ impl CommandCatalog {
             if catalog.lookup(&name).is_some() {
                 return Err(Error::Conflict(format!("skill/command collision: {name}")));
             }
+            let _ = catalog.names.insert(&name, &name);
             catalog.commands.insert(name, spec);
         }
         Ok(catalog)
@@ -481,15 +485,15 @@ impl CommandCatalog {
 
     /// Prefix matches names or aliases, with direct tools first, then lexical order.
     pub fn complete<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a CommandSpec> {
-        let prefix = prefix.strip_prefix('/').unwrap_or(prefix);
+        let prefix = prefix.strip_prefix('/').unwrap_or(prefix).to_ascii_lowercase();
         let matches = move |spec: &&CommandSpec| {
-            spec.name.starts_with(prefix)
-                || spec.aliases.iter().any(|alias| alias.starts_with(prefix))
+            spec.name.starts_with(&prefix)
+                || spec.aliases.iter().any(|alias| alias.starts_with(&prefix))
         };
         self.commands
             .values()
             .filter(|spec| matches!(spec.action, CommandAction::Tool { .. }))
-            .filter(matches)
+            .filter(matches.clone())
             .chain(
                 self.commands
                     .values()
@@ -499,11 +503,7 @@ impl CommandCatalog {
     }
 
     fn lookup(&self, name: &str) -> Option<&CommandSpec> {
-        self.commands.get(name).or_else(|| {
-            self.commands
-                .values()
-                .find(|spec| spec.aliases.iter().any(|alias| alias == name))
-        })
+        self.names.get(name).and_then(|canonical| self.commands.get(canonical))
     }
 
     /// Install the owning renderer's theme data once; no duplicated preset table.
