@@ -146,7 +146,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let key = format!("{}:{}", owner.kind, owner.id);
+    let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
     let mut documents = DocumentViews::default();
     documents
         .apply(&Write::new(FileKey::Goal, b"# Finish rewrite".to_vec()))
