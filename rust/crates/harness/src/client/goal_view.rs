@@ -38,6 +38,32 @@ pub struct GoalQueryView<'a> {
     pub goal: &'a GoalFileView,
     /// Retained counter; absent for a missing or invalid request head.
     pub progress: Option<&'a GoalProgress>,
+    #[serde(skip)]
+    pub(super) line_starts: &'a [usize],
+}
+
+impl GoalQueryView<'_> {
+    pub(super) fn lines(&self) -> impl Iterator<Item = &str> {
+        let markdown = match self.goal {
+            GoalFileView::Present { goal } => goal.markdown.as_str(),
+            _ => "",
+        };
+        self.line_starts
+            .iter()
+            .enumerate()
+            .map(move |(index, start)| {
+                let end = self
+                    .line_starts
+                    .get(index + 1)
+                    .copied()
+                    .unwrap_or(markdown.len());
+                let line = markdown.get(*start..end).unwrap_or_default();
+                match line.strip_suffix('\n') {
+                    Some(line) => line.strip_suffix('\r').unwrap_or(line),
+                    None => line,
+                }
+            })
+    }
 }
 
 impl ClientViews {
@@ -83,6 +109,7 @@ impl ClientViews {
             request_cursor: request.map(|view| view.cursor()),
             goal: file.goal(),
             progress: request.and_then(|view| view.progress()),
+            line_starts: file.goal_line_starts(),
         })
     }
 }

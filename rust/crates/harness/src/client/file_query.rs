@@ -7,6 +7,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod goal_lines_tests;
+
 /// Disposable goal rendering at the file query's current cursor.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -46,6 +49,7 @@ pub struct FileQueryView {
     files: BTreeMap<FileKey, FileValue>,
     rows: BTreeMap<FileKey, Arc<[String]>>,
     goal: GoalFileView,
+    goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     cursor: Cursor,
     bytes: usize,
@@ -99,10 +103,13 @@ impl FileQueryView {
             .filter(|(key, _)| matches!(key, FileKey::Plan(_)))
             .map(|(key, file)| (key.clone(), plan_rows(file)))
             .collect();
+        let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
+        let goal_line_starts = goal_line_starts(&goal);
         Ok(Self {
             query,
             rows,
-            goal: GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes),
+            goal,
+            goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
             cursor,
@@ -130,6 +137,10 @@ impl FileQueryView {
     /// Borrows parsed goal state; rendering never reparses the file.
     pub fn goal(&self) -> &GoalFileView {
         &self.goal
+    }
+
+    pub(super) fn goal_line_starts(&self) -> &Arc<[usize]> {
+        &self.goal_line_starts
     }
 
     pub(super) fn progress(&self) -> Option<&super::GoalProgress> {
@@ -219,6 +230,7 @@ impl FileQueryView {
         for key in change.removed {
             if key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
+                self.goal_line_starts = Arc::default();
             }
             if key == FileKey::RequestHead {
                 self.progress = None;
@@ -232,6 +244,7 @@ impl FileQueryView {
             }
             if file.key == FileKey::Goal && self.files.get(&file.key) != Some(&file) {
                 self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
+                self.goal_line_starts = goal_line_starts(&self.goal);
             }
             if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {
                 self.rows.insert(file.key.clone(), plan_rows(&file));
@@ -242,6 +255,23 @@ impl FileQueryView {
         self.cursor = change.cursor;
         Ok(changed)
     }
+}
+
+pub(super) fn goal_line_starts(goal: &GoalFileView) -> Arc<[usize]> {
+    let GoalFileView::Present { goal } = goal else {
+        return Arc::default();
+    };
+    if goal.markdown.is_empty() {
+        return Arc::default();
+    }
+    std::iter::once(0)
+        .chain(
+            goal.markdown
+                .match_indices('\n')
+                .map(|(index, _)| index + 1)
+                .filter(|index| *index < goal.markdown.len()),
+        )
+        .collect()
 }
 
 fn plan_rows(file: &FileValue) -> Arc<[String]> {

@@ -23,11 +23,13 @@ fn draw(markdown: String, reason: Option<String>, area: Rect) -> (usize, Buffer)
             markdown,
         },
     };
+    let line_starts = super::super::file_query::goal_line_starts(&goal);
     let view = GoalQueryView {
         cursor: &cursor,
         request_cursor: None,
         goal: &goal,
         progress: None,
+        line_starts: &line_starts,
     };
     let mut buffer = Buffer::empty(area);
     let work = GoalPanel { view }.render_counted(area, &mut buffer);
@@ -39,8 +41,10 @@ fn multi_megabyte_single_lines_have_viewport_bounded_redraw_work() {
     let area = Rect::new(0, 0, 42, 8);
     for scalar in ["x", "\u{301}", "\0", "界"] {
         let long = scalar.repeat(2 * 1024 * 1024);
-        let (work, _) = draw(long.clone(), None, area);
+        let (work, buffer) = draw(format!("{long}\nNext"), None, area);
         assert!(work <= 41 * 6, "visited {work} scalars");
+        let next = (1..41).map(|x| buffer[(x, 3)].symbol()).collect::<String>();
+        assert_eq!(next.trim_end(), "Next");
         let (work, _) = draw("body".into(), Some(long), area);
         assert!(work <= 41 * 6, "visited {work} reason scalars");
     }

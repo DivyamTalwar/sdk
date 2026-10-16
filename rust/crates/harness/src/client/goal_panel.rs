@@ -20,8 +20,8 @@ impl Widget for GoalPanel<'_> {
 }
 
 impl GoalPanel<'_> {
-    // Counts source scalars actually traversed, including clipped text. A redraw
-    // never searches an unbounded line for its next newline.
+    // Counts source scalars actually traversed. Publication-time line offsets
+    // let redraw skip clipped tails without searching for their newlines.
     fn render_counted(self, area: Rect, buffer: &mut Buffer) -> usize {
         let block = Block::bordered().title("Goal");
         let body = block.inner(area);
@@ -29,9 +29,9 @@ impl GoalPanel<'_> {
         if body.is_empty() {
             return 0;
         }
-        let (status, reason, markdown, color) = match self.view.goal {
-            GoalFileView::Missing => ("missing", None, "", Color::DarkGray),
-            GoalFileView::Invalid { reason } => ("invalid", Some(reason.as_str()), "", Color::Red),
+        let (status, reason, color) = match self.view.goal {
+            GoalFileView::Missing => ("missing", None, Color::DarkGray),
+            GoalFileView::Invalid { reason } => ("invalid", Some(reason.as_str()), Color::Red),
             GoalFileView::Present { goal } => (
                 match goal.status {
                     GoalStatus::Active => "active",
@@ -39,7 +39,6 @@ impl GoalPanel<'_> {
                     GoalStatus::Done => "done",
                 },
                 goal.reason.as_deref(),
-                goal.markdown.as_str(),
                 match goal.status {
                     GoalStatus::Active => Color::Yellow,
                     GoalStatus::Blocked => Color::Red,
@@ -70,36 +69,9 @@ impl GoalPanel<'_> {
             buffer.set_stringn(body.x, y, safe, width, style);
             y += 1;
         }
-        let budget = (width + 1) * usize::from(body.bottom() - y);
-        let mut line = String::new();
-        let mut scalars = 0;
-        let mut trailing_cr = false;
-        // The viewport bounds both output and traversal. If a clipped line's
-        // newline lies outside this cut, later lines are outside this viewport.
-        for ch in markdown.chars().take(budget) {
-            work += 1;
-            if ch == '\n' {
-                if trailing_cr {
-                    line.truncate(line.len() - 2);
-                }
-                buffer.set_stringn(body.x, y, &line, width, style);
-                line.clear();
-                scalars = 0;
-                trailing_cr = false;
-                y += 1;
-                if y == body.bottom() {
-                    return work;
-                }
-            } else if scalars < width {
-                escape(ch, &mut line);
-                scalars += 1;
-                trailing_cr = ch == '\r';
-            } else {
-                trailing_cr = false;
-            }
-        }
-        if y < body.bottom() {
-            buffer.set_stringn(body.x, y, line, width, style);
+        for (y, line) in (y..body.bottom()).zip(self.view.lines()) {
+            let safe = escaped(line.chars().take(width), &mut work);
+            buffer.set_stringn(body.x, y, safe, width, style);
         }
         work
     }
