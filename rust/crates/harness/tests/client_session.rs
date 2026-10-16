@@ -682,3 +682,6 @@ mod files;
 #[path = "client_session_usage.rs"]
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 mod usage;
+
+#[path = "client_session_documents.rs"]
+mod documents;

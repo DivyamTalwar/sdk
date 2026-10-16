@@ -270,6 +270,47 @@ impl<S: ClientStateStore> ClientSession<S> {
         request
     }
 
+    /// Folds one verified platform-follow update into the shared disposable views.
+    /// Query cursors remain owned by the platform follow, independently of the
+    /// durable wire outbox and acknowledgements.
+    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
+        match update {
+            super::ViewUpdate::Model {
+                authority,
+                turn,
+                event,
+            } => self.model_event(&authority, turn, event),
+            super::ViewUpdate::ToolOutput {
+                authority,
+                call_id,
+                delta,
+            } => self.tool_output(&authority, &call_id, &delta),
+            super::ViewUpdate::DocumentSnapshot {
+                authority,
+                query,
+                snapshot,
+            } => self.apply_documents(&authority, |documents| documents.replace(&query, &snapshot)),
+            super::ViewUpdate::DocumentFile { authority, file } => {
+                self.apply_documents(&authority, |documents| documents.apply(&file))
+            }
+        }
+    }
+
+    fn apply_documents(
+        &mut self,
+        authority: &wire::Authority,
+        apply: impl FnOnce(&mut super::DocumentViews) -> Result<()>,
+    ) -> Result<()> {
+        self.require_tracked(authority)?;
+        let key = authority_key(authority);
+        if let Some(documents) = self.views.documents.get_mut(&key) {
+            return apply(documents);
+        }
+        let mut documents = super::DocumentViews::default();
+        apply(&mut documents)?;
+        self.views.documents.insert(key, documents);
+        Ok(())
+    }
     /// Folds an incoming model item into the session's shared renderer state.
     pub fn model_event(
         &mut self,

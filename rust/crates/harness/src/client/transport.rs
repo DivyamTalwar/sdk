@@ -268,18 +268,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
         let Some(update) = source.next().await.transpose()? else {
             return Ok(false);
         };
-        match update {
-            super::ViewUpdate::Model {
-                authority,
-                turn,
-                event,
-            } => self.model_event(&authority, turn, event)?,
-            super::ViewUpdate::ToolOutput {
-                authority,
-                call_id,
-                delta,
-            } => self.tool_output(&authority, &call_id, &delta)?,
-        }
+        self.session.apply_update(update)?;
         Ok(true)
     }
 

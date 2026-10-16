@@ -15,6 +15,22 @@ use std::collections::BTreeMap;
 /// One decoded record from a platform follow, addressed to its tracked authority.
 /// These are in-process client inputs, not another wire schema.
 pub enum ViewUpdate {
+    /// Replacement snapshot from a private-volume live query, including resets.
+    DocumentSnapshot {
+        /// Tracked agent whose private volume is being followed.
+        authority: wire::Authority,
+        /// The query whose selected documents are replaced at this cut.
+        query: crate::task_volume::Query,
+        /// Authenticated atomic snapshot from that query.
+        snapshot: crate::task_volume::Snapshot,
+    },
+    /// One file from the same ordered private-volume follow.
+    DocumentFile {
+        /// Tracked agent whose private volume owns this file.
+        authority: wire::Authority,
+        /// Authenticated file; non-document files leave document panels unchanged.
+        file: crate::task_volume::FileValue,
+    },
     /// One provider-neutral model event.
     Model {
         /// Conversation owning the event.
@@ -98,6 +114,8 @@ pub struct TaskView {
 /// Shared view model for ratatui, browser and WASM consumers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ClientViews {
+    /// GOAL.md and plans/ folded from private-volume live queries.
+    pub documents: BTreeMap<String, super::DocumentViews>,
     /// Authority-keyed transcripts; keys are `kind:id`.
     pub transcripts: BTreeMap<String, TranscriptView>,
     /// Authority-keyed tool calls, then provider call identity.
