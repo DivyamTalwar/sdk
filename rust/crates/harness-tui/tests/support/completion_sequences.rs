@@ -157,7 +157,8 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
     menu.refresh(&editor);
     assert_eq!(menu.items().filter(|item| item.value == alias).count(), 1);
-    menu.selected = menu.items().position(|item| item.value == alias).unwrap();
+    let selected = menu.items().position(|item| item.value == alias).unwrap();
+    menu.selected = selected;
     assert!(menu.items().nth(menu.selected).unwrap().tool);
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), format!("/{alias} "));
