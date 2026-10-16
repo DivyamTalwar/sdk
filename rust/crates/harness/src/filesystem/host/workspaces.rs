@@ -346,7 +346,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
             let mut transaction = crate::conversation::BoundedContentFuture::new(Some(io), || {
                 workspace
-                    .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
+                    .begin_transaction_at(&pinned, operation, io, io.cancellation())
                     .map(|result| io.sdk(result))
             })?
             .await?;

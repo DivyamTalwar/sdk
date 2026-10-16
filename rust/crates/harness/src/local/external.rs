@@ -96,7 +96,8 @@ impl LocalHarness {
                 &self.signed,
                 self.limits.file_bytes,
                 None,
-            )?;
+            )?
+            .workflow_inputs()?;
             RequestConsumer::new(
                 &self.runtime,
                 &requests,

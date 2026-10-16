@@ -115,7 +115,8 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
             &harness.signed,
             harness.limits.file_bytes,
             None,
-        )?;
+        )?
+        .workflow_inputs()?;
         RequestConsumer::new(
             &harness.runtime,
             &requests,
