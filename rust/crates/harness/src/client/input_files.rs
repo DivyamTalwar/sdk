@@ -65,7 +65,6 @@ pub fn restore_tui_prompt<P: StreamProvider + ?Sized>(
     if let Some(history) = history {
         input.replace_history(history);
     }
-    // TODO(#495): connect prompt/history follow updates and the shared history writer.
     Ok(())
 }
 

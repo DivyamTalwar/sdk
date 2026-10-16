@@ -45,7 +45,8 @@ pub async fn run(
         },
     ));
     let mut input = PromptInput::default();
-    client::restore_tui_prompt(&commands, &mut input)?;
+    let mut prompt_files = client::PromptFiles::default();
+    prompt_files.refresh(&commands, &mut input)?;
     let mut completions = client::local_completions(&local, &mut input).await?;
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
@@ -56,6 +57,7 @@ pub async fn run(
         if commands.exit_requested()? {
             return Ok(());
         }
+        prompt_files.refresh(&commands, &mut input)?;
         input.busy = renderer.is_busy();
         input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
@@ -95,6 +97,6 @@ pub async fn run(
         for effect in effects {
             client.tui_input(&mut commands, effect).await?;
         }
-        client::save_tui_draft(&mut commands, &input).await?;
+        prompt_files.save(&mut commands, &mut input).await?;
     }
 }

@@ -156,6 +156,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .map(|(_, cursor)| cursor.as_str())
     }
 
+    /// Borrow one authoritative UI/config file at the latest query cut.
+    pub fn state_file(&self, root: CommandFileRoot, name: &str) -> Result<Option<&files::FileValue>> {
+        Ok(self.files.get(&self.state_key(root, name)?))
+    }
+
     /// Read one ordinary UI/config file from the latest query cut.
     pub fn state(&self, root: CommandFileRoot, name: &str) -> Result<Option<Value>> {
         let value: Option<Value> = self

@@ -1,6 +1,6 @@
 #![no_main]
 use acyclic_harness::{
-    client::{CommandSession, restore_tui_prompt, save_tui_draft},
+    client::{CommandSession, PromptFiles, restore_tui_prompt, save_tui_draft},
     task_volume::{FileKey, Query, TaskVolume, Write},
     tui::{Editor, PromptInput},
 };
@@ -54,6 +54,12 @@ fuzz_target!(|data: &[u8]| {
                     assert!(input.history().entries().is_empty());
                 }
                 Ok(()) => {
+                    let mut projection = PromptFiles::default();
+                    projection.refresh(&files, &mut input).unwrap();
+                    let generation = input.history().generation();
+                    projection.refresh(&files, &mut input).unwrap();
+                    assert_eq!(input.history().generation(), generation);
+                    projection.save(&mut files, &mut input).await.unwrap();
                     save_tui_draft(&mut files, &input).await.unwrap();
                     let mut replayed = PromptInput::default();
                     restore_tui_prompt(&files, &mut replayed).unwrap();

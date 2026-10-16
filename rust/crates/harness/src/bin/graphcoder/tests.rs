@@ -629,3 +629,6 @@ proptest::proptest! {
         })?;
     }
 }
+
+#[path = "tests/prompt_files.rs"]
+mod prompt_files;
