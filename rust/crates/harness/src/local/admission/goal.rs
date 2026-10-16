@@ -19,7 +19,7 @@ impl LocalHarness {
         goal: &GoalView,
         settled: OperationId,
         contents: &str,
-    ) -> Result<crate::conversation::FileRef> {
+    ) -> Result<(crate::conversation::FileRef, OperationId)> {
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.signed,
@@ -28,7 +28,10 @@ impl LocalHarness {
             u64::MAX,
             &mut None,
         )?;
-        self.files
+        let key =
+            crate::IdempotencyKey::new(format!("goal-block:{settled}:{}", goal.source.version()))?;
+        let file = self
+            .files
             .put_content(
                 &self.scratch,
                 &grant,
@@ -37,14 +40,15 @@ impl LocalHarness {
                 "text/markdown",
                 "GOAL.md",
                 self.limits.file_bytes,
-                &crate::IdempotencyKey::new(format!(
-                    "goal-block:{settled}:{}",
-                    goal.source.version()
-                ))?,
+                &key,
                 Some(&self.files.file_generation(&goal.source, None)?),
                 None,
             )
-            .await
+            .await?;
+        Ok((
+            file,
+            OperationId::from_bytes(crate::filesystem::filesystem_key(&key).into_bytes()),
+        ))
     }
 
     pub(super) async fn record_goal_revision(
@@ -52,13 +56,13 @@ impl LocalHarness {
         current: &Turn,
         generation: &GenerationRef,
         goal: &crate::conversation::FileRef,
+        publication: Option<OperationId>,
     ) -> Result<()> {
-        let revision = *goal.descriptor().sha256();
-        if current.goal_revision == Some(revision) {
+        if current.goal_revision == publication {
             return Ok(());
         }
         let mut next = current.clone();
-        next.goal_revision = Some(revision);
+        next.goal_revision = publication;
         self.write_turn(
             &next,
             generation,

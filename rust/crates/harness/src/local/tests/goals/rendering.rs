@@ -10,11 +10,21 @@ use futures::StreamExt as _;
 
 #[tokio::test]
 async fn local_goal_publications_render_status_reason_and_retained_count() -> Result<()> {
-    futures::future::try_join_all(cases()?.into_iter().map(render_case)).await?;
+    futures::future::try_join_all(cases()?.into_iter().map(|case| render_case(case, false)))
+        .await?;
     Ok(())
 }
 
-async fn render_case(case: Case) -> Result<()> {
+#[tokio::test]
+async fn identical_goal_bytes_follow_a_new_publication() -> Result<()> {
+    let case = cases()?
+        .into_iter()
+        .find(|case| case.name == "agent-blocked")
+        .unwrap();
+    render_case(case, true).await
+}
+
+async fn render_case(case: Case, repeat: bool) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
     let project = volume(directory.path()).await?;
     let provider = scripted(script(&case));
@@ -57,6 +67,42 @@ async fn render_case(case: Case) -> Result<()> {
     assert_ne!(goal_id.0, head_id.0);
     let mut omitted_head = client.views().clone();
     check_output(&case, harness.run("Start the objective").await)?;
+    if repeat {
+        let before = goal_source
+            .observe_files(goal_query.clone(), None, 1, 65536)
+            .await?
+            .snapshot
+            .unwrap()
+            .files
+            .remove(0);
+        write_goal(&harness, case.final_goal.as_deref().unwrap()).await?;
+        let after = goal_source
+            .observe_files(goal_query.clone(), None, 1, 65536)
+            .await?
+            .snapshot
+            .unwrap()
+            .files
+            .remove(0);
+        assert_eq!(before.bytes, after.bytes);
+        assert!(before.publication.is_some() && after.publication.is_some());
+        assert_ne!(
+            before.publication, after.publication,
+            "identical bytes must have distinct write identities"
+        );
+        let snapshot = head_source
+            .observe_files(head_query.clone(), None, 1, 65536)
+            .await?
+            .snapshot
+            .unwrap();
+        let turn = crate::goal::request_head::decode(&snapshot.files[0].bytes)
+            .map_err(super::super::super::storage)?;
+        check_output(
+            &case,
+            harness
+                .resume(crate::runtime::task_id_for_admission(turn.root))
+                .await,
+        )?;
+    }
     let goal_final = goal_source
         .observe_files(goal_query, None, 1, 65536)
         .await

@@ -14,8 +14,8 @@ pub struct GoalProgress {
     pub root: OperationId,
     /// Automatic continuations retained by that loop; edits never reset it.
     pub continuations: u32,
-    /// GOAL.md content revision acknowledged by this retained request head.
-    pub goal_revision: Option<[u8; 32]>,
+    /// GOAL.md write publication acknowledged by this retained request head.
+    pub goal_revision: Option<OperationId>,
 }
 
 impl GoalProgress {
@@ -40,7 +40,7 @@ pub struct GoalQueryView<'a> {
     /// File-driven status, reason and body.
     pub goal: &'a GoalFileView,
     /// Retained counter; pending for blocked goals until the head acknowledges
-    /// their exact content revision, or absent for a missing/invalid head.
+    /// their exact write publication, or absent for a missing/invalid head.
     pub progress: Option<&'a GoalProgress>,
     #[serde(skip)]
     pub(super) line_starts: &'a [usize],

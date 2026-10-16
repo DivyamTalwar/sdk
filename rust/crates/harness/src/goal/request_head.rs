@@ -8,9 +8,9 @@ pub(crate) struct Turn {
     pub operation: OperationId,
     pub root: OperationId,
     pub automatic_turns: u32,
-    /// GOAL.md content revision observed with this retained count.
+    /// GOAL.md write publication observed with this retained count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal_revision: Option<[u8; 32]>,
+    pub goal_revision: Option<OperationId>,
     pub receive: WorkflowCommand,
     pub model: WorkflowCommand,
 }
@@ -34,7 +34,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             linked.goal_revision,
-            Some(std::array::from_fn(|index| index as u8))
+            Some(OperationId::from_bytes(std::array::from_fn(
+                |index| index as u8
+            )))
         );
         assert_eq!(linked.operation, legacy.operation);
         assert_eq!(linked.automatic_turns, legacy.automatic_turns);
@@ -49,13 +51,13 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
-        fn turn_head_round_trips(operation in any::<[u8;16]>(), root in any::<[u8;16]>(), count in any::<u32>(), revision in prop::option::of(any::<[u8;32]>()), kind in ".{0,64}") {
+        fn turn_head_round_trips(operation in any::<[u8;16]>(), root in any::<[u8;16]>(), count in any::<u32>(), revision in prop::option::of(any::<[u8;16]>()), kind in ".{0,64}") {
             let seed = include_bytes!("../../../harness-fuzz/corpus/records/turn");
             let mut turn = decode(seed).unwrap();
             turn.operation = OperationId::from_bytes(operation);
             turn.root = OperationId::from_bytes(root);
             turn.automatic_turns = count;
-            turn.goal_revision = revision;
+            turn.goal_revision = revision.map(OperationId::from_bytes);
             turn.model.kind = kind;
             let bytes = serde_json::to_vec(&turn).unwrap();
             prop_assert_eq!(decode(&bytes).unwrap(), turn);

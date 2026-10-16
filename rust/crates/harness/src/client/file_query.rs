@@ -5,14 +5,13 @@ use crate::{
     goal::GoalState,
     task_volume::{Change, Cursor, FileKey, FileValue, Query, SCHEMA, Snapshot},
 };
-use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
-fn goal_revision(file: Option<&FileValue>) -> Option<[u8; 32]> {
-    file.map(|file| Sha256::digest(&file.bytes).into())
+fn goal_revision(file: Option<&FileValue>) -> Option<crate::OperationId> {
+    file.and_then(|file| file.publication)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -64,7 +63,7 @@ pub struct FileQueryView {
     models: ViewIndex<super::ModelFileView>,
     rejected_models: BTreeSet<FileKey>,
     goal: GoalFileView,
-    goal_revision: Option<[u8; 32]>,
+    goal_revision: Option<crate::OperationId>,
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     cursor: Cursor,
@@ -207,7 +206,7 @@ impl FileQueryView {
         self.progress.as_ref()
     }
 
-    pub(super) fn goal_revision(&self) -> Option<[u8; 32]> {
+    pub(super) fn goal_revision(&self) -> Option<crate::OperationId> {
         self.goal_revision
     }
 

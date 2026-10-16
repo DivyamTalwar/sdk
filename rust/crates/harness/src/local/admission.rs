@@ -328,9 +328,9 @@ impl LocalHarness {
                 )
                 .map(Some);
             }
-            let (source, bytes) = match self
+            let (source, bytes, publication) = match self
                 .files
-                .read_private_path(
+                .read_private_path_indexed(
                     &self.scratch,
                     &self.read_grant(&self.scratch)?,
                     "GOAL.md",
@@ -346,7 +346,7 @@ impl LocalHarness {
             };
             let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
             if goal.status == GoalStatus::Blocked {
-                self.record_goal_revision(&current, &generation, &goal.source)
+                self.record_goal_revision(&current, &generation, &goal.source, publication)
                     .await?;
             }
             let unreachable = GoalBlockedReason::TaskViewUnreachable;
@@ -367,8 +367,13 @@ impl LocalHarness {
                         let contents = goal
                             .status_contents(GoalStatus::Blocked, Some(&unreachable.to_string()))?;
                         let blocked = self.block_goal(&goal, settled, &contents).await?;
-                        self.record_goal_revision(&current, &generation, &blocked)
-                            .await?;
+                        self.record_goal_revision(
+                            &current,
+                            &generation,
+                            &blocked.0,
+                            Some(blocked.1),
+                        )
+                        .await?;
                         return Err(Error::GoalBlocked(unreachable));
                     };
                     let prompt =
@@ -380,7 +385,7 @@ impl LocalHarness {
                                 operation,
                                 root: current.root,
                                 automatic_turns: current.automatic_turns + 1,
-                                goal_revision: Some(goal.revision()),
+                                goal_revision: publication,
                                 receive,
                                 model,
                             },
@@ -391,7 +396,7 @@ impl LocalHarness {
                 }
                 Some(GoalContinuation::Block(contents)) => {
                     let blocked = self.block_goal(&goal, settled, &contents).await?;
-                    self.record_goal_revision(&current, &generation, &blocked)
+                    self.record_goal_revision(&current, &generation, &blocked.0, Some(blocked.1))
                         .await?;
                     Ok(None)
                 }

@@ -13,7 +13,8 @@ struct Source {
     fault: Option<u8>,
     pending: bool,
     closed: bool,
-    revision: Option<[u8; 32]>,
+    revision: Option<crate::OperationId>,
+    publication: crate::OperationId,
 }
 
 impl Source {
@@ -25,6 +26,7 @@ impl Source {
             pending: false,
             closed: false,
             revision: None,
+            publication: crate::OperationId::from_bytes([1; 16]),
         }
     }
     fn head(count: u32) -> Self {
@@ -35,11 +37,15 @@ impl Source {
             pending: false,
             closed: false,
             revision: None,
+            publication: crate::OperationId::from_bytes([1; 16]),
         }
     }
-    fn acknowledging(mut self, goal: &str) -> Self {
-        use sha2::Digest as _;
-        self.revision = Some(sha2::Sha256::digest(goal.as_bytes()).into());
+    fn acknowledging(mut self, publication: u8) -> Self {
+        self.revision = Some(crate::OperationId::from_bytes([publication; 16]));
+        self
+    }
+    fn published(mut self, publication: u8) -> Self {
+        self.publication = crate::OperationId::from_bytes([publication; 16]);
         self
     }
     fn snapshot(&self, query: Query) -> Snapshot {
@@ -55,7 +61,9 @@ impl Source {
             commit: [3; 32],
         };
         let file = if let Some(goal) = &self.goal {
-            FileValue::new(FileKey::Goal, goal.as_bytes().to_vec())
+            let mut file = FileValue::new(FileKey::Goal, goal.as_bytes().to_vec());
+            file.publication = Some(self.publication);
+            file
         } else {
             let mut head: serde_json::Value = serde_json::from_slice(include_bytes!(
                 "../../../../harness-fuzz/corpus/records/turn"
@@ -148,7 +156,7 @@ proptest! {
             let mut views = ClientViews::default();
             let statuses = [("active", GoalStatus::Active), ("done", GoalStatus::Done), ("blocked", GoalStatus::Blocked)];
             let text = format!("---\nstatus: {}\nreason: waiting\n---\nold", statuses[status].0);
-            let head = Source::head(count).acknowledging(&text);
+            let head = Source::head(count).acknowledging(1);
             let goal = Source::goal(&text);
             let _follow = views.select_goal_view(&goal, &head, 4096).await.unwrap();
             let identity = views.queries.iter().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
