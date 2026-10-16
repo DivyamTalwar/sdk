@@ -432,6 +432,50 @@ async fn image_fallbacks_never_read_files() -> Result<()> {
 }
 
 #[tokio::test]
+async fn image_prompt_files_resolve_utf8_on_the_same_authorized_path() -> Result<()> {
+    for (adapter, _) in fixtures() {
+        for bytes in ["hé\n\0".as_bytes(), &[0xff]] {
+            let (file, reads, _) = file(bytes, "text/plain", false, None).await?;
+            let (provider, script) = provider(adapter, 200);
+            let provider = provider.with_content_reader(reads.clone());
+            let (request, dispatch) = prepare(
+                &provider,
+                vec![user(vec![ModelContentPart::File {
+                    file,
+                    policy: FileProjectionPolicy::BoundedFull,
+                }])],
+            )?;
+            let counted = provider.count_tokens(&request)?;
+            assert!(counted.message_tokens[0] >= bytes.len() as u32);
+            assert_eq!(reads.calls.load(Ordering::SeqCst), 0);
+            let result = provider
+                .generate(request, dispatch)
+                .try_collect::<Vec<_>>()
+                .await;
+            let sent = script.sent.lock().expect("capture");
+            match std::str::from_utf8(bytes) {
+                Err(_) => {
+                    assert!(result.is_err());
+                    assert!(sent.is_empty());
+                }
+                Ok(text) => {
+                    result?;
+                    let body = json(&sent[0].body)?;
+                    let actual = match adapter {
+                        Adapter::Chat => &body["messages"][0]["content"],
+                        Adapter::Responses => &body["input"][0]["content"],
+                        _ => &message_parts(adapter, &body, 0)[0]["text"],
+                    };
+                    assert_eq!(actual, text);
+                }
+            }
+            assert_eq!(reads.calls.load(Ordering::SeqCst), 1);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn image_bounds_and_authority_fail_before_http() -> Result<()> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(PNG)
