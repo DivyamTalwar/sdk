@@ -93,3 +93,10 @@ path = "fuzz_targets/input_paths.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "task_query_case"
+path = "fuzz_targets/task_query_case.rs"
+test = false
+doc = false
+bench = false
