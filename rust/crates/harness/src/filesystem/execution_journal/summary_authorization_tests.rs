@@ -311,6 +311,20 @@ fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
         .build()
         .unwrap();
     let fixture = runtime.block_on(fixture())?;
+    let scope = fixture.issuer.issue(
+        "summary-accounting",
+        &crate::Capabilities::new([
+            fixture
+                .storage
+                .capability(VolumeOperation::Read, &mut None)?,
+            fixture
+                .storage
+                .capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(crate::AgentId::from_bytes([1; 16])),
+        None,
+        &mut None,
+    )?;
     let journal = FilesystemExecutionJournal::new(
         fixture.stream.clone(),
         fixture.files.clone(),
@@ -318,7 +332,7 @@ fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
         super::super::FilesystemJournalBinding {
             volume: &fixture.storage,
             verifier: &fixture.issuer.verifier(&mut None)?,
-            scope: &fixture.host.owner_scope,
+            scope: &scope,
             maximum_bytes: 65_536,
             io: None,
         },
