@@ -47,6 +47,8 @@ export declare class NativeStreamClient {
   readResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamSequenceResult>
   /** Opens a Rust-owned follow cursor from an encoded request. */
   openFollowResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamFollowResult>
+  /** Opens a Rust-owned live direct-child cursor from an encoded request. */
+  openChildrenResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamFollowResult>
   /** Executes a canonical children-page request. */
   childrenPageResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamOperationResult>
   /** Executes a canonical commit request, retaining an optional provider deadline. */
