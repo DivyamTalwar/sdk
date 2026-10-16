@@ -62,6 +62,37 @@ pub(super) struct DirectoryStream {
     pub(super) parked: u64,
 }
 
+// Cached rows retain namespace facts, not permission to disclose them. Return
+// the already-funded child used by emission, without copying its path twice.
+pub(super) fn next_visible_child(
+    source: &dyn MountFilesystem,
+    stream: &mut DirectoryStream,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Option<ChildName>, NativeMountError> {
+    loop {
+        let Some(entry) = stream
+            .page
+            .as_ref()
+            .and_then(|page| page.entries().get(stream.entry_position))
+        else {
+            return Ok(None);
+        };
+        work.charge(Items.delta(1))?;
+        let child = ChildName::new(
+            source,
+            fuse_child_path(&stream.path, &entry.name, work)?,
+            work,
+        )?;
+        match source.authorize_with_meter(&[(crate::access::Action::List, &child.spelled)], work) {
+            Ok(()) => return Ok(Some(child)),
+            Err(error) if matches!(error.semantic_error(), MountSourceError::AccessDenied) => {
+                stream.entry_position += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct DirectoryStreams {
     pub(super) waiting: HashMap<(u64, u64), (DirectoryStream, crate::NativeAllocation)>,
@@ -246,20 +277,15 @@ impl ProjectionState {
             }
             self.admit_listing(source, inode, stream.entries_stamp, work)?;
             loop {
+                let Some(child) = next_visible_child(source, stream, work)? else {
+                    return Ok(());
+                };
                 let next = stream.emitted.saturating_add(1);
-                let Some(entry) = stream
+                let entry = stream
                     .page
                     .as_ref()
                     .and_then(|page| page.entries().get(stream.entry_position))
-                else {
-                    return Ok(());
-                };
-                work.charge(Items.delta(1))?;
-                let child = ChildName::new(
-                    source,
-                    fuse_child_path(&stream.path, &entry.name, work)?,
-                    work,
-                )?;
+                    .ok_or(libc::EIO)?;
                 let current = match stream.entries_stamp {
                     Some(stamp)
                         if source.unchanged_since_with_meter(
@@ -440,6 +466,7 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let source = self.core.source.as_ref();
+        source.authorize_with_meter(&[(crate::access::Action::List, &stream.path)], work)?;
         stream.emitted = stream.emitted.max(offset.min(2));
         loop {
             work.charge(Items.delta(1))?;
