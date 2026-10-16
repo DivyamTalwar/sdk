@@ -38,12 +38,6 @@ fn native_policy_metadata(bytes: &[u8], timestamp: i64) -> Result<(), Box<dyn st
         source.set_attributes(&path, changed, None, &work),
         Err(MountSourceError::AccessDenied)
     ));
-    // A root handle must not provide an alternate route to the same tree.
-    let handle = source.open_file(&path)?;
-    assert!(matches!(
-        handle.set_attributes(changed, None, &work),
-        Err(MountSourceError::AccessDenied)
-    ));
     for mode in [
         MountAttributeWriteMode::Create,
         MountAttributeWriteMode::Replace,
@@ -59,22 +53,9 @@ fn native_policy_metadata(bytes: &[u8], timestamp: i64) -> Result<(), Box<dyn st
             ),
             Err(MountSourceError::AccessDenied)
         ));
-        assert!(matches!(
-            handle.write_attribute(
-                POLICY_METADATA_KEY,
-                OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"forged"), 0),
-                mode,
-                &work,
-            ),
-            Err(MountSourceError::AccessDenied)
-        ));
     }
     assert!(matches!(
         source.remove_attribute(&path, POLICY_METADATA_KEY, &work),
-        Err(MountSourceError::AccessDenied)
-    ));
-    assert!(matches!(
-        handle.remove_attribute(POLICY_METADATA_KEY, &work),
         Err(MountSourceError::AccessDenied)
     ));
     assert_eq!(
@@ -82,7 +63,8 @@ fn native_policy_metadata(bytes: &[u8], timestamp: i64) -> Result<(), Box<dyn st
         original
     );
     // Ordinary scalar edits still work and preserve the exact policy payload.
-    handle.set_attributes(
+    source.set_attributes(
+        &path,
         FileMetadata {
             modified_ns: MetadataField::Value(timestamp),
             ..original
@@ -108,7 +90,7 @@ fn native_access_policy_metadata_rejects_xattr_and_setattr_bypasses()
 }
 
 #[test]
-fn native_access_detached_metadata_cannot_replace_attribute_roots()
+fn native_access_handle_metadata_cannot_replace_attribute_roots()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
@@ -121,30 +103,31 @@ fn native_access_detached_metadata_cannot_replace_attribute_roots()
         MountAttributeWriteMode::Create,
         &work,
     )?;
-    let handle = source.detach_file(&path)?;
-    assert!(matches!(
-        handle.set_attributes(metadata(), None, &work),
-        Err(MountSourceError::AccessDenied)
-    ));
-    for result in [
-        handle.write_attribute(
-            POLICY_METADATA_KEY,
-            OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"forged"), 0),
-            MountAttributeWriteMode::Upsert,
-            &work,
-        ),
-        handle.remove_attribute(POLICY_METADATA_KEY, &work),
-    ] {
-        assert!(matches!(result, Err(MountSourceError::AccessDenied)));
+    for handle in [source.open_file(&path)?, source.detach_file(&path)?] {
+        assert!(matches!(
+            handle.set_attributes(metadata(), None, &work),
+            Err(MountSourceError::AccessDenied)
+        ));
+        for result in [
+            handle.write_attribute(
+                POLICY_METADATA_KEY,
+                OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"forged"), 0),
+                MountAttributeWriteMode::Upsert,
+                &work,
+            ),
+            handle.remove_attribute(POLICY_METADATA_KEY, &work),
+        ] {
+            assert!(matches!(result, Err(MountSourceError::AccessDenied)));
+        }
+        assert_eq!(
+            handle
+                .read_attribute(b"user.retained", &work)?
+                .ok_or("attribute was erased")?
+                .bytes
+                .as_ref(),
+            b"original"
+        );
     }
-    assert_eq!(
-        handle
-            .read_attribute(b"user.retained", &work)?
-            .ok_or("attribute was erased")?
-            .bytes
-            .as_ref(),
-        b"original"
-    );
     Ok(())
 }
 
