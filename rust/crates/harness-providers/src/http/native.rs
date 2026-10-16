@@ -19,9 +19,6 @@ impl<S: Stream<Item = Result<Bytes>> + Unpin> Stream for Body<S> {
             if let Err(cause) = custody.work().remaining() {
                 return Poll::Ready(Some(Err(cause.into())));
             }
-            if let Err(cause) = custody.work().admit_retained(1) {
-                return Poll::Ready(Some(Err(cause.into())));
-            }
         }
         let next = Pin::new(&mut this.stream).poll_next(cx);
         match (next, &this.custody) {
