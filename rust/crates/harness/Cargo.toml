@@ -43,6 +43,10 @@ path = "tests/default_tools.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "task_view"
+path = "tests/task_view.rs"
+
+[[test]]
 name = "task-volume"
 path = "tests/task_volume.rs"
 
@@ -50,6 +54,10 @@ path = "tests/task_volume.rs"
 name = "file-query"
 path = "tests/file_query.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client-model-views"
+path = "tests/client_model_views.rs"
 
 [[test]]
 name = "client-goal-views"
