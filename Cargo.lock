@@ -413,8 +413,10 @@ dependencies = [
  "acyclic-harness",
  "acyclic-stream",
  "async-stream",
+ "blake3",
  "bytes",
  "futures",
+ "js-sys",
  "keyring",
  "loom",
  "proptest",
@@ -424,6 +426,10 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

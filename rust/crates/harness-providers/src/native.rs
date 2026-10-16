@@ -1,9 +1,8 @@
 //! Original-ledger admission for the shared wire projections and parsers.
-use crate::{Adapter, ResolvedModel, dispatch, projection, sse, stream};
+use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness::{
     Error, NativeFutureBundle, Result,
-    context::ModelTokenCount,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
@@ -32,11 +31,12 @@ impl AsRef<[u8]> for RequestBody {
 async fn send(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     dispatch_id: ModelDispatch,
-    key: Option<&str>,
-    account: Option<&str>,
+    auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
 ) -> Result<(crate::HttpResponse, usize)> {
+    let (key, account) = auth;
     let (bytes, nodes) = shape(request.bytes());
     let mut allocation = reserve(
         work,
@@ -45,7 +45,7 @@ async fn send(
         key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
     )?;
     let (url, headers, body) = diagnostic(
-        dispatch::request(provider, request, dispatch_id, key, account),
+        dispatch::request(provider, request, names, dispatch_id, key, account),
         &mut allocation,
     )?;
     let input_bytes = body.len();
@@ -77,7 +77,7 @@ fn invalid(reason: &'static str) -> Error {
     }
 }
 
-fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
+pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
         let (code, message) = match error {
             Error::Invalid(message) => (ErrorCode::Invalid, message),
@@ -101,7 +101,7 @@ fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result
 
 // Count structural tokens without constructing a second JSON graph. Quoted
 // punctuation and escaped quotes are payload, not allocation-bearing nodes.
-fn shape(bytes: &[u8]) -> (u64, u64) {
+pub(crate) fn shape(bytes: &[u8]) -> (u64, u64) {
     let mut nodes = 1;
     let mut quoted = false;
     let mut escape = false;
@@ -122,7 +122,7 @@ fn shape(bytes: &[u8]) -> (u64, u64) {
 // Admission includes the temporary decoded graph, copies retained by the
 // protocol state, geometric buffer growth and SDK event slots. It precedes the
 // producer; only surviving capacity is transferred to the executor afterwards.
-fn reserve(
+pub(crate) fn reserve(
     work: &NativeMaterializationWork,
     bytes: u64,
     nodes: u64,
@@ -153,30 +153,12 @@ fn reserve(
     )?)
 }
 
-fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
+pub(crate) fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
     if bytes > allocation.bytes() {
         return Err(invalid("provider exceeded admitted allocation"));
     }
     allocation.resize(bytes)?;
     Ok(())
-}
-
-pub(crate) fn count(
-    provider: &ResolvedModel,
-    request: &PreparedModelRequest,
-    work: &NativeMaterializationWork,
-) -> Result<(ModelTokenCount, NativeAllocation)> {
-    work.remaining()?;
-    provider.context_capacity_with_native_work(&request.request().model, work)?;
-    let (bytes, nodes) = shape(request.bytes());
-    let mut allocation = reserve(work, bytes, nodes, 0)?;
-    let count = diagnostic(projection::count(provider, request), &mut allocation)?;
-    retain(
-        &mut allocation,
-        (std::mem::size_of::<ModelTokenCount>()
-            + count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64,
-    )?;
-    Ok((count, allocation))
 }
 
 pub(crate) fn generate<'a>(
@@ -195,17 +177,22 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
+            let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
             let auth = dispatch::authenticate(provider).await?;
             work.remaining()?;
             let (response, input_bytes) = send(
                 provider,
                 request,
+                &names,
                 dispatch_id,
-                auth.0.as_deref(),
-                auth.1.as_deref(),
+                (auth.0.as_deref(), auth.1.as_deref()),
                 work,
             )
             .await?;
+            let origin_bytes =
+                crate::stream::family(provider.config.adapter).len() + provider.model.name.len();
+            let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
+            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             drop(auth);
             if !(200..300).contains(&response.status) {
                 let mut allocation = work.claim(64, 1, WorkCounters::UNCHARGED)?;
@@ -215,7 +202,10 @@ pub(crate) fn generate<'a>(
             let adapter = provider.config.adapter;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
+                    let _name_custody = name_custody;
                     let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
+                    parser.allocation.absorb(&mut { origin_custody })?;
+                    parser.state.set_origin(Some(origin))?;
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
                     futures::pin_mut!(frames, cancelled);
@@ -231,7 +221,7 @@ pub(crate) fn generate<'a>(
                         let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                         parser.allocation.absorb(&mut admission)?;
                         work.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::UNCHARGED })?;
-                        let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data, dispatch_id), &mut parser.allocation)?;
+                        let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data), &mut parser.allocation)?;
                         let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                         drop(frame);
                         let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
@@ -249,10 +239,17 @@ pub(crate) fn generate<'a>(
                     let (bytes, nodes) = parser.state.arguments().map(|args| shape(args.as_bytes())).try_fold((0u64, 0u64), |(bytes, nodes), (b, n)| {
                         Ok::<_, Error>((bytes.checked_add(b).ok_or_else(|| invalid("tool batch size overflow"))?, nodes.checked_add(n).ok_or_else(|| invalid("tool batch size overflow"))?))
                     })?;
-                    let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
+                    let (reasoning_bytes, reasoning_nodes) = parser.state.reasoning_shape()?;
+                    let mut admission = reserve(work, bytes.checked_add(reasoning_bytes).ok_or_else(|| invalid("reasoning size overflow"))?, nodes.checked_add(reasoning_nodes).ok_or_else(|| invalid("reasoning size overflow"))?, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
+                    let restored = parser.state.restore_names(&names, |length| {
+                        let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;
+                        parser.allocation.absorb(&mut custody)?;
+                        Ok(())
+                    });
+                    diagnostic(restored, &mut parser.allocation)?;
                     let Parser { state, mut allocation } = parser;
-                    let events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
+                    let events = diagnostic(stream::finish(state, adapter, dispatch_id), &mut allocation)?;
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                     let retained = events.iter().try_fold(slots, |bytes, event| {
                         bytes.checked_add(event.logical_owned_bytes()?).ok_or_else(|| invalid("provider retained capacity overflow"))

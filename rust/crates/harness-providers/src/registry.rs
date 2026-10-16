@@ -1,7 +1,4 @@
-use crate::{
-    Authentication, Credentials, HttpTransport, ProviderSpec, ReqwestTransport, ResolvedModel,
-    invalid,
-};
+use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
 use acyclic_harness::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
@@ -16,10 +13,7 @@ pub struct Registry {
 impl Registry {
     /// Standard endpoints; unknown capacities must be registered explicitly.
     pub fn new(credentials: Credentials) -> Result<Self> {
-        Ok(Self::with_transport(
-            credentials,
-            Arc::new(ReqwestTransport::new()?),
-        ))
+        Ok(Self::with_transport(credentials, crate::http::platform()?))
     }
 
     /// Uses the same adapters with a caller-owned transport.
@@ -86,6 +80,11 @@ impl Registry {
         let capacity = config.models.get(name).copied().ok_or_else(|| {
             invalid("register the exact selected model context and output capacities")
         })?;
+        if config.token_counter.is_none() {
+            return Err(acyclic_harness::Error::Unsupported(
+                "configure a verified input token counter for this endpoint".into(),
+            ));
+        }
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         if key.is_none() && config.authentication == Authentication::ApiKey {
@@ -124,6 +123,14 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    if let Some(counter) = &config.token_counter {
+        if counter.adapter != config.adapter {
+            return Err(invalid(
+                "count endpoint must accept the provider input dialect",
+            ));
+        }
+        crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
+    }
     for capacity in config.models.values() {
         capacity.validate()?;
     }

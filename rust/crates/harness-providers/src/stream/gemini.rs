@@ -1,10 +1,6 @@
 use super::{ModelEvent, Result, State, Value, invalid, string, text};
 
-pub(super) fn parse(
-    state: &mut State,
-    value: &Value,
-    dispatch: acyclic_harness::model::ModelDispatch,
-) -> Result<Vec<ModelEvent>> {
+pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
     state.usage(&value["usageMetadata"])?;
     if let Some(id) = value.get("responseId") {
         state.budget.member(&mut state.metadata, "id", id)?;
@@ -22,30 +18,21 @@ pub(super) fn parse(
     if let Some(parts) = candidate["content"]["parts"].as_array() {
         for part in parts {
             text(&mut events, &part["text"], part["thought"] == true);
+            let position = (state.calls.len() + state.thinking.len()) as u64;
+            if part["thought"] == true || part.get("thoughtSignature").is_some() {
+                state.retain_thinking(position, part)?;
+            }
             if let Some(function) = part.get("functionCall") {
-                let index = state.calls.len() as u64;
+                let index = (state.calls.len() + state.thinking.len()) as u64;
                 let (call, budget) = state.call(index)?;
                 if let Some(id) = function["id"].as_str() {
                     budget.string(&mut call.id, id)?;
-                } else {
-                    budget.formatted(
-                        &mut call.id,
-                        format_args!("{}-{}-{index}", dispatch.operation_id, dispatch.step),
-                    )?;
                 }
                 budget.string(&mut call.name, string(&function["name"])?)?;
                 match function.get("args") {
                     None => budget.string(&mut call.arguments, "{}")?,
                     Some(args) if args.is_object() => budget.encoded(&mut call.arguments, args)?,
                     Some(_) => return Err(invalid("tool arguments must be a JSON object")),
-                }
-                if let Some(signature) = part.get("thoughtSignature") {
-                    call.metadata = Value::Object(serde_json::Map::new());
-                    let map = call
-                        .metadata
-                        .as_object_mut()
-                        .ok_or_else(|| invalid("invalid tool metadata"))?;
-                    budget.member(map, "gemini_thought_signature", signature)?;
                 }
             }
         }
