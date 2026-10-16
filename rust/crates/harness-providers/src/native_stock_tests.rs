@@ -404,13 +404,80 @@ async fn stock_turn(with_images: bool) -> Result<()> {
         let recovery = history.into_custody()?;
         let context = ContextPipeline::default();
         let policy = CompactionPolicy::Disabled;
-        let commands =
-            runtime
-                .commands()
-                .with_model(&model, provider, &context, &policy, Some(&io))?;
+        let commands = runtime.commands().with_model(
+            &model,
+            provider.clone(),
+            &context,
+            &policy,
+            Some(&io),
+        )?;
         let (attempt, custody) = runtime
-            .resume_task_with_native_work(lease, recovery, &commands, 2, &work)
+            .resume_task_with_native_work(
+                lease,
+                recovery,
+                &commands,
+                if with_images { 1 } else { 2 },
+                &work,
+            )
             .await?;
+        assert!(custody.work().shares_allocation_context(&work));
+        let attempt = if with_images {
+            let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt else {
+                if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
+                    return Err(error);
+                }
+                panic!("image task must yield at its transition boundary");
+            };
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+            // A second caller invocation recovers the same durable reservation;
+            // it does not replenish the first invocation's original ledger.
+            let next = super::work(&CancellationToken::new())?;
+            let next_io = PreparationIo::from_native_work(&next)?;
+            let mut history = HistoryWork::new(PreparationIo::from_native_work(&next)?);
+            history.retain_owned(
+                std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
+                    as u64,
+            )?;
+            let recovered = runtime
+                .task_host()
+                .recover_work(
+                    acyclic_harness::TaskId::from_bytes(operation.into_bytes()),
+                    &mut Some(&mut history),
+                )
+                .await?;
+            let WorkPull::Claimed(recovered) = recovered else {
+                panic!("retained image task lease")
+            };
+            assert_eq!(recovered.reservation, lease.reservation);
+            assert_eq!(
+                recovered.operation.operation_id,
+                lease.operation.operation_id
+            );
+            drop(lease);
+            drop(custody);
+            let commands = runtime.commands().with_model(
+                &model,
+                provider,
+                &context,
+                &policy,
+                Some(&next_io),
+            )?;
+            let (attempt, custody) = runtime
+                .resume_task_with_native_work(
+                    recovered,
+                    history.into_custody()?,
+                    &commands,
+                    1,
+                    &next,
+                )
+                .await?;
+            assert!(custody.work().shares_allocation_context(&next));
+            drop(custody);
+            attempt
+        } else {
+            drop(custody);
+            attempt
+        };
         if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
             return Err(error);
         }
@@ -421,7 +488,6 @@ async fn stock_turn(with_images: bool) -> Result<()> {
             ),
             "{adapter:?}"
         );
-        assert!(custody.work().shares_allocation_context(&work));
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
     }
     Ok(())
