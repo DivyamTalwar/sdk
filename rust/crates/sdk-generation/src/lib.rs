@@ -30,7 +30,6 @@ mod artifacts;
 mod cache_record;
 mod file_cache;
 mod shared_cache;
-mod parallel;
 pub use artifacts::materialize_generated_sources;
 use artifacts::*;
 use file_cache::rustdoc_digest;

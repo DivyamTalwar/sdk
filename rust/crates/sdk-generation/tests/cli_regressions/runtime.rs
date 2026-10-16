@@ -5,6 +5,31 @@ mod sync;
 thread_local! {
     static GIT: PathBuf = resolve_git();
     static COMPILER: sync::Arc<PathBuf> = resolve_cargo();
+    #[cfg(windows)]
+    static SCRATCH: PathBuf = {
+        let executable = std::env::current_exe().unwrap();
+        let directory = executable.ancestors().last().unwrap().join("tmp");
+        // Keep compiler I/O on its own volume without inheriting a repository's
+        // Cargo workspace. Each test thread owns a fresh, private directory.
+        if directory.ancestors().any(|path| path.join("Cargo.toml").exists()) {
+            std::env::temp_dir()
+        } else {
+            fs::create_dir_all(&directory).ok().and_then(|_| {
+                tempfile::Builder::new().prefix("sdk-generation-cli-").tempdir_in(directory).ok()
+            }).map(|directory| directory.keep()).unwrap_or_else(std::env::temp_dir)
+        }
+    };
+}
+
+pub(super) fn temp_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        SCRATCH.with(Clone::clone)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::temp_dir()
+    }
 }
 
 fn resolve_git() -> PathBuf {
@@ -76,9 +101,10 @@ pub(super) fn rustc() -> PathBuf {
         .join(format!("rustc{}", std::env::consts::EXE_SUFFIX))
 }
 
-pub(super) fn configure_linker(command: &mut Command) {
+pub(super) fn configure(command: &mut Command) {
     #[cfg(windows)]
     {
+        command.env("TEMP", temp_dir()).env("TMP", temp_dir());
         let cargo = cargo();
         let sysroot = cargo.parent().unwrap().parent().unwrap();
         let linkers = fs::read_dir(sysroot.join("lib/rustlib"))

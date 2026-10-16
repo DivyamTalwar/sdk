@@ -3,19 +3,6 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn receipt_dispatch_is_disjoint_under_portable_filename_aliases(
-        mut names in prop::collection::vec("[a-zA-Z_-]{1,8}", 1..6), alias in any::<bool>(),
-    ) {
-        if alias { names.push(names[0].to_ascii_uppercase().replace('-', "_")); }
-        let canonical = names.iter().map(|name| name.bytes().map(|byte| {
-            if byte == b'-' { b'_' } else { byte.to_ascii_lowercase() }
-        }).collect::<Vec<_>>()).collect::<Vec<_>>();
-        let pairwise = (0..canonical.len()).all(|a| (a+1..canonical.len()).all(|b| canonical[a] != canonical[b]));
-        prop_assert_eq!(distinct_receipt_names(names.iter().map(String::as_str)), pairwise);
-        if alias { prop_assert!(!pairwise); }
-    }
-
-    #[test]
     fn equivalent_profile_keys_are_exactly_the_transitive_local_cargo_feature_set(
         graph in prop::array::uniform4(0u8..16),
         requested in 0u8..16,

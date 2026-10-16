@@ -114,7 +114,7 @@ fn copy_fixture(template: &Fixture) -> Fixture {
 }
 
 fn build_fixture(include_plugin: bool) -> Fixture {
-    let root = std::env::temp_dir().join(format!(
+    let root = runtime::temp_dir().join(format!(
         "sdk-generation-cli-regression-{}-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
@@ -186,7 +186,7 @@ fn feature_profile_fixture() -> Fixture {
 }
 
 fn feature_profile_source() -> Fixture {
-    let root = std::env::temp_dir().join(format!(
+    let root = runtime::temp_dir().join(format!(
         "sdk-generation-feature-profile-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
@@ -222,7 +222,7 @@ fn feature_profile_source() -> Fixture {
         "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    let output = std::env::temp_dir().join(format!(
+    let output = runtime::temp_dir().join(format!(
         "sdk-generation-feature-profile-output-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
@@ -328,7 +328,7 @@ fn write_manifest(output: &Path, value: &Value) {
 }
 
 fn invoke(command: &mut Command) -> std::process::Output {
-    runtime::configure_linker(command);
+    runtime::configure(command);
     command.env("RUSTC", runtime::rustc());
     if !command
         .get_envs()
@@ -415,7 +415,7 @@ fn generate_command(
     skip_scenarios: bool,
 ) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
-    runtime::configure_linker(&mut command);
+    runtime::configure(&mut command);
     command.env("PATH", runtime::path());
     command.env("RUSTC", runtime::rustc());
     command.args([
@@ -471,7 +471,7 @@ fn generated_span_fixture_pair() -> (Fixture, Fixture) {
     });
     fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
 
-    let second_root = std::env::temp_dir().join(format!(
+    let second_root = runtime::temp_dir().join(format!(
         "sdk-generation-relocated-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
