@@ -24,6 +24,7 @@ async fn mcp_oracles_require_installation_authority_arguments_and_projected_resu
         "required",
         "property",
         "additional",
+        "completion",
     ] {
         let mut case = baseline.clone();
         match field {
@@ -51,6 +52,13 @@ async fn mcp_oracles_require_installation_authority_arguments_and_projected_resu
             "additional" => {
                 case["expect"]["requests"][0]["tools"][0]["input_schema"]["additionalProperties"] =
                     json!(true)
+            }
+            "completion" => {
+                case["expect"]["events"]
+                    .as_array_mut()
+                    .ok_or("missing expected events")?
+                    .last_mut()
+                    .ok_or("missing completion")?["step"] = json!(2);
             }
             _ => return Err("unknown MCP mutation".into()),
         }

@@ -69,3 +69,10 @@ path = "fuzz_targets/mcp_scenario.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "model_request"
+path = "fuzz_targets/model_request.rs"
+test = false
+doc = false
+bench = false

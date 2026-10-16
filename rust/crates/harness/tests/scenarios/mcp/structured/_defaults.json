@@ -1,6 +1,6 @@
 {"mcp":{"catalog":{"tools":[{"name":"echo","description":"Return the scripted MCP reply.","inputSchema":{"type":"object","required":
-    ["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false},"outputSchema":{"type":"object","required":
-    ["value"],"properties":{"value":{"type":"integer"}}}}]},"replies":[{"name":"echo","arguments":{"text":"hello"},"result":{
+    ["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false},"outputSchema":{"type":"object","required":[
+    "value"],"properties":{"value":{"type":"integer"}}}}]},"replies":[{"name":"echo","arguments":{"text":"hello"},"result":{
     "content":[],"structuredContent":{"value":7},"isError":false}}]},"expect":{"requests":[{"tools":[{"name":"mcp.fixture.echo",
     "revision":"1","input_schema":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},
     "additionalProperties":false}}]},{"messages":[{"role":"tool","content":{"kind":"tool_result","call_id":"echo","name":

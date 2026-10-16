@@ -865,7 +865,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
             &records,
             0,
             &invocation,
-            std::slice::from_ref(&definition),
+            &definition,
             Limits::default(),
             None,
         )
