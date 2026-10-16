@@ -45,11 +45,9 @@ impl GoalCase {
         if case.expect.view.is_some() == case.expect.view_error.is_some() {
             return Err("expect exactly one of goal view or error".into());
         }
-        if case
-            .expect
-            .view_error
-            .as_ref()
-            .is_some_and(String::is_empty)
+        if [&case.expect.view_error, &case.expect.runtime_error]
+            .into_iter()
+            .any(|error| error.as_ref().is_some_and(String::is_empty))
         {
             return Err("goal error must not be empty".into());
         }
