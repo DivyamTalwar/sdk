@@ -1,0 +1,86 @@
+use super::{check, id, name, object_arguments};
+use serde_json::Value;
+use std::collections::BTreeSet;
+
+pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
+    if body["input"].is_string() {
+        return;
+    }
+    let Some(items) = body["input"].as_array() else {
+        check(false, "OAR-SEQ-01", errors);
+        return;
+    };
+    let mut pending = BTreeSet::new();
+    let mut reasoning = false;
+    for item in items {
+        let kind = item["type"].as_str().unwrap_or("message");
+        match kind {
+            "message" => {
+                let role = item["role"].as_str().unwrap_or("");
+                check(
+                    matches!(role, "user" | "assistant" | "system" | "developer"),
+                    "OAR-SEQ-01",
+                    errors,
+                );
+                if let Some(parts) = item["content"].as_array() {
+                    for part in parts {
+                        let kind = part["type"].as_str().unwrap_or("");
+                        let accepted = if role == "assistant" {
+                            matches!(kind, "output_text" | "refusal")
+                        } else {
+                            matches!(kind, "input_text" | "input_image" | "input_file")
+                        };
+                        check(accepted, "OAR-SEQ-03", errors);
+                    }
+                } else {
+                    check(item["content"].is_string(), "OAR-SEQ-01", errors);
+                }
+                reasoning = false;
+            }
+            "function_call" => {
+                check(id(&item["call_id"], 64), "OAR-TOOL-03", errors);
+                check(name(&item["name"], 64, false, b"_-"), "OAR-TOOL-01", errors);
+                check(object_arguments(&item["arguments"]), "OAR-TOOL-02", errors);
+                if let Some(id) = item["call_id"].as_str() {
+                    pending.insert(id);
+                }
+                reasoning = false;
+            }
+            "function_call_output" => {
+                check(!reasoning, "OAR-RSN-02", errors);
+                let matched = item["call_id"]
+                    .as_str()
+                    .is_some_and(|id| pending.remove(id));
+                check(matched, "OAR-TOOL-04", errors);
+                check(
+                    item["output"].is_string() || item["output"].is_array(),
+                    "OAR-TOOL-05",
+                    errors,
+                );
+            }
+            "reasoning" => {
+                check(
+                    item["id"].is_string() && item["summary"].is_array(),
+                    "OAR-RSN-04",
+                    errors,
+                );
+                if body["store"] == false {
+                    check(item["encrypted_content"].is_string(), "OAR-RSN-03", errors);
+                }
+                reasoning = true;
+            }
+            _ => check(false, "OAR-SEQ-01", errors),
+        }
+    }
+    check(!reasoning, "OAR-RSN-02", errors);
+    check(pending.is_empty(), "OAR-TOOL-04", errors);
+    if let Some(tools) = body["tools"].as_array() {
+        for tool in tools {
+            check(
+                tool["type"] == "function" && name(&tool["name"], 64, false, b"_-"),
+                "OAR-TOOL-01",
+                errors,
+            );
+        }
+    }
+}

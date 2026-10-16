@@ -37,6 +37,24 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'V' {
+        let Some((&kind, input)) = input.split_first() else {
+            return;
+        };
+        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(input) {
+            let adapter = [
+                Adapter::Anthropic,
+                Adapter::Responses,
+                Adapter::Chat,
+                Adapter::Gemini,
+            ][usize::from(kind) % 4];
+            let before = crate::validate_input(adapter, &body);
+            let encoded = serde_json::to_vec(&body).unwrap();
+            let replay = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(before, crate::validate_input(adapter, &replay));
+        }
+        return;
+    }
     if kind == b'K' {
         use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
         for field in [

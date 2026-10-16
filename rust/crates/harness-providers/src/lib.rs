@@ -6,11 +6,11 @@ mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
-mod refresh;
+mod codex_count;
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_file;
 #[cfg(not(target_arch = "wasm32"))]
-mod codex_count;
+mod refresh;
 #[cfg(not(target_arch = "wasm32"))]
 mod usage_snapshot;
 #[cfg(not(target_arch = "wasm32"))]
@@ -24,6 +24,8 @@ mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
+mod input;
+pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
