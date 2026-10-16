@@ -120,13 +120,16 @@ impl LocalHarness {
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = match &config.model {
-                Some((model, provider)) => compaction::select(
-                    config.compaction,
-                    model,
-                    provider.as_ref(),
-                    &tools,
-                    config.limits,
-                )?,
+                Some((model, provider)) => {
+                    compaction::select(
+                        config.compaction,
+                        model,
+                        provider.as_ref(),
+                        &tools,
+                        config.limits,
+                    )
+                    .await?
+                }
                 None => crate::context::CompactionPolicy::Disabled,
             };
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
