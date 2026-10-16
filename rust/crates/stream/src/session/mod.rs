@@ -26,6 +26,13 @@ mod signal;
 mod sync;
 pub use client::Client;
 pub use service::Service;
+// Child frames carry both their path and the provider-owned resume anchor.
+const CHILD_FRAME_BYTES: usize = 2 * crate::MAX_PATH_BYTES + 128;
+const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES + 128 {
+    CHILD_FRAME_BYTES
+} else {
+    crate::MAX_RECORD_BYTES + 128
+};
 #[cfg(test)]
 mod tests;
 

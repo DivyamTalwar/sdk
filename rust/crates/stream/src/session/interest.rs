@@ -36,68 +36,7 @@ impl<P: StreamProvider> Session<P> {
         // Provider opens run independently; refusal closes only that channel.
         let mut opened = Vec::new();
         for subscription in interest.upsert {
-            let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
-            let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
-            let (cancel, cancelled) = oneshot::channel();
-            let enabled = Arc::new(gate::Gate::new());
-            let identity = channel;
-            let children = matches!(subscription.kind, Some(Kind::Children(_)));
-            let (latest, source) = match subscription.kind {
-                Some(Kind::Follow(follow)) => {
-                    if !resume.opaque.is_empty() {
-                        return Err(StreamError::InvalidArgument);
-                    }
-                    let latest = match wire::SessionDelivery::try_from(follow.delivery) {
-                        Ok(wire::SessionDelivery::All) => false,
-                        Ok(wire::SessionDelivery::Latest) => true,
-                        _ => return Err(StreamError::InvalidArgument),
-                    };
-                    let path = StreamPath::new(follow.path)?;
-                    (
-                        latest,
-                        follow_source(
-                            Arc::clone(&self.provider),
-                            path,
-                            resume.next,
-                            identity,
-                            cancelled,
-                            Arc::clone(&enabled),
-                        ),
-                    )
-                }
-                Some(Kind::Children(request)) => {
-                    let request = wire_codec::children_from_wire(request)?;
-                    children::validate_resume(&request, &resume)?;
-                    (
-                        false,
-                        children::source(
-                            Arc::clone(&self.provider),
-                            request,
-                            resume.clone(),
-                            identity,
-                            cancelled,
-                            Arc::clone(&enabled),
-                        ),
-                    )
-                }
-                _ => return Err(StreamError::Unsupported),
-            };
-            opened.push((
-                identity,
-                Channel {
-                    generation: identity.generation,
-                    latest,
-                    children,
-                    pending: 0,
-                    enabled,
-                    credit: wire::SessionWindow::default(),
-                    sent: resume.clone(),
-                    applied: resume,
-                    ending: None,
-                    cancel: Some(cancel),
-                },
-                source,
-            ));
+            opened.push(self.open(subscription)?);
         }
         for remove in interest.remove {
             self.remove(remove.channel_id)?;
@@ -117,6 +56,75 @@ impl<P: StreamProvider> Session<P> {
             }),
         ));
         Ok(())
+    }
+
+    fn open(
+        &self,
+        subscription: wire::SessionSubscription,
+    ) -> Result<(wire::SessionChannel, Channel, Source), StreamError> {
+        let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
+        let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
+        let (cancel, cancelled) = oneshot::channel();
+        let enabled = Arc::new(gate::Gate::new());
+        let identity = channel;
+        let children = matches!(subscription.kind, Some(Kind::Children(_)));
+        let (latest, source) = match subscription.kind {
+            Some(Kind::Follow(follow)) => {
+                if !resume.opaque.is_empty() {
+                    return Err(StreamError::InvalidArgument);
+                }
+                let latest = match wire::SessionDelivery::try_from(follow.delivery) {
+                    Ok(wire::SessionDelivery::All) => false,
+                    Ok(wire::SessionDelivery::Latest) => true,
+                    _ => return Err(StreamError::InvalidArgument),
+                };
+                let path = StreamPath::new(follow.path)?;
+                (
+                    latest,
+                    follow_source(
+                        Arc::clone(&self.provider),
+                        path,
+                        resume.next,
+                        identity,
+                        cancelled,
+                        Arc::clone(&enabled),
+                    ),
+                )
+            }
+            Some(Kind::Children(request)) => {
+                if self.limits.pending_bytes < CHILD_FRAME_BYTES { return Err(StreamError::Capacity); }
+                let request = wire_codec::children_from_wire(request)?;
+                children::validate_resume(&request, &resume)?;
+                (
+                    false,
+                    children::source(
+                        Arc::clone(&self.provider),
+                        request,
+                        resume.clone(),
+                        identity,
+                        cancelled,
+                        Arc::clone(&enabled),
+                    ),
+                )
+            }
+            _ => return Err(StreamError::Unsupported),
+        };
+        Ok((
+            identity,
+            Channel {
+                generation: identity.generation,
+                latest,
+                children,
+                pending: 0,
+                enabled,
+                credit: wire::SessionWindow::default(),
+                sent: resume.clone(),
+                applied: resume,
+                ending: None,
+                cancel: Some(cancel),
+            },
+            source,
+        ))
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {

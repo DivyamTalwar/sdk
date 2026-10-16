@@ -51,6 +51,16 @@ proptest! {
         prop_assert_eq!(children::validate_resume(&request, &decoded).is_ok(), !nested);
     }
 
+    #[test]
+    fn child_frames_fit_the_reserved_slot(length in 1_usize..=crate::MAX_PATH_BYTES) {
+        let path = "a".repeat(length);
+        let after = wire::SessionCursor { next: u64::MAX, opaque: Bytes::copy_from_slice(path.as_bytes()) };
+        let frame = frame(u64::MAX, u64::MAX, Body::Data(wire::SessionData { after: Some(after), accepted: u64::MAX, durable: 0, item: Some(Item::Child(wire::Child { path })) }));
+        let decoded = wire::SessionFrame::decode(frame.encode_to_vec().as_slice()).unwrap();
+        prop_assert_eq!(&decoded, &frame);
+        prop_assert!(frame.encoded_len() <= CHILD_FRAME_BYTES);
+    }
+
     // Property: ALL preserves every offset; LATEST retains every attention and
     // exactly the final ordinary value for each key, in original cursor order.
     #[test]
