@@ -20,6 +20,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
  "allocation-counter",
  "bytes",
@@ -49,6 +50,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -284,6 +286,7 @@ dependencies = [
 name = "acyclic-harness"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-tui",
