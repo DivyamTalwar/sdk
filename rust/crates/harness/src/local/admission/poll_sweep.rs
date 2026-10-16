@@ -222,6 +222,9 @@ impl Fixture {
             )?,
             provider: self.provider.clone(),
             context_manifest: Some(context_manifest),
+            #[cfg(feature = "hooks")]
+            hooks: Default::default(),
+            context_read_observer: None,
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -234,6 +237,8 @@ impl Fixture {
             admission: StateArc::new(Mutex::new(())),
             #[cfg(feature = "native-execution")]
             workspace: None,
+            #[cfg(feature = "native-execution")]
+            checkout_context: false,
         })
     }
 
