@@ -118,3 +118,24 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod negative_control {
+    use super::*;
+    #[derive(Deserialize)]
+    struct Borrowed<'a> {
+        thinking: &'a str,
+    }
+    #[test]
+    fn borrowed_string_validation_would_drop_signed_multiline_continuity() {
+        let raw =
+            br#"{"type":"thinking","thinking":"line\n\"quote\"\\path","signature":"signed=="}"#;
+        assert!(serde_json::from_slice::<Borrowed<'_>>(raw).is_err());
+        let plain: Borrowed<'_> = serde_json::from_str(r#"{"thinking":"plain"}"#).unwrap();
+        assert_eq!(plain.thinking, "plain");
+        assert_eq!(
+            validated(Adapter::Anthropic, raw).unwrap().get().as_bytes(),
+            raw
+        );
+    }
+}

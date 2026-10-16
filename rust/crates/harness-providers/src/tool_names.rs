@@ -133,6 +133,9 @@ impl<'a> Names<'a> {
     }
 
     fn with_capacity(request: &'a ModelRequest, count: usize) -> Self {
+        if count == 0 {
+            return Self(Vec::new());
+        }
         let mut values = Vec::with_capacity(count);
         values.extend(names(request));
         values.sort_unstable();

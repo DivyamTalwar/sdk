@@ -14,6 +14,9 @@ fn history(input: &[String], adapter: Adapter) -> (crate::ResolvedModel, ModelRe
     let (provider, _) = provider(adapter, 200);
     let (prepared, _) = request(&provider).unwrap();
     let mut request = prepared.request().clone();
+    if input.is_empty() {
+        return (provider, request);
+    }
     request.messages.push(ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Parts(
@@ -156,4 +159,9 @@ fn checked_in_call_id_seed_exercises_the_shared_fuzzer_oracle() {
     let seed = include_bytes!("../fuzz/corpus/provider_stream/tool-call-ids.json");
     let _: ModelRequest = serde_json::from_slice(&seed[1..]).unwrap();
     crate::fuzzing::assert_stream_invariants(seed);
+}
+
+#[test]
+fn empty_batch_has_no_calls_or_results() {
+    assert_ids(Vec::new());
 }
