@@ -33,9 +33,6 @@ pub(super) fn register(
     }
     let mut remaining = MAXIMUM_PATHS;
     while let Some(relative) = pending.pop() {
-        remaining = remaining
-            .checked_sub(1)
-            .ok_or_else(|| Error::Invalid("arriving subtree exceeds capture bound".into()))?;
         let path = workspace.path.join(&relative);
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -51,6 +48,9 @@ pub(super) fn register(
         // the native queue for the next capture; current contents are captured now.
         watcher.watch_directory(&namespace).map_err(storage)?;
         for entry in std::fs::read_dir(path).map_err(storage)? {
+            remaining = remaining
+                .checked_sub(1)
+                .ok_or_else(|| Error::Invalid("arriving subtree exceeds capture bound".into()))?;
             let entry = entry.map_err(storage)?;
             let kind = entry.file_type().map_err(storage)?;
             if kind.is_dir() && !kind.is_symlink() {
