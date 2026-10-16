@@ -60,6 +60,28 @@ proptest! {
         prop_assert_eq!(below_replaced_parent(&path, &parents, &meter()).unwrap(), expected);
     }
 
+    #[test]
+    fn retirement_preserves_unrelated_entries_and_classifies_replaced_ancestors(
+        replaced in prop::collection::btree_map(0usize..40, any::<bool>(), 0..30),
+    ) {
+        let work = meter();
+        let mut entries = ordinary(40, &work);
+        let missing: Vec<_> = replaced.iter().map(|(index, present)| (path(&format!("/d{index:04}")), present.then(record))).collect();
+        retire_hydrated(&mut entries, &missing, &work).unwrap();
+        let expected: Vec<_> = (0..40).flat_map(|index| {
+            let parent = format!("/d{index:04}");
+            let mut rows = Vec::new();
+            if !replaced.contains_key(&index) { rows.push((parent.clone(), false)); }
+            rows.push((format!("{parent}/file"), replaced.get(&index) == Some(&true)));
+            rows
+        }).collect();
+        prop_assert_eq!(entries.len(), expected.len());
+        for ((actual, (current, _)), (expected, absent)) in entries.iter().zip(expected) {
+            prop_assert_eq!(actual, &path(&expected));
+            prop_assert_eq!(matches!(current, CurrentRecord::Known(None)), absent);
+        }
+    }
+
     // N fresh sibling directories and their children require O(N log N) item
     // work, and each surviving entry moves at most once. Neither bound permits
     // the former repeated Vec::remove or exhaustive sibling scan.
