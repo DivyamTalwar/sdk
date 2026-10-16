@@ -221,7 +221,11 @@ proptest! {
 
 #[test]
 fn checked_in_auth_seed_exercises_an_accepted_document() {
-    let seed = include_bytes!("../fuzz/corpus/provider_stream/auth.json");
-    assert!(decode_auth(&seed[1..]).is_ok());
-    crate::fuzzing::assert_stream_invariants(seed);
+    for seed in [
+        include_bytes!("../fuzz/corpus/provider_stream/auth.json").as_slice(),
+        include_bytes!("../fuzz/corpus/provider_stream/auth-jwt.json").as_slice(),
+    ] {
+        assert!(decode_auth(&seed[1..]).is_ok());
+        crate::fuzzing::assert_stream_invariants(seed);
+    }
 }
