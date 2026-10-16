@@ -53,7 +53,10 @@ pub(super) fn get(
 }
 
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    get(path, "sha256", || crate::sha256_file(path))
+    get(path, "sha256", || {
+        let bytes = sdk_docs::read_rustdoc(path).map_err(crate::docs_error)?;
+        Ok(crate::sha256_bytes(&bytes))
+    })
 }
 
 pub(super) fn tool_identity(path: &Path) -> Result<String, CliError> {

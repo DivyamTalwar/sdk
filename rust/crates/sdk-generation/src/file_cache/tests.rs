@@ -92,6 +92,38 @@ fn cargo_probe_key_frames_environment_names_and_values() {
 }
 
 #[test]
+fn artifact_hashes_share_receipt_bytes_and_detect_same_length_rewrites() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("receipt.json");
+    proptest::test_runner::TestRunner::default()
+        .run(&any::<u64>(), |value| {
+            let original = value.to_le_bytes();
+            let changed = (!value).to_le_bytes();
+            fs::write(&path, original).unwrap();
+            let modified = fs::metadata(&path).unwrap().modified().unwrap();
+            begin_run();
+            sdk_docs::with_rustdoc_cache(|| {
+                let snapshot = sdk_docs::read_rustdoc(&path).unwrap();
+                prop_assert_eq!(sha256_file(&path).unwrap(), crate::sha256_bytes(&original));
+                fs::write(&path, changed).unwrap();
+                File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(FileTimes::new().set_modified(modified))
+                    .unwrap();
+                prop_assert_eq!(sha256_file(&path).unwrap(), crate::sha256_bytes(&changed));
+                prop_assert_eq!(&*snapshot, &original);
+                prop_assert_eq!(&*sdk_docs::read_rustdoc(&path).unwrap(), &changed);
+                fs::remove_file(&path).unwrap();
+                prop_assert!(sha256_file(&path).is_err());
+                Ok(())
+            })
+        })
+        .unwrap();
+}
+
+#[test]
 fn each_command_discards_all_cached_values_and_resolved_selections() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("toolchain");
@@ -211,8 +243,7 @@ fn wrapper_probe(broken: bool) {
     let directory = tempfile::tempdir().unwrap();
     // Use an immutable executable: concurrent fork can inherit a freshly
     // written fixture's writable descriptor until exec, causing ETXTBSY.
-    let wrapper = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/toolchain-wrapper.sh");
+    let wrapper = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/toolchain-wrapper.sh");
     fs::write(directory.path().join("selected"), "version A\n").unwrap();
     begin_run();
     if broken {

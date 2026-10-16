@@ -139,13 +139,7 @@ pub(super) fn json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CliError> {
     serde_json::to_vec_pretty(value).map_err(|e| CliError(format!("JSON error: {e}")))
 }
 pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
-}
-pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    let bytes = fs::read(path).map_err(io_error)?;
-    #[cfg(test)]
-    HASH_BYTES.set(HASH_BYTES.get() + bytes.len() as u64);
-    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut result = String::with_capacity(7 + digest.as_ref().len() * 2);
     result.push_str("sha256:");
@@ -153,7 +147,13 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
         result.push(DIGITS[(byte >> 4) as usize] as char);
         result.push(DIGITS[(byte & 0xf) as usize] as char);
     }
-    Ok(result)
+    result
+}
+pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
+    let bytes = fs::read(path).map_err(io_error)?;
+    #[cfg(test)]
+    HASH_BYTES.set(HASH_BYTES.get() + bytes.len() as u64);
+    Ok(sha256_bytes(&bytes))
 }
 
 #[cfg(test)]
