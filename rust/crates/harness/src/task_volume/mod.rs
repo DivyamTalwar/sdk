@@ -2,6 +2,7 @@
 
 mod child;
 mod query;
+pub(crate) use child::child_scope;
 pub use child::{ChildFile, ChildRequest, ChildState, Control};
 pub use query::Query;
 mod files;

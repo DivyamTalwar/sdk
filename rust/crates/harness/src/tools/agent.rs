@@ -140,6 +140,9 @@ impl ToolExecutor for AgentExecutor {
                 .ok_or_else(|| Error::Unsupported("agent files are absent".into()))?;
             let command: AgentCommand =
                 serde_json::from_value(invocation.arguments).map_err(invalid)?;
+            if let AgentCommand::Spawn { tools, .. } = &command {
+                crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
+            }
             access(
                 files,
                 command,
@@ -172,6 +175,9 @@ impl ToolExecutor for AgentExecutor {
                 .as_ref()
                 .ok_or_else(|| Error::Unsupported("agent files are absent".into()))?;
             let command = serde_json::from_value(invocation.arguments).map_err(invalid)?;
+            if let AgentCommand::Spawn { tools, .. } = &command {
+                crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
+            }
             access(
                 files,
                 command,
@@ -320,6 +326,20 @@ async fn access<P: StreamProvider + ?Sized>(
 fn status(reference: &Component, files: &[FileValue]) -> Result<Value> {
     let mut state = ChildState::Running;
     let mut execution = Value::Null;
+    // Requests and inbox files are immutable and cannot be deleted. Their
+    // cardinality therefore detects every input accepted since a settled turn.
+    let inputs = files
+        .iter()
+        .filter(|file| {
+            matches!(
+                &file.key,
+                FileKey::Child {
+                    file: ChildFile::Request | ChildFile::Inbox(_),
+                    ..
+                }
+            )
+        })
+        .count() as u64;
     for file in files {
         match &file.key {
             FileKey::Child {
@@ -340,7 +360,8 @@ fn status(reference: &Component, files: &[FileValue]) -> Result<Value> {
     let settled = matches!(
         state,
         ChildState::Cancelled | ChildState::Archived | ChildState::Interrupted
-    ) || execution.get("settled") == Some(&Value::Bool(true));
+    ) || (execution.get("settled") == Some(&Value::Bool(true))
+        && execution.get("inputs").and_then(Value::as_u64) == Some(inputs));
     Ok(json!({"reference":reference,"state":state,"settled":settled,"execution":execution}))
 }
 

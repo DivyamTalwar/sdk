@@ -2,6 +2,31 @@
 use super::{Component, Error, Result};
 use serde::{Deserialize, Serialize};
 
+pub(crate) fn child_scope(
+    parent: &crate::runtime::RuntimeScope,
+    tools: Option<&[String]>,
+) -> crate::Result<crate::runtime::RuntimeScope> {
+    let Some(tools) = tools else {
+        return Ok(parent.clone());
+    };
+    let requested = crate::Capabilities::new(tools.iter().map(|name| format!("tool:call:{name}")));
+    if requested
+        .iter()
+        .any(|grant| !parent.grants().contains(grant))
+    {
+        return Err(crate::Error::Unauthorized(
+            "child tool selection widens its parent".into(),
+        ));
+    }
+    let grants = crate::Capabilities::new(
+        parent
+            .grants()
+            .iter()
+            .filter(|grant| !grant.starts_with("tool:call:") || requested.contains(grant)),
+    );
+    parent.narrow(grants, parent.limits())
+}
+
 /// Spawn request read from `agents/<ref>/request.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildRequest {
@@ -265,6 +290,29 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn child_tool_selection_is_attenuation_with_unchanged_numeric_limits(
+            parent_tools in prop::collection::btree_set("[a-z]{1,5}", 0..10),
+            requested_tools in prop::collection::btree_set("[a-z]{1,5}", 0..10),
+        ) {
+            use crate::{Capabilities, conversation::Limits, runtime::RuntimeScope};
+            let grants = Capabilities::new(std::iter::once("model:generate".to_owned())
+                .chain(parent_tools.iter().map(|name| format!("tool:call:{name}"))));
+            let parent = RuntimeScope::new(grants, Limits::default()).unwrap();
+            let requested: Vec<_> = requested_tools.iter().cloned().collect();
+            let child = child_scope(&parent, Some(&requested));
+            prop_assert_eq!(child.is_ok(), requested_tools.is_subset(&parent_tools));
+            if let Ok(child) = child {
+                prop_assert_eq!(child.limits(), parent.limits());
+                prop_assert_eq!(child.run_limits(), parent.run_limits());
+                prop_assert!(child.grants().iter().all(|grant| parent.grants().contains(grant)));
+                prop_assert!(child.grants().contains("model:generate"));
+                for tool in &parent_tools {
+                    prop_assert_eq!(child.grants().contains(&format!("tool:call:{tool}")), requested_tools.contains(tool));
+                }
+            }
+        }
+
         #[test]
         fn request_metadata_round_trips_without_changing_the_literal_prompt(
             prompt in ".{1,100}", model in prop::option::of("[a-z]{1,10}"),

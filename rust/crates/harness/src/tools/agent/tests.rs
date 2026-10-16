@@ -241,6 +241,83 @@ async fn reconciliation_does_not_reapply_a_superseded_control() {
     );
 }
 
+#[tokio::test]
+async fn new_inbox_files_make_a_previously_settled_status_pending() {
+    let files = files().await;
+    let operation = OperationId::from_bytes([3; 16]);
+    call(
+        &files,
+        json!({"command":"spawn","reference":"worker","prompt":"work"}),
+        operation,
+    )
+    .await
+    .unwrap();
+    let snapshot = files
+        .observe(Query::Children, None, 16)
+        .await
+        .unwrap()
+        .snapshot
+        .unwrap();
+    files
+        .inner
+        .append(
+            snapshot.generation,
+            &FileValue::new(
+                FileKey::Child {
+                    reference: Component::new("worker").unwrap(),
+                    file: ChildFile::Status,
+                },
+                serde_json::to_vec(&json!({"settled":true,"inputs":1,"text":"done"})).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &files,
+            json!({"command":"wait","reference":"worker"}),
+            operation
+        )
+        .await
+        .unwrap()["settled"],
+        true
+    );
+    call(
+        &files,
+        json!({"command":"send","reference":"worker","message":"more work"}),
+        operation,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        call(
+            &files,
+            json!({"command":"status","reference":"worker"}),
+            operation
+        )
+        .await
+        .unwrap()["settled"],
+        false
+    );
+    let mut waiter = Box::pin(call(
+        &files,
+        json!({"command":"wait","reference":"worker"}),
+        operation,
+    ));
+    assert!(matches!(
+        futures::poll!(&mut waiter),
+        std::task::Poll::Pending
+    ));
+    call(
+        &files,
+        json!({"command":"control","reference":"worker","action":"cancel"}),
+        operation,
+    )
+    .await
+    .unwrap();
+    assert_eq!(waiter.await.unwrap()["state"], json!(ChildState::Cancelled));
+}
+
 proptest! {
     #[test]
     fn tool_arguments_round_trip(reference in "[a-z][a-z0-9_-]{0,20}", body in ".{1,100}") {
