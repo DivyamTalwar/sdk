@@ -11,6 +11,11 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
     for row in rows {
         let name = row["row"].as_str().unwrap();
         let mut input = PromptInput::new(Editor::new(row["text"].as_str().unwrap()));
+        if let Some(entries) = row["history"].as_array() {
+            let mut history = acyclic_harness::tui::PromptHistory::default();
+            for entry in entries { history.push(entry.as_str().unwrap().into()); }
+            input.replace_history(history);
+        }
         if let Some(files) = row["files"].as_object() {
             for (path, text) in files {
                 input.completion.set_file(path, Some(text.as_str().unwrap().as_bytes())).unwrap();
@@ -50,6 +55,7 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
                     "Tab" => KeyCode::Tab,
                     "Up" => KeyCode::Up,
                     "Down" => KeyCode::Down,
+                    "Escape" => KeyCode::Esc,
                     character => KeyCode::Char(character.chars().next().unwrap()),
                 };
                 let mut modifiers = KeyModifiers::NONE;

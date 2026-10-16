@@ -321,5 +321,46 @@
     "files": {"commands/review/code.md":"Review the changes"},
     "events": [{"key":"Tab"}], "completion": false,
     "expected": "/review:code ", "visible": ["/review:code"]
+  },
+  {
+    "row": "Prompt history Up at the buffer edge",
+    "text": "", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"Up"}],
+    "expected": "second prompt", "visible": ["second prompt"]
+  },
+  {
+    "row": "Prompt history Down restores the current draft",
+    "text": "", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"Up"},{"key":"Down"}],
+    "expected": "", "visible": []
+  },
+  {
+    "row": "Reverse history search uses Unicode query text",
+    "text": "draft", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"r","ctrl":true},{"text":"日本語"}],
+    "expected": "first 日本語", "visible": ["first 日本語"]
+  },
+  {
+    "row": "Escape from reverse history search restores draft",
+    "text": "draft", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"r","ctrl":true},{"text":"日本語"},{"key":"Escape"}],
+    "expected": "draft", "visible": ["draft"]
+  },
+  {
+    "row": "Alt+Enter inserts newline",
+    "text": "one", "events": [{"key":"Enter","alt":true},{"text":"two"}],
+    "expected": "one\ntwo", "visible": ["one","two"]
+  },
+  {
+    "row": "Ctrl+Enter inserts newline",
+    "text": "one", "events": [{"key":"Enter","ctrl":true},{"text":"two"}],
+    "expected": "one\ntwo", "visible": ["one","two"]
+  },
+  {
+    "row": "Theme name completion from followed theme definitions",
+    "text": "/theme da",
+    "files": {"commands/tools.json":"[{\"name\":\"theme\",\"action\":{\"kind\":\"theme\"}}]", "commands/themes.json":"[\"dark\",\"light\"]"},
+    "events": [{"key":"Tab"}], "completion": false,
+    "expected": "/theme dark", "visible": ["/theme dark"]
   }
 ]
