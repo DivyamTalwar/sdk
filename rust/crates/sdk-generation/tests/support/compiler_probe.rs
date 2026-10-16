@@ -7,6 +7,7 @@ use std::{
 };
 #[path = "probe_codec.rs"]
 pub mod codec;
+#[path = "probe_fence.rs"]
 mod probe_fence;
 
 pub fn cached<S: serde::Serialize + Eq>(
