@@ -524,17 +524,23 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
         ));
         drop((proof, custody));
         // Deliberately restore one old canonical sequence lookup. Its SDK
-        // cursor walks retained history even though the payload stays bounded.
+        // cursor walks retained history for the started record, beyond the
+        // initial-batch prefix cache, even though the payload stays bounded.
         let mut control =
             HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
         let source = coordinator_stream(&client, &mut Some(&mut control))?;
         let record =
-            operations::one_record(&client, source.0.path(), 0, &mut Some(&mut control)).await?;
+            operations::one_record(&client, source.0.path(), 2, &mut Some(&mut control)).await?;
         assert!(record.is_some());
         drop((record, source));
         drop(control.into_custody()?);
         let measured = native.receipt();
         let calls = client.io_snapshot();
+        println!(
+            "history-walk control history={} items={}",
+            3 + phase * 128,
+            measured.items_examined
+        );
         history_walk_control.push((
             calls.reads + calls.inspections,
             measured.source_bytes_read,
