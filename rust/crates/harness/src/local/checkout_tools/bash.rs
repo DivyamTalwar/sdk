@@ -17,7 +17,7 @@ impl CheckoutTools {
             cwd: workspace.path.clone(),
             environment: Default::default(),
             timeout_ms: 300_000,
-            control_timeout_ms: 1000,
+            control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             cancellation_poll_ms: 25,
             maximum_output_bytes: u32::try_from(maximum_output)
                 .map_err(|cause| Error::Invalid(cause.to_string()))?,
@@ -44,12 +44,12 @@ impl CheckoutTools {
                 }
                 runtime.block_on(async {
                     tokio::time::timeout(
-                        std::time::Duration::from_secs(1),
+                        std::time::Duration::from_millis(u64::from(output::CONTROL_TIMEOUT_MS)),
                         check_owner.verify(false, &mut None),
                     )
                     .await
-                    .map_err(std::io::Error::other)?
-                    .map_err(std::io::Error::other)
+                    .map_err(native_process::capture::control_error)?
+                    .map_err(native_process::capture::control_error)
                 })
             },
             (state, files),

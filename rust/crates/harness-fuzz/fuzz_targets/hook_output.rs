@@ -6,10 +6,10 @@ use serde_json::Value;
 
 // Include the production pure decoder and normalized types. No native runner,
 // model provider, process, or public testing API is needed by this target.
-#[path = "../../src/hooks/spec.rs"]
+#[path = "../../harness/src/hooks/spec.rs"]
 mod spec;
 use spec::{HookEvent, HookFailure};
-#[path = "../../src/hooks/output.rs"]
+#[path = "../../harness/src/hooks/output.rs"]
 mod output;
 use output::HookOutput;
 

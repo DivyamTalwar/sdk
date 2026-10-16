@@ -15,7 +15,6 @@ members = [
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
-  "rust/crates/harness/fuzz",
   "rust/crates/harness-conformance",
   "rust/crates/harness-fuzz",
   "rust/crates/inference",

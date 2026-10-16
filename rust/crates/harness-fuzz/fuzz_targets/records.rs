@@ -5,7 +5,7 @@ use libfuzzer_sys::fuzz_target;
 use serde::{Serialize, de::DeserializeOwned};
 
 // Compile the private production record without adding a public parser API.
-#[path = "../../src/local/owner_record.rs"]
+#[path = "../../harness/src/local/owner_record.rs"]
 mod owner_record;
 
 fn round_trip<T: Serialize + DeserializeOwned>(input: &[u8]) {

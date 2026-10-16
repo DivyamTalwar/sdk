@@ -24,14 +24,16 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
                 control_timeout,
                 check_owner.verify(false, &mut None),
             ))
-            .map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-            })?
-            .map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-            })
+            .map_err(control_error)?
+            .map_err(control_error)
     };
     capture_checked(invocation, observer, check).await
+}
+
+pub(crate) fn control_error(
+    cause: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, cause)
 }
 
 pub(crate) async fn capture_checked(
@@ -184,3 +186,6 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
     };
     Ok((Some(result), custody))
 }
+
+#[cfg(test)]
+mod tests;

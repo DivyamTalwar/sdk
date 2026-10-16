@@ -7,6 +7,8 @@ use crate::{
 use acyclic_native_runtime::ProcessOutput;
 use acyclic_stream::OwnedBytes;
 
+pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
+
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
     volume: Arc<TaskVolume<LocalStream>>,
@@ -101,7 +103,7 @@ impl Output {
         let runtime = self.runtime.clone();
         runtime.block_on(async {
             tokio::time::timeout(
-                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(u64::from(CONTROL_TIMEOUT_MS)),
                 self.publish(file, bytes.to_vec().into()),
             )
             .await
