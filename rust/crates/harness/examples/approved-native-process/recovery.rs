@@ -31,14 +31,13 @@ where
 {
     let issuer = issuer();
     let files = FilesystemHost::new(filesystem, seed.destination.provider(), None)?;
-    let work = capture::work()?;
     let runtime = task::open(
         stream.clone(),
         files.clone(),
         seed.results_volume.clone(),
         &issuer,
         &seed.scope,
-        &work,
+        None,
     )
     .await?;
     let (owner, effects, content) =

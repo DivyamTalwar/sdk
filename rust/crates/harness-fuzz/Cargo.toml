@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "grpc", "native-execution", "test-support"] }
+acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "grpc", "native-execution", "test-support", "search-http"] }
 acyclic-fs = { path = "../filesystem", default-features = false, features = ["local"] }
 diffy.workspace = true
 libfuzzer-sys = "0.4"
@@ -30,6 +30,20 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
 
 [features]
 notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+
+[[bin]]
+name = "search_http_codec"
+path = "fuzz_targets/search_http_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "search_request"
+path = "fuzz_targets/search_request.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "client_recovery"
