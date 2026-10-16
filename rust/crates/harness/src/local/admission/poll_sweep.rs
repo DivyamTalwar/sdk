@@ -18,6 +18,7 @@ use schedule::{Exit, Schedule, check_cut, drive};
 mod coverage;
 mod invariants;
 mod read_contention;
+mod requests;
 mod seed;
 use seed::Seed;
 
@@ -53,7 +54,7 @@ impl Fixture {
     async fn new(scenario: Scenario, seed: Option<&Seed>) -> Result<Self> {
         let (schedule, events) = Schedule::new();
         let directory = if cfg!(target_os = "linux") {
-            tempfile::tempdir_in("/dev/shm")
+            temporary_directory(Path::new("/dev/shm"))
         } else {
             tempfile::tempdir()
         }
@@ -375,6 +376,7 @@ async fn case(
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
         let observations = invariants::observe(&reopened, &fixture, root).await?;
+        requests::check(&reopened, &fixture, root).await?;
         observations
             .check(scenario)
             .map_err(|reason| Error::Invalid(reason.into()))?;
@@ -389,6 +391,21 @@ async fn case(
     })
     .await;
     result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())))
+}
+
+fn temporary_directory(preferred: &Path) -> std::io::Result<tempfile::TempDir> {
+    tempfile::tempdir_in(preferred).or_else(|_| tempfile::tempdir())
+}
+
+#[test]
+fn unavailable_shared_memory_falls_back_to_the_system_temporary_directory() {
+    let parent = tempfile::tempdir().unwrap();
+    let missing = parent.path().join("missing");
+    let directory = temporary_directory(&missing).unwrap();
+    assert!(directory.path().is_dir());
+    assert!(!missing.exists());
+    // Broken former implementation cannot create the same fixture.
+    assert!(tempfile::tempdir_in(&missing).is_err());
 }
 
 fn sweep(scenarios: &[Scenario]) -> Result<()> {
