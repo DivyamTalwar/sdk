@@ -60,7 +60,7 @@ impl WasmTaskVolume {
     }
 
     /// One file write per publication, using the provider's authorization policy.
-    #[wasm_bindgen]
+    #[wasm_bindgen(unchecked_return_type = "Generation")]
     pub async fn write(
         &self,
         #[wasm_bindgen(unchecked_param_type = "Generation")] expected: JsValue,
@@ -83,6 +83,7 @@ impl WasmTaskVolume {
 struct QueryFileInfo<'a> {
     key: &'a FileKey,
     length: u64,
+    #[tsify(type = "bigint | null")]
     through_sequence: Option<u64>,
     segments: usize,
 }
@@ -94,6 +95,7 @@ fn bytes<S: Serializer>(value: &&[u8], serializer: S) -> Result<S::Ok, S::Error>
 #[derive(Serialize, Tsify)]
 struct QueryFileDelta<'a> {
     key: &'a FileKey,
+    #[tsify(type = "Channel | null")]
     channel: Option<Channel>,
     #[serde(serialize_with = "bytes")]
     #[tsify(type = "Uint8Array")]
@@ -103,6 +105,7 @@ struct QueryFileDelta<'a> {
 #[derive(Serialize, Tsify)]
 struct QueryDelivery<'a> {
     cursor: &'a Cursor,
+    #[tsify(type = "QueryFileDelta | null")]
     file: Option<QueryFileDelta<'a>>,
 }
 

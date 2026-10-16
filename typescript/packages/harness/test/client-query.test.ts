@@ -1,10 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
-import { WasmClientQuery, WasmStream, WasmTaskVolume } from "../generated/wasm/acyclic_harness_wasm.js";
-import { ensureHarnessWasm } from "../src/wasm-runtime.js";
+import { ClientQuery, WasmStream, TaskVolume, initializeClientQueries } from "../src/client-query.js";
 
-beforeAll(ensureHarnessWasm);
+beforeAll(initializeClientQueries);
 
-const limits = { files: 32, segments: 64, bytes: 4096n };
+const limits = { files: 32n, segments: 64n, bytes: 4096n };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 function deferred<T = void>() {
@@ -21,8 +20,8 @@ function text(turn: bigint) {
 }
 async function fixture() {
   const stream = new WasmStream();
-  const volume = await WasmTaskVolume.create(stream, "agent/files");
-  const query = await WasmClientQuery.open(volume, "Root", null, limits);
+  const volume = await TaskVolume.create(stream, "agent/files");
+  const query = await ClientQuery.open(volume, "Root", null, limits);
   const views = query.views();
   async function write(turn: bigint, sequence: bigint, value: string) {
     return volume.write(await volume.head(), chunk(turn, sequence), encoder.encode(value), "Text");
@@ -47,7 +46,7 @@ test("live getters and per-chunk output share the native file fold", async () =>
     await release.promise;
   }, () => {
     expect(f.views.cursor().position).toBe(cut.position + 1n);
-    expect(f.views.segments(text(2n)).map(segment => decoder.decode(segment))).toEqual(["one"]);
+    expect(f.views.segments(text(2n))!.map(segment => decoder.decode(segment))).toEqual(["one"]);
     stop.resolve();
   }, stop.promise);
   expect(f.views.cursor()).toEqual(cut);
@@ -82,9 +81,9 @@ test("failed publication retains the frame across later arrivals and replay", as
     if (output.length === 2) stop.resolve();
   }, stop.promise);
   expect(output).toEqual(["current", "older"]);
-  expect(f.views.segments(text(2n)).map(segment => decoder.decode(segment))).toEqual(["current"]);
-  expect(f.views.segments(text(1n)).map(segment => decoder.decode(segment))).toEqual(["older"]);
-  const reopened = await WasmClientQuery.open(f.volume, "Root", f.views.cursor(), limits);
+  expect(f.views.segments(text(2n))!.map(segment => decoder.decode(segment))).toEqual(["current"]);
+  expect(f.views.segments(text(1n))!.map(segment => decoder.decode(segment))).toEqual(["older"]);
+  const reopened = await ClientQuery.open(f.volume, "Root", f.views.cursor(), limits);
   const replay = reopened.views();
   expect(replay.cursor()).toEqual(f.views.cursor());
   expect(replay.files()).toEqual(f.views.files());
@@ -110,7 +109,7 @@ test("cancellation drains an in-flight publication and concurrent follows fail",
   await running;
   expect(notifications).toBe(1);
   expect(f.views.cursor().position).toBe(cut.position + 1n);
-  expect(f.views.segments(text(1n)).map(segment => decoder.decode(segment))).toEqual(["accepted"]);
+  expect(f.views.segments(text(1n))!.map(segment => decoder.decode(segment))).toEqual(["accepted"]);
   // Cancellation while waiting leaves the shared handle readable and resumable.
   const idle = deferred();
   const waiting = f.query.follow(() => { throw new Error("unexpected data"); }, () => {}, idle.promise);
@@ -122,8 +121,8 @@ test("cancellation drains an in-flight publication and concurrent follows fail",
 
 test("opening a missing volume is read-only and writes use canonical validation", async () => {
   const stream = new WasmStream();
-  await expect(WasmTaskVolume.open(stream, "missing/files")).rejects.toBeDefined();
-  const volume = await WasmTaskVolume.create(stream, "agent/files");
+  await expect(TaskVolume.open(stream, "missing/files")).rejects.toBeDefined();
+  const volume = await TaskVolume.create(stream, "agent/files");
   const before = await volume.head();
   await expect(volume.write(before, { Input: "workspace/../secret" }, encoder.encode("bad"), null)).rejects.toBeDefined();
   await expect(volume.write(before, chunk(1n, 1n), encoder.encode("missing channel"), null)).rejects.toBeDefined();

@@ -11,6 +11,9 @@ use acyclic_harness::{
 use acyclic_stream::{MemoryStream, StreamPath};
 use std::{collections::BTreeMap, sync::Arc};
 
+#[path = "../../harness-fuzz/support/queries.rs"]
+mod query_inputs;
+
 const LIMITS: QueryViewLimits = QueryViewLimits {
     files: 128,
     segments: 128,
@@ -298,6 +301,11 @@ async fn validation_and_quota_failures_precede_publication() -> Result<()> {
 }
 
 proptest::proptest! {
+    #[test]
+    fn query_inputs_round_trip(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256)) {
+        query_inputs::exercise(&bytes);
+    }
+
     // Property: a snapshot at any cut plus all later changes equals the provider's
     // canonical heads, with mutable files replaced and chunks ordered numerically.
     #[test]
@@ -365,6 +373,27 @@ proptest::proptest! {
             assert_eq!(view.files().count(), 0);
         });
     }
+}
+
+#[test]
+fn negative_control_query_counter_truncation_is_rejected() {
+    let query = Query::Turn {
+        task: "task".to_owned().try_into().unwrap(),
+        turn: u64::MAX,
+    };
+    let encoded = serde_json::to_vec(&query).unwrap();
+    query_inputs::check_query(&query, &encoded);
+    let broken = Query::Turn {
+        task: "task".to_owned().try_into().unwrap(),
+        turn: u64::from(u32::MAX),
+    };
+    assert!(
+        std::panic::catch_unwind(|| query_inputs::check_query(
+            &query,
+            &serde_json::to_vec(&broken).unwrap()
+        ))
+        .is_err()
+    );
 }
 
 #[tokio::test]

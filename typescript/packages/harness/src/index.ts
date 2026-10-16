@@ -37,6 +37,7 @@ export * from "./extension.js";
 export { type ReplayCursor, type ClientEvent, type Delivery, type OfflinePayload, type ClientCommand, type Connection, type Transport, type ProjectionRecovery, type ClientAdmissionLimits, ProjectionStore, HarnessClient, ReplayError, TerminalAdmissionError } from "./client.js";
 export { type OutboxStore, type OutboxPage, type CursorStore, type AtomicClientStateStore, type ClientCheckpoint, ClientCheckpointConflict, type ClientRecoveryRecord, MemoryOutbox, MemoryCursorStore, type IndexedDbClientStoreOptions, IndexedDbClientStore } from "./client-store.js";
 export * from "./client-views.js";
+export * from "./client-query.js";
 export * from "./client-demand.js";
 export { RequestScheduler, RequestCapacityError, type RequestLimits } from "./client-requests.js";
 export * from "./client-transport.js";
