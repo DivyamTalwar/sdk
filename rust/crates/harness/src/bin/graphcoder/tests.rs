@@ -186,3 +186,33 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
         assert!(!visible.contains(text), "stale {text}");
     }
 }
+
+#[test]
+fn tool_output_deltas_repaint_without_a_new_committed_message() {
+    use acyclic_harness::model::ToolCall;
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let mut views = ClientViews::default();
+    views
+        .model_event(
+            &owner,
+            OperationId::from_bytes([1; 16]),
+            ModelEvent::ToolCall(ToolCall::new(
+                "call".into(),
+                "read".into(),
+                Default::default(),
+            )),
+        )
+        .unwrap();
+    views.tool_output(&owner, "call", "first chunk");
+    let mut renderer = ClientRenderer::default();
+    renderer.update(&views, &owner);
+    assert!(picture(&renderer).contains("first chunk"));
+    views.tool_output(&owner, "call", " second chunk");
+    renderer.update(&views, &owner);
+    let visible = picture(&renderer);
+    assert!(visible.contains("first chunk second chunk"));
+    assert!(!visible.contains("Parts {"));
+}

@@ -5,7 +5,11 @@ use super::{
         text::{Line, Span},
     },
 };
-use crate::{client::ClientViews, wire};
+use crate::{
+    client::ClientViews,
+    model::{ModelDataPart, ToolResultContent},
+    wire,
+};
 use acyclic_markdown::Markdown;
 
 #[derive(Default)]
@@ -74,8 +78,7 @@ impl ClientRenderer {
                         .as_ref()
                         .and_then(|id| views.tools.get(&key)?.get(id))
                     {
-                        self.transcript
-                            .extend(markdown(&format!("{}\n{:?}", call.name, call.output)));
+                        self.transcript.extend(tool_rows(&call.name, &call.output));
                     }
                 }
                 self.seen = transcript.messages.len();
@@ -97,6 +100,11 @@ impl ClientRenderer {
             self.turn = None;
             self.stream = StreamText::default();
             self.transcript.clear();
+        }
+        if let Some(tools) = views.tools.get(&key) {
+            for tool in tools.values().filter(|tool| tool.result.is_none()) {
+                self.transcript.extend(tool_rows(&tool.name, &tool.output));
+            }
         }
         if let Some(documents) = views.documents.get(&key) {
             let goal = documents.goal.as_deref().unwrap_or_default();
@@ -185,4 +193,32 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
             })
             .collect::<Vec<_>>(),
     )
+}
+
+fn tool_rows(name: &str, output: &ToolResultContent) -> Vec<Line<'static>> {
+    // TODO(#548): use specialized per-tool renderers when their API lands.
+    let text = match output {
+        ToolResultContent::Json { value } => value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string()),
+        ToolResultContent::Parts { parts } => parts
+            .iter()
+            .map(|part| match part {
+                ModelDataPart::Text { text } => text.as_str(),
+                ModelDataPart::File { .. } => "[attachment]",
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let bounded = text.lines().take(20).collect::<Vec<_>>().join("\n");
+    let mut rows = vec![Line::styled(
+        name.to_owned(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    rows.extend(markdown(&bounded).into_iter().take(20));
+    rows
 }
