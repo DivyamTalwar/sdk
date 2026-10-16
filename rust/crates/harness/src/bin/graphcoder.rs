@@ -42,13 +42,14 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         registry.load_catalog(path)?;
     }
     let provider = Arc::new(registry.resolve(&args.model)?);
-    let local = Arc::new(
-        LocalHarness::open(LocalHarnessConfig::new(
-            &args.workspace,
-            (provider.model().clone(), provider),
-        ))
-        .await?,
-    );
+    let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
+    if let Some(root) = &args.settings_root {
+        config = config.settings(
+            acyclic_harness::native_settings::SettingsConfig::new(&args.workspace, root)
+                .codex_home(root.join(".codex")),
+        );
+    }
+    let local = Arc::new(LocalHarness::open(config).await?);
     let operation = args
         .operation
         .as_deref()
@@ -59,29 +60,30 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         view::run(local, operation, args.inline).await?;
         return Ok(0);
     }
-    let (mut connection, target) = client::connect_local(local.clone(), operation).await?;
-    if let Some(prompt) = args.prompt {
-        let command = client::local_prompt(&local, operation, &prompt).await?;
-        return Ok(client::run_headless(
+    let command = args
+        .prompt
+        .as_deref()
+        .map(|prompt| client::prepare_local_prompt(operation, prompt))
+        .transpose()?;
+    let (mut connection, target) = client::connect_local(local, operation).await?;
+    let outcome = if let Some(command) = command {
+        client::run_headless(
             &mut connection,
             command,
             target,
             &mut std::io::stdout().lock(),
         )
         .await?
-        .exit_code());
-    }
-    if args.input_format == InputFormat::Jsonl {
-        return Ok(client::run_jsonl(
+    } else {
+        client::run_jsonl(
             &mut connection,
             target,
             client::stdin_jsonl(),
             &mut std::io::stdout().lock(),
         )
         .await?
-        .exit_code());
-    }
-    Ok(0)
+    };
+    Ok(connection.finish(outcome).await?.exit_code())
 }
 
 #[cfg(test)]

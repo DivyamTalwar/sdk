@@ -754,3 +754,6 @@ mod documents;
 
 #[cfg(all(feature = "tui", feature = "native-execution"))]
 mod command_files;
+
+#[cfg(all(feature = "tui", feature = "native-execution"))]
+mod headless;

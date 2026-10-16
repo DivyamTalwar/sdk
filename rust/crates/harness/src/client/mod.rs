@@ -42,7 +42,7 @@ pub mod jsonl;
 #[cfg(not(target_arch = "wasm32"))]
 pub use journal::FileClientState;
 mod headless;
-pub use headless::{HeadlessOutcome, run_headless, run_jsonl};
+pub use headless::{HeadlessClient, HeadlessOutcome, run_headless, run_jsonl};
 mod commands;
 pub use commands::*;
 mod mentions;
@@ -170,3 +170,8 @@ pub use scroll_files::{scroll_tui, tui_scroll};
     not(target_arch = "wasm32")
 ))]
 pub use native_input::next_file_tui_event;
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local_headless;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};

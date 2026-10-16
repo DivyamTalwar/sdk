@@ -5,9 +5,12 @@ use crate::{Error, Result, core::LifecycleState, wire};
 use acyclic_stream::BoxProviderStream;
 use futures::{FutureExt, Stream, StreamExt};
 use std::io::Write;
+mod runner;
+pub use runner::{HeadlessClient, run_headless, run_jsonl};
 
 /// Settled task outcome with stable process exit codes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HeadlessOutcome {
     /// The task completed, or is idle awaiting another prompt.
     Completed,
@@ -22,6 +25,26 @@ pub enum HeadlessOutcome {
 }
 
 impl HeadlessOutcome {
+    pub(crate) fn from_error(error: &Error) -> Self {
+        #[cfg(feature = "filesystem")]
+        if let Error::TaskFiles(error) = error {
+            if let crate::task_volume::Error::FileRead(cause) = error.as_ref() {
+                return Self::from_error(cause);
+            }
+        }
+        if matches!(error, Error::GoalBlocked(_)) {
+            return Self::Blocked;
+        }
+        match error.code() {
+            wire::ErrorCode::Indeterminate => Self::Indeterminate,
+            wire::ErrorCode::InteractionCancelled => Self::Cancelled,
+            wire::ErrorCode::InteractionDeclined
+            | wire::ErrorCode::InteractionExpired
+            | wire::ErrorCode::InteractionDenied => Self::Blocked,
+            _ => Self::Failed,
+        }
+    }
+
     /// Stable CLI contract: completed=0, failed=1, cancelled=2, blocked=3, indeterminate=4.
     #[must_use]
     pub const fn exit_code(self) -> u8 {
@@ -59,7 +82,7 @@ fn completion(status: &wire::OperationStatus) -> Option<HeadlessOutcome> {
 }
 
 /// Submits and streams every response as service JSONL until this task settles.
-pub async fn run_headless<S: ClientStateStore>(
+pub(super) async fn wire_headless<S: ClientStateStore>(
     client: &mut HarnessClient<S>,
     command: wire::CommandEnvelope,
     target: wire::ObserveRequest,
@@ -105,7 +128,7 @@ pub async fn run_headless<S: ClientStateStore>(
 
 /// Reads wire command frames from JSONL stdin while continuing to stream replay.
 /// EOF closes command input; it does not cancel a running task.
-pub async fn run_jsonl<S: ClientStateStore>(
+pub(super) async fn wire_jsonl<S: ClientStateStore>(
     client: &mut HarnessClient<S>,
     target: wire::ObserveRequest,
     input: impl Stream<Item = Result<String>> + Unpin,

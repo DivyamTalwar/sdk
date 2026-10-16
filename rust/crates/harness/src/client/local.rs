@@ -1,32 +1,25 @@
 //! Local bindings shared by native clients; presentation never owns a host.
-use super::{FileClientState, HarnessClient};
 use crate::{Error, OperationId, Result, local::LocalHarness, wire};
 use std::sync::Arc;
 
-/// Opens the local client over the same task-volume request and follow binding
-/// used by hosted clients, with private durable client state.
+/// Opens the authorized task-file client; opening starts no task.
 pub async fn connect_local(
-    _local: Arc<LocalHarness>,
-    _operation: OperationId,
-) -> Result<(HarnessClient<FileClientState>, wire::ObserveRequest)> {
-    // TODO(#645): expose the LocalHarness task-file admission/replay binding,
-    // owner/control scope, initial cursor, private client-state path and file reader.
-    Err(Error::Unsupported(
-        "TODO #645: LocalHarness admission/replay binding is not exposed".into(),
+    local: Arc<LocalHarness>,
+    operation: OperationId,
+) -> Result<(super::LocalFileClient, OperationId)> {
+    Ok((
+        super::LocalFileClient::open(local, operation).await?,
+        operation,
     ))
 }
 
-/// Stages a prompt as a request file and returns its exact wire command identity.
+/// Stages an immutable request for the client outbox, without admitting it.
 pub async fn local_prompt(
     _local: &LocalHarness,
-    _operation: OperationId,
-    _prompt: &str,
-) -> Result<wire::CommandEnvelope> {
-    // TODO(#645): expose prompt request-file preparation without admitting or
-    // executing it, so the existing client outbox remains the only submit path.
-    Err(Error::Unsupported(
-        "TODO #645: prompt admission binding is not exposed".into(),
-    ))
+    operation: OperationId,
+    prompt: &str,
+) -> Result<crate::task_volume::FileValue> {
+    super::prepare_local_prompt(operation, prompt)
 }
 
 /// Follow the local host's ordinary command/workspace files into the prompt.

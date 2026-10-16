@@ -3,7 +3,7 @@
 use super::{FileViews, QuerySubscription, QueryViewLimits, query_error};
 use crate::{
     Result,
-    task_volume::{Change, Cursor, HeadFile, Query, TaskVolume},
+    task_volume::{Change, Cursor, Generation, HeadFile, HeadSnapshot, Query, TaskVolume},
 };
 use acyclic_stream::StreamProvider;
 
@@ -32,6 +32,22 @@ impl ClientQuery {
             views,
             limits,
         })
+    }
+
+    /// Captures the accepted view cut. Segment slices retain their original
+    /// backing allocation; snapshotting clones only bounded file/segment metadata.
+    pub fn snapshot(&self) -> HeadSnapshot {
+        let cursor = self.cursor().clone();
+        HeadSnapshot {
+            files: self.files().cloned().collect(),
+            generation: Generation {
+                volume: cursor.volume,
+                epoch: cursor.epoch,
+                position: cursor.position,
+                commit: cursor.commit,
+            },
+            cursor,
+        }
     }
 
     /// Last completely published view cut. A failed publisher leaves it unchanged.

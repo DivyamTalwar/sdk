@@ -19,6 +19,8 @@ pub struct Args {
     pub catalog: Option<PathBuf>,
     #[arg(long)]
     pub credentials: Option<PathBuf>,
+    #[arg(long)]
+    pub settings_root: Option<PathBuf>,
     #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]

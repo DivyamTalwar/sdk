@@ -54,6 +54,14 @@ pub async fn consume_local_command(
 /// Follows ordinary command files and drives their durable local owner.
 /// Poll this future alongside input/follows; dropping it never resends a claim.
 pub async fn run_local_commands(local: Arc<LocalHarness>, session: OperationId) -> Result<()> {
+    run_local_command_files(local, session, false).await
+}
+
+pub(crate) async fn run_local_command_files(
+    local: Arc<LocalHarness>,
+    session: OperationId,
+    only_session: bool,
+) -> Result<()> {
     let mut commands = CommandSession::open(
         Arc::clone(&local.task_files().inner),
         uuid::Uuid::from_bytes(session.into_bytes()),
@@ -63,6 +71,9 @@ pub async fn run_local_commands(local: Arc<LocalHarness>, session: OperationId) 
     .await?;
     loop {
         let request = commands.next_request().await?;
+        if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
+            continue;
+        }
         match consume_local_command(&mut commands, &local, &request).await {
             // Claim CAS contention has already followed the winning cut and
             // requeued the request. Completed outcomes are never dispatched again.

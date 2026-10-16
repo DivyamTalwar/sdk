@@ -19,7 +19,7 @@ mod files;
 mod name_index;
 mod session;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod local;
+pub(crate) mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{consume_local_command, run_local_commands};
 mod syntax;

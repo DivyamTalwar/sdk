@@ -135,8 +135,13 @@ pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) 
     };
     let encoded = (|| -> serde_json::Result<()> {
         let mut serializer = serde_json::Serializer::new(&mut output);
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map = serializer.serialize_map(Some(3))?;
         map.serialize_entry("sequence", &sequence)?;
+        let completion = result.as_ref().map_or_else(
+            |error| crate::client::HeadlessOutcome::from_error(error),
+            |_| crate::client::HeadlessOutcome::Completed,
+        );
+        map.serialize_entry("completion", &completion)?;
         match result {
             Ok(value) => map.serialize_entry("ok", value)?,
             Err(error) => map.serialize_entry("error", &error.to_string())?,
@@ -148,7 +153,8 @@ pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) 
         output.overflow = false;
         serde_json::to_writer(
             &mut output,
-            &json!({"sequence":sequence,"completed":true,"output_omitted":true}),
+            &json!({"sequence":sequence,"completed":true,"output_omitted":true,
+                "completion":result.as_ref().map_or_else(|error| crate::client::HeadlessOutcome::from_error(error), |_| crate::client::HeadlessOutcome::Completed)}),
         )
         .map_err(codec)?;
     } else {

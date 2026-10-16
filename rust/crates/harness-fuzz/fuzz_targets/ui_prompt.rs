@@ -32,6 +32,16 @@ fuzz_target!(|data: &[u8]| {
     {
         assert_eq!(menu.items().cloned().collect::<Vec<_>>(), before);
     }
+    let operation = acyclic_harness::OperationId::from_bytes([9; 16]);
+    if let Ok(request) =
+        acyclic_harness::client::parse_local_request(&String::from_utf8_lossy(data), operation)
+    {
+        let canonical = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            acyclic_harness::client::parse_local_request(&canonical, operation).unwrap(),
+            request
+        );
+    }
     let width = u16::from(data.first().copied().unwrap_or(0) % 80) + 1;
     let text = String::from_utf8_lossy(data);
     let visible = acyclic_harness::tui::display_text(&text);
