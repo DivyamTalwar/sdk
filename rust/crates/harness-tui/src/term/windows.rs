@@ -1,11 +1,12 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::lifecycle::{self, Arc, Mutex, State};
-use super::{Capabilities, Decoder, Environment, ProbeIo, ScreenMode, detect};
+use super::{Capabilities, Decoder, Environment, PROBE_TIMEOUT, ProbeIo, ScreenMode, detect};
 use crate::key_event::InputEvent;
 
 use acyclic_terminal_console as ffi;
@@ -14,6 +15,7 @@ struct ConsoleIo {
     input: File,
     output: File,
     original: ffi::ConsoleState,
+    pending: Option<ffi::PendingWrite>,
 }
 impl ConsoleIo {
     fn apply(&mut self, state: ffi::ConsoleState) -> io::Result<()> {
@@ -25,7 +27,16 @@ impl ConsoleIo {
         .map_err(io::Error::other)
     }
     fn restore(&mut self) -> io::Result<()> {
-        self.apply(self.original)
+        self.cancel_pending();
+        let cancel =
+            ffi::console_cancel(self.output.as_raw_handle() as usize).map_err(io::Error::other);
+        let restore = self.apply(self.original);
+        cancel.and(restore)
+    }
+    fn cancel_pending(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            ffi::console_write_cancel(&pending);
+        }
     }
     fn reapply(&mut self) -> io::Result<()> {
         let mut raw = self.original;
@@ -39,11 +50,30 @@ impl ConsoleIo {
 }
 impl Write for ConsoleIo {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.output.write(bytes)
+        // Journal restoration writes cancel the pending application write
+        // before emitting any undo bytes on the same output handle.
+        self.cancel_pending();
+        ffi::console_cancel(self.output.as_raw_handle() as usize).map_err(io::Error::other)?;
+        let pending = ffi::console_write_start(self.output.as_raw_handle() as usize, bytes)
+            .map_err(io::Error::other)?;
+        finish_write(&pending, Instant::now() + PROBE_TIMEOUT)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.output.flush()
+        Ok(())
     }
+}
+
+fn finish_write(pending: &ffi::PendingWrite, deadline: Instant) -> io::Result<usize> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let timeout = u32::try_from(remaining.as_millis()).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let result = ffi::console_write_wait(pending, timeout);
+    if Instant::now() >= deadline || result.error == 1460 {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    if result.error != 0 {
+        return Err(io::Error::from_raw_os_error(result.error as i32));
+    }
+    Ok(result.written as usize)
 }
 
 // Publication occurs before registering the OS handler and before any mode
@@ -76,7 +106,11 @@ impl Tty {
     /// Capture original modes and code pages before enabling VT/UTF-8.
     pub fn open() -> io::Result<Self> {
         let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
-        let output = OpenOptions::new().read(true).write(true).open("CONOUT$")?;
+        let output = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(0x40000000) // FILE_FLAG_OVERLAPPED
+            .open("CONOUT$")?;
         let original = ffi::console_state(
             input.as_raw_handle() as usize,
             output.as_raw_handle() as usize,
@@ -86,6 +120,7 @@ impl Tty {
             input,
             output,
             original,
+            pending: None,
         })));
         CONSOLE
             .set(Arc::clone(&state))
@@ -139,10 +174,45 @@ impl Tty {
         }
         Ok(self.decoder.take_events())
     }
+
+    fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
+        lifecycle::pending_io(
+            &self.state,
+            |writer| {
+                if Instant::now() >= deadline {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                writer.cancel_pending();
+                let pending =
+                    ffi::console_write_start(writer.output.as_raw_handle() as usize, bytes)
+                        .map_err(io::Error::other)?;
+                writer.pending = Some(pending.clone());
+                Ok(pending)
+            },
+            |pending| {
+                #[cfg(test)]
+                assert!(
+                    self.state.try_lock().is_ok(),
+                    "pending output retained state"
+                );
+                finish_write(&pending, deadline)
+            },
+        )
+    }
 }
 impl ProbeIo for Tty {
-    fn send(&mut self, bytes: &[u8], _deadline: Instant) -> io::Result<()> {
-        self.write_all(bytes)
+    fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        if Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        while !bytes.is_empty() {
+            let count = self.write_until(bytes, deadline)?;
+            if count == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
+        }
+        Ok(())
     }
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
         let timeout = u32::try_from(
@@ -170,7 +240,7 @@ impl ProbeIo for Tty {
 }
 impl Write for Tty {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        lifecycle::active(&self.state, |guard| guard.writer().write(bytes))
+        self.write_until(bytes, Instant::now() + PROBE_TIMEOUT)
     }
     fn flush(&mut self) -> io::Result<()> {
         lifecycle::active(&self.state, |guard| guard.writer().flush())
@@ -239,6 +309,9 @@ mod tests {
             baseline,
         )?;
         let mut tty = Tty::open()?;
+        assert!(
+            matches!(tty.send(b"EXPIRED", Instant::now()), Err(error) if error.kind() == io::ErrorKind::TimedOut)
+        );
         let raw = ffi::console_state(
             input.as_raw_handle() as usize,
             output.as_raw_handle() as usize,
@@ -265,7 +338,29 @@ mod tests {
             received.extend_from_slice(&remaining[..count]);
         }
         assert_eq!(received, b"0123456789".repeat(10));
+        let blocked = std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("blocked");
+        let payload = vec![b'B'; 1024 * 1024];
+        if blocked {
+            // The host leaves ConPTY output unread through the whole send.
+            // write_until also asserts state is unlocked before every wait.
+            for _ in 0..2 {
+                let start = Instant::now();
+                assert!(
+                    matches!(tty.send(&payload, start + Duration::from_millis(50)), Err(error) if error.kind() == io::ErrorKind::TimedOut)
+                );
+                assert!(start.elapsed() < Duration::from_millis(500));
+            }
+        }
         std::fs::write(path.with_extension("ready"), b"ready")?;
+        if blocked {
+            // Windows routes GenerateConsoleCtrlEvent through the same server
+            // whose output is blocked. Drain only after the timeout assertion;
+            // the real-lock loom model covers close racing the pending wait.
+            while !path.with_extension("draining").exists() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ffi::console_break()?;
+        }
         if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("break") {
             ffi::console_break()?;
         }
