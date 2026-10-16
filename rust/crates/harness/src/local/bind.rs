@@ -22,10 +22,6 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
-        #[cfg(feature = "hooks")]
-        let hooks = settings::load(&config.project, config.settings)
-            .await?
-            .hooks;
         let (verifier, signed) = authority;
         let LocalProject::Volume { volume, .. } = &config.project else {
             return Err(Error::Invalid(
@@ -130,8 +126,6 @@ impl LocalHarness {
             signed: signed.clone(),
             model: config.model,
             context_manifest: config.context_manifest,
-            #[cfg(feature = "hooks")]
-            hooks,
             #[cfg(test)]
             context_read_observer: None,
             #[cfg(feature = "hooks")]
