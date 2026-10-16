@@ -105,9 +105,10 @@ const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 pub(crate) struct RustdocProducer {
     cargo: PathBuf,
     targets: BTreeSet<String>,
-    compiler: std::sync::Arc<Compiler>,
+    compiler: Compiler,
 }
 
+#[derive(Clone)]
 struct Compiler {
     rustc: PathBuf,
     host: String,
@@ -116,11 +117,8 @@ struct Compiler {
 
 // Only concrete compiler output survives an operation, fenced on native file
 // identity. Rustup selection and installed targets belong to the operation.
-static COMPILERS: crate::concrete_versions::Versions<
-    PathBuf,
-    sdk_file_identity::Stamp,
-    std::sync::Arc<Compiler>,
-> = crate::concrete_versions::Mutex::new(std::collections::BTreeMap::new());
+static COMPILERS: crate::concrete_versions::Versions<PathBuf, sdk_file_identity::Stamp, Compiler> =
+    crate::concrete_versions::Mutex::new(std::collections::BTreeMap::new());
 #[cfg(test)]
 static PROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
@@ -221,11 +219,11 @@ fn resolve_producer() -> Result<RustdocProducer, ProfileError> {
                     &["--print", "cfg", "--target", "wasm32-unknown-unknown"],
                 )?,
             );
-            Ok::<_, ProfileError>(std::sync::Arc::new(Compiler {
+            Ok::<_, ProfileError>(Compiler {
                 rustc: rustc.clone(),
                 host,
                 cfgs,
-            }))
+            })
         },
         || ProfileError::InvalidRustdoc("pinned compiler changed during observation".into()),
     )?;

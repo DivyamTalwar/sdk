@@ -71,20 +71,25 @@ pub(super) fn owner_metadata(
         .parent()
         .unwrap()
         .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
-    let compiler = compiler.canonicalize().ok();
+    let Ok(compiler) = compiler.canonicalize() else {
+        return get(cargo, context, query);
+    };
     let configured =
         crate::command_var_os("RUSTC").and_then(|path| PathBuf::from(path).canonicalize().ok());
     if !is_resolved_cargo(cargo)
-        || compiler.is_none()
         || configured.is_none()
-        || configured != compiler
-        || ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"]
-            .iter()
-            .any(|key| crate::command_var_os(key).is_some_and(|value| !value.is_empty()))
+        || configured.as_ref() != Some(&compiler)
+        || [
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        ]
+        .iter()
+        .any(|key| crate::command_var_os(key).is_some_and(|value| !value.is_empty()))
     {
-        return get(cargo, context, query);
+        return query();
     }
-    let compiler = compiler.unwrap();
     METADATA.with(|values| {
         observed(
             values,

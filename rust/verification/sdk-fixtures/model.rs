@@ -52,6 +52,28 @@ fn negative_control_detects_detached_owner_compiler() {
     joined_workers(true);
 }
 
+#[test]
+fn a_panicking_owner_still_joins_every_other_worker() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(|| {
+        let completed = Arc::new(AtomicUsize::new(0));
+        let state = Arc::clone(&completed);
+        let result = std::panic::catch_unwind(move || {
+            parallel::map(vec![0, 1], move |index| {
+                state.fetch_or(1usize << index, Ordering::SeqCst);
+                assert_ne!(index, 0, "owner failed");
+            })
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            3,
+            "panic escaped before all workers joined"
+        );
+    });
+}
+
 #[path = "../../crates/sdk-docs/src/concrete_versions.rs"]
 mod concrete_versions;
 

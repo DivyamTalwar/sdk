@@ -15,7 +15,7 @@ proptest! {
                 calls.set(calls.get()+1);
                 Ok(RustdocProducer {
                     cargo: home.into(), targets: BTreeSet::from([home.into()]),
-                    compiler: std::sync::Arc::new(Compiler { rustc: home.into(), host: home.into(), cfgs: (home.into(), home.into()) }),
+                    compiler: Compiler { rustc: home.into(), host: home.into(), cfgs: (home.into(), home.into()) },
                 })
             }).unwrap())
         };

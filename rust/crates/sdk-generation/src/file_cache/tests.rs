@@ -135,12 +135,29 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
             });
             calls.set(4);
         }
-        let mut command = std::process::Command::new(&cargo);
-        command.env("RUSTC_WRAPPER", "external-wrapper");
-        sdk_docs::with_command_environment(&command, || {
-            assert_eq!(query("source/config/environment-a"), "5");
-            assert_eq!(query("source/config/environment-a"), "6");
-        });
+        for key in [
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        ] {
+            let mut command = std::process::Command::new(&cargo);
+            command.env(key, "external-wrapper");
+            sdk_docs::with_command_environment(&command, || {
+                assert_eq!(query("source/config/environment-a"), "5");
+                // A wrapper must query afresh even within the same command.
+                assert_eq!(
+                    owner_metadata(&cargo, "source/config/environment-a", || {
+                        calls.set(calls.get() + 1);
+                        Ok(calls.get().to_string())
+                    })
+                    .unwrap(),
+                    "6"
+                );
+                assert_eq!(query("source/config/environment-a"), "7");
+            });
+            calls.set(4);
+        }
     });
 }
 
