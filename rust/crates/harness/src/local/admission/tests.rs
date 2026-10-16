@@ -85,7 +85,7 @@ async fn unadmitted_request_head_does_not_block_a_new_run() -> Result<()> {
 async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_once() -> Result<()> {
     for after_admission in [false, true] {
         let (_directory, config, provider) = fixture().await?;
-        let model = config.model.clone();
+        let model = config.model.clone().expect("stock fixture has a model");
         let project = match &config.project {
             config::LocalProject::Volume { directory, volume } => {
                 (directory.clone(), volume.clone())
