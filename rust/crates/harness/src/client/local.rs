@@ -73,6 +73,6 @@ pub async fn local_documents(
     local: &LocalHarness,
     authority: &wire::Authority,
 ) -> Result<acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>> {
-    // TODO(#495): obtain the plan-count bound from followed settings.
-    super::document_files(local.task_files(), authority, 4096).await
+    // TODO(#495): obtain document count/content bounds from followed settings.
+    super::document_files(local.task_files(), authority, 4096, 65_536).await
 }

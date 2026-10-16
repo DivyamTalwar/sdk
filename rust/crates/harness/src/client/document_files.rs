@@ -2,7 +2,7 @@
 use super::ViewUpdate;
 use crate::{
     Error, Result,
-    task_volume::{FileKey, Query, TaskFiles},
+    task_volume::{FileKey, FileQuerySource, Query, TaskFiles},
     wire,
 };
 use acyclic_stream::{BoxProviderStream, StreamProvider};
@@ -14,10 +14,15 @@ pub async fn document_files<P: StreamProvider + ?Sized>(
     files: &TaskFiles<P>,
     authority: &wire::Authority,
     maximum_plans: usize,
+    maximum_bytes: usize,
 ) -> Result<BoxProviderStream<'static, Result<ViewUpdate>>> {
     let goal_query = Query::File(FileKey::Goal);
-    let goal = files.observe(goal_query.clone(), None, 1).await?;
-    let plans = files.observe(Query::Plans, None, maximum_plans).await?;
+    let goal = files
+        .observe_files(goal_query.clone(), None, 1, maximum_bytes)
+        .await?;
+    let plans = files
+        .observe_files(Query::Plans, None, maximum_plans, maximum_bytes)
+        .await?;
     let initial = [
         ViewUpdate::DocumentSnapshot {
             authority: authority.clone(),

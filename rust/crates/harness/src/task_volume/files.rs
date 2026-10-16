@@ -1,5 +1,8 @@
 //! Owner-authorized file access to the private task volume.
-use super::{Cursor, Error, FileKey, FileValue, Generation, Observation, Owner, Query, TaskVolume};
+use super::{
+    Cursor, Error, FileKey, FileQuerySource, FileValue, Generation, Observation, Owner, Query,
+    TaskVolume,
+};
 use crate::{
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},
     core::{AuthorityVerifier, Scope},
@@ -78,6 +81,19 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         maximum_files: usize,
     ) -> super::Result<Observation> {
         self.inner.observe(query, cursor, maximum_files).await
+    }
+}
+
+impl<P: StreamProvider + ?Sized> FileQuerySource for TaskFiles<P> {
+    fn observe_files(
+        &self,
+        query: Query,
+        cursor: Option<Cursor>,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> acyclic_stream::BoxProviderFuture<'_, super::Result<Observation>> {
+        self.inner
+            .observe_files(query, cursor, maximum_files, maximum_bytes)
     }
 }
 
