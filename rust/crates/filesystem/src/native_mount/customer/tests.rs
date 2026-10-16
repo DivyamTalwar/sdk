@@ -785,7 +785,10 @@ pub(super) async fn native_lazy_source(
         name,
         Arc::new(demand),
         MemoryLazyWorkspaceStore::default(),
-        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation),
     )

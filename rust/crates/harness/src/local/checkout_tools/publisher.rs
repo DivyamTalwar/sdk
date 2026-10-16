@@ -74,6 +74,7 @@ impl CheckoutPublisher {
         operation: OperationId,
         bytes: &[u8],
         publication: Publication<'_>,
+        ceiling: Option<&crate::Capabilities>,
     ) -> Result<FileRef> {
         serialized(&self.tools.state, async |mut state| {
             let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
@@ -88,9 +89,9 @@ impl CheckoutPublisher {
             // Recover the original committed generation before reading the
             // checkout: capture must not import a missing physical write as a deletion.
             let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, None)?.await?.0,
-                Publication::Path { path, .. } => writer.observe_staged_path(operation, path, self.maximum).await?,
-                Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum).await?,
+                Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, ceiling, None)?.await?.0,
+                Publication::Path { path, .. } => writer.observe_staged_path(operation, path, self.maximum, ceiling).await?,
+                Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
             };
             if original.is_none() {
                 self.tools.capture(view, watcher, operation, 0, PublicationPermit::Unrestricted).await?;
@@ -102,7 +103,7 @@ impl CheckoutPublisher {
                     display,
                 } => {
                     writer
-                        .stage_once(operation, path, bytes, media, display, None)?
+                        .stage_once(operation, path, bytes, media, display, ceiling, None)?
                         .await?
                         .0
                 }
@@ -112,12 +113,12 @@ impl CheckoutPublisher {
                     display,
                 } => {
                     writer
-                        .stage(operation, path, bytes, media, display, None)?
+                        .stage(operation, path, bytes, media, display, ceiling, None)?
                         .await?
                         .0
                 }
                 Publication::Replace(source) => {
-                    writer.stage_at(operation, source, bytes, None)?.await?.0
+                    writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0
                 }
             };
             self.materialize(view, operation, &file).await?;
@@ -197,6 +198,7 @@ impl ContentPublisher for CheckoutPublisher {
         bytes: &'a [u8],
         media: &'a str,
         display: &'a str,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         self.supports_stage(io)?;
@@ -210,6 +212,7 @@ impl ContentPublisher for CheckoutPublisher {
                         media,
                         display,
                     },
+                    ceiling,
                 )
                 .await?,
                 None,
@@ -223,6 +226,7 @@ impl ContentPublisher for CheckoutPublisher {
         bytes: &'a [u8],
         media: &'a str,
         display: &'a str,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         self.supports_stage(io)?;
@@ -236,6 +240,7 @@ impl ContentPublisher for CheckoutPublisher {
                         media,
                         display,
                     },
+                    ceiling,
                 )
                 .await?,
                 None,
@@ -247,12 +252,13 @@ impl ContentPublisher for CheckoutPublisher {
         operation: OperationId,
         source: &'a FileRef,
         bytes: &'a [u8],
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
-                self.publish(operation, bytes, Publication::Replace(source))
+                self.publish(operation, bytes, Publication::Replace(source), ceiling)
                     .await?,
                 None,
             ))
@@ -262,6 +268,7 @@ impl ContentPublisher for CheckoutPublisher {
         &'a self,
         operation: OperationId,
         maximum: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         self.supports_stage(io)?;
@@ -273,7 +280,7 @@ impl ContentPublisher for CheckoutPublisher {
                     .unwrap_or_else(|| self.tools.workspace.view());
                 let file = self
                     .writer(view)?
-                    .observe_staged_once(operation, maximum, None)?
+                    .observe_staged_once(operation, maximum, ceiling, None)?
                     .await?
                     .0;
                 if let Some(file) = &file {

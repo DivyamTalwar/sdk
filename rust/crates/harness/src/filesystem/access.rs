@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 
 // Explicit initial policy: signed capabilities supply the authority ceiling.
 // Reads never synthesize this record when it is missing from an existing volume.
-pub(in crate::filesystem) const INITIAL_POLICY: &[u8] = include_bytes!("access/initial.json");
+pub(crate) const INITIAL_POLICY: &[u8] = include_bytes!("access/initial.json");
 const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
 const LEGACY_WRITE: &[u8] = include_bytes!("access/legacy-write.json");
 

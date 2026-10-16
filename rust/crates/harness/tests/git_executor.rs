@@ -314,7 +314,10 @@ async fn fixture() -> Result<(
         "main",
         Arc::new(source),
         store.clone(),
-        config,
+        acyclic_fs::VolumeInitialization {
+            config: config,
+            access_policy: None,
+        },
         OperationId::new(),
         &mut work,
     )

@@ -542,7 +542,10 @@ mod source_bound_lost_ack {
             "stream-lost-ack",
             source.clone(),
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization {
+                config: config,
+                access_policy: None,
+            },
             operation,
             &mut accounting,
         )
@@ -633,7 +636,10 @@ mod source_bound_lost_ack {
             "stream-lost-ack",
             source,
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization {
+                config: config,
+                access_policy: None,
+            },
             operation,
             &mut accounting,
         )

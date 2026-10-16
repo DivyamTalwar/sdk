@@ -115,11 +115,14 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         "ntfs-source-links",
         demand,
         MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
-            acyclic_fs::Lifecycle::Durable
-        } else {
-            acyclic_fs::Lifecycle::Ephemeral
-        }),
+        acyclic_fs::VolumeInitialization {
+            config: acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+                acyclic_fs::Lifecycle::Durable
+            } else {
+                acyclic_fs::Lifecycle::Ephemeral
+            }),
+            access_policy: None,
+        },
         acyclic_fs::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )
@@ -450,11 +453,14 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "windows-ntfs-costs",
         demand,
         MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
-            acyclic_fs::Lifecycle::Durable
-        } else {
-            acyclic_fs::Lifecycle::Ephemeral
-        }),
+        acyclic_fs::VolumeInitialization {
+            config: acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+                acyclic_fs::Lifecycle::Durable
+            } else {
+                acyclic_fs::Lifecycle::Ephemeral
+            }),
+            access_policy: None,
+        },
         acyclic_fs::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )
@@ -560,11 +566,14 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "windows-ntfs-phases",
         phase_demand,
         MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
-            acyclic_fs::Lifecycle::Durable
-        } else {
-            acyclic_fs::Lifecycle::Ephemeral
-        }),
+        acyclic_fs::VolumeInitialization {
+            config: acyclic_fs::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
+                acyclic_fs::Lifecycle::Durable
+            } else {
+                acyclic_fs::Lifecycle::Ephemeral
+            }),
+            access_policy: None,
+        },
         acyclic_fs::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )
@@ -640,7 +649,10 @@ async fn native_lazy_workspace_lists_windows_source_directories()
         "ntfs-native-listing",
         demand,
         MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::native(Lifecycle::Durable),
+        acyclic_fs::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Durable),
+            access_policy: None,
+        },
         acyclic_fs::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )

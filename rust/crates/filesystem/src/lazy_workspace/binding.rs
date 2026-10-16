@@ -9,7 +9,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         name: &str,
         source: Arc<D>,
         store: S,
-        config: VolumeConfig,
+        initialization: crate::VolumeInitialization<'_>,
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
@@ -17,10 +17,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 name,
-                crate::VolumeInitialization {
-                    config,
-                    access_policy: None
-                },
+                initialization,
                 operation,
                 work,
                 cancel,

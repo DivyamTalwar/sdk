@@ -23,11 +23,14 @@ async fn attach<
         "root",
         source,
         store,
-        VolumeConfig::portable(if fs.capabilities().durable {
-            crate::Lifecycle::Durable
-        } else {
-            crate::Lifecycle::Ephemeral
-        }),
+        crate::VolumeInitialization {
+            config: VolumeConfig::portable(if fs.capabilities().durable {
+                crate::Lifecycle::Durable
+            } else {
+                crate::Lifecycle::Ephemeral
+            }),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         accounting!(),
     )
@@ -310,5 +313,6 @@ async fn native_source(
 mod exactify;
 mod lookup;
 mod mount;
+mod policy;
 mod recovery;
 mod snapshot;

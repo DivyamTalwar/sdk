@@ -60,11 +60,14 @@ async fn attach(
         name,
         source,
         MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::portable(if fs.capabilities().durable {
-            Lifecycle::Durable
-        } else {
-            Lifecycle::Ephemeral
-        }),
+        acyclic_fs::VolumeInitialization {
+            config: VolumeConfig::portable(if fs.capabilities().durable {
+                Lifecycle::Durable
+            } else {
+                Lifecycle::Ephemeral
+            }),
+            access_policy: None,
+        },
         OperationId::new(),
         &mut KernelAccounting::NativeOriginal {
             work: &work,

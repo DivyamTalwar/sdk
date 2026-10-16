@@ -63,6 +63,7 @@ impl LocalHarness {
                 "application/json",
                 "model input",
                 None,
+                None,
             )?
             .await?
             .0;
@@ -88,7 +89,7 @@ impl LocalHarness {
     ) -> Result<Option<(WorkflowCommand, WorkflowCommand)>> {
         let publisher = self.input_publisher()?;
         let (payload, _) = publisher
-            .observe_staged_once(operation, self.limits.file_bytes, None)?
+            .observe_staged_once(operation, self.limits.file_bytes, None, None)?
             .await?;
         let Some(payload) = payload else {
             return Ok(None);
@@ -120,6 +121,7 @@ impl LocalHarness {
                 b"{\"after\":0}",
                 "application/json",
                 "mailbox receive",
+                None,
                 None,
             )?
             .await?

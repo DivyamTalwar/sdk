@@ -62,6 +62,7 @@ impl LocalHarness {
                 Some(&generation),
                 self.limits.file_bytes,
                 None,
+                None,
             )
             .await
         {
@@ -184,6 +185,7 @@ impl LocalHarness {
                 self.limits.file_bytes,
                 &crate::IdempotencyKey::new(format!("local-turn:{operation}"))?,
                 Some(&generation),
+                None,
                 None,
             )
             .await?;
@@ -329,6 +331,7 @@ impl LocalHarness {
                     None,
                     self.limits.file_bytes,
                     None,
+                    None,
                 )
                 .await
             {
@@ -382,6 +385,7 @@ impl LocalHarness {
                             ))?,
                             Some(&self.files.file_generation(&goal.source, None)?),
                             None,
+                            None,
                         )
                         .await?;
                     Ok(None)
@@ -412,6 +416,7 @@ impl LocalHarness {
                 HEAD,
                 self.limits.file_bytes,
                 None,
+                None,
             )
             .await?
         else {
@@ -425,6 +430,7 @@ impl LocalHarness {
                 HEAD,
                 Some(&self.files.file_generation(&file, None)?),
                 self.limits.file_bytes,
+                None,
                 None,
             )
             .await?;

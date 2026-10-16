@@ -158,7 +158,10 @@ async fn a_held_placeholder_is_replaced_before_revalidation_returns()
         "held-placeholder",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::native(&work, work.cancellation()),
     )
@@ -211,7 +214,10 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
         "read-only-placeholder",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::native(&work, work.cancellation()),
     )
@@ -252,7 +258,10 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         "renamed-projfs",
         Arc::new(demand),
         crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
-        VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::native(&work, work.cancellation()),
     )

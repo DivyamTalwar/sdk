@@ -98,7 +98,10 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
             name,
             demand,
             store,
-            crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+            crate::VolumeInitialization {
+                config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                access_policy: None,
+            },
             crate::OperationId::new(),
             &mut crate::kernel::KernelAccounting::standalone(
                 WorkBudget::UNBOUNDED,
@@ -175,7 +178,10 @@ pub(super) async fn live_lazy_mount_of(
         name,
         Arc::new(demand),
         MemoryLazyWorkspaceStore::default(),
-        VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: VolumeConfig::native(Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut crate::kernel::KernelAccounting::standalone(
             WorkBudget::UNBOUNDED,

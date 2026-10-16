@@ -138,6 +138,7 @@ async fn run(case: Case) -> Result<()> {
             None,
             Limits::default().file_bytes,
             None,
+            None,
         )
         .await;
     match &case.final_goal {
@@ -198,6 +199,7 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
             "text/markdown",
             "GOAL.md",
             None,
+            None,
         )?
         .await?;
     let user = OperationId::new();
@@ -232,6 +234,7 @@ async fn write_goal(harness: &LocalHarness, contents: &str) -> Result<()> {
         contents.as_bytes(),
         "text/markdown",
         "GOAL.md",
+        None,
         None,
     )?
     .await?;

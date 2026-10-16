@@ -527,6 +527,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         operation: OperationId,
         path: &str,
         maximum: u64,
+        ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
         self.host
             .content_for_operation(
@@ -535,6 +536,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &upload_key(operation, path, None)?,
                 path,
                 maximum.min(self.maximum_bytes),
+                ceiling,
                 None,
             )
             .await
@@ -544,6 +546,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         operation: OperationId,
         source: &FileRef,
         maximum: u64,
+        ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
         self.host
             .content_for_operation(
@@ -552,6 +555,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &replacement_key(operation, source.path(), None)?,
                 source.path(),
                 maximum.min(self.maximum_bytes),
+                ceiling,
                 None,
             )
             .await

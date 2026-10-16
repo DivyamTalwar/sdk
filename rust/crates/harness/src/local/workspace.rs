@@ -167,7 +167,10 @@ pub(super) async fn open(
                 &name,
                 source,
                 store.clone(),
-                acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                    access_policy: Some(crate::filesystem::access::INITIAL_POLICY),
+                },
                 operation,
                 &mut accounting,
             )

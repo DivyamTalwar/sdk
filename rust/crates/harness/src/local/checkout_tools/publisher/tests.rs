@@ -45,6 +45,7 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             "text/plain",
             "published.txt",
             None,
+            None,
         )?
         .await?;
     assert_eq!(file.volume(), &harness.project);
@@ -96,6 +97,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
             "text/plain",
             "once.txt",
             None,
+            None,
         )?
         .await?;
     assert!(!directory.path().join("once.txt").exists());
@@ -103,7 +105,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     // the tool again. It must repair the checkout as well as return its ref.
     assert_eq!(
         publisher
-            .observe_staged_once(operation, 1024, None)?
+            .observe_staged_once(operation, 1024, None, None)?
             .await?
             .0
             .as_ref(),
@@ -121,7 +123,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
                 b"once",
                 "text/plain",
                 "once.txt",
-                None
+                None,
+                None,
             )?
             .await?
             .0,
@@ -137,6 +140,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
             "text/plain",
             "path.txt",
             None,
+            None,
         )?
         .await?;
     assert!(!directory.path().join("path.txt").exists());
@@ -148,7 +152,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
                 b"path",
                 "text/plain",
                 "path.txt",
-                None
+                None,
+                None,
             )?
             .await?
             .0,
@@ -161,7 +166,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
 
     let operation = OperationId::new();
     let (replacement, _) = writer
-        .stage_at(operation, &original, b"replacement", None)?
+        .stage_at(operation, &original, b"replacement", None, None)?
         .await?;
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -169,7 +174,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     );
     assert_eq!(
         publisher
-            .stage_at(operation, &original, b"replacement", None)?
+            .stage_at(operation, &original, b"replacement", None, None)?
             .await?
             .0,
         replacement
@@ -189,7 +194,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     std::fs::write(directory.path().join("path.txt"), b"later user edit").map_err(storage)?;
     assert_eq!(
         publisher
-            .stage_at(operation, &original, b"replacement", None)?
+            .stage_at(operation, &original, b"replacement", None, None)?
             .await?
             .0,
         replacement
@@ -244,7 +249,7 @@ async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits
         ("second.txt", b"second".as_slice()),
     ] {
         let (file, _) = publisher
-            .stage(operation, path, bytes, "text/plain", path, None)?
+            .stage(operation, path, bytes, "text/plain", path, None, None)?
             .await?;
         assert_eq!(
             std::fs::read(directory.path().join(path)).map_err(storage)?,
@@ -262,6 +267,7 @@ async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits
                 "text/plain",
                 file.display_name(),
                 None,
+                None,
             )?
             .await?;
         assert_eq!(retried, file);
@@ -271,6 +277,45 @@ async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits
         );
     }
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn checkout_publication_preserves_caller_ceilings(path in "file-[a-z]{1,8}\\.txt", allowed in proptest::bool::ANY) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?.block_on(async {
+            let (_directory, harness, publisher) = fixture().await?;
+            let ceiling = if allowed { harness.signed.grants().clone() } else { crate::Capabilities::default() };
+            let operation = OperationId::new();
+            let (source, _) = publisher.stage_once(operation, &path, b"original", "text/plain", &path, None, None)?.await?;
+            let replacement = publisher.stage_at(OperationId::new(), &source, b"replaced", Some(&ceiling), None)?.await;
+            assert_eq!(replacement.is_ok(), allowed, "{replacement:?}");
+            let observed = publisher.observe_staged_once(operation, 1024, Some(&ceiling), None)?.await;
+            assert_eq!(observed.is_ok(), allowed, "{observed:?}");
+            for once in [false, true] {
+                let target = format!("{once}-{path}");
+                let operation = OperationId::new();
+                let result = if once {
+                    publisher.stage_once(operation, &target, b"new", "text/plain", &target, Some(&ceiling), None)?.await
+                } else {
+                    publisher.stage(operation, &target, b"new", "text/plain", &target, Some(&ceiling), None)?.await
+                };
+                assert_eq!(result.is_ok(), allowed, "{result:?}");
+                if allowed {
+                    // A committed reply still needs the current caller's ceiling.
+                    let empty = crate::Capabilities::default();
+                    let replay = if once {
+                        publisher.stage_once(operation, &target, b"new", "text/plain", &target, Some(&empty), None)?.await
+                    } else {
+                        publisher.stage(operation, &target, b"new", "text/plain", &target, Some(&empty), None)?.await
+                    };
+                    assert!(replay.is_err(), "cached publication bypassed the caller ceiling");
+                }
+            }
+            Ok::<_, crate::Error>(())
+        }).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    }
 }
 
 proptest::proptest! {

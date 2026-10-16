@@ -154,11 +154,14 @@ async fn lazy_workspace(
             "stack-budget",
             Arc::new(demand),
             LocalCoreStateStore::open_owned(root.join("core"))?,
-            crate::VolumeConfig::portable(if engine.capabilities().durable {
-                crate::Lifecycle::Durable
-            } else {
-                crate::Lifecycle::Ephemeral
-            }),
+            crate::VolumeInitialization {
+                config: crate::VolumeConfig::portable(if engine.capabilities().durable {
+                    crate::Lifecycle::Durable
+                } else {
+                    crate::Lifecycle::Ephemeral
+                }),
+                access_policy: None,
+            },
             crate::OperationId::new(),
             &mut crate::kernel::KernelAccounting::Standalone {
                 allocations: Default::default(),
