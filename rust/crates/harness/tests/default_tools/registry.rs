@@ -22,10 +22,11 @@ proptest! {
         };
         let original = registry(&left);
         let before = original.definitions(None).unwrap();
-        let result = original.clone().extend(registry(&right));
+        let mut merged = original.clone();
+        let result = merged.extend(registry(&right));
         let accepted = result.is_ok();
         prop_assert_eq!(accepted, left.is_disjoint(&right));
-        if let Ok(merged) = result {
+        if result.is_ok() {
             let actual: BTreeSet<_> = merged.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
             prop_assert_eq!(actual, left.union(&right).cloned().collect::<BTreeSet<_>>());
         } else {
@@ -174,12 +175,12 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
 
 #[test]
 fn registry_merge_rejects_duplicates_before_mutating_destination() -> Result<()> {
-    let destination = crate::tools::defaults()?;
+    let mut destination = crate::tools::defaults()?;
     let mut incoming = ToolRegistry::default();
     incoming.register((example_tool(), None), &mut None, None)?;
     incoming.register((crate::tool::files::read()?, None), &mut None, None)?;
     assert!(matches!(
-        destination.clone().extend(incoming),
+        destination.extend(incoming),
         Err(Error::Conflict(_))
     ));
     assert!(destination.get("example.echo", None, None)?.is_none());
@@ -196,7 +197,8 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     custom.register((second, None), &mut None, None)?;
     custom.select_model_version("example.echo", "2")?;
     custom.remove_from_model("example.echo")?;
-    let mut combined = crate::tools::defaults()?.extend(custom)?;
+    let mut combined = crate::tools::defaults()?;
+    combined.extend(custom)?;
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
     assert!(combined.get("example.echo", Some("2"), None)?.is_some());

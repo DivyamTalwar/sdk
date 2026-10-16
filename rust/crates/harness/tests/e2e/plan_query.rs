@@ -7,7 +7,6 @@ use acyclic_harness::{
     model::{Model, ModelEvent},
     task_volume::{FileQuerySource, Query},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
-    tool::files,
 };
 use futures::StreamExt as _;
 use serde::Deserialize;
@@ -106,10 +105,7 @@ impl PlanQuery {
         let volume = storage.file_query(acyclic_fs::performance::BOUNDARY_BUDGET)?;
         let turns: Vec<_> = self.writes.iter().enumerate().flat_map(|(index, revision)| [
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("write-{index}"), name: "acyclic.write_file".into(),
-                    arguments: json!({"path":revision.path,"text":revision.text,"media_type":"text/markdown","display_name":revision.path.rsplit('/').next().unwrap_or_default()}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(format!("write-{index}"), "write".into(), json!({"path":revision.path,"text":revision.text,"media_type":"text/markdown","display_name":revision.path.rsplit('/').next().unwrap_or_default()})))),
                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
             ]),
             ScriptedTurn::Text("Plans saved".into()),
@@ -124,8 +120,7 @@ impl PlanQuery {
                         provider.clone(),
                     )
                     .grant("model:generate")
-                    .tool(files::write_file()?)?
-                    .grant("tool:call:acyclic.write_file")
+                    .grant("tool:call:write")
                     .compaction(CompactionPolicy::Disabled)
                     .build()?,
             )

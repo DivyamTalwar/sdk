@@ -7,7 +7,6 @@ use acyclic_harness::{
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelEvent},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
-    tool::files,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -116,11 +115,7 @@ impl Plans {
             .await?;
         let mut turns: Vec<_> = self.writes.iter().enumerate().map(|(index, write)| {
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("write-{index}"),
-                    name: "acyclic.write_file".into(),
-                    arguments: json!({"path":write.path,"text":write.text,"media_type":"text/markdown","display_name":write.path.rsplit('/').next().unwrap_or_default()}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(format!("write-{index}"), "write".into(), json!({"path":write.path,"text":write.text,"media_type":"text/markdown","display_name":write.path.rsplit('/').next().unwrap_or_default()})))),
                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
             ])
         }).collect();
@@ -134,8 +129,7 @@ impl Plans {
                     provider.clone(),
                 )
                 .grant("model:generate")
-                .tool(files::write_file()?)?
-                .grant("tool:call:acyclic.write_file")
+                .grant("tool:call:write")
                 .compaction(CompactionPolicy::Disabled)
                 .build()?;
             let output = storage

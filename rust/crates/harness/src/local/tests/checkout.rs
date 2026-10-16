@@ -203,14 +203,17 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .await?,
     );
     let workspace = harness
-        .workspace()
+        .workspace
+        .as_ref()
         .ok_or_else(|| Error::NotFound("workspace".into()))?;
     assert!(matches!(
-        workspace.executor(
-            harness.scratch(),
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
-            Arc::clone(&harness.task_files().inner)
-        ),
+        workspace
+            .executor(
+                harness.scratch(),
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                Arc::clone(&harness.task_files().inner)
+            )
+            .await,
         Err(Error::Unauthorized(_))
     ));
     let cancellation = acyclic_fs::CancellationToken::new();

@@ -84,8 +84,7 @@ impl LocalHarness {
                     &mut Vec::new(),
                     None,
                     true,
-                    cfg!(feature = "native-execution")
-                        && matches!(&config.project, LocalProject::Workspace(_)),
+                    cfg!(feature = "native-execution"),
                 )?;
             }
             for tool in config.tools {
@@ -132,12 +131,29 @@ impl LocalHarness {
                         &directory,
                         owner.workspace_identity,
                         workspace::attach_operation(owner.task),
+                        false,
                     )
                     .await?,
                 )),
-                LocalProject::Volume { .. } => None,
+                LocalProject::Volume { .. } => Some(Arc::new(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                )),
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
             // A configured project is opened, never silently replaced by an empty volume.
             files
                 .resolve(
@@ -287,8 +303,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
-        self.workspace.as_ref()
+    pub fn workspace(&self) -> Option<&LocalWorkspace> {
+        self.workspace.as_deref()
     }
 }
 
