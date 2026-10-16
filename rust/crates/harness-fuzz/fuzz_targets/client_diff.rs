@@ -3,9 +3,9 @@
 use libfuzzer_sys::fuzz_target;
 
 // Compile the production pure module without pulling in unrelated providers.
-#[path = "../../src/client/diff/compute.rs"]
+#[path = "../../harness/src/client/diff/compute.rs"]
 mod compute;
-#[path = "../../src/client/diff/file.rs"]
+#[path = "../../harness/src/client/diff/file.rs"]
 mod file;
 use file::{DiffHunk, FileDiff, PatchText, render_bound};
 

@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use std::{ffi::OsString, path::Path};
 
-#[path = "../../src/mcp/install/executable.rs"]
+#[path = "../../harness/src/mcp/install/executable.rs"]
 mod executable;
 
 fuzz_target!(|input: &str| {

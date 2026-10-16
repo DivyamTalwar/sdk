@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 
 // These are the production parser functions used by catalog resolution,
 // command/skill discovery and pinned template expansion, without replicas.
-#[path = "../../src/context/discovery/frontmatter.rs"]
+#[path = "../../harness/src/context/discovery/frontmatter.rs"]
 mod frontmatter;
-#[path = "../../src/client/commands/parse.rs"]
+#[path = "../../harness/src/client/commands/parse.rs"]
 mod parse;
 
 struct NoReads;
