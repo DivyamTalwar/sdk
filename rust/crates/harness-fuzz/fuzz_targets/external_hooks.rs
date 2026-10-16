@@ -3,7 +3,8 @@
 
 use acyclic_harness::{
     external_executor::{
-        CommandSessionMachine, ExternalHost, ExternalRequest, HookBinding, hook_answer, hooks, request,
+        CommandSessionMachine, ExternalHost, ExternalRequest, HookBinding, hook_answer, hooks,
+        request,
     },
     task_volume::{Component, FileKey, FileValue, TaskFile},
     workflow::ResumableMachine,
@@ -37,6 +38,28 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let task = Component::new("task")?;
+    if let Ok(arguments) = serde_json::from_slice::<serde_json::Value>(input) {
+        if let Ok(result) = acyclic_harness::external_executor::tool_result(arguments.clone()) {
+            assert_eq!(result["isError"], false);
+            assert!(result["content"].is_array());
+        }
+    }
+    if let Ok((name, arguments, key, bytes)) =
+        serde_json::from_slice::<(String, serde_json::Value, FileKey, Vec<u8>)>(input)
+    {
+        let file = FileValue::new(key, bytes);
+        if let Ok((request, _)) =
+            acyclic_harness::external_executor::native_tool_request(&name, arguments, &file)
+        {
+            assert_eq!(
+                request.to_file(match &file.key {
+                    FileKey::Task { task, .. } => task.clone(),
+                    _ => return Ok(()),
+                })?,
+                file
+            );
+        }
+    }
     if let Ok((state, input)) =
         serde_json::from_slice::<(serde_json::Value, serde_json::Value)>(input)
     {
@@ -82,7 +105,30 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(hook) = serde_json::from_slice::<Hook>(input)
         && let Ok(request) = request(hook.host, &hook.event, hook.input)
     {
-        if let Ok(call)=request.tool_call(&acyclic_harness::tools::defaults()?) {
+        if let acyclic_harness::external_executor::ExternalAction::RunTool {
+            name, arguments, ..
+        } = &request.action
+        {
+            if let Some(mut arguments) = arguments.as_object().cloned() {
+                // Native input supplies seed data; the production normalizer
+                // derives its request identity before the handoff is decoded.
+                if !arguments.contains_key("_acyclic") {
+                    if let Ok(file) = request.to_file(task.clone()) {
+                        arguments.insert(
+                            "_acyclic".into(),
+                            serde_json::json!({"request":file.key,"cwd":"/project"}),
+                        );
+                        let (decoded, _) = acyclic_harness::external_executor::native_tool_request(
+                            name,
+                            serde_json::Value::Object(arguments),
+                            &file,
+                        )?;
+                        assert_eq!(decoded, request);
+                    }
+                }
+            }
+        }
+        if let Ok(call) = request.tool_call(&acyclic_harness::tools::defaults()?) {
             assert!(!call.revision.is_empty());
         }
         match request.to_file(task.clone()) {
@@ -93,8 +139,11 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Ok(request) = serde_json::from_slice::<ExternalRequest>(input) {
         if let Ok(call) = request.tool_call(&acyclic_harness::tools::defaults()?) {
-            let bytes=serde_json::to_vec(&call)?;
-            assert_eq!(serde_json::from_slice::<acyclic_harness::filesystem::ToolTaskCommand>(&bytes)?,call);
+            let bytes = serde_json::to_vec(&call)?;
+            assert_eq!(
+                serde_json::from_slice::<acyclic_harness::filesystem::ToolTaskCommand>(&bytes)?,
+                call
+            );
         }
         let original = file(task.clone(), &request, input.to_vec())?;
         if let Ok(accepted) = ExternalRequest::from_file(&task, &original) {

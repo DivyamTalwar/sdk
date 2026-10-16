@@ -39,6 +39,21 @@ fn malformed_tool_answers_cannot_implicitly_allow_native_execution() -> Result<(
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Property: every successful canonical tool value is delivered verbatim;
+    // neither failure nor an unfinished dispatch can become success.
+    #[test]
+    fn canonical_tool_result_substitution_preserves_the_value(text in ".{0,128}") {
+        let value = json!({"text":text});
+        let result = tool_result(json!({"Succeeded":value}))?;
+        prop_assert_eq!(result["structuredContent"].clone(),value.clone());
+        prop_assert_eq!(result["details"].clone(),value.clone());
+        prop_assert_eq!(serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap())?,value);
+        prop_assert_eq!(result["isError"].as_bool(),Some(false));
+        prop_assert!(tool_result(json!({"Cancelled":null})).is_err(), "cancelled results must fail");
+        prop_assert!(tool_result(json!({})).is_err(), "missing outcomes must fail");
+    }
+
     // Property: a durable failure is never interpreted as native permission or
     // a successful lifecycle acknowledgement, for any catalogued host event.
     #[test]

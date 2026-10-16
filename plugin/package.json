@@ -12,6 +12,7 @@
     "bin",
     "certification",
     "plugin.json",
+    ".mcp.json",
     ".agents",
     ".codex-plugin",
     "hooks",

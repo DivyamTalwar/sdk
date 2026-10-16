@@ -1,12 +1,16 @@
 use super::{
-    ExternalAction, ExternalRequest, intake::LIFECYCLE,
+    ExternalAction, ExternalRequest,
+    intake::LIFECYCLE,
     publication::{publish, storage},
     volume,
 };
 use crate::{
     Error, Result,
     distributed::JournalWrite,
-    filesystem::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, TOOL_TASK_COMMAND_KIND, ToolTaskCommand},
+    filesystem::{
+        FilesystemTaskRuntime, TOOL_TASK_COMMAND_KIND, TaskCommandHost, TaskCommandProgress,
+        ToolTaskCommand,
+    },
     runtime::TaskContext,
     scheduler::LeaseFence,
     task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskVolume},
@@ -97,7 +101,8 @@ where
                     "request differs from the retained command".into(),
                 ));
             }
-            let mut failure = validate_command(&request, &command, &payload, self.runtime.tool_registry())?;
+            let mut failure =
+                validate_command(&request, &command, &payload, self.runtime.tool_registry())?;
             let result_key = request.result_key(task.clone()).map_err(storage)?;
             let started = FileValue::new(
                 FileKey::Task {
@@ -146,19 +151,43 @@ where
             }
             drop(cached);
             let progress = if command.kind == LIFECYCLE {
-                if let ExternalAction::ToolFinished {call_id,..}=&request.action {
-                    let call = ExternalAction::RunTool {call_id:call_id.clone(),name:String::new(),arguments:Value::Null};
-                    let operation=super::normalize::operation(request.host,&request.session_id,&request.caller,&call);
-                    let result_key=FileKey::Task {task:Component::new(owner.task_id().to_string()).map_err(storage)?,
-                        file:TaskFile::RequestResult(Component::new(operation.to_string()).map_err(storage)?)};
-                    if self.results.snapshot(&Query::File(result_key),1).await.map_err(storage)?.files.is_empty() {
+                if let ExternalAction::ToolFinished { call_id, .. } = &request.action {
+                    let call = ExternalAction::RunTool {
+                        call_id: call_id.clone(),
+                        name: String::new(),
+                        arguments: Value::Null,
+                    };
+                    let operation = super::normalize::operation(
+                        request.host,
+                        &request.session_id,
+                        &request.caller,
+                        &call,
+                    );
+                    let result_key = FileKey::Task {
+                        task: Component::new(owner.task_id().to_string()).map_err(storage)?,
+                        file: TaskFile::RequestResult(
+                            Component::new(operation.to_string()).map_err(storage)?,
+                        ),
+                    };
+                    if self
+                        .results
+                        .snapshot(&Query::File(result_key), 1)
+                        .await
+                        .map_err(storage)?
+                        .files
+                        .is_empty()
+                    {
                         failure = Some("native completion has no original harness tool result");
                     }
                 }
                 let value = match failure {
-                    Some(message) => serde_json::to_value(crate::Outcome::<Value>::Failed {message:message.into()})
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                    None => serde_json::json!({"task":owner.task_id(),"operation_id":request.operation_id}),
+                    Some(message) => serde_json::to_value(crate::Outcome::<Value>::Failed {
+                        message: message.into(),
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                    None => {
+                        serde_json::json!({"task":owner.task_id(),"operation_id":request.operation_id})
+                    }
                 };
                 TaskCommandProgress::Ready(value)
             } else {
@@ -195,21 +224,31 @@ fn validate_command(
         let actual: ToolTaskCommand = serde::Deserialize::deserialize(payload)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         if actual != request.tool_call_at(tools, Some(&actual.revision))? {
-            return Err(Error::Conflict("tool command differs from the original native request".into()));
+            return Err(Error::Conflict(
+                "tool command differs from the original native request".into(),
+            ));
         }
         return Ok(None);
     }
     if command.kind != LIFECYCLE {
-        return Err(Error::Unsupported("external command kind is not bound".into()));
+        return Err(Error::Unsupported(
+            "external command kind is not bound".into(),
+        ));
     }
     let original: ExternalRequest = serde::Deserialize::deserialize(payload)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     if original != *request {
-        return Err(Error::Conflict("lifecycle command differs from its native request".into()));
+        return Err(Error::Conflict(
+            "lifecycle command differs from its native request".into(),
+        ));
     }
     Ok(match &request.action {
-        ExternalAction::RunTool {..} => Some("native tool request has no supported prepared tool command"),
-        ExternalAction::Fork {..} | ExternalAction::Join {..} => Some("external child preparation is not bound"),
+        ExternalAction::RunTool { .. } => {
+            Some("native tool request has no supported prepared tool command")
+        }
+        ExternalAction::Fork { .. } | ExternalAction::Join { .. } => {
+            Some("external child preparation is not bound")
+        }
         _ => None,
     })
 }

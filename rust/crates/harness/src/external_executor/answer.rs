@@ -17,7 +17,7 @@ pub(super) fn validate(host: ExternalHost, event: &str, answer: Value) -> Result
     }
     if answer.get("Failed").is_some() {
         return match serde::Deserialize::deserialize(&answer) {
-            Ok(crate::Outcome::<Value>::Failed {message}) => Err(Error::Invalid(message)),
+            Ok(crate::Outcome::<Value>::Failed { message }) => Err(Error::Invalid(message)),
             _ => Err(invalid()),
         };
     }

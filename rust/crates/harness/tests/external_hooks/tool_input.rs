@@ -53,9 +53,19 @@ proptest! {
     }
 }
 
-fn native_request(host:ExternalHost,name:&str,args:Value)->Result<ExternalRequest> {
-    let input=if host==ExternalHost::Pi {
+fn native_request(host: ExternalHost, name: &str, args: Value) -> Result<ExternalRequest> {
+    let input = if host == ExternalHost::Pi {
         json!({"sessionId":"session","toolCallId":"call","toolName":name,"input":args})
-    } else {json!({"session_id":"session","tool_use_id":"call","tool_name":name,"tool_input":args})};
-    request(host,if host==ExternalHost::Pi {"tool_call"} else {"PreToolUse"},input)
+    } else {
+        json!({"session_id":"session","tool_use_id":"call","tool_name":name,"tool_input":args})
+    };
+    request(
+        host,
+        if host == ExternalHost::Pi {
+            "tool_call"
+        } else {
+            "PreToolUse"
+        },
+        input,
+    )
 }

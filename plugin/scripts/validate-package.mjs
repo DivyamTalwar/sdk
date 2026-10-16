@@ -65,6 +65,8 @@ for (const relativePath of ["pi/index.ts", "pi/README.md"]) {
 for (const path of [
   ...hostManifests,
   join(plugin, "hooks", "hooks.json"),
+  join(plugin, ".mcp.json"),
+  join(plugin, "claude", ".mcp.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
@@ -75,9 +77,15 @@ for (const path of hostManifests) {
   }
 }
 
-// Every native event calls the common harness client; no endpoint is installed.
-if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== undefined) {
-  fail("the Codex shim must not install a separate MCP host");
+// MCP only substitutes the followed result; it owns no execution or endpoint.
+for (const manifest of hostManifests.slice(1)) {
+  if (assets[manifest].mcpServers !== "./.mcp.json") fail(`missing result client: ${manifest}`);
+}
+for (const path of [join(plugin,".mcp.json"),join(plugin,"claude",".mcp.json")]) {
+  const servers = assets[path].mcpServers;
+  if (Object.keys(servers).length !== 1 || JSON.stringify(servers.acyclic.args) !== '["__tools"]') {
+    fail(`result adapter must use the common client: ${path}`);
+  }
 }
 const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
   .flat().flatMap(group => group.hooks ?? []);

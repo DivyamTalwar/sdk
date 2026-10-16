@@ -78,7 +78,18 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
 }
 
 async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -> Result<()> {
-    let Fixture {runtime,files,volume,verifier,signed,tasks,revision,publisher,requests,results} = Fixture::at_revision(binding, selected_revision).await?;
+    let Fixture {
+        runtime,
+        files,
+        volume,
+        verifier,
+        signed,
+        tasks,
+        revision,
+        publisher,
+        requests,
+        results,
+    } = Fixture::at_revision(binding, selected_revision).await?;
     let operation = OperationId::from_bytes([63; 16]);
     let arguments = json!({
         "path":"session.txt","text":"written by the task worker",
@@ -109,11 +120,13 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
     }
     let payload = if binding == VolumeBinding::ForgedLifecycle {
         serde_json::to_vec(&original)
-    } else { serde_json::to_vec(&ToolTaskCommand {
-        name: "write".into(),
-        revision,
-        arguments,
-    }) }
+    } else {
+        serde_json::to_vec(&ToolTaskCommand {
+            name: "write".into(),
+            revision,
+            arguments,
+        })
+    }
     .map_err(|error| invalid(&error))?;
     let payload =
         SchedulerPayloadStore::stage(publisher.as_ref(), tool_operation, "tool", &payload, None)?
@@ -122,7 +135,10 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
         operation_id: tool_operation,
         kind: if binding == VolumeBinding::ForgedLifecycle {
             "acyclic.external.lifecycle.v1"
-        } else { TOOL_TASK_COMMAND_KIND }.into(),
+        } else {
+            TOOL_TASK_COMMAND_KIND
+        }
+        .into(),
         payload,
     };
     let definition = tasks.get::<Value, ()>("acyclic.command_session@1")?;
@@ -148,17 +164,35 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
     let commands = RequestCommands::new(&runtime, &requests, &results);
     let guarded = SizeGuard(&commands);
     let attempt = Box::pin(runtime.run_operation(&worker, task, &guarded, 8, None)).await?;
-    if !matches!(binding, VolumeBinding::Separate | VolumeBinding::RetainedRevision) {
+    if !matches!(
+        binding,
+        VolumeBinding::Separate | VolumeBinding::RetainedRevision
+    ) {
         if binding == VolumeBinding::ForgedLifecycle {
-            assert!(matches!(attempt, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed {..}))));
-            let result = results.snapshot(&Query::File(original.result_key(task_folder.clone()).map_err(storage)?), 1)
-                .await.map_err(storage)?;
+            assert!(matches!(
+                attempt,
+                Some(TaskWorkerAttempt::Progress(
+                    TaskWorkerOutcome::Completed { .. }
+                ))
+            ));
+            let result = results
+                .snapshot(
+                    &Query::File(original.result_key(task_folder.clone()).map_err(storage)?),
+                    1,
+                )
+                .await
+                .map_err(storage)?;
             assert_eq!(result.files.len(), 1);
-            let outcome: acyclic_harness::Outcome<Value> = serde_json::from_slice(&result.files[0].bytes)
-                .map_err(|error| invalid(&error))?;
-            assert!(matches!(outcome, acyclic_harness::Outcome::Failed {..}));
+            let outcome: acyclic_harness::Outcome<Value> =
+                serde_json::from_slice(&result.files[0].bytes).map_err(|error| invalid(&error))?;
+            assert!(matches!(outcome, acyclic_harness::Outcome::Failed { .. }));
         } else {
-            assert!(matches!(attempt, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling {..}))));
+            assert!(matches!(
+                attempt,
+                Some(TaskWorkerAttempt::Progress(
+                    TaskWorkerOutcome::Reconciling { .. }
+                ))
+            ));
         }
         let actor_files = results
             .snapshot(&Query::Requests(task_folder), 2)
@@ -166,7 +200,11 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
             .map_err(storage)?
             .files;
         if binding != VolumeBinding::ForgedLifecycle {
-            assert!(actor_files.iter().all(|file| file.key.owner() == acyclic_harness::task_volume::Owner::Caller));
+            assert!(
+                actor_files
+                    .iter()
+                    .all(|file| file.key.owner() == acyclic_harness::task_volume::Owner::Caller)
+            );
         }
         let reader = FilesystemContentVerifier::new(files, &verifier, &signed, 65_536, None)?;
         assert!(
@@ -260,11 +298,17 @@ impl TaskCommandHost for SizeGuard<'_> {
         fence: acyclic_harness::scheduler::LeaseFence,
         command: WorkflowCommand,
         payload: Value,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_harness::filesystem::TaskCommandProgress>> {
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        Result<acyclic_harness::filesystem::TaskCommandProgress>,
+    > {
         let future = self.0.execute(context, fence, command, payload);
         let bytes = std::mem::size_of_val(&future);
         eprintln!("external request command future: {bytes} bytes");
-        assert!(bytes < 16 * 1024, "external request command future: {bytes} bytes");
+        assert!(
+            bytes < 16 * 1024,
+            "external request command future: {bytes} bytes"
+        );
         future
     }
 }

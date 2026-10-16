@@ -1,5 +1,11 @@
-use super::{*, session_runtime::{Fixture, VolumeBinding}};
-use acyclic_harness::{TaskId, task_volume::{Component, FileValue, Query}};
+use super::{
+    session_runtime::{Fixture, VolumeBinding},
+    *,
+};
+use acyclic_harness::{
+    TaskId,
+    task_volume::{Component, FileValue, Query},
+};
 use proptest::prelude::*;
 
 proptest! {
@@ -47,11 +53,25 @@ proptest! {
     }
 }
 
-async fn publish(fixture:&Fixture, task:&Component, native:&ExternalRequest)->Result<FileValue> {
-    let file=native.to_file(task.clone()).map_err(storage)?;
-    let head=fixture.requests.snapshot(&Query::File(file.key.clone()),1).await.map_err(storage)?;
-    fixture.requests.append(head.generation,&file).await.map_err(storage)?;
+async fn publish(
+    fixture: &Fixture,
+    task: &Component,
+    native: &ExternalRequest,
+) -> Result<FileValue> {
+    let file = native.to_file(task.clone()).map_err(storage)?;
+    let head = fixture
+        .requests
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(storage)?;
+    fixture
+        .requests
+        .append(head.generation, &file)
+        .await
+        .map_err(storage)?;
     Ok(file)
 }
 
-fn storage(error:impl std::fmt::Display)->Error {Error::Storage(error.to_string())}
+fn storage(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}

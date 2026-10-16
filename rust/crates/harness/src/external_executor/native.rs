@@ -63,15 +63,108 @@ impl HookBinding {
 /// Reads one native event and uses only the platform Streams provider.
 pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     let host: ExternalHost = serde_json::from_value(Value::String(host.into())).map_err(storage)?;
-    let input: Value = volume::decode(&read_bounded(
+    let mut input: Value = volume::decode(&read_bounded(
         std::io::stdin().lock(),
         acyclic_stream::MAX_RECORD_BYTES,
     )?)
     .map_err(storage)?;
+    let cwd = input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir().map_err(storage)?);
+    let mcp = super::handoff::normalize_tool(host, event, &mut input)?;
     let request = request(host, event, input)?;
-    let path = std::env::var_os("ACYCLIC_HARNESS_BINDING").ok_or_else(|| {
-        Error::Invalid("ACYCLIC_HARNESS_BINDING must name a platform binding file".into())
-    })?;
+    if matches!(request.action, super::ExternalAction::RunTool { .. })
+        && host != ExternalHost::Pi
+        && !mcp
+    {
+        return Err(Error::Unsupported(
+            "Use the Acyclic MCP coding tools so execution and results share the task fence."
+                .into(),
+        ));
+    }
+    let (answer, task) = run_request(&request, &cwd).await?;
+    if mcp {
+        // The ordinary MCP call returns this already-published result. Its
+        // rewritten arguments identify the exact original immutable request.
+        super::handoff::answer(&request, &cwd, task, &answer)
+    } else if host == ExternalHost::Pi
+        && matches!(request.action, super::ExternalAction::RunTool { .. })
+    {
+        super::tool_result(answer)
+    } else {
+        super::answer::validate(host, event, answer)
+    }
+}
+
+pub(super) fn run_request<'a>(
+    request: &'a super::ExternalRequest,
+    cwd: &'a std::path::Path,
+) -> impl Future<Output = Result<(Value, Component)>> + 'a {
+    Box::pin(async move {
+        let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+            {
+                let harness =
+                    crate::LocalHarness::open(crate::LocalHarnessConfig::external(cwd)).await?;
+                return Ok((
+                    harness.external_request(request).await?,
+                    Component::new(request.task_id().to_string()).map_err(storage)?,
+                ));
+            }
+            #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
+            return Err(Error::Unsupported(
+                "local hooks require filesystem-local and native-execution".into(),
+            ));
+        };
+        let (requests, results, task) = platform_volumes(path).await?;
+        Ok((
+            request
+                .send(&requests, &results, task.clone())
+                .await
+                .map_err(storage)?,
+            task,
+        ))
+    })
+}
+
+pub(super) fn read_tool_result(
+    name: &str,
+    arguments: Value,
+) -> impl Future<Output = Result<Value>> + '_ {
+    Box::pin(async move {
+        let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+            {
+                let cwd = super::handoff::cwd(&arguments)?;
+                let harness =
+                    crate::LocalHarness::open(crate::LocalHarnessConfig::external(cwd)).await?;
+                return harness.external_tool_result(name, arguments).await;
+            }
+            #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
+            return Err(Error::Unsupported(
+                "local hooks require filesystem-local and native-execution".into(),
+            ));
+        };
+        let (requests, results, task) = platform_volumes(path).await?;
+        let key = arguments
+            .pointer("/_acyclic/request")
+            .cloned()
+            .ok_or_else(|| Error::Unauthorized("missing native request file".into()))?;
+        let key: crate::task_volume::FileKey = serde_json::from_value(key).map_err(storage)?;
+        if !matches!(&key,crate::task_volume::FileKey::Task {task:bound,..} if bound == &task) {
+            return Err(Error::Unauthorized(
+                "native result belongs to another bound task".into(),
+            ));
+        }
+        super::handoff::read_result(name, arguments, &requests, &results).await
+    })
+}
+
+async fn platform_volumes(
+    path: std::ffi::OsString,
+) -> Result<(TaskVolume<HttpStream>, TaskVolume<HttpStream>, Component)> {
     let binding = HookBinding::from_bytes(&read_bounded(
         std::fs::File::open(path).map_err(storage)?,
         acyclic_stream::MAX_RECORD_BYTES,
@@ -95,11 +188,7 @@ pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     let results = TaskVolume::open(provider, binding.results)
         .await
         .map_err(storage)?;
-    let answer = request
-        .send(&requests, &results, binding.task)
-        .await
-        .map_err(storage)?;
-    super::answer::validate(host, event, answer)
+    Ok((requests, results, binding.task))
 }
 
 fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
@@ -116,4 +205,30 @@ fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_hook_and_request_futures_stay_below_sixteen_kib() -> Result<()> {
+        let request = request(
+            ExternalHost::Pi,
+            "session_start",
+            serde_json::json!({"sessionId":"size","cwd":"project"}),
+        )?;
+        let hook = run_hook("pi", "session_start");
+        let call = run_request(&request, std::path::Path::new("project"));
+        let result = read_tool_result("bash", Value::Null);
+        eprintln!(
+            "native hook/request futures: {}/{} bytes",
+            std::mem::size_of_val(&hook),
+            std::mem::size_of_val(&call)
+        );
+        assert!(std::mem::size_of_val(&hook) < 16 * 1024);
+        assert!(std::mem::size_of_val(&call) < 16 * 1024);
+        assert!(std::mem::size_of_val(&result) < 16 * 1024);
+        Ok(())
+    }
 }

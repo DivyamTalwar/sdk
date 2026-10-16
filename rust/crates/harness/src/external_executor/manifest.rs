@@ -34,6 +34,7 @@ pub fn claude_manifest(version: &str) -> Value {
         "description": "Run tools and fork subagents through Acyclic harness actors.",
         "author": {"name":"Acyclic Labs"},
         "license": "Apache-2.0",
+        "mcpServers": "./.mcp.json",
         "hooks": claude_hooks("${CLAUDE_PLUGIN_ROOT}/../bin/acyclic")
     })
 }

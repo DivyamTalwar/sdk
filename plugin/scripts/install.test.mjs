@@ -368,8 +368,12 @@ test("the published package contains only native hook shims", () => {
   for (const path of [".codex-plugin/plugin.json", "claude/.claude-plugin/plugin.json", "pi/index.ts", "pi/package.json", "hooks/hooks.json", "bin/acyclic"]) {
     assert.ok(files.includes(path), `package omits ${path}`);
   }
-  assert.ok(!files.includes(".mcp.json"));
-  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, undefined);
+  for (const path of [".mcp.json","claude/.mcp.json"]) {
+    assert.ok(files.includes(path));
+    const servers = JSON.parse(readFileSync(join(plugin,path),"utf8")).mcpServers;
+    assert.deepEqual(servers.acyclic.args,["__tools"]);
+  }
+  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./.mcp.json");
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8")).hooks;
   assert.deepEqual(Object.keys(hooks), ["SessionStart", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop", "SessionEnd"]);
   for (const [event, groups] of Object.entries(hooks)) {

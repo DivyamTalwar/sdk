@@ -12,6 +12,8 @@ pub(super) struct Configuration<'a> {
     pub scratch: &'a VolumeRef,
     pub journal: &'a VolumeRef,
     pub tools: &'a ToolRegistry,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub capabilities: &'a Capabilities,
     pub limits: Limits,
     pub run_limits: TaskRunLimits,
     pub session_limits: SessionLimits,
@@ -22,6 +24,7 @@ pub(super) struct Configuration<'a> {
 pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
+    let external = Arc::new(crate::external_executor::CommandSessionMachine::new());
     let definition = stock.definition()?;
     let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
     let mut grants = vec![
@@ -37,6 +40,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         "mail:send".to_owned(),
         "fork:publish".to_owned(),
         "project:merge".to_owned(),
+        "task:spawn:acyclic.command_session@1".to_owned(),
         format!(
             "task:spawn:{}@{}",
             definition.identity().name,
@@ -57,6 +61,15 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     for definition in config.tools.definitions(None)? {
         grants.push(format!("tool:call:{}", definition.name));
     }
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    grants.extend(
+        config
+            .capabilities
+            .iter()
+            // Registry definitions above already supply every tool-call grant.
+            .filter(|grant| !grant.starts_with("tool:call:"))
+            .map(str::to_owned),
+    );
     grants.push(
         config
             .journal
@@ -85,9 +98,11 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
     tasks.register(fork)?;
+    tasks.register(external.definition()?)?;
     let mut machines = MachineRegistry::default();
     machines.register(stock, &mut None)?;
     machines.register(preparation, &mut None)?;
+    machines.register(external, &mut None)?;
     let runtime = LocalTaskRuntime::open(
         config.stream,
         config.files.clone(),

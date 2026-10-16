@@ -28,6 +28,16 @@ impl ExternalRequest {
             } else {
                 requests.append(snapshot.generation, &write).await?;
             }
+            self.follow_result(results, task).await
+        })
+    }
+
+    pub(crate) fn follow_result<'a, P: StreamProvider + ?Sized>(
+        &'a self,
+        results: &'a TaskVolume<P>,
+        task: Component,
+    ) -> impl Future<Output = Result<Value>> + 'a {
+        Box::pin(async move {
             let key = self.result_key(task)?;
             let mut observation = results.observe(Query::File(key.clone()), None, 1).await?;
             if let Some(file) = observation

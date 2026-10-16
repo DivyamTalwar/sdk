@@ -35,17 +35,18 @@ impl ExternalRequest {
         if !self.valid() {
             return Err(Error::InvalidSegment);
         }
-        let bytes = encode(self)?;
+        Ok(FileValue::new(self.request_key(task)?, encode(self)?))
+    }
+
+    /// Immutable request-file identity, without encoding or copying its payload.
+    pub fn request_key(&self, task: Component) -> Result<FileKey> {
         let mut name = [0; 36];
         let operation = uuid::Uuid::from_bytes(self.operation_id.into_bytes());
         let request = Component::new(operation.hyphenated().encode_lower(&mut name))?;
-        Ok(FileValue::new(
-            FileKey::Task {
-                task,
-                file: TaskFile::Request(request),
-            },
-            bytes,
-        ))
+        Ok(FileKey::Task {
+            task,
+            file: TaskFile::Request(request),
+        })
     }
 
     /// Decodes a request belonging to this task, checking both file and hook identities.

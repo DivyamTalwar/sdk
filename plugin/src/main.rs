@@ -33,6 +33,12 @@ fn main() -> std::process::ExitCode {
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let arguments: Vec<String> = env::args().skip(1).collect();
     match arguments.as_slice() {
+        [command] if command == "__tools" => {
+            runtime()?.block_on(acyclic_harness::external_executor::serve_native_tools())?;
+        }
+        [command] if command == "__catalog" => {
+            println!("{}",acyclic_harness::external_executor::native_tool_catalog()?);
+        }
         [command, rest @ ..] if identity::is_command(command) => {
             runtime()?.block_on(identity::run(&std::iter::once(command.clone()).chain(rest.iter().cloned()).collect::<Vec<_>>()))?;
         }

@@ -129,5 +129,6 @@
         ]
       }
     ]
-  }
+  },
+  "mcpServers": "./.mcp.json"
 }

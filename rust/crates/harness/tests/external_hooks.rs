@@ -7,26 +7,34 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+#[path = "external_hooks/local.rs"]
+mod local;
+
 #[path = "external_hooks/answers.rs"]
 mod answers;
-#[path = "external_hooks/intake.rs"]
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod intake;
-#[path = "external_hooks/intake_model.rs"]
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod intake_model;
 #[path = "external_hooks/attachment_property.rs"]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod attachment_property;
-#[path = "external_hooks/lifecycle_recovery.rs"]
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod lifecycle_recovery;
 #[path = "external_hooks/boundary_stream.rs"]
 #[cfg(all(
     any(feature = "filesystem", feature = "hooks"),
     not(target_arch = "wasm32")
 ))]
 mod boundary_stream;
+#[path = "external_hooks/intake.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod intake;
+#[path = "external_hooks/intake_model.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod intake_model;
+#[path = "external_hooks/lifecycle_recovery.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod lifecycle_recovery;
 #[path = "external_hooks/publication_model.rs"]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod publication_model;
@@ -46,11 +54,11 @@ mod session;
 #[path = "external_hooks/session_runtime.rs"]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod session_runtime;
-#[path = "external_hooks/volume.rs"]
-mod volume;
 #[path = "external_hooks/tool_input.rs"]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_input;
+#[path = "external_hooks/volume.rs"]
+mod volume;
 
 #[derive(Deserialize)]
 struct Scenario {
@@ -203,7 +211,7 @@ fn native_metadata_and_credentials_are_not_copied_into_requests() -> Result<()> 
 }
 
 #[test]
-fn claude_manifest_drives_every_catalog_hook_without_codex_mcp() -> Result<()> {
+fn claude_manifest_drives_catalog_hooks_and_the_result_client() -> Result<()> {
     let manifest: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../plugin/claude/.claude-plugin/plugin.json"
@@ -245,7 +253,7 @@ fn claude_manifest_drives_every_catalog_hook_without_codex_mcp() -> Result<()> {
             assert_eq!(group.get("matcher").and_then(Value::as_str), Some(".*"));
         }
     }
-    assert!(manifest.get("mcpServers").is_none());
+    assert_eq!(manifest.get("mcpServers"), Some(&json!("./.mcp.json")));
     Ok(())
 }
 

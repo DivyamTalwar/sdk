@@ -20,7 +20,7 @@ struct Scenario {
 }
 
 #[test]
-fn missing_binding_fails_closed_without_starting_a_plugin_host() -> Result {
+fn invalid_platform_binding_fails_closed_without_starting_a_plugin_host() -> Result {
     let directory = tempfile::tempdir()?;
     let scenarios: Vec<Scenario> = serde_json::from_str(include_str!(
         "../../rust/crates/harness/tests/external_hooks.json"
@@ -29,7 +29,10 @@ fn missing_binding_fails_closed_without_starting_a_plugin_host() -> Result {
         let mut child = Command::new(env!("CARGO_BIN_EXE_acyclic"))
             .args(["__hook", scenario.host.name(), &scenario.event])
             .current_dir(directory.path())
-            .env_remove("ACYCLIC_HARNESS_BINDING")
+            .env(
+                "ACYCLIC_HARNESS_BINDING",
+                directory.path().join("missing-binding.json"),
+            )
             .env("HOME", directory.path())
             .env("USERPROFILE", directory.path())
             .env("XDG_STATE_HOME", directory.path())
@@ -58,7 +61,7 @@ fn missing_binding_fails_closed_without_starting_a_plugin_host() -> Result {
                 answer
                     .get("systemMessage")
                     .and_then(Value::as_str)
-                    .is_some_and(|message| message.contains("ACYCLIC_HARNESS_BINDING"))
+                    .is_some_and(|message| !message.is_empty())
             );
         }
         assert_eq!(
@@ -90,10 +93,10 @@ fn codex_and_pi_manifests_route_every_event_to_the_common_client() -> Result {
             serde_json::json!(["__hook", "pi", spec.event])
         );
     }
-    assert!(
-        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(".mcp.json")
-            .exists()
+    let mcp: Value = serde_json::from_str(include_str!("../.mcp.json"))?;
+    assert_eq!(
+        mcp["mcpServers"]["acyclic"]["args"],
+        serde_json::json!(["__tools"])
     );
     for file in ["../src/main.rs", "../pi/index.ts"] {
         let source = std::fs::read_to_string(

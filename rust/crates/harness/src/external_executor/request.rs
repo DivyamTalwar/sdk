@@ -26,6 +26,20 @@ pub(super) fn valid_text(text: &str) -> bool {
 }
 
 impl ExternalRequest {
+    /// Durable session identity, independent of tool calls and turn changes.
+    #[must_use]
+    pub fn task_id(&self) -> crate::TaskId {
+        let operation = super::normalize::operation(
+            self.host,
+            &self.session_id,
+            &self.caller,
+            &ExternalAction::Attach {
+                workspace: String::new(),
+            },
+        );
+        crate::TaskId::from_bytes(operation.into_bytes())
+    }
+
     pub(super) fn valid(&self) -> bool {
         let action = match &self.action {
             ExternalAction::Attach { workspace } => valid_text(workspace),

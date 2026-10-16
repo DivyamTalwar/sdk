@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn claude_tools_use_the_shared_client_and_restore_foreign_entries() {
+    let fixture = Fixture::new();
+    let path = fixture.data.join(".mcp.json");
+    let executable = fixture.data.join("native client.exe");
+    let prior = json!({"mcpServers":{"foreign":{"command":"keep"}}});
+    fs::write(&path, serde_json::to_vec(&prior).unwrap()).unwrap();
+    install_claude_tools_at(&path, &executable).unwrap();
+    install_claude_tools_at(&path, &executable).unwrap();
+    let installed = read_optional_json(&path, "tools").unwrap().unwrap();
+    assert_eq!(
+        installed["mcpServers"]["foreign"],
+        prior["mcpServers"]["foreign"]
+    );
+    assert_eq!(
+        installed["mcpServers"]["acyclic"],
+        json!({"type":"stdio","command":executable,"args":["__tools"]})
+    );
+    remove_owned_json(&path, "claude-tools", "tools").unwrap();
+    assert_eq!(read_optional_json(&path, "tools").unwrap(), Some(prior));
+    fs::write(
+        &path,
+        b"{\"mcpServers\":{\"acyclic\":{\"command\":\"foreign\"}}}",
+    )
+    .unwrap();
+    assert!(install_claude_tools_at(&path, &executable).is_err());
+}
+
+#[test]
 fn pi_install_preserves_foreign_settings_and_refuses_modified_ownership() {
     let fixture = Fixture::new();
     let settings = fixture.data.join("settings.json");

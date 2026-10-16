@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
 
 // Installation substitutes one JSON string; no shell interprets it.
@@ -9,7 +10,7 @@ export type Invoke = (event: string, input: Answer) => Promise<Answer>;
 
 /** The common Rust client owns normalization, authentication, append and follow. */
 export const invoke: Invoke = (event, input) => new Promise((resolve, reject) => {
-  const child = spawn(executable, ["__hook", "pi", event], { windowsHide: true, stdio: "pipe" });
+  const child = spawn(executable, event === "catalog" ? ["__catalog"] : ["__hook", "pi", event], { windowsHide: true, stdio: "pipe" });
   const output: Buffer[] = [];
   let bytes = 0;
   child.on("error", reject);
@@ -38,19 +39,30 @@ function identity(ctx: ExtensionContext) {
   return { sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
 
-/** Pi owns native execution; the shim owns no task queue, process or transcript. */
+/** Tool definitions and execution both come from the harness registry. */
 export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
-  pi.on("session_start", async (_event, ctx) => { await send("session_start", identity(ctx)); });
-  pi.on("tool_call", async (event, ctx) => {
-    try {
-      const answer = await send("tool_call", { ...event, ...identity(ctx) });
-      if (answer.updatedInput && typeof answer.updatedInput === "object" && !Array.isArray(answer.updatedInput)) {
-        for (const key of Object.keys(event.input)) delete event.input[key];
-        Object.assign(event.input, answer.updatedInput);
-      }
-      return answer;
-    } catch (error) { return { block: true, reason: String(error) }; }
+  const registered = new Set<string>();
+  pi.on("session_start", async (_event, ctx) => {
+    await send("session_start", identity(ctx));
+    const catalog = await send("catalog", {});
+    if (!Array.isArray(catalog.tools)) throw new Error("Invalid harness tool catalog");
+    for (const tool of catalog.tools) {
+      if (!tool || typeof tool.name !== "string" || typeof tool.description !== "string" ||
+          !tool.input_schema || typeof tool.input_schema !== "object") throw new Error("Invalid harness tool definition");
+      pi.registerTool({
+        name: tool.name, label: tool.name, description: tool.description,
+        parameters: Type.Unsafe(tool.input_schema),
+        async execute(toolCallId, input, _signal, _onUpdate, context) {
+          const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) });
+          if (!Array.isArray(result.content) || result.isError !== false) throw new Error("Invalid harness tool result");
+          return { content: result.content, details: result.details };
+        },
+      });
+      registered.add(tool.name);
+    }
   });
+  pi.on("tool_call", async event => registered.has(event.toolName)
+    ? undefined : { block: true, reason: "Use the registered harness tools" });
   pi.on("tool_result", async (event, ctx) => send("tool_result", { ...event, ...identity(ctx) }));
   pi.on("session_shutdown", async (_event, ctx) => { await send("session_shutdown", identity(ctx)); });
 }

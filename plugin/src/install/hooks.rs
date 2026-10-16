@@ -4,7 +4,12 @@ use super::*;
 pub(crate) fn install_host(host: &str, project: bool) -> Result<(), String> {
     match host {
         "codex" if !project => install_codex_plugin(),
-        "claude-code" => install_claude_hooks(&current_executable()?, project).map(|_| ()),
+        "claude-code" => {
+            let executable = current_executable()?;
+            let tools = claude_tools_path(project)?;
+            install_claude_tools_at(&tools, &executable)?;
+            install_claude_hooks(&executable, project).map(|_| ())
+        }
         "pi" => install_pi_at(
             &pi_settings_path(project)?,
             &default_data_directory().join("pi-extension"),
@@ -95,10 +100,42 @@ pub(crate) fn uninstall_host(host: &str) -> Result<(), String> {
         if !same_settings {
             remove_claude_hooks(true)?;
         }
+        for project in [false, true] {
+            let tools = claude_tools_path(project)?;
+            if read_ownership(&ownership_path(&tools, "claude-tools"))?.is_some() {
+                remove_owned_json(&tools, "claude-tools", "Claude Code tools")?;
+            }
+        }
         println!("removed Acyclic-owned Claude Code lifecycle hooks");
         return Ok(());
     }
     Err(format!("unsupported native hook installation: {host}"))
+}
+
+fn claude_tools_path(project: bool) -> Result<PathBuf, String> {
+    if project {
+        Ok(env::current_dir().map_err(display)?.join(".mcp.json"))
+    } else {
+        Ok(home_directory()?.join(".claude.json"))
+    }
+}
+
+pub(crate) fn install_claude_tools_at(path: &Path, executable: &Path) -> Result<(), String> {
+    install_owned_json(path, "claude-tools", "Claude Code tools", |prior| {
+        let mut document = prior.cloned().unwrap_or_else(|| json!({}));
+        let object = document
+            .as_object_mut()
+            .ok_or_else(|| "Claude Code configuration must be an object".to_owned())?;
+        let servers = object_entry(object, "mcpServers")?;
+        if servers.contains_key("acyclic") {
+            return Err("an unowned acyclic MCP entry already exists".into());
+        }
+        servers.insert(
+            "acyclic".into(),
+            json!({"type":"stdio","command":executable,"args":["__tools"]}),
+        );
+        Ok(document)
+    })
 }
 
 pub(crate) fn same_existing_path(left: &Path, right: &Path) -> bool {
