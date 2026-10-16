@@ -1,6 +1,13 @@
 use super::*;
 use crate::{executor::TurnOutput, runtime::TaskSpawner, scheduler::LeaseFence};
 
+#[cfg(feature = "native-execution")]
+mod admission;
+#[cfg(feature = "native-execution")]
+mod lazy;
+#[cfg(feature = "native-execution")]
+mod preparation;
+
 impl LocalHarness {
     pub(super) async fn submit_child_turn(
         &self,

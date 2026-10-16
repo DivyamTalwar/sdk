@@ -53,6 +53,17 @@ impl LocalHarness {
         prompt: &str,
         limits: Limits,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        self.stage_turn_with_output(operation, prompt, limits, None)
+            .await
+    }
+
+    pub(super) async fn stage_turn_with_output(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        limits: Limits,
+        output: Option<&VolumeRef>,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher(limits.file_bytes)?;
         let model = crate::filesystem::ModelTaskCommand {
             context_manifest: self.context_manifest.clone(),
@@ -62,7 +73,7 @@ impl LocalHarness {
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
             max_output_tokens: None,
             mailbox_operation: None,
-            selected_output_volume: None,
+            selected_output_volume: output.cloned(),
         };
         let bytes = serde_json::to_vec(&model).map_err(storage)?;
         let payload = publisher
@@ -80,7 +91,7 @@ impl LocalHarness {
             .await
     }
 
-    fn input_publisher(
+    pub(super) fn input_publisher(
         &self,
         maximum_bytes: u64,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {

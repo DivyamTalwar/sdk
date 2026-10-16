@@ -6,6 +6,163 @@ use crate::{
     scheduler::LeaseFence,
 };
 
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_original_owner()
+-> Result<()> {
+    use crate::task_volume::{ChildFile, Component, FileKey, FileValue, Query};
+    use acyclic_fs::facade::FsWork as _;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::write(directory.path().join("source.txt"), b"parent source")
+        .map_err(super::super::storage)?;
+    let provider = scripted([ScriptedTurn::Text("child done".into())]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    let operation = OperationId::new();
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable {
+        task_id: parent, ..
+    }) = harness.submit(operation, "parent").await?
+    else {
+        panic!("parent admission");
+    };
+    let worker = Worker {
+        id: "lazy-child-test".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let host = harness.runtime.task_host();
+    let WorkPull::Claimed(lease) = host.pull_work(&worker, Some(operation), &mut None).await?
+    else {
+        panic!("parent lease");
+    };
+    host.start_task(&lease, &mut None).await?;
+    let fence = LeaseFence::from(&lease.reservation);
+    let context = harness.runtime.task_context(parent, fence.clone()).await?;
+    let files = harness.task_files();
+    let reference = Component::new("worker").map_err(super::super::storage)?;
+    let mut request = FileValue::new(
+        FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Request,
+        },
+        b"inspect the child files".to_vec(),
+    );
+    let snapshot = files
+        .observe(Query::Child(reference.clone()), None, 8)
+        .await
+        .map_err(super::super::storage)?
+        .snapshot
+        .unwrap();
+    let (condition, deadline) = context
+        .owned_mailbox
+        .as_ref()
+        .unwrap()
+        .file_publication_condition()
+        .await?;
+    files
+        .write_if(snapshot.generation, &request, parent, condition, deadline)
+        .await
+        .map_err(super::super::storage)?;
+    request.requester = Some(parent);
+    let (child, view) = harness.admit_child_request(files, &request).await?;
+    assert_ne!(
+        view.workspace().id(),
+        harness.workspace().unwrap().view().workspace().id()
+    );
+    assert!(provider.requests().is_empty());
+    let admitted = host.observe_admission(child).await?;
+    assert_eq!(admitted.parent, Some(parent));
+    assert!(!admitted.resource_proofs.is_empty());
+    assert!(
+        !admitted.grants.contains(
+            &harness
+                .project()
+                .capability(VolumeOperation::Write, &mut None)?
+        )
+    );
+    assert!(
+        !admitted
+            .grants
+            .contains(&harness.project().directory_read_capability("", &mut None)?)
+    );
+    let WorkPull::Claimed(lease) = host
+        .pull_work(&worker, Some(admitted.operation_id), &mut None)
+        .await?
+    else {
+        panic!("child lease");
+    };
+    host.start_task(&lease, &mut None).await?;
+    let child_context = harness
+        .runtime
+        .task_context(child, LeaseFence::from(&lease.reservation))
+        .await?;
+    let command: crate::workflow::WorkflowCommand =
+        serde_json::from_value(admitted.input["model"].clone()).map_err(super::super::storage)?;
+    let bytes = child_context.read_file(&command.payload, None).await?;
+    let model: crate::filesystem::ModelTaskCommand =
+        crate::contract::json_from_slice(&bytes).map_err(super::super::storage)?;
+    let project = model.selected_output_volume.unwrap();
+    child_context
+        .stage_file(
+            Some(&project),
+            OperationId::new(),
+            "child.txt",
+            b"child only",
+            "text/plain",
+            "child.txt",
+        )
+        .await?;
+    assert!(!directory.path().join("child.txt").exists());
+    let cancel = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut accounting = budget.accounting(&cancel);
+    assert_eq!(
+        view.read("/source.txt", 1024, &mut accounting)
+            .await
+            .map_err(super::super::storage)?
+            .bytes
+            .as_ref(),
+        b"parent source"
+    );
+    assert_eq!(
+        view.read("/child.txt", 1024, &mut accounting)
+            .await
+            .map_err(super::super::storage)?
+            .bytes
+            .as_ref(),
+        b"child only"
+    );
+    let publisher = harness.input_publisher(harness.limits.file_bytes)?;
+    let message = OperationId::new();
+    let (payload, _) = publisher
+        .stage_once(
+            message,
+            "inputs/lazy-child-request.md",
+            b"inspect the child files",
+            "text/plain",
+            "request.md",
+            None,
+        )?
+        .await?;
+    host.send_mail(parent, &fence, child, message, payload, None)
+        .await?;
+    harness.advance(child, &harness.commands()?).await?;
+    assert_eq!(provider.requests().len(), 1);
+    assert!(host.outcome(child).await?.is_none());
+    let (replayed, reopened) = harness.admit_child_request(files, &request).await?;
+    assert_eq!(replayed, child);
+    assert_eq!(reopened.workspace().id(), view.workspace().id());
+    let mut changed = request.clone();
+    changed.bytes = acyclic_stream::OwnedBytes::from_static(b"forged replacement");
+    assert!(harness.admit_child_request(files, &changed).await.is_err());
+    host.cancel(child).await?;
+    host.cancel(parent).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
