@@ -41,6 +41,9 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
         |value| value.unsigned_abs() <= MAX_EXACT_JS_INTEGER,
     )
 }
+mod json_numbers;
+pub(crate) use json_numbers::validate_json_numbers;
+
 /// Largest count representable by both this platform and the numeric wire format.
 pub const MAX_PORTABLE_COUNT: usize =
     usize::MAX >> usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);

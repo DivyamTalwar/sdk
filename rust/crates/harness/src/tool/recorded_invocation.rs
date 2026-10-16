@@ -35,3 +35,29 @@ impl crate::filesystem::UploadRecord for RecordedInvocation {
             })
     }
 }
+
+impl ToolInvocation {
+    /// Admits the complete saved record under the same byte, depth and numeric bounds as replay.
+    pub fn validate_recorded(
+        &self,
+        metadata: &Value,
+        limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        crate::executor::with_history_io(io, |work| {
+            limits.validate(work)?;
+            crate::executor::json::json_byte_length_at_depth(
+                &RecordedInvocation {
+                    invocation: self,
+                    metadata,
+                },
+                limits.file_bytes.min(limits.render_bytes),
+                crate::executor::json::RECORD_MAXIMUM_DEPTH,
+                work,
+            )?;
+            Self::validate_identity(&self.call_id, Some(&self.name), work)?;
+            crate::conversation::validate_json_numbers(&self.arguments, work)?;
+            crate::conversation::validate_json_numbers(metadata, work)
+        })
+    }
+}
