@@ -192,6 +192,17 @@ fn task_settings_and_session_controls_have_distinct_roots() -> Result<()> {
         assert_eq!(changes[0].root, root, "{input}");
         assert!(!changes[0].create_only);
     }
+    for (input, root) in [
+        ("/stop", CommandFileRoot::Task),
+        ("/resume", CommandFileRoot::Task),
+        ("/stopall", CommandFileRoot::Session),
+        ("/resumeall", CommandFileRoot::Session),
+    ] {
+        let resolution = futures::executor::block_on(catalog.resolve(input, &DeniedReader, 1024))?;
+        let changes = resolution.file_changes(&snapshot(), OperationId::new())?;
+        assert_eq!(changes[0].root, root);
+        assert!(changes[0].create_only);
+    }
     Ok(())
 }
 

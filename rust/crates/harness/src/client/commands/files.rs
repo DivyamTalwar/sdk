@@ -129,10 +129,10 @@ impl CommandResolution {
                 create_only: false,
             }]
         };
-        let publish_request = |contents| {
+        let publish_request = |root, contents| {
             vec![CommandFileChange {
                 operation,
-                root: CommandFileRoot::Task,
+                root,
                 path: format!("requests/{operation}.json"),
                 contents,
                 create_only: true,
@@ -180,12 +180,28 @@ impl CommandResolution {
                 ));
             }
             Self::Submit { request } => {
+                let root = if matches!(
+                    request,
+                    CommandRequest::Pause {
+                        scope: CommandTaskScope::All
+                    } | CommandRequest::Resume {
+                        scope: CommandTaskScope::All
+                    }
+                ) {
+                    CommandFileRoot::Session
+                } else {
+                    CommandFileRoot::Task
+                };
                 return Ok(publish_request(
+                    root,
                     serde_json::to_value(request).map_err(codec)?,
                 ));
             }
             Self::Tool { .. } | Self::Prompt { .. } => {
-                return Ok(publish_request(serde_json::to_value(self).map_err(codec)?));
+                return Ok(publish_request(
+                    CommandFileRoot::Task,
+                    serde_json::to_value(self).map_err(codec)?,
+                ));
             }
             Self::Confirm { request } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
