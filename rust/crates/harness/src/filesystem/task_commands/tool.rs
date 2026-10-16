@@ -87,8 +87,14 @@ where
                     work,
                 )?;
             }
-            let task_context = self.runtime.bind_context_interactions(
+            let task_context = Box::pin(self.runtime.bind_task_owner(
                 context.task().clone(),
+                task,
+                fence.clone(),
+            ))
+            .await?;
+            let task_context = self.runtime.bind_context_interactions(
+                task_context,
                 task,
                 Arc::clone(&journal),
             )?;

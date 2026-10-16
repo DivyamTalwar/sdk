@@ -8,6 +8,9 @@ use tokio::{
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[path = "native_tools/commands.rs"]
+mod commands;
+
 fn command(directory: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_acyclic"));
     command

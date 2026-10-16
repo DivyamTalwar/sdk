@@ -477,19 +477,13 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        let owner = self.host.journal_owner(task, &(fence), None).await?;
         let context = self
             .harness
             .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
             .await?;
-        let mut context =
+        let context =
             Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
-        context.owned_mailbox = Some(Arc::new(TaskJournalMailbox {
-            host: Arc::clone(&self.host),
-            owner: Arc::new(owner),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
-        }));
+        let context = self.bind_task_owner(context, task, fence).await?;
         if context.scope().resource_proofs().is_empty()
             && context.scope().grants().contains(
                 &self
@@ -520,6 +514,29 @@ where
             return Ok(Arc::try_unwrap(context)
                 .unwrap_or_else(|_| unreachable!("fresh context is unshared")));
         }
+        Ok(context)
+    }
+
+    pub(in crate::filesystem) async fn bind_task_owner(
+        &self,
+        mut context: TaskContext,
+        task: TaskId,
+        fence: LeaseFence,
+    ) -> Result<TaskContext> {
+        if context.durable_task_id() != Some(task) || !Arc::ptr_eq(&context.harness, &self.harness) {
+            return Err(Error::Unauthorized(
+                "execution owner differs from task context".into(),
+            ));
+        }
+        let owner = self.host.journal_owner(task, &fence, None).await?;
+        let mailbox = Arc::new(TaskJournalMailbox {
+            host: Arc::clone(&self.host),
+            owner: Arc::new(owner),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        });
+        mailbox.validate_scope(context.scope(), None)?;
+        context.owned_mailbox = Some(mailbox);
         Ok(context)
     }
 
