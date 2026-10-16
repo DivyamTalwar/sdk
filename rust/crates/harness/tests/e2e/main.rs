@@ -213,7 +213,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn scenarios() -> TestResult {
     let started = Instant::now();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
@@ -227,23 +227,17 @@ async fn scenarios() -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    // Admit every case concurrently, keeping its event loop on one worker.
-    let pool = tokio_util::task::LocalPoolHandle::new(
-        std::thread::available_parallelism()?.get().min(count),
-    );
     let mut results = stream::iter(paths.into_iter().map(|path| {
         let root = root.clone();
-        let pool = pool.clone();
         async move {
             let case_path = path.clone();
-            let result: TestResult = pool
-                .spawn_pinned(move || async move {
-                    let case = scenario::load_value(&root, &case_path)?;
-                    tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
-                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                })
-                .await
-                .unwrap_or_else(|error| Err(Box::new(error)));
+            let result: TestResult = tokio::spawn(async move {
+                let case = scenario::load_value(&root, &case_path)?;
+                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            })
+            .await
+            .unwrap_or_else(|error| Err(Box::new(error)));
             (path, result)
         }
     }))
