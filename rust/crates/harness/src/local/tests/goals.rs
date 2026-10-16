@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     TaskId,
     conversation::{ContentGrant, Limits},
-    goal::{GoalBlockedReason, GoalContinuationPolicy},
+    goal::GoalContinuationPolicy,
 };
 use acyclic_stream::{StreamPath, StreamProvider};
 use futures::TryStreamExt as _;
@@ -20,8 +20,7 @@ struct Case {
     final_goal: Option<String>,
     panel: Vec<String>,
     initial_goal: Option<String>,
-    #[serde(default)]
-    unreachable: bool,
+    path: String,
 }
 
 #[cfg(feature = "tui")]
@@ -114,6 +113,11 @@ async fn run(case: Case) -> Result<()> {
     )
     .await
     .expect("goal scenario stalled")?;
+    if case.tasks > 1 {
+        let requests =
+            serde_json::to_string(&provider.requests()).map_err(super::super::storage)?;
+        assert!(requests.contains("Continue the active goal in .volumes/scratch/GOAL.md."));
+    }
     assert_eq!(provider.requests().len(), case.calls, "{}", case.name);
     assert_eq!(provider.remaining(), 0, "{}", case.name);
     let grant = ContentGrant::verify_directory_read(
@@ -138,7 +142,7 @@ async fn run(case: Case) -> Result<()> {
         Some(expected) => assert_eq!(read?.1.as_ref(), expected.as_bytes(), "{}", case.name),
         None => assert!(matches!(read, Err(Error::NotFound(_)))),
     }
-    if let Some(Some(expected)) = case.writes.last() {
+    if let Some(Some(expected)) = case.writes.last().filter(|_| case.path == "GOAL.md") {
         let project = crate::filesystem::workspace_ref(
             harness.project.provider().clone(),
             &harness.project.storage_name(&mut None)?,
@@ -158,11 +162,6 @@ async fn run(case: Case) -> Result<()> {
             expected.as_bytes(),
             "stock writer's actual destination"
         );
-    }
-    if case.unreachable {
-        // Replays recover the file-driven typed reason without more model work.
-        check_output(&case, harness.resume(task_id).await)?;
-        assert_eq!(provider.requests().len(), case.calls);
     }
     // Reopen/replay never reissues model work or resets the finite allowance.
     drop(followed);
@@ -184,26 +183,12 @@ async fn run(case: Case) -> Result<()> {
 }
 
 fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Result<()> {
-    if case.unreachable {
-        assert!(
-            matches!(
-                &output,
-                Err(Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable))
-            ),
-            "{}: {output:?}",
-            case.name
-        );
-        let error = Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable);
-        assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
-        assert!(!error.is_native_failure());
-    } else {
-        assert_eq!(
-            output?.text,
-            format!("settle-{}", case.writes.len() - 1),
-            "{}",
-            case.name
-        );
-    }
+    assert_eq!(
+        output?.text,
+        format!("settle-{}", case.writes.len() - 1),
+        "{}",
+        case.name
+    );
     Ok(())
 }
 
@@ -215,7 +200,7 @@ fn script(case: &Case) -> Vec<ScriptedTurn> {
                 ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                     format!("goal-{index}"),
                     "write".into(),
-                    json!({"path":"GOAL.md", "text":text,
+                    json!({"path":case.path, "text":text,
                         "media_type":"text/markdown", "display_name":"GOAL.md"}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
