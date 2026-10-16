@@ -1,9 +1,14 @@
 use super::*;
 
-impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
+impl<F, Fut> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
+        (self.before_effect)().await?;
         let Some(lease) = &self.lease else {
             return Ok(());
         };
@@ -297,11 +302,17 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
-                let plan = builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| Error::from(failure.error))?;
+                let plan = super::materialize::prepared(
+                    async {
+                        builder
+                            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| Error::from(failure.error))
+                    },
+                    &|| self.validate(),
+                )
+                .await?;
                 let options = ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -321,7 +332,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map_err(Error::from)?;
                     let typed_json = serde_json::to_string(&typed).map_err(json_error)?;
-                    let candidate = {
+                    let candidate = super::materialize::prepared(async {
                         let mut cache = self.merge_cache.lock().await;
                         resolve_merge_plan(typed, &self.merge_drivers, &mut *cache, false).map_err(
                             |error| {
@@ -329,8 +340,8 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                     "Git join has unresolved typed conflicts: {typed_json}; {error}"
                                 ))
                             },
-                        )?
-                    };
+                        )
+                    }, &|| self.validate()).await?;
                     let has_markers = candidate.resolutions.values().any(|resolution| {
                         matches!(resolution, acyclic_fs::MergeResolution::Text(text)
                                 if acyclic_fs::text_merge::has_conflict_markers(text))

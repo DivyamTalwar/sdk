@@ -1,6 +1,10 @@
 use super::*;
 
-impl WorkspaceGitExecutor<'_> {
+impl<F, Fut> WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<LocalGeneration, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self

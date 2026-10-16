@@ -424,6 +424,12 @@ impl Error {
     }
 }
 
+impl From<crate::task_volume::Error> for Error {
+    fn from(error: crate::task_volume::Error) -> Self {
+        Self::TaskFiles(Box::new(error))
+    }
+}
+
 /// Moves a native cause without formatting it or manufacturing allocation custody.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::NativeTreeMaterializationError> for Error {

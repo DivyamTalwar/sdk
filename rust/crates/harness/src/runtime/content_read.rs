@@ -394,8 +394,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
-        let writer =
-            super::content_write::bound_content_writer(self.content_binding(None), scope, io)?;
+        let writer = super::content_write::content_writer(self.content_binding(None), io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
@@ -417,11 +416,13 @@ impl TaskContext {
         }
         if let Some(file) = &file {
             crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
-            if file.volume() != writer.volume() {
-                return Err(Error::Storage(
-                    "original publisher receipt belongs to another volume".into(),
-                ));
-            }
+            super::content_write::publication_destination(
+                self.content_binding(Some(file.volume())),
+                scope,
+                Some(file),
+                file.path(),
+                io,
+            )?;
         }
         Ok((file, retained))
     }

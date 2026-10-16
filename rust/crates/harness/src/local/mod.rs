@@ -54,7 +54,6 @@ pub(crate) type LocalTaskRuntime =
 /// A checkout or volume, durable authority, journals and stock executor.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     runtime: Arc<LocalTaskRuntime>,
     project: VolumeRef,
     scratch: VolumeRef,
@@ -237,24 +236,12 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
-            let task_files = Arc::new(
-                crate::task_volume::TaskVolume::open(
-                    Arc::clone(&stream),
-                    acyclic_stream::StreamPath::new(format!(
-                        "harness/task-volumes/{}",
-                        task_volume.storage_name(&mut None)?
-                    ))
-                    .map_err(storage)?,
-                )
-                .await?,
-            );
-            let (runtime, signed) = runtime::open(runtime::Configuration {
+            let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
-                task_files: Arc::clone(&task_files),
-                task_volume: &task_volume,
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
-                stream: stream.clone(),
+                stream,
+                task_volume: &task_volume,
                 issuer: &issuer,
                 verifier: &verifier,
                 agent: owner.agent,
@@ -271,16 +258,8 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            let task_files = Arc::new(crate::task_volume::TaskFiles::bind(
-                task_files,
-                &task_volume,
-                &verifier,
-                &signed,
-                config.limits.file_bytes,
-            )?);
             Ok(Self {
                 files,
-                task_files,
                 runtime,
                 project: owner.project.clone(),
                 scratch,
@@ -306,11 +285,6 @@ impl LocalHarness {
     #[must_use]
     pub const fn filesystem(&self) -> &Arc<LocalFilesystem> {
         &self.files
-    }
-    /// Ordinary private task-file writes and live queries under the owner grants.
-    #[must_use]
-    pub fn task_files(&self) -> &crate::task_volume::TaskFiles<LocalStream> {
-        &self.task_files
     }
     /// Selected project view.
     #[must_use]

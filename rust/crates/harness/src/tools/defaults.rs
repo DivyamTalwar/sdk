@@ -41,11 +41,11 @@ pub(crate) fn bind_defaults(
         let tool = match name {
             "bash" => command(
                 name,
-                "Run a bash command in the calling task's composed workspace view",
+                "Run a bash command in the calling task's composed workspace view. No OS sandbox in release 1; writes outside the task view are not captured",
             )?,
             "fs" => command(
                 name,
-                "Run one git facade command, including diff, merge and discard of agents/<ref>; --volume <name> selects a granted mount for diff, log, show, status, merge or discard",
+                "Run one git facade command, including diff and merge of agents/<ref>; --volume <name> selects a granted mount for diff, log, show, status or merge",
             )?,
             "read" => crate::tool::files::read()?,
             "write" => crate::tool::files::write()?,

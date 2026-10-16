@@ -44,6 +44,7 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = crate::Result<()>> + Send,
 {
+    before_effect().await?;
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
@@ -52,6 +53,7 @@ where
     let (ignore, merge_drivers) = git_policy(workspace.view).await?;
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
+        before_effect: &before_effect,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),
@@ -80,7 +82,6 @@ where
                 inner: &executor,
                 root: workspace.root,
                 source_root_identity: identity,
-                before_effect,
             },
         )
         .await?

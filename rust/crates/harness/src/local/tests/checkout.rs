@@ -59,6 +59,32 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         );
     }
     assert_eq!(output?.text, "commands completed");
+    // The client-facing, owner-authorized query sees the same chunk files
+    // written by bash; there is no parallel output stream or task-file root.
+    let observation = harness
+        .task_files()
+        .observe(crate::task_volume::Query::Root, None, 128)
+        .await?;
+    let snapshot = observation.snapshot.expect("initial task-file snapshot");
+    let stdout: Vec<_> = snapshot
+        .files
+        .iter()
+        .filter(|file| {
+            matches!(
+                file.key,
+                crate::task_volume::FileKey::Task {
+                    file: crate::task_volume::TaskFile::Tool {
+                        file: crate::task_volume::ToolFile::Stdout(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .flat_map(|file| file.bytes.iter().copied())
+        .collect();
+    assert_eq!(stdout, b"visible");
+
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
     let results: std::collections::BTreeMap<_, _> = requests
@@ -189,6 +215,43 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .task_context(task, crate::scheduler::LeaseFence::from(&lease.reservation))
             .await?,
     );
+    {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "unmounted".into(),
+            name: "fs".into(),
+            arguments: json!({"command":"status --volume journal"}),
+        };
+        let context = ToolContext::new(
+            Arc::clone(&task_context),
+            invocation.operation_id,
+            &invocation.call_id,
+            None,
+        )?;
+        let tool = harness
+            .tools()
+            .get("fs", None, None)?
+            .ok_or_else(|| Error::NotFound("fs".into()))?;
+        let refused = tool
+            .executor
+            .execute(invocation.clone(), Some(context.clone()))
+            .await?;
+        assert!(
+            refused.value["error"]
+                .as_str()
+                .unwrap()
+                .contains("volume is not mounted")
+        );
+        // Current visibility cannot prove that a previously dispatched call
+        // had no effect. A recorded completion replays through the journal;
+        // otherwise reconciliation remains conservative.
+        assert!(
+            tool.executor
+                .reconcile(invocation, Some(context))
+                .await?
+                .is_none()
+        );
+    }
     // Property: arbitrary call identities are authorized exactly when both
     // identities and every required grant survive scope attenuation.
     {

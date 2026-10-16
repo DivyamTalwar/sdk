@@ -24,7 +24,7 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -34,7 +34,7 @@ pub(super) struct CheckoutTools {
 pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
-    pub(in crate::local) mounts: workspace::Mounts,
+    pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
 }
 
@@ -52,7 +52,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
+        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     ) -> Result<Self> {
         if workspace
             .filesystem
@@ -159,11 +159,6 @@ impl ToolExecutor for CheckoutTools {
                 let Some(serde_json::Value::String(command)) = command else {
                     return Err(Error::Invalid("checkout command must be text".into()));
                 };
-                if command.is_empty() || command.contains('\0') {
-                    return Err(Error::Invalid(
-                        "checkout command is empty or contains NUL".into(),
-                    ));
-                }
                 Some(command)
             } else {
                 None
@@ -171,6 +166,14 @@ impl ToolExecutor for CheckoutTools {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            let fs = if let Some(command) = command {
+                match self.fs_arguments(&command, context.effective_scope()) {
+                    Ok(parsed) => Some(parsed),
+                    Err(error) => return Ok(argument_error(error)),
+                }
+            } else {
+                None
+            };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let result = serialized(&self.state, async |mut state| {
@@ -190,8 +193,8 @@ impl ToolExecutor for CheckoutTools {
                     state.watcher = None;
                 }
                 workspace::volumes::sync(&state.mounts).await?;
-                if let Some(command) = command {
-                    self.fs(&command, context, &mut state).await
+                if let Some(parsed) = fs {
+                    self.fs(parsed, context, &mut state).await
                 } else {
                     let State {
                         active, watcher, ..
@@ -251,5 +254,11 @@ impl ToolExecutor for CheckoutTools {
             // A dispatched process must never be launched again after a lost ack.
             Ok(None)
         })
+    }
+}
+
+fn argument_error(error: Error) -> ToolResult {
+    ToolResult {
+        value: serde_json::json!({"error": error.to_string()}),
     }
 }

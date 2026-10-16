@@ -233,3 +233,71 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_task() -> Result<()>
+{
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checked_commands::call(0, "bash", "printf 'base\n' > note.txt"),
+        super::checked_commands::call(1, "fs", "commit -m base"),
+        super::checked_commands::call(2, "fs", "checkout -b topic"),
+        super::checked_commands::call(3, "bash", "printf 'child\n' > note.txt"),
+        super::checked_commands::call(4, "fs", "commit -m child"),
+        super::checked_commands::call(5, "fs", "checkout main"),
+        super::checked_commands::call(6, "bash", "printf 'parent\n' > note.txt"),
+        super::checked_commands::call(7, "fs", "commit -m parent"),
+        super::checked_commands::call(8, "fs", "merge topic"),
+        super::checked_commands::call(
+            9,
+            "bash",
+            "grep -q '^<<<<<<<' note.txt && printf 'resolved\n' > note.txt",
+        ),
+        super::checked_commands::call(10, "fs", "merge --continue"),
+        ScriptedTurn::Text("resolved".into()),
+    ]);
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
+        directory.path(),
+        (model()?, provider.clone()),
+    )?)
+    .await?;
+    assert_eq!(
+        harness
+            .run("merge, inspect markers and resolve them")
+            .await?
+            .text,
+        "resolved"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
+        b"resolved\n"
+    );
+    let requests = provider.requests();
+    let results: std::collections::BTreeMap<_, _> = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id,
+                content: crate::model::ToolResultContent::Json { value },
+                ..
+            } => Some((call_id.as_str(), value)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        results["checkout-8"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("conflict")
+    );
+    assert!(
+        results["checkout-10"].get("result").is_some(),
+        "merge continuation failed: {}",
+        results["checkout-10"]
+    );
+    Ok(())
+}

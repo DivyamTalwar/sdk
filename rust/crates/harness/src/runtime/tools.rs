@@ -1,5 +1,3 @@
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use super::content_write::bound_content_writer;
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
@@ -422,26 +420,13 @@ impl ToolContext {
     /// Checks effective WRITE through the original bound destination.
     pub fn authorize_content_publication_with_native_work(
         &self,
+        path: &str,
         source: Option<&FileRef>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if let Some(source) = source {
-            task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
-        }
-        let writer = bound_content_writer(
-            task.content_binding(source.map(FileRef::volume)),
-            self.effective_scope(),
-            Some(&io),
-        )?;
-        if source.is_some_and(|source| source.volume() != writer.volume()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "source differs from the owner-bound destination",
-            });
-        }
-        Ok(())
+        task.authorize_content_publication(path, source, self.effective_scope(), Some(&io))
     }
 }
 

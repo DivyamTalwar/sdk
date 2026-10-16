@@ -18,29 +18,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
     )?;
     let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
-        "ranges",
-        [3; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "owner".into(),
-        },
-    );
-    let scope = issuer.issue(
-        "owner",
-        &Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]),
-        Some(AgentId::from_bytes([1; 16])),
-        None,
-        &mut None,
-    )?;
-    let grant = ContentGrant::verify(
-        &issuer.verifier(&mut None)?,
-        &scope,
-        &volume,
-        VolumeOperation::Write,
-        u64::MAX,
-        &mut None,
-    )?;
+    let grant = grant(&volume, VolumeOperation::Write)?;
     let file = host
         .put_content(
             &volume,
@@ -56,6 +34,72 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
         )
         .await?;
     Ok((host, file))
+}
+
+fn grant(volume: &VolumeRef, operation: VolumeOperation) -> Result<ContentGrant> {
+    let issuer = AuthorityIssuer::new(
+        "ranges",
+        [3; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "owner".into(),
+        },
+    );
+    let scope = issuer.issue(
+        "owner",
+        &Capabilities::new([volume.capability(operation, &mut None)?]),
+        Some(AgentId::from_bytes([1; 16])),
+        None,
+        &mut None,
+    )?;
+    let grant = if operation == VolumeOperation::Read {
+        ContentGrant::verify_directory_read(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            volume,
+            "",
+            &mut None,
+        )?
+    } else {
+        ContentGrant::verify(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            volume,
+            operation,
+            u64::MAX,
+            &mut None,
+        )?
+    };
+    Ok(grant)
+}
+
+async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
+    let (host, uploaded) = published(b"").await?;
+    let volume = uploaded.volume();
+    let workspace = fork_preparer_io::content_workspace(&host.provider, volume, None)?;
+    let generation = host
+        .apply(
+            &workspace,
+            None,
+            &[crate::filesystem::WorkspaceMutation::PutFile {
+                path: "/ordinary".into(),
+                bytes: bytes::Bytes::copy_from_slice(body).into(),
+            }],
+            &IdempotencyKey::new("ordinary")?,
+        )
+        .await?;
+    let (reference, actual) = host
+        .read_private_path(
+            volume,
+            &grant(volume, VolumeOperation::Read)?,
+            "ordinary",
+            Some(&generation),
+            body.len() as u64,
+            None,
+        )
+        .await?;
+    assert_eq!(actual.as_ref(), body);
+    Ok((host, reference))
 }
 
 async fn selection_case(body: Vec<u8>, a: u16, b: u16, mutate: bool) -> Result<()> {
@@ -196,5 +240,57 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     assert!(work.receipt().bytes_copied < 64 * 1024);
     assert!(work.receipt().bytes_hashed < file.descriptor().byte_length());
     assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // A discovered ordinary file supports every interval without upload
+    // metadata. Its full descriptor remains authenticated, including empty ranges.
+    #[test]
+    fn ordinary_ranges_preserve_identity(
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..8192),
+        a in proptest::prelude::any::<u16>(), b in proptest::prelude::any::<u16>(),
+    ) {
+        futures::executor::block_on(async {
+            let (host, file) = ordinary(&body).await.unwrap();
+            let a = usize::from(a) % (body.len() + 1);
+            let b = usize::from(b) % (body.len() + 1);
+            let (start, end) = (a.min(b), a.max(b));
+            let range = acyclic_fs::ByteRange { offset: start as u64, length: (end - start) as u64 };
+            assert_eq!(host.read_pinned_range(&file, range, None).await.unwrap().as_ref(), &body[start..end]);
+            let mut sha = *file.descriptor().sha256(); sha[0] ^= 1;
+            let forged = FileRef::new(file.volume().clone(), file.path().into(), file.version().into(),
+                FileDescriptor::new(sha, body.len() as u64, "application/octet-stream".into()).unwrap(),
+                file.display_name().into(), &mut None).unwrap();
+            assert!(host.read_pinned_range(&forged, range, None).await.is_err());
+        });
+    }
+}
+
+#[tokio::test]
+async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> {
+    let (host, file) = ordinary(&vec![b'x'; 4 * 1024 * 1024]).await?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let range = acyclic_fs::ByteRange {
+        offset: 65530,
+        length: 16,
+    };
+    assert_eq!(
+        host.read_pinned_range(&file, range, Some(&io))
+            .await?
+            .as_ref(),
+        b"xxxxxxxxxxxxxxxx"
+    );
+    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     Ok(())
 }

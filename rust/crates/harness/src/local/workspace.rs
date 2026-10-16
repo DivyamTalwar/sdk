@@ -38,6 +38,7 @@ pub struct LocalWorkspace {
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
+    pub(super) mounts: Arc<Mounts>,
     context_line: String,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
@@ -90,7 +91,7 @@ impl LocalWorkspace {
         self: &Arc<Self>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
+        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
             super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)
@@ -254,6 +255,7 @@ pub(super) async fn open(
     )?;
     volumes::attach(filesystem, &store, &path, &mut mounts).await?;
     let context_line = mounts.context_line();
+    let mounts = Arc::new(mounts);
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -268,10 +270,11 @@ pub(super) async fn open(
         state: StateArc::new(AsyncMutex::new(super::checkout_tools::State {
             active: None,
             watcher: None,
-            mounts,
+            mounts: Arc::clone(&mounts),
             initialized: false,
         })),
         context_line,
+        mounts,
     })
 }
 
