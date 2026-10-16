@@ -78,7 +78,7 @@ pub(super) fn rustc() -> PathBuf {
 
 fn resolve_cargo() -> sync::Arc<PathBuf> {
     sync::get_or_try_init(&CARGO, || {
-        let output = Command::new("rustup")
+        let output = sdk_docs::command("rustup")
             .args(["which", "cargo", "--toolchain", "1.98.1"])
             .output()
             .unwrap();

@@ -187,7 +187,7 @@ fn plugin_rust_edits_invalidate_output() {
 fn unknown_generate_option_is_rejected_before_writes() {
     runtime::time_control();
     let fixture = fixture(false);
-    let result = invoke(Command::new(runtime::binary("sdk-generation")).args([
+    let result = invoke(sdk_docs::command(runtime::binary("sdk-generation")).args([
         "generate",
         "--root",
         fixture.root.to_str().unwrap(),
@@ -217,7 +217,7 @@ fn unknown_generate_option_is_rejected_before_writes() {
 fn unknown_drift_option_is_rejected_before_reads() {
     runtime::time_control();
     let fixture = fixture(false);
-    let result = invoke(Command::new(runtime::binary("sdk-generation")).args([
+    let result = invoke(sdk_docs::command(runtime::binary("sdk-generation")).args([
         "drift",
         "--root",
         fixture.root.to_str().unwrap(),
@@ -805,7 +805,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     );
     let relocated_root = fixture.root.with_extension("relocated");
     let relocated_output = fixture.output.with_extension("relocated");
-    assert!(Command::new(runtime::git())
+    assert!(sdk_docs::command(runtime::git())
         .args([
             "clone",
             "--quiet",

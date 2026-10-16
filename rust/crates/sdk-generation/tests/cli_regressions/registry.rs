@@ -77,7 +77,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     );
                     fs::write(config_directory.join("config.toml"), &config).unwrap();
                     // Negative control: maintained Cargo really discovers this automatic config.
-                    let mut control = Command::new(&*runtime::cargo());
+                    let mut control = sdk_docs::command(&*runtime::cargo());
                     control.env("CARGO_HOME", fixture_cargo_home(&fixture));
                     control
                         .args([
@@ -587,16 +587,16 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
 fn historical_source_help_and_flag_contract_are_explicit() {
     runtime::time_control();
     let binary = runtime::binary("sdk-generation");
-    let help = Command::new(&binary).arg("help").output().unwrap();
+    let help = sdk_docs::command(&binary).arg("help").output().unwrap();
     assert!(help.status.success());
-    let direct = invoke(Command::new(&binary).arg("help"));
+    let direct = invoke(sdk_docs::command(&binary).arg("help"));
     assert_eq!(direct.status.code(), help.status.code());
     assert_eq!(direct.stdout, help.stdout);
     assert_eq!(direct.stderr, help.stderr);
     let text = output_message(&help);
     assert!(text.contains("--historical-archives DIR"));
     assert!(text.contains("--historical-source git|registry-archives"));
-    let missing_frontier = Command::new(&binary)
+    let missing_frontier = sdk_docs::command(&binary)
         .args([
             "generate",
             "--root",
@@ -621,7 +621,7 @@ fn historical_source_help_and_flag_contract_are_explicit() {
         ("registry-archives", "requires --historical-archives"),
         ("unverified", "unknown historical source"),
     ] {
-        let rejected = Command::new(&binary)
+        let rejected = sdk_docs::command(&binary)
             .args([
                 "generate",
                 "--root",

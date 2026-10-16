@@ -67,6 +67,11 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 }
 
 pub(crate) fn configure(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW; tooling captures stdio.
+    }
     let explicit = command
         .get_envs()
         .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))

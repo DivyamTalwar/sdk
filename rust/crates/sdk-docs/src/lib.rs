@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 mod child;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
+mod metadata_output;
 mod path_identity;
 mod public_api;
 mod render_cache;
