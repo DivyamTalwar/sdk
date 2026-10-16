@@ -16,11 +16,13 @@ use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
+#[cfg(acyclic_stream_loom)]
+pub use pool::model::verify_link_isolation;
 mod progress;
 use progress::Progress;
 #[cfg(test)]
 mod tests;
-type Connect = Arc<
+type Connect = std::sync::Arc<
     dyn Fn(wire::SessionNode) -> BoxFuture<'static, Result<TransportChannel, StreamError>>
         + Send
         + Sync,
@@ -119,10 +121,10 @@ impl Client {
     pub(crate) async fn open(
         channel: TransportChannel,
         authorization: MetadataValue<Ascii>,
-        ca: Option<Arc<[u8]>>,
-        verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
+        ca: Option<std::sync::Arc<[u8]>>,
+        verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     ) -> Result<Self, StreamError> {
-        let connect: Connect = Arc::new(move |node| {
+        let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
             let verifier = verifier.clone();
             Box::pin(async move {

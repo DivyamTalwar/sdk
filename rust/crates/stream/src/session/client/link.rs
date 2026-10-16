@@ -33,7 +33,7 @@ impl Pool {
         if self.links.contains_key(&name) || !self.connecting.insert(name.clone()) {
             return;
         }
-        let connect = Arc::clone(&self.connect);
+        let connect = self.connect.clone();
         let identity = self.identity.clone();
         let authorization = self.authorization.clone();
         self.dials.push(Box::pin(async move {
@@ -81,8 +81,7 @@ impl Pool {
         if let Err(error) = link.sender.push(value, bytes) {
             // A full control queue cannot safely retain remote interests after
             // cancellation. Evict this node's session, never the shared pool.
-            self.links.remove(node);
-            self.fail_node(node, &error);
+            self.fail_link(node, &error);
         }
         Ok(())
     }

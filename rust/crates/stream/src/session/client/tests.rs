@@ -6,6 +6,7 @@ use std::{
 };
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
+mod isolation;
 mod outbound;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -17,6 +18,7 @@ struct Counts {
     follows: AtomicUsize,
     actors: AtomicUsize,
     acknowledgements: AtomicUsize,
+    windows: AtomicUsize,
     changed: tokio::sync::Notify,
     // Fixture-only lock: never nested, and never held across an await.
     resumes: Mutex<Vec<(u64, u64, u64)>>,
@@ -99,6 +101,13 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                     })
                 ) {
                     counts.acknowledgements.fetch_add(1, Ordering::Relaxed);
+                }
+                if matches!(&input, Ok(wire::SessionFrame {
+                    channel_id, body: Some(Body::Window(_)), ..
+                }) if *channel_id != 0)
+                {
+                    counts.windows.fetch_add(1, Ordering::Relaxed);
+                    counts.changed.notify_one();
                 }
                 input.map_err(|_| StreamError::Unavailable)
             })

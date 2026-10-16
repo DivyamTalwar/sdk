@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(acyclic_stream_loom)]
+pub(super) mod model;
+
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
@@ -26,9 +29,9 @@ impl Pool {
                     Some((node,epoch,response,value)) => {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
-                            Some(Ok(value)) => { self.receive(&node,value)?; self.read(node,response); }
+                            Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
                             Some(Err(error)) if grpc::retryable(&error) => self.reconnect(&node)?,
-                            Some(Err(error)) => { self.links.remove(&node); self.fail_node(&node,&grpc::status(&error)); }
+                            Some(Err(error)) => self.fail_link(&node,&grpc::status(&error)),
                             None => self.reconnect(&node)?,
                         }
                     }
@@ -36,6 +39,19 @@ impl Pool {
                 }
             }
         }
+    }
+    fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
+        match self.receive(node, value) {
+            Ok(()) => true,
+            Err(error) => {
+                self.fail_link(node, &error);
+                false
+            }
+        }
+    }
+    pub(super) fn fail_link(&mut self, node: &str, error: &StreamError) {
+        self.links.remove(node);
+        self.fail_node(node, error);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
         match command {
@@ -284,8 +300,9 @@ impl Pool {
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Err(error.clone()));
             }
+            let records = route.records;
             tokio::spawn(async move {
-                let _ = route.records.send(Err(error)).await;
+                let _ = records.send(Err(error)).await;
             });
         }
     }
@@ -302,8 +319,9 @@ impl Pool {
                     let _ = ready.send(Ok(id));
                 }
                 let error = error.clone();
+                let records = route.records;
                 tokio::spawn(async move {
-                    let _ = route.records.send(Err(error)).await;
+                    let _ = records.send(Err(error)).await;
                 });
             }
         }
@@ -314,8 +332,9 @@ impl Pool {
                 let _ = ready.send(Ok(id));
             }
             let error = error.clone();
+            let records = route.records;
             tokio::spawn(async move {
-                let _ = route.records.send(Err(error)).await;
+                let _ = records.send(Err(error)).await;
             });
         }
     }
