@@ -105,3 +105,24 @@ path = "fuzz_targets/input_paths.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "client_interests"
+path = "fuzz_targets/client_interests.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_diff"
+path = "fuzz_targets/client_diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "command_parser"
+path = "fuzz_targets/command_parser.rs"
+test = false
+doc = false
+bench = false
