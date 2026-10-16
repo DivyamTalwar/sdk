@@ -32,6 +32,11 @@ path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
 
 [[test]]
+name = "local-task-files"
+path = "tests/local_task_files.rs"
+required-features = ["filesystem-local", "native-execution", "test-support"]
+
+[[test]]
 name = "default_tools"
 path = "tests/default_tools.rs"
 required-features = ["filesystem"]
@@ -112,6 +117,10 @@ path = "tests/plan_markdown.rs"
 [[test]]
 name = "client-interests"
 path = "tests/client_interests.rs"
+
+[[test]]
+name = "client-query"
+path = "tests/client_query.rs"
 
 [[test]]
 name = "task-workflow"
