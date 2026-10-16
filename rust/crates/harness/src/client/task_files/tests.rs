@@ -48,3 +48,85 @@ proptest! {
         })?;
     }
 }
+
+#[tokio::test]
+async fn changing_and_resetting_one_volume_preserves_other_task_views() {
+    let mut volumes = Vec::new();
+    let mut owners = Vec::new();
+    for number in 1..=2 {
+        let volume = TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new(format!("volume-{number}")).unwrap(),
+        )
+        .await
+        .unwrap();
+        let owner = wire::Authority {
+            kind: wire::AggregateKind::Task as i32,
+            id: crate::TaskId::from_bytes([number; 16]).to_string(),
+        };
+        let empty = volume.snapshot(&Query::Tasks, 16).await.unwrap();
+        volume
+            .append(
+                empty.generation,
+                &FileValue {
+                    key: FileKey::Task {
+                        task: Component::new(&owner.id).unwrap(),
+                        file: TaskFile::Chunk {
+                            turn: 0,
+                            sequence: 0,
+                        },
+                    },
+                    channel: Some(Channel::Text),
+                    bytes: vec![b'a' + number].into(),
+                },
+            )
+            .await
+            .unwrap();
+        owners.push(owner);
+        volumes.push((volume, empty));
+    }
+    let mut client = TaskFileClient::observe(&volumes[0].0, &owners[0], 16, 4096)
+        .await
+        .unwrap();
+    client
+        .session
+        .query_snapshot(
+            Query::Tasks,
+            volumes[1].0.snapshot(&Query::Tasks, 16).await.unwrap(),
+            16,
+            4096,
+        )
+        .unwrap();
+    assert_eq!(client.views().transcripts.len(), 2);
+    let first = format!("AGGREGATE_KIND_TASK:{}", owners[0].id);
+    let second = format!("AGGREGATE_KIND_TASK:{}", owners[1].id);
+    let foreign = client.views().transcripts[&second].clone();
+    let (volume, empty) = volumes.remove(0);
+    let cut = volume.snapshot(&Query::Tasks, 16).await.unwrap();
+    volume
+        .append(
+            cut.generation,
+            &FileValue {
+                key: FileKey::Task {
+                    task: Component::new(&owners[0].id).unwrap(),
+                    file: TaskFile::Chunk {
+                        turn: 0,
+                        sequence: 1,
+                    },
+                },
+                channel: Some(Channel::Text),
+                bytes: b"!".to_vec().into(),
+            },
+        )
+        .await
+        .unwrap();
+    client.next_change().await.unwrap();
+    assert_eq!(client.views().transcripts[&first].streaming_text, "b!");
+    assert_eq!(client.views().transcripts[&second], foreign);
+    client
+        .session
+        .query_snapshot(Query::Tasks, empty, 16, 4096)
+        .unwrap();
+    assert!(!client.views().transcripts.contains_key(&first));
+    assert_eq!(client.views().transcripts[&second], foreign);
+}
