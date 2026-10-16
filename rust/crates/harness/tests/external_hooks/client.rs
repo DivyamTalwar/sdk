@@ -1,6 +1,6 @@
 use super::{Scenario, request};
 use acyclic_harness::{
-    external_executor::{HookBinding, handle},
+    external_executor::HookBinding,
     task_volume::{Component, Error, FileKey, FileValue, Owner, Query, TaskFile, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
@@ -26,7 +26,7 @@ async fn publish(volume: &TaskVolume<MemoryStream>, file: &FileValue) -> Result 
 }
 
 #[tokio::test]
-async fn every_native_hook_uses_the_shared_file_handler_and_push_answer() -> Result {
+async fn every_native_hook_round_trips_through_request_and_answer_files() -> Result {
     let scenarios: Vec<Scenario> = serde_json::from_str(include_str!("../external_hooks.json"))?;
     for scenario in scenarios {
         let (requests, results) = volumes().await?;
@@ -44,11 +44,10 @@ async fn every_native_hook_uses_the_shared_file_handler_and_push_answer() -> Res
             let file = change.file.ok_or("missing request file")?;
             assert_eq!(file.key.owner(), Owner::Caller);
             let answer = expected_answer.clone();
-            let response = handle(&task, &file, |received| async move {
-                assert_eq!(received, expected);
-                Ok(answer)
-            })
-            .await?;
+            let received =
+                acyclic_harness::external_executor::ExternalRequest::from_file(&task, &file)?;
+            assert_eq!(received, expected);
+            let response = received.result_file(task.clone(), &answer)?;
             assert_eq!(response.key.owner(), Owner::Harness);
             assert_eq!(FileKey::parse(&response.key.path())?, response.key);
             publish(&results, &response).await?;
@@ -144,24 +143,11 @@ async fn completed_answer_is_available_without_a_new_handler_or_request_append()
 }
 
 #[test]
-fn native_client_and_handler_futures_are_small() -> Result {
-    let task = Component::new("task")?;
-    let request = request(
-        super::ExternalHost::Codex,
-        "SessionEnd",
-        json!({"session_id":"session"}),
-    )?;
-    let file = request.to_file(task.clone())?;
-    let handler = handle(&task, &file, |_| async { Ok(json!({})) });
+fn native_client_future_is_small() {
     let native = acyclic_harness::external_executor::run_hook("codex", "SessionEnd");
-    for (name, bytes) in [
-        ("handler", std::mem::size_of_val(&handler)),
-        ("native", std::mem::size_of_val(&native)),
-    ] {
-        eprintln!("external {name}: {bytes} bytes");
-        assert!(bytes < 16 * 1024, "{name}: {bytes}");
-    }
-    Ok(())
+    let bytes = std::mem::size_of_val(&native);
+    eprintln!("external native: {bytes} bytes");
+    assert!(bytes < 16 * 1024, "external native: {bytes} bytes");
 }
 
 proptest! {

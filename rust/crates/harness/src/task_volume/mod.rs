@@ -169,6 +169,10 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    pub(crate) fn uses_provider(&self, provider: &Arc<P>) -> bool {
+        Arc::ptr_eq(&self.provider, provider)
+    }
+
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {

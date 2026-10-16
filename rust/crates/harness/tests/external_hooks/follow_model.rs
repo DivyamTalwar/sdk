@@ -9,67 +9,7 @@ use futures::StreamExt as _;
 use serde_json::json;
 use std::sync::Arc;
 
-struct Follower {
-    inner: Arc<MemoryStream>,
-    broken: bool,
-}
-
-#[async_trait::async_trait]
-impl StreamProvider for Follower {
-    async fn inspect_idempotency(
-        &self,
-        key: IdempotencyKey,
-    ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.inner.inspect_idempotency(key).await
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.inner.watermarks(path).await
-    }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.inner.fork(request).await
-    }
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.inner.read(request).await
-    }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-    ) -> Result<RecordStream, StreamError> {
-        // Every legal order: publish before the snapshot, at this handoff, or
-        // after subscription. No artificial sleeps or polling are involved.
-        shuttle::future::yield_now().await;
-        if self.broken {
-            self.inner
-                .follow(path.clone(), self.inner.tail(path).await?)
-                .await
-        } else {
-            self.inner.follow_checked(path, from, preceding).await
-        }
-    }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.inner.children(request).await
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.inner.commit(request).await
-    }
-    async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.inner.read_commit(commit).await
-    }
-}
+use super::boundary_stream::BoundaryStream;
 
 #[test]
 fn client_never_loses_an_answer_at_the_snapshot_follow_handoff() {
@@ -95,9 +35,12 @@ fn model(broken: bool) {
                         TaskVolume::open(provider.clone(), StreamPath::new("results")?).await?,
                     );
                     let client_results = TaskVolume::open(
-                        Arc::new(Follower {
+                        Arc::new(BoundaryStream {
                             inner: provider,
-                            broken,
+                            broken_follow: broken,
+                            owner: None,
+                            broken_fence: false,
+                            lose_result_ack: false,
                         }),
                         StreamPath::new("results")?,
                     )

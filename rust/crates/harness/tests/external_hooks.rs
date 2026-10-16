@@ -1,5 +1,7 @@
 //! Native host hook fixtures over the shared external-executor request API.
 use acyclic_harness::external_executor::*;
+#[cfg(feature = "filesystem")]
+use acyclic_harness::task_volume;
 use acyclic_harness::{Error, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -7,6 +9,15 @@ use std::collections::HashSet;
 
 #[path = "external_hooks/answers.rs"]
 mod answers;
+#[path = "external_hooks/boundary_stream.rs"]
+#[cfg(all(
+    any(feature = "filesystem", feature = "hooks"),
+    not(target_arch = "wasm32")
+))]
+mod boundary_stream;
+#[path = "external_hooks/publication_model.rs"]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod publication_model;
 
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 #[path = "external_hooks/client.rs"]
