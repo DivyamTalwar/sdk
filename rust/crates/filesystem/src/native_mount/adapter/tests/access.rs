@@ -330,7 +330,7 @@ fn native_access_refreshes_new_opens_but_keeps_handle_permissions()
                 |_| async {
                     Ok::<_, crate::OperationFailure<FsError>>(crate::OperationReceipt {
                         value: (),
-                        work: WorkCounters::UNCHARGED,
+                        work: crate::WorkCounters::UNCHARGED,
                     })
                 },
             )
