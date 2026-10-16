@@ -115,6 +115,9 @@ impl Markdown {
         let mut committed = mark;
         let mut depth = 0usize;
         for (event, range) in &events {
+            if range.end <= sentinel {
+                continue;
+            }
             match event {
                 Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
                 Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
@@ -233,6 +236,7 @@ impl Markdown {
 
 fn left_context(source: &str) -> String {
     match source.chars().next_back() {
+        Some('\n') => "x\n".into(),
         Some(c) if c.is_whitespace() => "x ".into(),
         Some(c) if !c.is_ascii() => format!("x{c}"),
         Some(c) if c.is_alphanumeric() => "x".into(),

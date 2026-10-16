@@ -170,7 +170,12 @@ fn stable_blocks_and_fence_lines_are_not_replaced() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/streaming.proptest-regressions")
+        ))),
+        ..ProptestConfig::with_cases(64)
+    })]
     #[test]
     fn arbitrary_delta_partitions(parts in prop::collection::vec(0usize..12, 1..25), cuts in prop::collection::vec(1usize..20, 1..12)) {
         let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n"];

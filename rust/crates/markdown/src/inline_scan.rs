@@ -19,9 +19,14 @@ struct State {
     delimiter: Delimiters,
     forest: forest::Forest,
     invalid: bool,
-    bracket: Vec<usize>,
+    bracket: Vec<Bracket>,
     labels: Vec<Range<usize>>,
     opaque: Option<usize>,
+}
+
+struct Bracket {
+    start: usize,
+    frontier: usize,
 }
 
 impl State {
@@ -53,7 +58,7 @@ impl State {
     fn earliest(&self, end: usize) -> usize {
         [
             self.delimiter.first(),
-            self.bracket.first().copied(),
+            self.bracket.first().map(|bracket| bracket.frontier),
             self.labels.first().map(|label| label.start),
             self.opaque,
         ]
@@ -335,20 +340,24 @@ fn literal(range: Range<usize>, kind: Kind, state: &mut State, linked: bool, cur
         Kind::Open { .. } if !linked => {
             #[cfg(test)]
             work::copy(
-                std::mem::size_of::<usize>()
+                std::mem::size_of::<Bracket>()
                     * (1 + if state.bracket.len() == state.bracket.capacity() {
                         state.bracket.len()
                     } else {
                         0
                     }),
             );
-            state.bracket.push(range.start);
+            let frontier = state.earliest(range.start);
+            state.bracket.push(Bracket {
+                start: range.start,
+                frontier,
+            });
         }
         Kind::Close if !linked => {
-            if let Some(start) = state.bracket.pop()
+            if let Some(bracket) = state.bracket.pop()
                 && state.bracket.is_empty()
             {
-                state.label(start..range.end);
+                state.label(bracket.start..range.end);
             }
         }
         Kind::ParenOpen if !state.labels.is_empty() => {
