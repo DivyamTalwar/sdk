@@ -34,10 +34,11 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     }
                     let raw: Event<'_> = serde_json::from_str(data)
                         .map_err(|_| invalid("invalid thinking block"))?;
-                    state.raw_thinking(
+                    state.raw_part(
                         index(value, "index")?,
                         block,
                         Some(raw.content_block.get()),
+                        false,
                     )?;
                     text(&mut events, &block["thinking"], true);
                 }
@@ -49,10 +50,11 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     }
                     let raw: Event<'_> = serde_json::from_str(data)
                         .map_err(|_| invalid("invalid thinking block"))?;
-                    state.raw_thinking(
+                    state.raw_part(
                         index(value, "index")?,
                         block,
                         Some(raw.content_block.get()),
+                        false,
                     )?;
                 }
                 _ => {}

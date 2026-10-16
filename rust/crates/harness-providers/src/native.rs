@@ -234,7 +234,8 @@ pub(crate) fn generate<'a>(
                         let (bytes, nodes) = shape(frame.data.as_bytes());
                         let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                         parser.allocation.absorb(&mut admission)?;
-                        let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data, dispatch_id), &mut parser.allocation)?;
+                        work.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::UNCHARGED })?;
+                        let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data), &mut parser.allocation)?;
                         let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                         drop(frame);
                         let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
@@ -262,7 +263,7 @@ pub(crate) fn generate<'a>(
                     });
                     diagnostic(restored, &mut parser.allocation)?;
                     let Parser { state, mut allocation } = parser;
-                    let events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
+                    let events = diagnostic(stream::finish(state, adapter, dispatch_id), &mut allocation)?;
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                     let retained = events.iter().try_fold(slots, |bytes, event| {
                         bytes.checked_add(event.logical_owned_bytes()?).ok_or_else(|| invalid("provider retained capacity overflow"))

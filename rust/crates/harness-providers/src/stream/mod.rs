@@ -61,22 +61,17 @@ pub(crate) fn events_named<'a>(
         state.set_origin(origin)?;
         while let Some(data) = input.next().await {
             let data = data?;
-            let deltas = parse(&mut state, adapter, &data, dispatch)?;
+            let deltas = parse(&mut state, adapter, &data)?;
             for event in deltas { yield event; }
             if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
         if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
-        let events = finish(state, adapter)?;
+        let events = finish(state, adapter, dispatch)?;
         for event in events { yield event; }
     })
 }
 
-pub(crate) fn parse(
-    state: &mut State,
-    adapter: Adapter,
-    data: &str,
-    dispatch: ModelDispatch,
-) -> Result<Vec<ModelEvent>> {
+pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<Vec<ModelEvent>> {
     if data == "[DONE]" {
         if adapter != Adapter::Chat {
             return Err(invalid("unexpected stream terminator"));
@@ -97,11 +92,15 @@ pub(crate) fn parse(
         Adapter::Chat => chat::parse(state, &value),
         Adapter::Anthropic => anthropic::parse(state, &value, data),
         Adapter::Responses => responses::parse(state, &value, data),
-        Adapter::Gemini => gemini::parse(state, &value, dispatch),
+        Adapter::Gemini => gemini::parse(state, &value, data),
     }
 }
 
-pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEvent>> {
+pub(crate) fn finish(
+    mut state: State,
+    adapter: Adapter,
+    dispatch: ModelDispatch,
+) -> Result<Vec<ModelEvent>> {
     if !state.terminal {
         return Err(acyclic_harness::Error::Storage(
             "model stream ended without a terminal marker".into(),
@@ -118,9 +117,9 @@ pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEven
     // Validate the whole tool batch before exposing any call to the executor.
     let mut seen = BTreeSet::new();
     for call in state.calls.values() {
-        if call.id.trim().is_empty()
+        if (adapter != Adapter::Gemini && call.id.trim().is_empty())
             || call.name.trim().is_empty()
-            || !seen.insert(call.id.as_str())
+            || (!call.id.is_empty() && !seen.insert(call.id.as_str()))
         {
             return Err(invalid("incomplete or duplicate model tool call"));
         }
@@ -128,6 +127,7 @@ pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEven
     drop(seen);
     let mut thinking = std::mem::take(&mut state.thinking).into_iter().peekable();
     let mut batch = std::mem::take(&mut state.calls).into_iter().peekable();
+    let mut ordinal = 0u64;
     while thinking.peek().is_some() || batch.peek().is_some() {
         if thinking
             .peek()
@@ -146,10 +146,43 @@ pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEven
             return Err(invalid("tool arguments must be a JSON object"));
         }
         validate_numbers(&arguments)?;
+        // Admit the canonical ID and binding graph before allocating either.
+        // The original provider ID is moved into the binding without copying.
+        let native = !call.metadata.is_null();
+        state.budget.add(
+            ModelDispatch::TOOL_CALL_ID_BYTES
+                + (3 + usize::from(native)) * std::mem::size_of::<(String, Value)>()
+                + "provider_call".len()
+                + "provider".len()
+                + "id".len()
+                + family(adapter).len()
+                + if native { "native".len() } else { 0 },
+            3 + usize::from(native),
+        )?;
+        let mut binding = serde_json::Map::new();
+        binding.insert("provider".into(), Value::String(family(adapter).into()));
+        binding.insert(
+            "id".into(),
+            if call.id.is_empty() {
+                Value::Null
+            } else {
+                Value::String(call.id)
+            },
+        );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("provider_call".into(), Value::Object(binding));
+        if native {
+            metadata.insert("native".into(), call.metadata);
+        }
         calls.push(ModelEvent::ToolCall(
-            acyclic_harness::model::ToolCall::new(call.id, call.name, arguments)
-                .with_metadata(call.metadata),
+            acyclic_harness::model::ToolCall::new(
+                dispatch.tool_call_id(ordinal),
+                call.name,
+                arguments,
+            )
+            .with_metadata(Value::Object(metadata)),
         ));
+        ordinal += 1;
     }
     calls.push(ModelEvent::Completed {
         metadata: Value::Object(state.metadata),

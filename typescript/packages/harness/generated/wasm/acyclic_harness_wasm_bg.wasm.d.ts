@@ -10,6 +10,10 @@ export const taskIdentityDigest: (a: number, b: number, c: number, d: number, e:
 export const validateTaskRequirements: (a: any) => [number, number];
 export const wasmclientviews_advance: (a: number, b: any) => [number, number, number];
 export const wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+export const wasmclientviews_bindGoalSources: (a: number, b: any, c: any) => [number, number];
+export const wasmclientviews_queryChange: (a: number, b: any) => [number, number, number];
+export const wasmclientviews_querySnapshot: (a: number, b: any, c: any, d: number, e: number) => [number, number];
+export const wasmclientviews_views: (a: number) => [number, number, number];
 export const wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
 export const wasmclientviews_discard: (a: number, b: any) => [number, number, number];
 export const wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];

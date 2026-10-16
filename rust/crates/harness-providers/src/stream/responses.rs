@@ -19,7 +19,12 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 }
                 let event: Event<'_> =
                     serde_json::from_str(data).map_err(|_| invalid("invalid reasoning item"))?;
-                state.raw_thinking(index(value, "output_index")?, item, Some(event.item.get()))?;
+                state.raw_part(
+                    index(value, "output_index")?,
+                    item,
+                    Some(event.item.get()),
+                    false,
+                )?;
             }
             if item["type"] == "function_call" {
                 let (call, budget) = state.call(index(value, "output_index")?)?;

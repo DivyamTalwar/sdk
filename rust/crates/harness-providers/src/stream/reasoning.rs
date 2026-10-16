@@ -7,6 +7,7 @@ pub(super) struct Thinking {
     text: String,
     signature: String,
     kind: ReasoningKind,
+    visible: bool,
 }
 impl Default for Thinking {
     fn default() -> Self {
@@ -15,6 +16,7 @@ impl Default for Thinking {
             text: String::new(),
             signature: String::new(),
             kind: ReasoningKind::Readable,
+            visible: false,
         }
     }
 }
@@ -25,6 +27,54 @@ impl Thinking {
 }
 
 impl<'work> State<'work> {
+    // A call-free completion with no signed answer needs only the ordinary
+    // answer text. Keep earlier tool-step fragments to align later signatures.
+    pub(super) fn discard_unsigned_final_text(&mut self) -> Result<()> {
+        if !self.calls.is_empty()
+            || self
+                .thinking
+                .values()
+                .any(|part| part.visible && part.kind == ReasoningKind::Signature)
+        {
+            return Ok(());
+        }
+        let mut error = None;
+        self.thinking.retain(|_, part| {
+            if !part.visible || error.is_some() {
+                return true;
+            }
+            match self.budget.replace(
+                budget::Size {
+                    bytes: size_of::<(u64, Thinking)>() + part.bytes(),
+                    items: 1,
+                },
+                budget::Size::default(),
+            ) {
+                Ok(()) => false,
+                Err(cause) => {
+                    error = Some(cause);
+                    true
+                }
+            }
+        });
+        error.map_or(Ok(()), Err)
+    }
+
+    pub(super) fn visible_text(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let position = (self.calls.len() + self.thinking.len()) as u64;
+        let previous = self.thinking.last_key_value().filter(|(index, block)| {
+            **index + 1 == position && block.visible && block.native.is_empty()
+        });
+        let index = previous.map_or(position, |(index, _)| *index);
+        let (target, budget) = self.thinking(index)?;
+        target.visible = true;
+        target.kind = ReasoningKind::Opaque;
+        budget.append_str(&mut target.text, text)
+    }
+
     fn thinking(&mut self, index: u64) -> Result<(&mut Thinking, &mut budget::Budget<'work>)> {
         let target = match self.thinking.entry(index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -36,14 +86,17 @@ impl<'work> State<'work> {
         Ok((target, &mut self.budget))
     }
 
+    #[cfg(test)]
     pub(super) fn retain_thinking(&mut self, index: u64, value: &Value) -> Result<()> {
-        self.raw_thinking(index, value, None)
+        self.raw_part(index, value, None, false)
     }
-    pub(super) fn raw_thinking(
+
+    pub(super) fn raw_part(
         &mut self,
         index: u64,
         value: &Value,
         raw: Option<&str>,
+        visible: bool,
     ) -> Result<()> {
         let (target, budget) = self.thinking(index)?;
         match raw {
@@ -57,10 +110,16 @@ impl<'work> State<'work> {
             _ if value.get("thoughtSignature").is_some() => ReasoningKind::Signature,
             _ => ReasoningKind::Readable,
         };
+        target.visible = visible;
         budget.string(
             &mut target.signature,
             value["signature"].as_str().unwrap_or_default(),
         )?;
+        if target.visible {
+            // This text already streams as Content. Native continuity alone
+            // owns its exact part and signature; foreign targets use the answer.
+            return budget.string(&mut target.text, "");
+        }
         let mut first = true;
         let summaries = value["summary"]
             .as_array()
@@ -140,6 +199,10 @@ pub(super) fn block(
         struct Chat<'a> {
             reasoning_content: &'a str,
         }
+        #[derive(serde::Serialize)]
+        struct Gemini<'a> {
+            text: &'a str,
+        }
         if adapter == Adapter::Anthropic {
             budget.encoded(
                 &mut value.native,
@@ -149,6 +212,8 @@ pub(super) fn block(
                     signature: &value.signature,
                 },
             )?;
+        } else if adapter == Adapter::Gemini && value.visible {
+            budget.encoded(&mut value.native, &Gemini { text: &value.text })?;
         } else {
             budget.encoded(
                 &mut value.native,
@@ -169,8 +234,10 @@ pub(super) fn block(
             credential_scope: None,
         }
     };
-    let text = (!value.text.is_empty()).then_some(value.text);
-    let outcome = if text.is_some() {
+    let text = (!value.visible && !value.text.is_empty()).then_some(value.text);
+    let outcome = if value.visible {
+        ReasoningOutcome::SuppressedDisplay
+    } else if text.is_some() {
         ReasoningOutcome::PreservedReadable
     } else {
         ReasoningOutcome::PreservedOpaque

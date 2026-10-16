@@ -208,41 +208,6 @@ impl<'work> Budget<'work> {
         *target = String::from_utf8(bytes).map_err(|_| invalid("tool encoding is not UTF-8"))?;
         Ok(())
     }
-    pub fn formatted(
-        &mut self,
-        target: &mut String,
-        arguments: std::fmt::Arguments<'_>,
-    ) -> Result<()> {
-        use std::fmt::Write as _;
-        struct Counter(usize);
-        impl std::fmt::Write for Counter {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.0 = self.0.checked_add(text.len()).ok_or(std::fmt::Error)?;
-                Ok(())
-            }
-        }
-        let mut count = Counter(0);
-        count
-            .write_fmt(arguments)
-            .map_err(|_| invalid("tool identity size overflow"))?;
-        self.replace(
-            Size {
-                bytes: target.capacity(),
-                items: 0,
-            },
-            Size {
-                bytes: count.0,
-                items: 0,
-            },
-        )?;
-        let mut text = String::new();
-        text.try_reserve_exact(count.0)
-            .map_err(|_| invalid("tool buffer allocation failed"))?;
-        text.write_fmt(arguments)
-            .map_err(|_| invalid("tool identity formatting failed"))?;
-        *target = text;
-        Ok(())
-    }
 }
 
 fn size(value: &Value, cloned: bool) -> Result<Size> {

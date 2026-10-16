@@ -320,7 +320,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             unreachable!()
         };
         if adapter == Adapter::Gemini {
-            assert_eq!(call_id, format!("{}-0-0", dispatch.operation_id));
+            assert_eq!(call_id, dispatch.tool_call_id(0));
         }
         let mut next = initial.request().clone();
         next.tools.push(acyclic_harness::tool::ToolDefinition {
@@ -377,7 +377,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             );
             assert_eq!(
                 body["contents"][1]["parts"][0]["functionCall"]["id"],
-                format!("{}-0-0", dispatch.operation_id)
+                "harness_call_0"
             );
         } else if adapter == Adapter::Responses {
             for request in sent.iter() {

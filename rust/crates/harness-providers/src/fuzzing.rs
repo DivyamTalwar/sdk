@@ -8,13 +8,22 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
+    parse_at(adapter, input, width, [1; 16])
+}
+
+fn parse_at(
+    adapter: Adapter,
+    input: &[u8],
+    width: usize,
+    operation: [u8; 16],
+) -> Result<Vec<ModelEvent>, String> {
     let body = Box::pin(futures::stream::iter(
         input
             .chunks(width)
             .map(|part| Ok(Bytes::copy_from_slice(part))),
     ));
     let dispatch = ModelDispatch {
-        operation_id: OperationId::from_bytes([1; 16]),
+        operation_id: OperationId::from_bytes(operation),
         step: 0,
         request_digest: [0; 32],
     };
@@ -122,6 +131,49 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let whole = parse(adapter, input, input.len().max(1));
     assert_eq!(whole, parse(adapter, input, 1));
     if let Ok(events) = whole {
+        if adapter == Adapter::Gemini {
+            crate::projection::gemini::assert_visible_replay(&events);
+        }
+        // Identical provider bytes in a different turn must never reuse canonical
+        // IDs. Bindings remain byte-for-byte equal, independently of chunking.
+        let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
+        let first: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        let second: Vec<_> = other
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(first.len(), second.len());
+        for (ordinal, (first, second)) in first.iter().zip(&second).enumerate() {
+            let a = ModelDispatch {
+                operation_id: OperationId::from_bytes([1; 16]),
+                step: 0,
+                request_digest: [0; 32],
+            };
+            let b = ModelDispatch {
+                operation_id: OperationId::from_bytes([2; 16]),
+                step: 0,
+                request_digest: [0; 32],
+            };
+            assert_eq!(first.call_id, a.tool_call_id(ordinal as u64));
+            assert_eq!(second.call_id, b.tool_call_id(ordinal as u64));
+            assert_eq!(first.metadata, second.metadata);
+        }
+        let ids: std::collections::BTreeSet<_> =
+            first.iter().map(|call| call.call_id.as_str()).collect();
+        assert!(
+            second
+                .iter()
+                .all(|call| !ids.contains(call.call_id.as_str()))
+        );
         for event in events {
             let bytes = serde_json::to_vec(&event).unwrap();
             let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
@@ -213,7 +265,9 @@ mod properties {
             include_bytes!("../fuzz/corpus/provider_stream/anthropic.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/responses.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/chat.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-reused-id.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/gemini.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse").as_slice(),
         ] {
             assert_stream_invariants(input);
             let (&kind, body) = input.split_first().unwrap();

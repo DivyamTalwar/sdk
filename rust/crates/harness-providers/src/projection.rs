@@ -1,3 +1,4 @@
+pub(crate) mod gemini;
 pub(crate) mod native_reasoning;
 mod wire;
 use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
@@ -105,10 +106,10 @@ pub(crate) fn body_named<'a>(
     target: &acyclic_harness::model::ReasoningOrigin,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
-    let call_ids = crate::call_ids::CallIds::new(request);
+    let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
-    let mut gemini_signature = None;
+    let mut gemini = gemini::Replay::default();
     for message in &request.messages {
         #[cfg(not(target_arch = "wasm32"))]
         if provider.codex_login.is_some() && message.role == ModelRole::System {
@@ -120,27 +121,18 @@ pub(crate) fn body_named<'a>(
         {
             system.push(text_content(&message.content)?);
         } else {
-            for mut projected in project_message(
-                adapter,
-                message,
-                names,
-                &call_ids,
-                target,
-                &mut gemini_signature,
-            )? {
+            for mut projected in
+                project_message(adapter, message, names, &call_ids, target, &mut gemini)?
+            {
                 match (messages.last_mut(), &mut projected) {
                     (
-                        Some(Message::Item(Item::Json(previous))),
-                        Message::Item(Item::Json(next)),
-                    ) if adapter == Adapter::Gemini && previous["role"] == next["role"] => {
-                        previous["parts"]
-                            .as_array_mut()
-                            .ok_or_else(|| invalid("invalid Gemini parts"))?
-                            .append(
-                                next["parts"]
-                                    .as_array_mut()
-                                    .ok_or_else(|| invalid("invalid Gemini parts"))?,
-                            );
+                        Some(Message::Gemini {
+                            role: previous_role,
+                            parts: previous,
+                        }),
+                        Message::Gemini { role, parts },
+                    ) if previous_role == role => {
+                        previous.append(parts);
                     }
                     (
                         Some(Message::Anthropic {
@@ -324,7 +316,7 @@ fn project_message<'a>(
     names: &crate::tool_names::Names,
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness::model::ReasoningOrigin,
-    gemini_signature: &mut Option<Value>,
+    gemini: &mut gemini::Replay<'a>,
 ) -> Result<Vec<Message<'a>>> {
     let role: &'static str = match message.role {
         ModelRole::System => "system",
@@ -336,17 +328,15 @@ fn project_message<'a>(
     let mut calls = Vec::new();
     let mut results = Vec::new();
     let mut ordered = Vec::new();
-    if message.role != ModelRole::Assistant {
-        *gemini_signature = None;
-    }
+    gemini.begin(message.role);
     let mut chat_reasoning = String::new();
     if let ModelContent::Text(text) = &message.content {
-        project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
+        project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
     for part in message.content.parts() {
         match part {
             ModelContentPart::Text { text } => {
-                project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
+                project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }
             ModelContentPart::File { file, policy } => {
                 project_text(
@@ -380,7 +370,7 @@ fn project_message<'a>(
                     }
                 };
                 if adapter == Adapter::Gemini {
-                    if let Some(signature) = gemini_signature.take() {
+                    if let Some(signature) = gemini.signature.take() {
                         call["thoughtSignature"] = signature;
                     }
                 }
@@ -410,12 +400,12 @@ fn project_message<'a>(
                         }
                     }
                     ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
-                        if let Ok(value) = crate::json(continuity) {
-                            *gemini_signature = value.get("thoughtSignature").cloned();
-                            if value.get("functionCall").is_none() && value.get("text").is_some() {
-                                ordered.push(Item::Json(value));
-                                *gemini_signature = None;
-                            }
+                        if let Some(part) = gemini.native(
+                            continuity,
+                            block.outcome
+                                == acyclic_harness::model::ReasoningOutcome::SuppressedDisplay,
+                        ) {
+                            ordered.push(part);
                         }
                     }
                     ProjectedReasoning::Native { .. } => {
@@ -467,7 +457,7 @@ fn project_message<'a>(
         Adapter::Chat => {
             let mut output = Vec::new();
             if !texts.is_empty() || !calls.is_empty() || results.is_empty() {
-                let mut value = json!({"role":role,"content":if texts.is_empty() {Value::Null} else {json!(texts.join("\n"))}});
+                let mut value = json!({"role":role,"content":if texts.is_empty() {Value::Null} else {json!(texts.concat())}});
                 if !calls.is_empty() {
                     value["tool_calls"] = json!(calls);
                 }
@@ -495,10 +485,29 @@ fn project_message<'a>(
         Adapter::Gemini => Ok(if ordered.is_empty() {
             Vec::new()
         } else {
-            vec![Message::Item(Item::Json(
-                json!({"role":if role == "assistant" {"model"} else {"user"},"parts":ordered}),
-            ))]
+            vec![Message::Gemini {
+                role: if role == "assistant" { "model" } else { "user" },
+                parts: ordered,
+            }]
         }),
+    }
+}
+
+fn project_visible_text(
+    adapter: Adapter,
+    role: &str,
+    text: &str,
+    texts: &mut Vec<String>,
+    ordered: &mut Vec<Item<'_>>,
+    gemini: &mut gemini::Replay<'_>,
+) {
+    let text = if adapter == Adapter::Gemini && role == "assistant" {
+        gemini.remaining(text)
+    } else {
+        text
+    };
+    if !text.is_empty() || adapter != Adapter::Gemini {
+        project_text(adapter, role, text.to_owned(), texts, ordered);
     }
 }
 

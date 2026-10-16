@@ -200,7 +200,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 request.messages.push(ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
-                        call_id: "call_echo".into(),
+                        call_id: dispatch.tool_call_id(0),
                         name: "echo".into(),
                         content: ToolResultContent::Json {
                             value: json!({"value":1}),
