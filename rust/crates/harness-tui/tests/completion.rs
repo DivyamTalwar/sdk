@@ -35,6 +35,8 @@ fn completion_regression_corpus() {
         include_bytes!("../fuzz/corpus/completion_events/mention").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/quotes").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/unicode").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/catalog-alias").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/themes").as_slice(),
     ] {
         assert!(sequences::exercise(seed).is_ok());
     }

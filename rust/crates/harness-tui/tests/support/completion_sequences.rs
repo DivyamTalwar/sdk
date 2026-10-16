@@ -27,6 +27,10 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
     let mut probe = CompletionMenu::default();
     probe.set_file("commands/themes.json", Some(b"[\"Theme\"]"))?;
     probe.refresh(&Editor::new("/theme "));
+    let before: Vec<_> = probe.items().cloned().collect();
+    if probe.set_file("commands/catalog.json", Some(data)).is_err() {
+        assert_eq!(probe.items().cloned().collect::<Vec<_>>(), before);
+    }
     if probe.set_file("commands/themes.json", Some(data)).is_err() {
         assert_eq!(probe.items().next().unwrap().value, "Theme");
     }
