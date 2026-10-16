@@ -150,7 +150,7 @@ mod tests {
                 prop_assert_eq!(&*json(&serde_json::to_vec(&*first).unwrap()).unwrap(), &*first);
                 let changed = serde_json::to_vec(&(values, "different JSON shape")).unwrap();
                 prop_assert_ne!(&*first, &*json(&changed).unwrap());
-                prop_assert!(json(b"truncated {").is_err());
+                prop_assert!(json(b"truncated {").is_err(), "truncated JSON must fail");
                 Ok(())
             })?;
         }
@@ -195,25 +195,30 @@ mod tests {
     fn receipt_reads_reuse_unchanged_bytes_and_recheck_native_identity() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("receipt");
-        std::fs::write(&path, b"before").unwrap();
+        std::fs::write(&path, br#"{"version":1}"#).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         with_rustdoc_cache(|| {
             let before = READS.get();
             let first = read_rustdoc(&path).unwrap();
             let second = read_rustdoc(&path).unwrap();
             assert!(Rc::ptr_eq(&first, &second));
+            let original_json = read_rustdoc_json(&path).unwrap();
+            assert_eq!(original_json["version"], 1);
             assert_eq!(READS.get() - before, 1);
-            std::fs::write(&path, b"edited").unwrap();
+            std::fs::write(&path, br#"{"version":2}"#).unwrap();
             std::fs::File::options()
                 .write(true)
                 .open(&path)
                 .unwrap()
                 .set_times(std::fs::FileTimes::new().set_modified(modified))
                 .unwrap();
-            assert_eq!(&*read_rustdoc(&path).unwrap(), b"edited");
+            assert_eq!(&*read_rustdoc(&path).unwrap(), br#"{"version":2}"#);
+            assert_eq!(read_rustdoc_json(&path).unwrap()["version"], 2);
+            assert_eq!(original_json["version"], 1);
             std::fs::remove_file(&path).unwrap();
             assert!(read_rustdoc(&path).is_err());
-            assert_eq!(&*first, b"before");
+            assert!(read_rustdoc_json(&path).is_err());
+            assert_eq!(&*first, br#"{"version":1}"#);
         });
         assert!(CACHE.with_borrow(|cache| cache.is_none()));
     }
