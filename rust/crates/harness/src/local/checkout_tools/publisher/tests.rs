@@ -289,7 +289,24 @@ proptest::proptest! {
             let ceiling = if allowed { harness.signed.capabilities().clone() } else { crate::Capabilities::default() };
             let operation = OperationId::new();
             let (source, _) = publisher.stage_once(operation, &path, b"original", "text/plain", &path, None, None)?.await?;
-            let replacement = publisher.stage_at(OperationId::new(), &source, b"replaced", Some(&ceiling), None)?.await;
+            // Capture a real unrelated edit before obtaining the immutable
+            // replacement reference. stage_at must reject the earlier head.
+            std::fs::write(_directory.path().join("user-sibling.txt"), b"user edit").map_err(storage)?;
+            let fresh = serialized(&publisher.tools.state, async |mut state| {
+                let State { active, watcher } = &mut *state;
+                let view = active.as_ref().unwrap_or_else(|| publisher.tools.workspace.view());
+                publisher.tools.capture(view, watcher, OperationId::new(), 0, PublicationPermit::Unrestricted).await?;
+                let host = harness.files.for_workspace(&harness.project, view.workspace().clone())?;
+                let grant = crate::conversation::ContentGrant::verify(&harness.verifier, &harness.signed,
+                    &harness.project, crate::conversation::VolumeOperation::Read, 1024, &mut None)?;
+                let (fresh, bytes) = host.read_private_path(&harness.project, &grant, source.path(), None, 1024, None, None).await?;
+                assert_eq!(bytes.as_ref(), b"original");
+                Ok::<_, Error>(fresh)
+            }).await?;
+            assert_ne!(source.version(), fresh.version());
+            assert!(matches!(publisher.stage_at(OperationId::new(), &source, b"stale", None, None)?.await,
+                Err(Error::Conflict(_))));
+            let replacement = publisher.stage_at(OperationId::new(), &fresh, b"replaced", Some(&ceiling), None)?.await;
             assert_eq!(replacement.is_ok(), allowed, "{:?}", replacement.as_ref().err());
             let observed = publisher.observe_staged_once(operation, 1024, Some(&ceiling), None)?.await;
             assert_eq!(observed.is_ok(), allowed, "{:?}", observed.as_ref().err());
