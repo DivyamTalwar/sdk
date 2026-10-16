@@ -34,7 +34,8 @@ proptest! {
     }
 
     #[test]
-    fn task_file_errors_preserve_file_read_classification(kind in 0u8..6, message in ".{0,64}") {
+    fn task_file_errors_preserve_file_read_classification(kind in 0u8..8, message in ".{0,64}") {
+        if kind < 6 {
         let cause = match kind {
             0 => Error::NotFound(message),
             1 => Error::Conflict(message),
@@ -48,6 +49,14 @@ proptest! {
         let wrapped = Error::from(acyclic_harness::task_volume::Error::from(cause));
         prop_assert_eq!(wrapped.code(), expected);
         prop_assert_eq!(wrapped.to_string(), display);
+        } else {
+            let cause = if kind == 6 { acyclic_harness::task_volume::Error::Unauthorized }
+                else { acyclic_harness::task_volume::Error::FenceConflict };
+            let display = cause.to_string();
+            let wrapped = Error::from(cause);
+            prop_assert_eq!(wrapped.code(), acyclic_harness::wire::ErrorCode::Unauthorized);
+            prop_assert_eq!(wrapped.to_string(), display);
+        }
     }
 
     // A complete replacement preserves exactly the selected contracts for any

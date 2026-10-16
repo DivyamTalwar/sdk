@@ -335,7 +335,8 @@ impl Error {
             Self::TaskFiles(error) => match error.as_ref() {
                 #[cfg(feature = "filesystem")]
                 crate::task_volume::Error::FileRead(error) => error.code(),
-                crate::task_volume::Error::FenceConflict => ErrorCode::Unauthorized,
+                crate::task_volume::Error::FenceConflict
+                | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
                 crate::task_volume::Error::Conflict(_)
                 | crate::task_volume::Error::ImmutableConflict(_)
                 | crate::task_volume::Error::SequenceConflict(_)
