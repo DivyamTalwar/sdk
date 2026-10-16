@@ -1,3 +1,4 @@
+//! Checks normalized facade paths stay contained and round-trip without traversal.
 #![no_main]
 
 use acyclic_harness::Error;
@@ -23,9 +24,9 @@ fuzz_target!(|bytes: &[u8]| {
                 .all(|part| !matches!(part, Component::ParentDir))
         );
         let absolute = root.join(parsed.trim_start_matches('/'));
-        assert_eq!(
-            path::workspace_path_argument(root, absolute.to_str().unwrap()).unwrap(),
-            parsed
-        );
+        let restored = absolute
+            .to_str()
+            .and_then(|argument| path::workspace_path_argument(root, argument).ok());
+        assert_eq!(restored.as_deref(), Some(parsed.as_str()));
     }
 });

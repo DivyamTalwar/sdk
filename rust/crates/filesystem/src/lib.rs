@@ -65,6 +65,8 @@ pub(crate) fn initialize_test_native_io() {
 }
 
 pub mod access;
+mod sync;
+
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 #[path = "tests/accounting/mod.rs"]
@@ -146,7 +148,6 @@ pub mod speculation;
 pub mod staged_objects;
 pub mod storage;
 pub mod streams_record;
-mod sync;
 #[cfg(all(test, feature = "memory"))]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
