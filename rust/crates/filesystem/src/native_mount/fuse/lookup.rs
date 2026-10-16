@@ -170,9 +170,17 @@ impl FuseProjection {
     ) -> Result<(FileAttr, Duration), NativeMountError> {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
-        let facts = {
+        let facts = if let Some(handle) = handle {
+            NodeFacts::Handle(
+                self.core
+                    .state()?
+                    .file_handle(inode, handle)?
+                    .open_file
+                    .clone(),
+            )
+        } else {
             let mut state = self.core.state()?;
-            match state.node_facts(source, inode, handle, work)? {
+            match state.node_facts(source, inode, None, work)? {
                 NodeFacts::Current(current) => {
                     if let Some(path) = &current.through {
                         source

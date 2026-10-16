@@ -496,7 +496,14 @@ impl ProjectionState {
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
         if let Some(handle) = handle {
             let open_file = self.file_handle(inode, handle)?.open_file.clone();
-            return Ok(NodeFacts::Handle(open_file));
+            return Ok(match entry.current_facts(source, work)? {
+                Some(stamp) => NodeFacts::Current(Resolved {
+                    lookup: entry.lookup,
+                    stamp: Some(stamp),
+                    through: None,
+                }),
+                None => NodeFacts::Handle(open_file),
+            });
         }
         if let Some(stamp) = entry.current_facts(source, work)? {
             let through = entry
