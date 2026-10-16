@@ -55,6 +55,7 @@ pub(crate) type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    external_volumes: external::Volumes,
     runtime: Arc<LocalTaskRuntime>,
     project: VolumeRef,
     scratch: VolumeRef,
@@ -259,6 +260,7 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
+            let external_volumes = external::Volumes::open(stream.clone()).await?;
             let task_files = Arc::new(
                 crate::task_volume::TaskFiles::open(
                     stream,
@@ -272,6 +274,7 @@ impl LocalHarness {
             Ok(Self {
                 files,
                 task_files,
+                external_volumes,
                 runtime,
                 project: owner.project.clone(),
                 scratch,

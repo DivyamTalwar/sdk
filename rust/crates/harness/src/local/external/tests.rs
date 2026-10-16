@@ -42,8 +42,11 @@ impl TaskCommandHost for Published<'_> {
 
 #[tokio::test]
 async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<()> {
+    let started = std::time::Instant::now();
     let directory = tempfile::tempdir().map_err(storage)?;
     let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
+    let opened = started.elapsed();
+    let volumes = harness.external_volumes();
     let host = crate::external_executor::ExternalHost::Pi;
     let attach = crate::external_executor::request(
         host,
@@ -51,6 +54,7 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
         serde_json::json!({"sessionId":"parallel", "cwd":directory.path()}),
     )?;
     harness.external_request(&attach).await?;
+    let attached = started.elapsed();
     let tool = |name: &str| {
         crate::external_executor::request(
             host,
@@ -67,12 +71,21 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
     );
     crate::external_executor::tool_result(left?)?;
     crate::external_executor::tool_result(right?)?;
+    let executed = started.elapsed();
+    assert!(std::ptr::eq(volumes.0, harness.external_volumes().0));
+    assert!(std::ptr::eq(volumes.1, harness.external_volumes().1));
     for name in ["first.txt", "second.txt"] {
         assert_eq!(
             std::fs::read_to_string(directory.path().join(name)).map_err(storage)?,
             name
         );
     }
+    eprintln!(
+        "native parallel: open={opened:?} attach={:?} tools={:?} total={:?}",
+        attached - opened,
+        executed - attached,
+        started.elapsed()
+    );
     Ok(())
 }
 
@@ -98,7 +111,7 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
         let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
         harness.external_request(&attach).await?;
         let task = Component::new(first.task_id().to_string()).map_err(storage)?;
-        let (requests, results) = harness.external_volumes().await?;
+        let (requests, results) = harness.external_volumes();
         let file = first.to_file(task.clone()).map_err(storage)?;
         let cut = requests
             .snapshot(&Query::File(file.key.clone()), 1)
@@ -118,8 +131,8 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
         )?;
         RequestConsumer::new(
             &harness.runtime,
-            &requests,
-            &results,
+            requests,
+            results,
             publisher.as_ref(),
             "",
         )
@@ -127,7 +140,7 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
         .await?;
         let reached = tokio::sync::Notify::new();
         let interrupted = Published {
-            commands: RequestCommands::new(&harness.runtime, &requests, &results),
+            commands: RequestCommands::new(&harness.runtime, requests, results),
             reached: &reached,
         };
         let mut drive = Box::pin(harness.advance(first.task_id(), &interrupted));
@@ -147,15 +160,13 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
                         && slot.input.is_some()
                 )
         );
-        let answer = first.follow_result(&results, task).await.map_err(storage)?;
+        let answer = first.follow_result(results, task).await.map_err(storage)?;
         assert_eq!(
             std::fs::read_to_string(directory.path().join("note.txt")).map_err(storage)?,
             "first"
         );
         drop(interrupted);
         drop(publisher);
-        drop(requests);
-        drop(results);
         drop(harness);
         let reopened = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
         if retry {

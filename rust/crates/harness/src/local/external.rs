@@ -11,12 +11,14 @@ mod recovery;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
-impl LocalHarness {
-    fn external_volumes(
-        &self,
-    ) -> impl Future<Output = Result<(TaskVolume<LocalStream>, TaskVolume<LocalStream>)>> + '_ {
+pub(super) struct Volumes {
+    requests: TaskVolume<LocalStream>,
+    results: TaskVolume<LocalStream>,
+}
+
+impl Volumes {
+    pub(super) fn open(stream: Arc<LocalStream>) -> impl Future<Output = Result<Self>> {
         Box::pin(async move {
-            let stream = self.runtime.task_host().workflow_stream();
             let requests = TaskVolume::open(
                 stream.clone(),
                 StreamPath::new("external/requests").map_err(storage)?,
@@ -29,8 +31,14 @@ impl LocalHarness {
             )
             .await
             .map_err(storage)?;
-            Ok((requests, results))
+            Ok(Self { requests, results })
         })
+    }
+}
+
+impl LocalHarness {
+    fn external_volumes(&self) -> (&TaskVolume<LocalStream>, &TaskVolume<LocalStream>) {
+        (&self.external_volumes.requests, &self.external_volumes.results)
     }
 
     /// Reads an existing native result without admitting or executing work.
@@ -41,8 +49,8 @@ impl LocalHarness {
         arguments: Value,
     ) -> impl Future<Output = Result<Value>> + 'a {
         Box::pin(async move {
-            let (requests, results) = self.external_volumes().await?;
-            crate::external_executor::read_native_result(name, arguments, &requests, &results).await
+            let (requests, results) = self.external_volumes();
+            crate::external_executor::read_native_result(name, arguments, requests, results).await
         })
     }
 
@@ -63,11 +71,11 @@ impl LocalHarness {
                     }
                 }
             }
-            let (requests, results) = self.external_volumes().await?;
+            let (requests, results) = self.external_volumes();
             let task_id = request.task_id();
             let task = Component::new(task_id.to_string()).map_err(storage)?;
             let file = request.to_file(task.clone()).map_err(storage)?;
-            crate::external_executor::publish_request(&requests, &file, None, None)
+            crate::external_executor::publish_request(requests, &file, None, None)
                 .await
                 .map_err(storage)?;
             let key = request.result_key(task.clone()).map_err(storage)?;
@@ -75,7 +83,7 @@ impl LocalHarness {
                 .snapshot(&Query::File(key), 1)
                 .await
                 .map_err(storage)?;
-            let commands = RequestCommands::new(&self.runtime, &requests, &results);
+            let commands = RequestCommands::new(&self.runtime, requests, results);
             recovery::recover_before_delivery(
                 matches!(request.action, ExternalAction::Attach { .. }),
                 !cached.files.is_empty(),
@@ -99,15 +107,15 @@ impl LocalHarness {
             )?;
             RequestConsumer::new(
                 &self.runtime,
-                &requests,
-                &results,
+                requests,
+                results,
                 publisher.as_ref(),
                 workspace,
             )
             .accept(&task, &file)
             .await?;
             Box::pin(self.advance(task_id, &commands)).await?;
-            request.follow_result(&results, task).await.map_err(storage)
+            request.follow_result(results, task).await.map_err(storage)
         }))
     }
 }
