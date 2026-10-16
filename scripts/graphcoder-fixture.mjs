@@ -1,33 +1,43 @@
-// Production adapter over a loopback scripted HTTP endpoint; no model in the binary.
+// Production adapter over a loopback endpoint; no model implementation in the binary.
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export async function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "graphcoder-"));
-  let fail = false;
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-"));
+  const root = join(directory, "workspace"), settings = join(directory, "settings");
+  mkdirSync(root); mkdirSync(settings);
+  let fail = false, calls = 0;
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const bytes of request) body += bytes;
     const input = JSON.parse(body);
-    if (!Array.isArray(input.messages)) { response.writeHead(400); response.end(); return; }
+    if (request.url === "/count") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ input_tokens: 64 })); return;
+    }
+    if (request.url !== "/responses" || !Array.isArray(input.input)) {
+      response.writeHead(400); response.end("invalid responses request"); return;
+    }
+    calls++;
     if (fail) { response.writeHead(400); response.end("scripted provider error"); return; }
     response.writeHead(200, { "content-type": "text/event-stream" });
-    for (const text of ["graphcoder ", "**test answer**"]) {
-      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`);
+    for (const delta of ["graphcoder ", "**test answer**"]) {
+      response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta })}\n\n`);
     }
-    response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+    response.end(`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 2 } } })}\n\n`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const catalog = join(root, "catalog.json");
+  const catalog = join(directory, "catalog.json");
   writeFileSync(catalog, JSON.stringify({ scripted: {
-    adapter: "chat", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}/v1`,
+    adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
     models: { test: { context_tokens: 8192, output_tokens: 1024 } }, max_event_bytes: 65536,
+    token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
   } }));
   return {
-    root, args: ["--workspace", root, "--model", "scripted/test", "--catalog", catalog],
-    fail: () => { fail = true; },
-    close: async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); },
+    root, settings, args: ["--workspace", root, "--settings-root", settings, "--model", "scripted/test", "--catalog", catalog],
+    calls: () => calls, fail: () => { fail = true; },
+    close: async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); },
   };
 }

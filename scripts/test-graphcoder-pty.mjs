@@ -12,7 +12,7 @@ const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
 let launcher, args;
 if (process.platform === "win32") {
   launcher = join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
-  args = ["-NoProfile", "-NonInteractive", "-File", fileURLToPath(new URL("graphcoder-conpty.ps1", import.meta.url)), "-Binary", binary, "-Workspace", host.root, "-Catalog", host.args.at(-1), "-Model", "scripted/test", "-DeadlineMilliseconds", "8000"];
+  args = ["-NoProfile", "-NonInteractive", "-File", fileURLToPath(new URL("graphcoder-conpty.ps1", import.meta.url)), "-Binary", binary, "-Workspace", host.root, "-SettingsRoot", host.settings, "-Catalog", host.args.at(-1), "-Model", "scripted/test", "-DeadlineMilliseconds", "8000"];
 } else {
   launcher = "/usr/bin/script";
   const command = [binary, ...host.args].map(quote).join(" ");
