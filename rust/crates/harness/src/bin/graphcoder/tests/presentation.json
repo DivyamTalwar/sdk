@@ -30,6 +30,7 @@
   },
   {
     "row": "Header busy indicator",
+    "bold_header": true,
     "reasoning": false,
     "status": "active",
     "expected": [
@@ -73,5 +74,19 @@
     "absent": [
       "\u001b"
     ]
+  },
+  {
+    "row": "Streaming markdown wraps at the composed transcript width",
+    "reasoning": false,
+    "width": 12,
+    "expected": ["Visible answ", "er"],
+    "absent": ["Visible answer", "**Visible answer**"]
+  },
+  {
+    "row": "Reasoning and answer share the same Unicode width projection",
+    "reasoning": true,
+    "width": 12,
+    "expected": ["Private reas", "oning", "Visible answ", "er"],
+    "absent": ["Private reasoning", "Visible answer"]
   }
 ]

@@ -86,8 +86,12 @@ async fn followed_presentation_rows_are_declarative_and_live() {
             )
             .await
             .unwrap();
+        let width = row["width"].as_u64().unwrap_or(80) as u16;
+        renderer
+            .layout(&files, &PromptInput::default(), width, 20)
+            .unwrap();
         let screen = renderer.screen_for(&files).unwrap();
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
         terminal
             .draw(|frame| {
                 screen.render(
@@ -100,6 +104,17 @@ async fn followed_presentation_rows_are_declarative_and_live() {
             })
             .unwrap();
         let picture = super::screen_text(&terminal);
+        if row["bold_header"].as_bool() == Some(true) {
+            for column in 2..12 {
+                assert!(
+                    terminal.backend().buffer()[(column, 0)]
+                        .modifier
+                        .contains(acyclic_harness::tui::ratatui::style::Modifier::BOLD),
+                    "{}",
+                    row["row"]
+                );
+            }
+        }
         for text in row["expected"].as_array().unwrap() {
             assert!(
                 picture.contains(text.as_str().unwrap()),
