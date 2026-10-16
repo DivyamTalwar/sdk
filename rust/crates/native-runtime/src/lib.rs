@@ -19,12 +19,12 @@ pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
-#[cfg(windows)]
-pub use windows::terminal;
 #[cfg(all(unix, not(target_os = "linux")))]
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
 use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
+#[cfg(windows)]
+pub use windows::terminal;
 #[cfg(windows)]
 use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
@@ -70,6 +70,8 @@ pub use meter::{
     ReadAllocation, ReadAllocationReservation,
 };
 mod blocking;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub(crate) use blocking::{
     BlockingWaitWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,

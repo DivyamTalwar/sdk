@@ -87,7 +87,7 @@ impl LocalStream {
                 &original,
                 std::mem::size_of_val(&worker),
             )?;
-            let task = tokio::spawn(async move {
+            let task = spawn(async move {
                 let _allocation = allocation;
                 worker.await
             });

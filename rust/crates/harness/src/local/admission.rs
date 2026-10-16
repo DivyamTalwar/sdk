@@ -29,12 +29,7 @@ fn can_admit(current: Option<OperationId>, expected: Option<OperationId>, termin
     terminal && expected.is_none_or(|expected| current == Some(expected))
 }
 
-impl<P, A, O> LocalHarness<P, A, O>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
+impl LocalHarness {
     fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
         ContentGrant::verify_directory_read(
             &self.verifier,

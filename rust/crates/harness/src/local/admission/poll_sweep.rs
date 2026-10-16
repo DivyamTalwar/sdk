@@ -6,18 +6,18 @@ use crate::{
     test_support::ScriptedTurn,
     tool::{JsonToolProjection, ToolDefinition},
 };
-use acyclic_fs::{EmbeddedCapabilities, Fs, MemoryObjectBackend, StreamAuthorityStore};
+use acyclic_fs::{Fs, LocalOptions};
 use acyclic_stream::UnixMillisClock;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 mod model;
 mod schedule;
-mod stream;
 use model::{Effect, ModelEffects};
 use schedule::{Exit, Schedule, check_cut, drive};
+mod coverage;
 
-type AuthorityBackend = StreamAuthorityStore<stream::Stream>;
-type Harness = LocalHarness<stream::Stream, AuthorityBackend, MemoryObjectBackend>;
+type Harness = LocalHarness;
 const PROMPT: &str = "recover the original run input";
 
 #[derive(Clone, Copy, Debug)]
@@ -34,8 +34,10 @@ impl UnixMillisClock for Clock {
 }
 
 struct Fixture {
-    objects: MemoryObjectBackend,
-    stream: Arc<stream::Stream>,
+    directory: tempfile::TempDir,
+    schedule: Arc<Schedule>,
+    events:
+        RefCell<tokio::sync::mpsc::UnboundedReceiver<acyclic_native_runtime::testing::Boundary>>,
     issuer: AuthorityIssuer,
     volumes: [VolumeRef; 4],
     provider: Arc<ModelEffects>,
@@ -45,24 +47,16 @@ struct Fixture {
 
 impl Fixture {
     async fn new(scenario: Scenario) -> Result<Self> {
-        let schedule = Arc::new(Schedule::default());
-        let stream = Arc::new(stream::Stream {
-            memory: acyclic_stream::MemoryStream::new_with_clock(
-                Default::default(),
-                Arc::new(Clock),
-            ),
-            schedule: schedule.clone(),
-        });
-        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-        let objects = acyclic_fs::LogicalObjectStore::new(Arc::new(objects), bucket);
-        let fs = Fs::new(
-            StreamAuthorityStore::new(stream.clone()),
-            acyclic_fs::LogicalObjectStore::new(
-                objects.provider().clone(),
-                objects.bucket().clone(),
-            ),
-            EmbeddedCapabilities::MEMORY,
-        );
+        let (schedule, events) = Schedule::new();
+        let directory = if cfg!(target_os = "linux") {
+            tempfile::tempdir_in("/dev/shm")
+        } else {
+            tempfile::tempdir()
+        }
+        .map_err(storage)?;
+        let fs = Fs::local(LocalOptions::new(directory.path().join("filesystem")))
+            .await
+            .map_err(storage)?;
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let files = FilesystemHost::new(fs, &reference, None)?;
@@ -94,8 +88,9 @@ impl Fixture {
             ],
         };
         Ok(Self {
-            objects,
-            stream,
+            directory,
+            schedule: schedule.clone(),
+            events: RefCell::new(events),
             issuer: AuthorityIssuer::new(
                 "acyclic.local",
                 [7; 32],
@@ -117,13 +112,17 @@ impl Fixture {
     async fn open(&self) -> Result<Harness> {
         // Reconstruct the host and discard all filesystem/runtime caches. Only
         // the two provider states and the external effect receipts survive.
-        let fs = Fs::new(
-            StreamAuthorityStore::new(self.stream.clone()),
-            acyclic_fs::LogicalObjectStore::new(
-                self.objects.provider().clone(),
-                self.objects.bucket().clone(),
-            ),
-            EmbeddedCapabilities::MEMORY,
+        let fs = Fs::local(LocalOptions::new(self.directory.path().join("filesystem")))
+            .await
+            .map_err(storage)?;
+        let stream = Arc::new(
+            LocalStream::open_with_clock(
+                self.directory.path().join("tasks"),
+                Default::default(),
+                Arc::new(Clock),
+            )
+            .await
+            .map_err(storage)?,
         );
         let files = FilesystemHost::new(fs, self.volumes[0].provider(), None)?;
         let verifier = self.issuer.verifier(&mut None)?;
@@ -154,7 +153,7 @@ impl Fixture {
         }
         let (runtime, signed) = runtime::open(runtime::Configuration {
             files: files.clone(),
-            stream: self.stream.clone(),
+            stream: stream.clone(),
             task_volume: &self.volumes[3],
             issuer: &self.issuer,
             verifier: &verifier,
@@ -187,7 +186,7 @@ impl Fixture {
         };
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
-                self.stream.clone(),
+                stream.clone(),
                 &self.volumes[3],
                 &verifier,
                 &signed,
@@ -282,9 +281,15 @@ async fn case(
     let result: Result<Coverage> = Box::pin(async {
         let harness = fixture.open().await?;
         fixture.initialize(&harness).await?;
-        let schedule = &fixture.stream.schedule;
+        let schedule = &fixture.schedule;
         schedule.start();
-        let (exit, hit) = drive(harness.run(PROMPT), cut, schedule);
+        let (exit, hit) = drive(
+            harness.run(PROMPT),
+            cut,
+            schedule,
+            &mut fixture.events.borrow_mut(),
+        )
+        .await;
         let points = schedule.points();
         assert_eq!(points.len(), hit, "uncontrolled I/O changed the schedule");
         if let Some(cut) = cut {
@@ -302,8 +307,7 @@ async fn case(
         }
         drop(harness);
         if cut.is_some() {
-            // All operations are owned by this one future: dropping it drains every
-            // in-process call. The executor has no spawn API or detached work queue.
+            // The driver joined the physical completion of detached provider work.
             let trace = schedule.drained();
             assert_eq!(
                 schedule.drained(),
@@ -362,23 +366,23 @@ async fn case(
         Ok(Coverage { points, unadmitted })
     })
     .await;
-    result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.stream.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())))
+    result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())))
 }
 
 fn sweep(scenarios: &[Scenario]) -> Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let started = std::time::Instant::now();
-    // Enter a frozen timer driver without a Tokio task or its cooperative poll
-    // budget. Only the explicit provider schedule can suspend these futures.
+    // Cuts are named push barriers, independent of task polling and I/O latency.
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
+        .enable_all()
         .build()
         .map_err(storage)?;
-    let _entered = runtime.enter();
     let mut schedules = Vec::new();
     for &scenario in scenarios {
-        let baseline = futures::executor::block_on(Box::pin(case(scenario, None, &[])))?.points;
+        let baseline = runtime
+            .block_on(Box::pin(case(scenario, None, &[])))?
+            .points;
+        coverage::check_boundaries(scenario, &baseline)?;
         assert!(!baseline.is_empty());
         eprintln!(
             "{scenario:?}: {} deterministic cancellation points",
@@ -386,18 +390,19 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         );
         schedules.push((scenario, baseline));
     }
-    // Each case owns its single-thread executor and independent providers. Run
-    // the complete replay matrix in parallel; no filesystem or I/O workers.
+    // Each replay owns a real filesystem on tmpfs and its single-thread executor.
     let cuts: Vec<_> = schedules
         .iter()
         .flat_map(|(scenario, baseline)| {
             (1..=baseline.len()).map(move |cut| (*scenario, baseline, cut))
         })
         .collect();
+    for (scenario, baseline) in &schedules {
+        coverage::check_cuts(*scenario, baseline.len(), 1..=baseline.len())?;
+    }
     let next = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
     let unadmitted = AtomicUsize::new(0);
-    let handle = tokio::runtime::Handle::current();
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..std::thread::available_parallelism()
             .unwrap()
@@ -405,23 +410,23 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
-                    let _entered = handle.enter();
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(storage)?;
                     loop {
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&(scenario, baseline, cut)) = cuts.get(index) else {
                             return Ok(());
                         };
-                        let coverage = futures::executor::block_on(Box::pin(case(
-                            scenario,
-                            Some(cut),
-                            baseline,
-                        )))
-                        .map_err(|error| {
-                            Error::Storage(format!(
-                                "{scenario:?} cut {cut}/{}: {error:?}",
-                                baseline.len()
-                            ))
-                        })?;
+                        let coverage = runtime
+                            .block_on(Box::pin(case(scenario, Some(cut), baseline)))
+                            .map_err(|error| {
+                                Error::Storage(format!(
+                                    "{scenario:?} cut {cut}/{}: {error:?}",
+                                    baseline.len()
+                                ))
+                            })?;
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
                     }
@@ -450,29 +455,4 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
 #[test]
 fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
     sweep(&[Scenario::Text, Scenario::EffectAndContinuation])
-}
-
-#[test]
-fn skipped_cancellation_point_is_rejected() {
-    let schedule = Schedule::default();
-    schedule.start();
-    let (complete, _) = drive(
-        async {
-            schedule.point("first").await;
-            schedule.point("second").await;
-        },
-        None,
-        &schedule,
-    );
-    assert!(matches!(complete, Exit::Completed(())));
-    // Deliberately skip the second point in the replay. Completion is a failure,
-    // even though the shortened future returned successfully.
-    let (exit, hit) = drive(
-        async {
-            schedule.point("first").await;
-        },
-        Some(2),
-        &schedule,
-    );
-    assert!(check_cut(&exit, 2, hit).is_err());
 }

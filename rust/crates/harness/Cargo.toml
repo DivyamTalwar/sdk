@@ -171,7 +171,7 @@ required-features = ["filesystem"]
 
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
-test-support = []
+test-support = ["acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
 model-checking = ["dep:loom"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.

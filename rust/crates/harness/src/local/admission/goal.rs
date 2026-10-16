@@ -1,11 +1,6 @@
 use super::*;
 
-impl<P, A, O> LocalHarness<P, A, O>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
+impl LocalHarness {
     pub(super) fn goal_task_path(&self) -> Option<&'static str> {
         // The current publisher resolves paths inside its one output volume.
         // Composed mount routing replaces this lookup when #503 lands.

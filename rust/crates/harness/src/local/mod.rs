@@ -17,10 +17,8 @@ use crate::{
     tool::{Tool, ToolRegistry},
     workflow::{MachineRegistry, WorkflowCommand},
 };
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
-};
-use acyclic_stream::{LocalStream, StreamProvider};
+use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+use acyclic_stream::LocalStream;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -49,15 +47,14 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
-#[cfg(test)]
 pub(crate) type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
-pub struct LocalHarness<P = LocalStream, A = LocalAuthorityBackend, O = LocalObjectBackend> {
-    files: Arc<FilesystemHost<A, O>>,
-    task_files: Arc<crate::task_volume::TaskFiles<P>>,
-    runtime: Arc<FilesystemTaskRuntime<P, A, O>>,
+pub struct LocalHarness {
+    files: Arc<LocalFilesystem>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    runtime: Arc<LocalTaskRuntime>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,

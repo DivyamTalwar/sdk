@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) struct Configuration<'a, P, A, O> {
-    pub files: Arc<FilesystemHost<A, O>>,
-    pub stream: Arc<P>,
+pub(super) struct Configuration<'a> {
+    pub files: Arc<LocalFilesystem>,
+    pub stream: Arc<LocalStream>,
     pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
@@ -20,14 +20,7 @@ pub(super) struct Configuration<'a, P, A, O> {
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
-pub(super) async fn open<P, A, O>(
-    config: Configuration<'_, P, A, O>,
-) -> Result<(FilesystemTaskRuntime<P, A, O>, Scope)>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
+pub(super) async fn open(config: Configuration<'_>) -> Result<(LocalTaskRuntime, Scope)> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let definition = stock.definition()?;

@@ -3,16 +3,18 @@ use crate::{executor::TurnOutput, runtime::TaskStateProvider};
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
-impl<P, A, O> LocalHarness<P, A, O>
-where
-    P: StreamProvider,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
+impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
     pub(crate) fn commands(
         &self,
-    ) -> Result<crate::filesystem::FilesystemTaskCommands<'_, P, A, O>> {
+    ) -> Result<
+        crate::filesystem::FilesystemTaskCommands<
+            '_,
+            LocalStream,
+            LocalAuthorityBackend,
+            LocalObjectBackend,
+        >,
+    > {
         self.runtime.commands().with_model(
             &self.model,
             self.provider.clone(),
@@ -67,7 +69,9 @@ where
         self.finish_turn_inputs(operation, payload).await
     }
 
-    fn input_publisher(&self) -> Result<Arc<FilesystemContentPublisher<A, O>>> {
+    fn input_publisher(
+        &self,
+    ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
             self.files.clone(),
             &self.journal,

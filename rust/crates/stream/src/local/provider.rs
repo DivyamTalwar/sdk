@@ -44,6 +44,10 @@ impl StreamProvider for LocalStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("append {} {:?}", request.path, request.idempotency_key)
+        });
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.append",
             items = request.records.len(),
@@ -278,6 +282,21 @@ async fn commit(
     request: CommitRequest,
     deadline: Option<u64>,
 ) -> Result<CommitOutcome, StreamError> {
+    #[cfg(feature = "test-support")]
+    acyclic_native_runtime::testing::describe(|| {
+        format!(
+            "commit {:?}: {:?}",
+            request.idempotency_key,
+            request
+                .mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    crate::CommitMutation::Append { path, .. } => path.as_str(),
+                    crate::CommitMutation::Fork { destination, .. } => destination.as_str(),
+                })
+                .collect::<Vec<_>>()
+        )
+    });
     let span = obs::OperationSpan::new(tracing::info_span!(
         "acyclic.stream.commit",
         items = request.mutations.len(),

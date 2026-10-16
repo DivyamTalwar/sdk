@@ -116,21 +116,12 @@ impl ModelProvider for ModelEffects {
                         .unwrap()
                         .pop_front()
                         .expect("script exhausted");
-                    let events = match turn {
-                        ScriptedTurn::Text(delta) => vec![
-                            ModelEvent::Content { delta },
-                            ModelEvent::Completed {
-                                metadata: serde_json::Value::Null,
-                            },
-                        ],
-                        ScriptedTurn::Events(events) => events
-                            .into_iter()
-                            .map(|e| match e {
-                                ScriptedEvent::Event(e) => e,
-                                _ => panic!("nonfinite script"),
-                            })
-                            .collect(),
-                    };
+                    let events = turn
+                        .stream()
+                        .collect::<Vec<_>>()
+                        .await
+                        .into_iter()
+                        .collect::<Result<Vec<_>>>()?;
                     self.responses
                         .lock()
                         .unwrap()
