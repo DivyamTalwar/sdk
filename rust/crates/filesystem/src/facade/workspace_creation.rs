@@ -37,7 +37,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub async fn create_workspace_with_operation<W, G, E>(
         &self,
         name: impl AsRef<str>,
-        config: VolumeConfig,
+        initialization: VolumeInitialization<'_>,
         operation_id: OperationId,
         budget: W,
         cancellation: &CancellationToken,
@@ -51,6 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
+            let config = initialization.config;
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
             validate_volume_capabilities(config, self.inner.capabilities)?;
             let observed = self
@@ -65,7 +66,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     let (_, root) = self
                         .create_volume_operation(
                             id.volume_id(),
-                            config,
+                            initialization,
                             Some(operation_id),
                             &mut accounting,
                             cancellation,
@@ -215,7 +216,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (volume, _) = self
                 .create_volume_operation::<FsError, ()>(
                     id.volume_id(),
-                    config,
+                    VolumeInitialization {
+                        config,
+                        access_policy: None,
+                    },
                     operation_id,
                     &mut accounting,
                     cancellation,

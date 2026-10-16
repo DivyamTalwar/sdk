@@ -48,6 +48,82 @@ async fn publish(checkout: &mut MemoryCheckout) -> Result<bool, Box<dyn Error>> 
     }
 }
 
+async fn initial_policy(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let operation = crate::OperationId::new();
+    let initialization = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(bytes),
+    };
+    let initial = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "initial-policy",
+            initialization,
+            operation,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            None,
+        )
+        .await?
+        .value;
+    let workspace = initial.workspace();
+    let mut first = current(workspace, false).await?;
+    assert_eq!(first.generation_id(), initial.id());
+    let position = unbounded!(first, generation_position(initial.id()))?;
+    assert_eq!((position.0.get(), position.1.get()), (1, 1));
+    assert_eq!(recorded(&mut first).await?.as_deref(), Some(bytes));
+
+    // Recovery observes the immutable original. It must not restage policy,
+    // reauthenticate a moving head as the original, or perform writes.
+    let mut writer = current(workspace, true).await?;
+    unbounded!(
+        writer,
+        write_access_policy(b"later", NamedAttributeWriteMode::Replace)
+    )?;
+    publish(&mut writer).await?;
+    let recovered = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "initial-policy",
+            initialization,
+            operation,
+            WorkBudget {
+                backend_write_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+            None,
+        )
+        .await?;
+    assert_eq!(recovered.value.id(), initial.id());
+    assert_eq!(recovered.work.backend_write_operations, 0);
+    assert_eq!(recorded(&mut first).await?.as_deref(), Some(bytes));
+    let mut latest = current(workspace, false).await?;
+    assert_eq!(
+        recorded(&mut latest).await?.as_deref(),
+        Some(b"later".as_slice())
+    );
+
+    let child = fork_workspace(
+        workspace,
+        "initial-policy-fork",
+        ForkOptions::from_generation(initial.clone(), IdempotencyKey::new()).inherit_paths(vec![]),
+    )
+    .await?;
+    assert_eq!(
+        recorded(&mut current(&child, false).await?)
+            .await?
+            .as_deref(),
+        Some(bytes)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn access_policy_storage_is_atomic_with_original_creation() -> Result<(), Box<dyn Error>> {
+    initial_policy(b"initial authenticated policy").await
+}
+
 // Each published root has its own metadata; staging never changes another view,
 // and a fork inherits policy even when every namespace path is filtered out.
 async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
@@ -257,6 +333,15 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(policy_history(revisions))
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+    }
+
+    #[test]
+    fn access_policy_storage_initial_revision_is_durable(
+        bytes in prop::collection::vec(any::<u8>(), 0..96),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        runtime.block_on(initial_policy(&bytes))
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }

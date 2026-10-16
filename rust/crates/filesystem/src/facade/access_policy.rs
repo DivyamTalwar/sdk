@@ -23,6 +23,39 @@ fn policy_name(
     }
 }
 
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    pub(super) async fn initial_policy_metadata(
+        &self,
+        id: VolumeId,
+        config: VolumeConfig,
+        bytes: &[u8],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<FileMetadata, FsError> {
+        if bytes.len() as u64 > MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes) {
+            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
+        }
+        let volume = Volume {
+            fs: self.clone(),
+            id,
+            config,
+        };
+        let name = policy_name(config.limits.maximum_component_bytes, accounting)?;
+        let result = attributes::change_attribute(
+            &volume,
+            FileMetadata::default(),
+            &name.value,
+            Some((bytes, NamedAttributeWriteMode::Create)),
+            MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes),
+            accounting,
+            cancellation,
+        )
+        .await;
+        name.retire(accounting)?;
+        result
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Reads the policy record from this checkout's pinned volume metadata.
     pub async fn read_access_policy<W: FsWork>(

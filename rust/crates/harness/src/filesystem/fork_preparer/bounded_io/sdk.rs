@@ -160,7 +160,10 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             host.filesystem
                 .create_workspace_with_operation::<_, _, Error>(
                     name,
-                    acyclic_fs::VolumeConfig::portable(lifecycle),
+                    acyclic_fs::VolumeInitialization {
+                        config: acyclic_fs::VolumeConfig::portable(lifecycle),
+                        access_policy: None,
+                    },
                     acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
                     io,
                     io.cancellation(),

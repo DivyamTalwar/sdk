@@ -16,7 +16,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let original = source.reference();
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
-                name, config, operation, work, cancel, None
+                name,
+                crate::VolumeInitialization {
+                    config,
+                    access_policy: None
+                },
+                operation,
+                work,
+                cancel,
+                None
             ))?;
         let lazy = Self::bind(generation.workspace().clone(), source, store, ctx).await?;
         lazy.state(ctx)
