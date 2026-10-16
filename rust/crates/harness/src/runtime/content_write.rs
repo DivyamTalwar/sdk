@@ -2,6 +2,14 @@ use super::*;
 
 #[cfg(feature = "filesystem")]
 impl AgentHarness {
+    pub(crate) fn output_volume(&self) -> Option<&VolumeRef> {
+        self.content
+            .as_ref()?
+            .writer
+            .as_ref()
+            .map(|writer| writer.volume())
+    }
+
     pub(crate) fn bind_output(
         &mut self,
         writer: Arc<dyn crate::conversation::ContentPublisher>,

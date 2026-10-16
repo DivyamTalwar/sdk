@@ -24,6 +24,14 @@ pub enum GoalStatus {
     Done,
 }
 
+/// A continuation cannot make progress through its admitted task view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum GoalBlockedReason {
+    /// The stock file tools cannot reach the private goal's destination.
+    #[error("GOAL.md is not reachable through the task view.")]
+    TaskViewUnreachable,
+}
+
 /// Parsed contents of an observed GOAL.md, without inventing a filesystem reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

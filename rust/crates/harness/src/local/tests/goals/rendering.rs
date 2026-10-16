@@ -20,9 +20,7 @@ async fn render_case(case: Case) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
     let project = volume(directory.path()).await?;
     let provider = scripted(script(&case));
-    let files = files::Files::default();
-    let mut config =
-        files.configure(volume_config(directory.path(), project, provider.clone())?)?;
+    let mut config = volume_config(directory.path(), project, provider.clone())?;
     config.goal_continuations = if case.enabled == Some(false) {
         None
     } else {
@@ -31,7 +29,9 @@ async fn render_case(case: Case) -> Result<()> {
         })
     };
     let harness = LocalHarness::open(config).await?;
-    files.bind(&harness)?;
+    if let Some(initial) = &case.initial_goal {
+        write_goal(&harness, initial).await?;
+    }
     let reader = FilesystemContentVerifier::new(
         harness.files.clone(),
         &harness.verifier,
@@ -61,7 +61,7 @@ async fn render_case(case: Case) -> Result<()> {
     views.query_snapshot(head_query.clone(), head_snapshot, 1, 65536)?;
     views.bind_goal_sources(goal_id, head_id)?;
     let mut omitted_head = views.clone();
-    harness.run("Start the objective").await?;
+    check_output(&case, harness.run("Start the objective").await)?;
     let goal_final = goal_source
         .observe_files(goal_query, None, 1, 65536)
         .await
