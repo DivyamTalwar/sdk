@@ -48,7 +48,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         serde_json::from_slice::<(String, serde_json::Value, FileKey, Vec<u8>)>(input)
     {
         let file = FileValue::new(key, bytes);
-        if let Ok((request, _)) =
+        if let Ok(request) =
             acyclic_harness::external_executor::native_tool_request(&name, arguments, &file)
         {
             assert_eq!(
@@ -114,11 +114,8 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 // derives its request identity before the handoff is decoded.
                 if !arguments.contains_key("_acyclic") {
                     if let Ok(file) = request.to_file(task.clone()) {
-                        arguments.insert(
-                            "_acyclic".into(),
-                            serde_json::json!({"request":file.key,"cwd":"/project"}),
-                        );
-                        let (decoded, _) = acyclic_harness::external_executor::native_tool_request(
+                        arguments.insert("_acyclic".into(), serde_json::json!(file.key.path()));
+                        let decoded = acyclic_harness::external_executor::native_tool_request(
                             name,
                             serde_json::Value::Object(arguments),
                             &file,

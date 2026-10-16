@@ -42,7 +42,7 @@ async fn native_sessions_execute_once_in_the_selected_checkout_after_reopen() ->
         let result = harness.external_request(&write).await?;
         let native = tool_result(result.clone())?;
         assert_eq!(native["isError"], false);
-        assert!(native["structuredContent"]["file"].is_object());
+        assert!(native["details"]["file"].is_object());
         assert_eq!(
             std::fs::read_to_string(directory.path().join("note.txt")).map_err(|e| failure(e))?,
             "from harness"
@@ -61,14 +61,20 @@ async fn native_sessions_execute_once_in_the_selected_checkout_after_reopen() ->
                 unreachable!()
             };
             let mut arguments = arguments.clone();
-            arguments["_acyclic"] = json!({"request":write.request_key(
-                acyclic_harness::task_volume::Component::new(write.task_id().to_string()).map_err(failure)?)
-                .map_err(failure)?,"cwd":cwd});
+            arguments["_acyclic"] = json!(
+                write
+                    .request_key(
+                        acyclic_harness::task_volume::Component::new(write.task_id().to_string())
+                            .map_err(failure)?
+                    )
+                    .map_err(failure)?
+                    .path()
+            );
             assert_eq!(
                 reopened
                     .external_tool_result("write", arguments.clone())
                     .await?,
-                native
+                result
             );
             arguments["text"] = json!("untrusted replacement");
             assert!(

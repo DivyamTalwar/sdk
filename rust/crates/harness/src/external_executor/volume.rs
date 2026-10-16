@@ -16,7 +16,7 @@ pub(super) fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
         .map_err(|_| Error::LimitExceeded)
 }
 
-pub(super) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     crate::json_from_slice_bounded(
         std::marker::PhantomData::<T>,
         bytes,

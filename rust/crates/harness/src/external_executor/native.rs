@@ -88,7 +88,7 @@ pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     if mcp {
         // The ordinary MCP call returns this already-published result. Its
         // rewritten arguments identify the exact original immutable request.
-        super::handoff::answer(&request, &cwd, task, &answer)
+        super::handoff::answer(&request, task, &answer)
     } else if host == ExternalHost::Pi
         && matches!(request.action, super::ExternalAction::RunTool { .. })
     {
@@ -137,7 +137,7 @@ pub(super) fn read_tool_result(
         let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
-                let cwd = super::handoff::cwd(&arguments)?;
+                let cwd = std::env::current_dir().map_err(storage)?;
                 let harness =
                     crate::LocalHarness::open(crate::LocalHarnessConfig::external(cwd)).await?;
                 return harness.external_tool_result(name, arguments).await;
@@ -148,11 +148,7 @@ pub(super) fn read_tool_result(
             ));
         };
         let (requests, results, task) = platform_volumes(path).await?;
-        let key = arguments
-            .pointer("/_acyclic/request")
-            .cloned()
-            .ok_or_else(|| Error::Unauthorized("missing native request file".into()))?;
-        let key: crate::task_volume::FileKey = serde_json::from_value(key).map_err(storage)?;
+        let key = super::handoff::file_key(&arguments)?;
         if !matches!(&key,crate::task_volume::FileKey::Task {task:bound,..} if bound == &task) {
             return Err(Error::Unauthorized(
                 "native result belongs to another bound task".into(),

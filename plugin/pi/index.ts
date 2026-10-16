@@ -1,10 +1,12 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 
 // Installation substitutes one JSON string; no shell interprets it.
 const executable = "__ACYCLIC_EXECUTABLE__";
 const maximum = 64 * 1024;
+// Canonical value once, its escaped text (at most twice), plus native fields.
+const maximumAnswer = 3 * maximum + 1024;
 type Answer = Record<string, unknown>;
 export type Invoke = (event: string, input: Answer) => Promise<Answer>;
 
@@ -17,7 +19,7 @@ export const invoke: Invoke = (event, input) => new Promise((resolve, reject) =>
   child.stdin.on("error", reject);
   child.stdout.on("data", (chunk: Buffer) => {
     bytes += chunk.length;
-    if (bytes > maximum) { child.kill(); reject(new Error("Harness hook answer exceeds its bound")); }
+    if (bytes > maximumAnswer) { child.kill(); reject(new Error("Harness hook answer exceeds its bound")); }
     else output.push(chunk);
   });
   // Diagnostics go to the native host; task output comes only from followed files.
@@ -30,6 +32,7 @@ export const invoke: Invoke = (event, input) => new Promise((resolve, reject) =>
       resolve(answer as Answer);
     } catch (error) { reject(error); }
   });
+  if (event === "catalog") { child.stdin.end(); return; }
   const payload = JSON.stringify(input);
   if (Buffer.byteLength(payload) > maximum) { child.kill(); reject(new Error("Native hook exceeds its bound")); }
   else child.stdin.end(payload);
@@ -51,7 +54,9 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
           !tool.input_schema || typeof tool.input_schema !== "object") throw new Error("Invalid harness tool definition");
       pi.registerTool({
         name: tool.name, label: tool.name, description: tool.description,
-        parameters: Type.Unsafe(tool.input_schema),
+        parameters: tool.input_schema as ToolDefinition["parameters"],
+        renderCall: args => new Text(tool.name + " " + JSON.stringify(args), 0, 0),
+        renderResult: result => new Text(result.content.map(block => block.type === "text" ? block.text : "").join("\n"), 0, 0),
         async execute(toolCallId, input, _signal, _onUpdate, context) {
           const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) });
           if (!Array.isArray(result.content) || result.isError !== false) throw new Error("Invalid harness tool result");
@@ -63,6 +68,6 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
   });
   pi.on("tool_call", async event => registered.has(event.toolName)
     ? undefined : { block: true, reason: "Use the registered harness tools" });
-  pi.on("tool_result", async (event, ctx) => send("tool_result", { ...event, ...identity(ctx) }));
+  pi.on("tool_result", async (event, ctx) => { await send("tool_result", { ...event, ...identity(ctx) }); });
   pi.on("session_shutdown", async (_event, ctx) => { await send("session_shutdown", identity(ctx)); });
 }

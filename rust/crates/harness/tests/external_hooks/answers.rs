@@ -2,6 +2,20 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn native_result_envelope_covers_a_near_limit_escaped_value() -> Result<()> {
+    let outcome =
+        json!({"Succeeded":{"text":"\\\"".repeat((acyclic_stream::MAX_RECORD_BYTES-512)/4)}});
+    let stored = serde_json::to_vec(&outcome).map_err(|e| invalid(&e))?;
+    assert!(stored.len() > acyclic_stream::MAX_RECORD_BYTES - 1024);
+    assert!(stored.len() < acyclic_stream::MAX_RECORD_BYTES);
+    let delivered = serde_json::to_vec(&tool_result(outcome)?).map_err(|e| invalid(&e))?;
+    // Canonical data once, escaped text at most twice, plus fixed native fields.
+    assert!(delivered.len() <= 3 * acyclic_stream::MAX_RECORD_BYTES + 1024);
+    assert!(delivered.len() > acyclic_stream::MAX_RECORD_BYTES);
+    Ok(())
+}
+
+#[test]
 fn malformed_tool_answers_cannot_implicitly_allow_native_execution() -> Result<()> {
     for host in [
         ExternalHost::Codex,
@@ -46,7 +60,6 @@ proptest! {
     fn canonical_tool_result_substitution_preserves_the_value(text in ".{0,128}") {
         let value = json!({"text":text});
         let result = tool_result(json!({"Succeeded":value}))?;
-        prop_assert_eq!(result["structuredContent"].clone(),value.clone());
         prop_assert_eq!(result["details"].clone(),value.clone());
         prop_assert_eq!(serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap())?,value);
         prop_assert_eq!(result["isError"].as_bool(),Some(false));

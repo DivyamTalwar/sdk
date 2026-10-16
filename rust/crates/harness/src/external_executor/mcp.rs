@@ -70,7 +70,10 @@ impl ServerHandler for Tools {
         }
         .await;
         let result = match result {
-            Ok(result) => CallToolResult::structured(result["structuredContent"].clone()),
+            Ok(result) => match super::result::value(result) {
+                Ok(value) => CallToolResult::structured(value),
+                Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
+            },
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
         };
         Ok(result.into())

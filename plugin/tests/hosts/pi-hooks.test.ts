@@ -31,6 +31,9 @@ test("Pi executes every registered tool exactly once through the harness", async
   await handlers.get("session_start")!({},context);
   assert.deepEqual([...tools.keys()],definitions.map(tool=>tool.name));
   for (const [name,tool] of tools) {
+    assert.deepEqual(tool.parameters,definitions.find(definition=>definition.name===name)!.input_schema);
+    assert.equal(typeof tool.renderCall,"function");
+    assert.equal(typeof tool.renderResult,"function");
     const count = calls.length;
     assert.equal(await handlers.get("tool_call")!({toolName:name},context),undefined);
     assert.equal(calls.length,count,"permission hook must not execute a tool");
