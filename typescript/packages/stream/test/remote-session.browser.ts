@@ -1,5 +1,5 @@
 import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import { toBinary, fromBinary } from "@bufbuild/protobuf";
+import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ReadResponseSchema, RecordBatchSchema } from "../generated/proto/stream/v1/stream_pb.js";
 
 export async function test(endpoint: string) {
@@ -7,18 +7,19 @@ export async function test(endpoint: string) {
   let credentials = 0;
   const stream = WasmStream.connect(endpoint, () => { credentials++; return "browser-test"; });
   const append = async (value: number) => {
-    const result = await stream.dispatch("append", toBinary(AppendRequestSchema, { path: "browser/events", records: [new Uint8Array([value])] }));
+    const result = await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "browser/events", records: [new Uint8Array([value])] })));
     if (fromBinary(AppendResponseSchema, result).outcome.case !== "committed") throw new Error("append did not commit");
   };
-  const sequence = (bytes: Uint8Array) => {
+  const sequence = (bytes: Uint8Array | null) => {
+    if (bytes === null) throw new Error("follow ended before its delivery");
     const result = fromBinary(ReadResponseSchema, bytes);
     const records = fromBinary(RecordBatchSchema, result.data).records;
     if (records.length !== 1) throw new Error("expected one pushed record");
     return records[0].sequence;
   };
   await append(1);
-  const follow = await stream.open_follow(toBinary(FollowRequestSchema, { path: "browser/events", from: 0n }));
-  const sibling = await stream.open_follow(toBinary(FollowRequestSchema, { path: "browser/events", from: 1n }));
+  const follow = await stream.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "browser/events", from: 0n })));
+  const sibling = await stream.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "browser/events", from: 1n })));
   if (sequence(await follow.next()) !== 0n) throw new Error("snapshot replay lost its cursor");
   const first = await stream.nextConnection(0n);
   if (await (await fetch(`${endpoint}/fixture/connections`)).text() !== "1") throw new Error("follows did not share one physical session");
