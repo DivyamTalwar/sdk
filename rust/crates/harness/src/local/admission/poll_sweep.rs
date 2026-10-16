@@ -412,7 +412,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(storage)?;
@@ -429,7 +429,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         );
         schedules.push((scenario, baseline));
     }
-    // Each replay owns a real filesystem on tmpfs and its single-thread executor.
+    // Replays own independent filesystems, sharing one executor and blocking pool.
     let cuts: Vec<_> = schedules
         .iter()
         .flat_map(|(scenario, baseline)| {
@@ -456,10 +456,6 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(storage)?;
                     loop {
                         if failed.load(Ordering::Relaxed) {
                             return Ok(());
