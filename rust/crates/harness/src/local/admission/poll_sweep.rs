@@ -237,6 +237,8 @@ impl Fixture {
             provider: self.provider.clone(),
             context_manifest: None,
             context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: if compact {
                 CompactionPolicy::Threshold(ThresholdCompaction {
