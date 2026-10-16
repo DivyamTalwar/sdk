@@ -24,6 +24,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         scope: &Scope,
         maximum_bytes: u64,
     ) -> crate::Result<Self> {
+        authorize_open(volume, verifier, scope, maximum_bytes)?;
         let path = StreamPath::new(format!(
             "harness/task-volumes/{}",
             volume.storage_name(&mut None)?
@@ -34,28 +35,18 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
     }
 
     pub(crate) fn bind(
-        inner: Arc<TaskVolume<P>>, volume: &VolumeRef, verifier: &AuthorityVerifier,
-        scope: &Scope, maximum_bytes: u64,
+        inner: Arc<TaskVolume<P>>,
+        volume: &VolumeRef,
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        maximum_bytes: u64,
     ) -> crate::Result<Self> {
-        if volume.class() != VolumeClass::AgentPrivate
-            || maximum_bytes == 0
-            || maximum_bytes == u64::MAX
-        {
-            return Err(crate::Error::Invalid(
-                "task files require a private volume and finite file bound".into(),
-            ));
-        }
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::authorize_volume(
-                verifier,
-                scope,
-                volume,
-                operation,
-                maximum_bytes,
-                &mut None,
-            )?;
-        }
-        Ok(Self { inner, volume: volume.clone(), maximum_bytes })
+        authorize_open(volume, verifier, scope, maximum_bytes)?;
+        Ok(Self {
+            inner,
+            volume: volume.clone(),
+            maximum_bytes,
+        })
     }
 
     /// Exact private volume whose owner grants authorized this binding.
@@ -68,6 +59,15 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
     pub async fn write(&self, expected: Generation, file: &FileValue) -> super::Result<Generation> {
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
         self.inner.append(expected, file).await
+    }
+
+    /// Reads one bounded snapshot under the same verified owner grants.
+    pub async fn snapshot(
+        &self,
+        query: &Query,
+        maximum_files: usize,
+    ) -> super::Result<super::Snapshot> {
+        self.inner.snapshot(query, maximum_files).await
     }
 
     /// Captures an atomic snapshot and push follow, or resumes a durable cursor.
@@ -105,6 +105,37 @@ mod models;
 
 impl<P: ?Sized> Clone for TaskFiles<P> {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner), volume: self.volume.clone(), maximum_bytes: self.maximum_bytes }
+        Self {
+            inner: Arc::clone(&self.inner),
+            volume: self.volume.clone(),
+            maximum_bytes: self.maximum_bytes,
+        }
     }
+}
+
+fn authorize_open(
+    volume: &VolumeRef,
+    verifier: &AuthorityVerifier,
+    scope: &Scope,
+    maximum_bytes: u64,
+) -> crate::Result<()> {
+    if volume.class() != VolumeClass::AgentPrivate
+        || maximum_bytes == 0
+        || maximum_bytes == u64::MAX
+    {
+        return Err(crate::Error::Invalid(
+            "task files require a private volume and finite file bound".into(),
+        ));
+    }
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        ContentGrant::authorize_volume(
+            verifier,
+            scope,
+            volume,
+            operation,
+            maximum_bytes,
+            &mut None,
+        )?;
+    }
+    Ok(())
 }

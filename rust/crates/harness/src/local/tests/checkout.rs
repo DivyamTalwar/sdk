@@ -209,7 +209,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         workspace.executor(
             harness.scratch(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
-            Arc::clone(harness.task_files())
+            Arc::clone(&harness.task_files().inner)
         ),
         Err(Error::Unauthorized(_))
     ));

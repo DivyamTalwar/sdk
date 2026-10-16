@@ -9,10 +9,10 @@ pub async fn connect_local(
     _local: Arc<LocalHarness>,
     _operation: OperationId,
 ) -> Result<(HarnessClient<FileClientState>, wire::ObserveRequest)> {
-    // TODO(#495): expose the LocalHarness task-volume HarnessWireApi binding,
+    // TODO(#645): expose the LocalHarness task-file admission/replay binding,
     // owner/control scope, initial cursor, private client-state path and file reader.
     Err(Error::Unsupported(
-        "TODO #495: LocalHarness client binding is not exposed".into(),
+        "TODO #645: LocalHarness admission/replay binding is not exposed".into(),
     ))
 }
 
@@ -22,10 +22,10 @@ pub async fn local_prompt(
     _operation: OperationId,
     _prompt: &str,
 ) -> Result<wire::CommandEnvelope> {
-    // TODO(#495): expose prompt request-file preparation without admitting or
+    // TODO(#645): expose prompt request-file preparation without admitting or
     // executing it, so the existing client outbox remains the only submit path.
     Err(Error::Unsupported(
-        "TODO #495: prompt request-file binding is not exposed".into(),
+        "TODO #645: prompt admission binding is not exposed".into(),
     ))
 }
 
@@ -36,7 +36,8 @@ pub async fn local_completions(
     input: &mut crate::tui::PromptInput,
 ) -> Result<crate::tui_files::CompletionFiles> {
     // TODO(#495): take this resident query bound from the followed client settings.
-    crate::tui_files::CompletionFiles::observe(local.task_files(), input, None, 4096).await
+    crate::tui_files::CompletionFiles::observe_authorized(local.task_files(), input, None, 4096)
+        .await
 }
 
 /// Open the file-backed UI session. Its identity is supplied by the client binding.
@@ -52,7 +53,8 @@ pub async fn local_ui(
     let session = uuid::Uuid::from_bytes(OperationId::parse(operation)?.into_bytes());
     // TODO(#495): obtain the stable UI-session identity and bounds from client settings.
     let mut files =
-        super::CommandSession::open(Arc::clone(local.task_files()), session, 65_536, 4096).await?;
+        super::CommandSession::open_authorized(local.task_files().clone(), session, 65_536, 4096)
+            .await?;
     if files.selected_task()?.is_none() {
         let task = crate::TaskId::parse(&owner.id)?;
         let mut layout = files

@@ -48,6 +48,16 @@ impl CompletionFiles {
         })
     }
 
+    /// Observe the owner-authorized binding supplied by LocalHarness.
+    pub async fn observe_authorized<P: StreamProvider + ?Sized>(
+        volume: &crate::task_volume::TaskFiles<P>,
+        input: &mut PromptInput,
+        cursor: Option<Cursor>,
+        maximum_files: usize,
+    ) -> crate::Result<Self> {
+        Self::observe(&volume.inner, input, cursor, maximum_files).await
+    }
+
     /// Read without changing the prompt or committed query cursor. A selected
     /// event loop applies this value synchronously after its wait has completed.
     pub async fn read_change(&mut self) -> crate::Result<Change> {

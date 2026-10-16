@@ -13,6 +13,7 @@ mod archive;
 /// are ordinary files in the supplied, already-authorized private/config volume.
 pub struct CommandSession<P: ?Sized> {
     volume: Arc<files::TaskVolume<P>>,
+    writer: Option<Arc<files::TaskFiles<P>>>,
     changes: files::ChangeStream,
     next_change: Option<files::Change>,
     generation: files::Generation,
@@ -59,6 +60,34 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         maximum_bytes: u64,
         maximum_files: usize,
     ) -> Result<Self> {
+        Self::open_bound(volume, None, session, maximum_bytes, maximum_files).await
+    }
+
+    /// Open the caller-authorized file binding; execution-owned writes stay denied.
+    pub async fn open_authorized(
+        files: files::TaskFiles<P>,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+    ) -> Result<Self> {
+        let volume = Arc::clone(&files.inner);
+        Self::open_bound(
+            volume,
+            Some(Arc::new(files)),
+            session,
+            maximum_bytes,
+            maximum_files,
+        )
+        .await
+    }
+
+    async fn open_bound(
+        volume: Arc<files::TaskVolume<P>>,
+        writer: Option<Arc<files::TaskFiles<P>>>,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+    ) -> Result<Self> {
         if maximum_bytes == 0 || maximum_files == 0 {
             return Err(Error::Invalid("zero command-session bound".into()));
         }
@@ -79,6 +108,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
         let mut client = Self {
             volume,
+            writer,
             changes: observed.changes,
             next_change: None,
             generation: snapshot.generation,
@@ -167,7 +197,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     /// Borrow one authoritative UI/config file at the latest query cut.
-    pub fn state_file(&self, root: CommandFileRoot, name: &str) -> Result<Option<&files::FileValue>> {
+    pub fn state_file(
+        &self,
+        root: CommandFileRoot,
+        name: &str,
+    ) -> Result<Option<&files::FileValue>> {
         Ok(self.files.get(&self.state_key(root, name)?))
     }
 
@@ -512,7 +546,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }
         self.make_room(usize::from(!self.files.contains_key(&key)))?;
         let file = files::FileValue::new(key, bytes);
-        let published = if create_only {
+        let published = if let Some(writer) = &self.writer {
+            writer.write(self.generation, &file).await
+        } else if create_only {
             self.volume.create(self.generation, &file).await
         } else {
             self.volume.append(self.generation, &file).await

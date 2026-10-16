@@ -189,7 +189,11 @@ impl LocalHarness {
             let task_files = Arc::new(
                 crate::task_volume::TaskVolume::open(
                     Arc::clone(&stream),
-                    acyclic_stream::StreamPath::new(format!("harness/task-volumes/{}", task_volume.storage_name(&mut None)?)).map_err(storage)?,
+                    acyclic_stream::StreamPath::new(format!(
+                        "harness/task-volumes/{}",
+                        task_volume.storage_name(&mut None)?
+                    ))
+                    .map_err(storage)?,
                 )
                 .await?,
             );
@@ -214,16 +218,13 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            let task_files = Arc::new(
-                crate::task_volume::TaskFiles::bind(
-                    task_files,
-                    &task_volume,
-                    &verifier,
-                    &signed,
-                    config.limits.file_bytes,
-                )
-                ?,
-            );
+            let task_files = Arc::new(crate::task_volume::TaskFiles::bind(
+                task_files,
+                &task_volume,
+                &verifier,
+                &signed,
+                config.limits.file_bytes,
+            )?);
             Ok(Self {
                 files,
                 task_files,

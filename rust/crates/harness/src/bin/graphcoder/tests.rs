@@ -641,3 +641,6 @@ mod help;
 
 #[path = "tests/scroll.rs"]
 mod scroll;
+
+#[path = "tests/parity.rs"]
+mod parity;

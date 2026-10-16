@@ -1,0 +1,202 @@
+[
+  {
+    "row": "Multiline buffer",
+    "text": "one",
+    "events": [
+      {
+        "key": "Enter",
+        "shift": true
+      },
+      {
+        "text": "two"
+      }
+    ],
+    "expected": "one\ntwo",
+    "visible": [
+      "one",
+      "two"
+    ]
+  },
+  {
+    "row": "Char left/right, Shift to select",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Left"
+      },
+      {
+        "key": "Left",
+        "shift": true
+      },
+      {
+        "text": "X"
+      }
+    ],
+    "expected": "aXc",
+    "visible": [
+      "aXc"
+    ]
+  },
+  {
+    "row": "Line start/end",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Home"
+      },
+      {
+        "text": "X"
+      },
+      {
+        "key": "End"
+      },
+      {
+        "text": "Y"
+      }
+    ],
+    "expected": "XabcY",
+    "visible": [
+      "XabcY"
+    ]
+  },
+  {
+    "row": "Word left/right",
+    "text": "one two",
+    "events": [
+      {
+        "key": "Left",
+        "ctrl": true
+      },
+      {
+        "text": "X"
+      }
+    ],
+    "expected": "one Xtwo",
+    "visible": [
+      "one Xtwo"
+    ]
+  },
+  {
+    "row": "Undo/redo",
+    "text": "abc",
+    "events": [
+      {
+        "text": "X"
+      },
+      {
+        "key": "z",
+        "ctrl": true
+      },
+      {
+        "key": "z",
+        "ctrl": true,
+        "shift": true
+      }
+    ],
+    "expected": "abcX",
+    "visible": [
+      "abcX"
+    ]
+  },
+  {
+    "row": "Kill ring (Ctrl+K/U/W kill, Ctrl+Y yank, Alt+Y rotate)",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Home"
+      },
+      {
+        "key": "k",
+        "ctrl": true
+      },
+      {
+        "key": "y",
+        "ctrl": true
+      }
+    ],
+    "expected": "abc",
+    "visible": [
+      "abc"
+    ]
+  },
+  {
+    "row": "Grapheme and display-width wrap and motion (CJK, emoji, ZWJ, combining)",
+    "text": "日本👩‍💻é",
+    "events": [
+      {
+        "key": "Left"
+      },
+      {
+        "key": "Backspace"
+      }
+    ],
+    "expected": "日本é",
+    "visible": [
+      "日本é"
+    ]
+  },
+  {
+    "row": "IME-safe input",
+    "text": "",
+    "events": [
+      {
+        "text": "入力\n日本語"
+      }
+    ],
+    "expected": "入力\n日本語",
+    "visible": [
+      "入力",
+      "日本語"
+    ]
+  },
+  {
+    "row": "Large-paste collapse expanded on submit",
+    "text": "",
+    "events": [
+      {
+        "paste": "line one\nline two\nline three"
+      }
+    ],
+    "expected": "line one\nline two\nline three",
+    "visible": []
+  },
+  {
+    "row": "Repeat filter (only editing and navigation keys repeat)",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Enter",
+        "repeat": true
+      }
+    ],
+    "expected": "abc",
+    "visible": [
+      "abc"
+    ],
+    "effects": 0
+  },
+  {
+    "row": "Ctrl+C clears the input",
+    "text": "draft",
+    "events": [
+      {
+        "key": "c",
+        "ctrl": true
+      }
+    ],
+    "expected": "",
+    "visible": []
+  },
+  {
+    "row": "Enter submission (typed input boundary; ConPTY byte decoding remains #604)",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Enter"
+      }
+    ],
+    "expected": "",
+    "visible": [],
+    "effects": 1
+  }
+]

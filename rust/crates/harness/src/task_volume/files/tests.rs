@@ -138,3 +138,63 @@ proptest! {
         }
     }
 }
+
+#[cfg(feature = "tui")]
+#[tokio::test]
+async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
+    use crate::client::{CommandFileRoot, CommandSession};
+    struct NoFiles;
+    impl crate::conversation::ContentResidencyVerifier for NoFiles {}
+    let agent = AgentId::from_bytes([1; 16]);
+    let volume = volume(agent);
+    let (verifier, scope) = authority(
+        agent,
+        &volume,
+        &[VolumeOperation::Read, VolumeOperation::Write],
+    );
+    let files = TaskFiles::open(
+        Arc::new(MemoryStream::default()),
+        &volume,
+        &verifier,
+        &scope,
+        65_536,
+    )
+    .await
+    .unwrap();
+    let identity = uuid::Uuid::from_bytes([5; 16]);
+    let mut commands = CommandSession::open_authorized(files.clone(), identity, 65_536, 64)
+        .await
+        .unwrap();
+    commands.submit("/diff", &NoFiles).await.unwrap();
+    assert_eq!(
+        commands
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+    commands.submit("ordinary request", &NoFiles).await.unwrap();
+    let request = commands.take_request().unwrap();
+    let before = files.snapshot(&Query::Root, 64).await.unwrap().generation;
+    let result = commands
+        .consume(&request, |_, _, _| async {
+            panic!("a UI must never acquire execution ownership")
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        files.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    drop(commands);
+    let reopened = CommandSession::open_authorized(files, identity, 65_536, 64)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+}
