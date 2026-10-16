@@ -4,6 +4,7 @@ use super::{
 };
 use acyclic_harness::{
     TaskId,
+    runtime::TaskStateProvider,
     task_volume::{Component, FileValue, Query},
 };
 use proptest::prelude::*;
@@ -30,6 +31,14 @@ proptest! {
             }))?;
             let file = publish(&fixture,&task,&original).await?;
             consumer.accept(&task,&file).await?;
+            let admitted = fixture.runtime.task_host()
+                .observe_admission(TaskId::from_bytes([78;16])).await?;
+            let command: acyclic_harness::workflow::WorkflowCommand =
+                serde_json::from_value(admitted.input["command"].clone())
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            // Generated command inputs stay within the existing directory grant
+            // of the workflow's journal volume, including after retry/reopen.
+            assert!(command.payload.path().starts_with("inputs/"));
             let host = if host_changed {ExternalHost::ClaudeCode} else {ExternalHost::Pi};
             let session = if session_changed {format!("other-{session}")} else {session};
             let caller = if caller_changed {Some(format!("other-{}",caller.as_deref().unwrap_or("root")))} else {caller};

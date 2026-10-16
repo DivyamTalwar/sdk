@@ -111,7 +111,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (path_hold, path) = {
                 let path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
-                        format_args!("scheduler/results/{operation}/{key}.json"),
+                        format_args!("inputs/{operation}/{key}.json"),
                         work,
                     )
                 })?;
