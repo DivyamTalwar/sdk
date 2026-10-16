@@ -60,6 +60,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'T' {
+        if let Ok(fragments) = serde_json::from_slice::<Vec<String>>(input) {
+            crate::projection::text::assert_normalization(&fragments);
+        }
+        return;
+    }
     if kind == b'V' {
         let Some((&kind, input)) = input.split_first() else {
             return;

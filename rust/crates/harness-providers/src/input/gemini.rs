@@ -40,7 +40,8 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                 results.push((result["name"].as_str(), result["id"].as_str()));
             } else if part.get("text").is_some() {
                 check(
-                    text(&part["text"]) || part["thoughtSignature"].is_string(),
+                    part["text"].as_str().is_some_and(|text| !text.is_empty())
+                        || part["thoughtSignature"].is_string(),
                     "GEM-SEQ-03",
                     errors,
                 );

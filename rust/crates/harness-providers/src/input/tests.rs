@@ -46,7 +46,7 @@ fn fixtures() -> [(Adapter, Value, &'static str); 4] {
 #[test]
 fn native_tool_batches_are_accepted_and_missing_results_are_detected() {
     for (adapter, mut body, missing_result_rule) in fixtures() {
-        assert_eq!(validate_input(adapter, &body), vec![]);
+        assert!(validate_input(adapter, &body).is_empty());
         let items = match adapter {
             Adapter::Anthropic | Adapter::Chat => "messages",
             Adapter::Responses => "input",
