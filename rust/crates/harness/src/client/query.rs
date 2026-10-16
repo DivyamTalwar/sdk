@@ -1,27 +1,18 @@
-//! One disposable file-query fold with a retained, publish-before-cursor delivery.
+//! One disposable file-query fold with publish-before-cursor delivery.
 
-use super::file_views::{FileViews, QueryViewLimits};
+use super::{FileViews, QuerySubscription, QueryViewLimits, query_error};
 use crate::{
-    Error, Result,
-    task_volume::{Change, ChangeStream, Cursor, HeadFile, Query, TaskVolume},
+    Result,
+    task_volume::{Change, Cursor, HeadFile, Query, TaskVolume},
 };
-use acyclic_stream::{StreamPath, StreamProvider};
-use futures::StreamExt as _;
-
-fn query_error(error: crate::task_volume::Error) -> Error {
-    Error::Storage(error.to_string())
-}
+use acyclic_stream::StreamProvider;
 
 /// A single task-volume subscription shared by native and WASM renderers.
 /// Source files stay authoritative; this cache is reconstructed at its cursor.
 pub struct ClientQuery {
-    target: StreamPath,
-    query: Query,
-    limits: QueryViewLimits,
+    subscription: QuerySubscription,
     views: FileViews,
-    changes: ChangeStream,
-    pending: Option<Change>,
-    reset: bool,
+    limits: QueryViewLimits,
 }
 
 impl ClientQuery {
@@ -33,44 +24,24 @@ impl ClientQuery {
         cursor: Option<Cursor>,
         limits: QueryViewLimits,
     ) -> Result<Self> {
-        let observed = volume
-            .observe(query.clone(), cursor.clone(), limits.segments)
-            .await
-            .map_err(query_error)?;
-        let snapshot = match observed.snapshot {
-            Some(snapshot) => snapshot,
-            None => volume
-                .snapshot_at(
-                    &query,
-                    cursor.ok_or_else(|| {
-                        Error::Storage("query returned no snapshot or cursor".into())
-                    })?,
-                    limits.segments,
-                )
-                .await
-                .map_err(query_error)?,
-        };
-        let views = FileViews::snapshot(snapshot.into_heads().map_err(query_error)?, limits)
-            .map_err(query_error)?;
+        let (subscription, snapshot) =
+            QuerySubscription::open(volume, query, cursor, limits.segments).await?;
+        let views = FileViews::snapshot(snapshot, limits).map_err(query_error)?;
         Ok(Self {
-            target: volume.path().clone(),
-            query,
-            limits,
+            subscription,
             views,
-            changes: observed.changes,
-            pending: None,
-            reset: observed.reset,
+            limits,
         })
     }
 
     /// Last completely published view cut. A failed publisher leaves it unchanged.
     pub fn cursor(&self) -> &Cursor {
-        self.views.cursor()
+        self.subscription.cursor()
     }
 
     /// Whether opening/resuming replaced an incompatible history rather than resuming it.
     pub fn reset(&self) -> bool {
-        self.reset
+        self.subscription.reset()
     }
 
     /// Borrow one logical file, including ordered text/reasoning segments.
@@ -83,65 +54,37 @@ impl ClientQuery {
         self.views.files()
     }
 
-    /// Publishes one exact query change before advancing the view/cursor. Validation
-    /// happens first. Failed publication retains the same frame for retry, even
-    /// when later records have already arrived at the provider.
+    /// Validates and publishes one exact change before advancing the views/cursor.
+    /// Failed publication retains the same frame for retry, even when later records
+    /// have arrived. The shared reducer remains the only file-fold implementation.
     pub async fn publish_next<F>(&mut self, mut publish: F) -> Result<()>
     where
         F: for<'a> std::ops::AsyncFnMut(&'a Change) -> Result<()>,
     {
-        if self.pending.is_none() {
-            self.pending = Some(
-                self.changes
-                    .next()
-                    .await
-                    .ok_or_else(|| Error::Storage("query follow ended; reconnect required".into()))?
-                    .map_err(query_error)?,
-            );
-        }
-        let change = self
-            .pending
-            .as_ref()
-            .ok_or_else(|| Error::Storage("query delivery missing".into()))?;
-        let apply = self.views.prepare(change).map_err(query_error)?;
-        publish(change).await?;
-        apply();
-        self.pending = None;
-        Ok(())
+        let views = &mut self.views;
+        self.subscription
+            .publish_next(async |change| {
+                let apply = views.prepare(change).map_err(query_error)?;
+                publish(change).await?;
+                apply(views).map_err(query_error)
+            })
+            .await
     }
 
-    /// Reconnects only after the pending frame has been published. Matching views
-    /// resume directly; a reset atomically replaces them with a validated snapshot.
+    /// Resumes matching views directly, or atomically installs a validated reset
+    /// snapshot. Pending output must be published before reconnecting.
     pub async fn reconnect<P: StreamProvider + ?Sized>(
         &mut self,
         volume: &TaskVolume<P>,
     ) -> Result<bool> {
-        if volume.path() != &self.target {
-            return Err(Error::Invalid("query reconnect target differs".into()));
-        }
-        if self.pending.is_some() {
-            return Err(Error::Conflict(
-                "publish the buffered query delivery before reconnecting".into(),
-            ));
-        }
-        let observed = volume
-            .observe(
-                self.query.clone(),
-                Some(self.cursor().clone()),
-                self.limits.segments,
-            )
+        let views = &mut self.views;
+        self.subscription
+            .reconnect(volume, |snapshot| {
+                let replacement =
+                    FileViews::snapshot(snapshot, self.limits).map_err(query_error)?;
+                *views = replacement;
+                Ok(())
+            })
             .await
-            .map_err(query_error)?;
-        let replacement = observed
-            .snapshot
-            .map(|snapshot| FileViews::snapshot(snapshot.into_heads()?, self.limits))
-            .transpose()
-            .map_err(query_error)?;
-        if let Some(views) = replacement {
-            self.views = views;
-        }
-        self.changes = observed.changes;
-        self.reset = observed.reset;
-        Ok(observed.reset)
     }
 }

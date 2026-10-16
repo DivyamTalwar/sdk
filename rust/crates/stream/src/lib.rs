@@ -36,17 +36,19 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
-#[doc(hidden)]
-pub mod query_sync;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
 ))]
 mod obs;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmStream;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 

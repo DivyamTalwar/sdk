@@ -343,7 +343,7 @@ proptest::proptest! {
             let mut snapshot = volume.heads(&Query::Root, None, 128).await.unwrap();
             snapshot.cursor.durable = snapshot.cursor.position;
             let before = snapshot.cursor.clone();
-            let mut view = FileViews::snapshot(snapshot, LIMITS).unwrap();
+            let view = FileViews::snapshot(snapshot, LIMITS).unwrap();
             let mut next = before.clone();
             next.position += 1;
             next.accepted = next.position;
@@ -365,4 +365,47 @@ proptest::proptest! {
             assert_eq!(view.files().count(), 0);
         });
     }
+}
+
+#[tokio::test]
+async fn prepared_change_keeps_views_readable_and_rejects_an_advanced_cut() {
+    use futures::StreamExt as _;
+    let volume = volume().await;
+    let mut observation = volume.observe(Query::Root, None, 128).await.unwrap();
+    let snapshot = observation.snapshot.take().unwrap().into_heads().unwrap();
+    let mut views = FileViews::snapshot(snapshot, LIMITS).unwrap();
+    put(&volume, &chunk(1, 1, Channel::Text, b"one")).await;
+    let change = observation.changes.next().await.unwrap().unwrap();
+    let apply = views.prepare(&change).unwrap();
+    assert_eq!(views.files().count(), 0);
+    assert_eq!(views.cursor().position + 1, change.cursor.position);
+    let stale = views.prepare(&change).unwrap();
+    apply(&mut views).unwrap();
+    let committed = files(views.files());
+    assert!(stale(&mut views).is_err());
+    assert_eq!(files(views.files()), committed);
+    assert_eq!(views.cursor(), &change.cursor);
+}
+
+#[tokio::test]
+async fn opening_published_files_does_not_initialize_a_missing_volume() {
+    use acyclic_stream::{StreamError, StreamProvider as _};
+    let provider = Arc::new(MemoryStream::default());
+    assert!(
+        TaskVolume::open_existing(provider.clone(), path("missing/files"))
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        provider.tail(path("missing/files")).await,
+        Err(StreamError::NotFound)
+    ));
+    let created = TaskVolume::open(provider.clone(), path("agent/files"))
+        .await
+        .unwrap();
+    put(&created, &Write::new(FileKey::Goal, b"goal".to_vec())).await;
+    let opened = TaskVolume::open_existing(provider, path("agent/files"))
+        .await
+        .unwrap();
+    assert_eq!(opened.head().await.unwrap(), created.head().await.unwrap());
 }

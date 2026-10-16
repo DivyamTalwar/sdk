@@ -69,10 +69,13 @@ impl From<StreamError> for Error {
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Generation {
     /// Volume identity, including its provider path.
     pub volume: [u8; 32],
     /// Durable history incarnation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Next append-only segment position.
     pub position: u64,
@@ -201,6 +204,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 })
                 .await?;
         }
+        Self::open_existing(provider, path).await
+    }
+
+    /// Opens a published volume without creating or writing any state.
+    pub async fn open_existing(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let mut records = provider
             .read(ReadRequest {
                 path: path.clone(),
@@ -234,6 +242,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         };
         volume.refresh(&mut *volume.index.lock().await).await?;
         Ok(volume)
+    }
+
+    /// Current publication fence without copying the file index.
+    pub async fn head(&self) -> Result<Generation> {
+        let mut index = self.index.lock().await;
+        self.refresh(&mut index).await?;
+        Ok(self.generation(&index))
     }
 
     fn generation(&self, index: &Index) -> Generation {

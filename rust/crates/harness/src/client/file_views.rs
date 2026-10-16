@@ -6,7 +6,10 @@ use crate::task_volume::{
 use std::collections::{BTreeMap, btree_map::Entry};
 
 /// Bounds for one selected file query, including every retained segment.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct QueryViewLimits {
     /// Maximum materialized logical files.
     pub files: usize,
@@ -116,10 +119,13 @@ impl FileViews {
         self.files.values()
     }
 
-    /// Prepares one change without altering the fold. The returned plain function
-    /// holds the map entry until publication succeeds, avoiding another lookup or
-    /// a cloned transcript. Rust ownership prevents intervening view mutations.
-    pub fn prepare<'a>(&'a mut self, change: &'a Change) -> Result<impl FnOnce() + 'a> {
+    /// Prepares one change without altering or borrowing the fold across I/O.
+    /// Read-only renderers remain usable while publication is pending. Applying
+    /// the change checks the original cut before committing the prepared totals.
+    pub fn prepare<'a>(
+        &self,
+        change: &'a Change,
+    ) -> Result<impl FnOnce(&mut Self) -> Result<()> + use<'a>> {
         let next = &change.cursor;
         if next.volume != self.cursor.volume
             || next.epoch != self.cursor.epoch
@@ -137,13 +143,7 @@ impl FileViews {
             .as_ref()
             .map(|file| file.head_key())
             .transpose()?;
-        let Self {
-            files,
-            cursor,
-            bytes: current_bytes,
-            segments: current_segments,
-            limits,
-        } = self;
+        let files = &self.files;
         let other_sequence = match logical.as_ref() {
             Some((
                 FileKey::Task {
@@ -169,13 +169,10 @@ impl FileViews {
             _ => None,
         };
         let count = files.len();
-        let entry = logical.as_ref().map(|(key, _)| files.entry(key.clone()));
-        let before = match entry.as_ref() {
-            Some(Entry::Occupied(entry)) => Some(entry.get()),
-            _ => None,
-        };
-        let mut bytes = *current_bytes;
-        let mut segments = *current_segments;
+        let before = logical.as_ref().and_then(|(key, _)| files.get(key));
+        let mut bytes = self.bytes;
+        let mut segments = self.segments;
+        let mut next_count = count;
         let mut length = 0;
         if let Some(file) = change.file.as_ref() {
             let sequence = logical.as_ref().and_then(|(_, sequence)| *sequence);
@@ -209,19 +206,19 @@ impl FileViews {
                 .map_or(0, |head| head.length)
                 .checked_add(file.bytes.len() as u64)
                 .ok_or(Error::LimitExceeded)?;
-            admit(
-                *limits,
-                count
-                    .checked_add(usize::from(before.is_none()))
-                    .ok_or(Error::LimitExceeded)?,
-                segments,
-                bytes,
-            )?;
+            next_count = count
+                .checked_add(usize::from(before.is_none()))
+                .ok_or(Error::LimitExceeded)?;
+            admit(self.limits, next_count, segments, bytes)?;
         }
-        Ok(move || {
-            if let (Some(file), Some((key, sequence)), Some(entry)) = (&change.file, logical, entry)
-            {
-                match entry {
+        let expected = self.cursor.clone();
+        Ok(move |view: &mut Self| {
+            if view.cursor != expected {
+                return Err(Error::ResetRequired);
+            }
+            admit(view.limits, next_count, segments, bytes)?;
+            if let (Some(file), Some((key, sequence))) = (&change.file, logical) {
+                match view.files.entry(key.clone()) {
                     Entry::Occupied(mut entry) if sequence.is_some() => {
                         let head = entry.get_mut();
                         head.segments.push(file.bytes.clone());
@@ -245,9 +242,10 @@ impl FileViews {
                     }
                 }
             }
-            *current_bytes = bytes;
-            *current_segments = segments;
-            *cursor = next.clone();
+            view.bytes = bytes;
+            view.segments = segments;
+            view.cursor = next.clone();
+            Ok(())
         })
     }
 }
