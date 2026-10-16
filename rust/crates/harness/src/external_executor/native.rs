@@ -88,7 +88,7 @@ pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     if mcp {
         // The ordinary MCP call returns this already-published result. Its
         // rewritten arguments identify the exact original immutable request.
-        super::handoff::answer(&request, task, &answer)
+        super::handoff::answer(request, task, &answer)
     } else if host == ExternalHost::Pi
         && matches!(request.action, super::ExternalAction::RunTool { .. })
     {

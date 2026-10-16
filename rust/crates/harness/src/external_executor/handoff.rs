@@ -32,7 +32,7 @@ pub(super) fn normalize_tool(host: ExternalHost, event: &str, input: &mut Value)
     Ok(true)
 }
 
-pub(super) fn answer(request: &ExternalRequest, task: Component, result: &Value) -> Result<Value> {
+pub(super) fn answer(request: ExternalRequest, task: Component, result: &Value) -> Result<Value> {
     if !result
         .as_object()
         .is_some_and(|object| object.len() == 1 && object.contains_key("Succeeded"))
@@ -45,17 +45,18 @@ pub(super) fn answer(request: &ExternalRequest, task: Component, result: &Value)
                 .into(),
         ));
     }
-    let ExternalAction::RunTool { arguments, .. } = &request.action else {
+    let path = request.request_key(task).map_err(|_| invalid())?.path();
+    let ExternalAction::RunTool { arguments, .. } = request.action else {
         return Err(invalid());
     };
-    let mut arguments = arguments.as_object().cloned().ok_or_else(invalid)?;
-    arguments.insert(
-        FIELD.into(),
-        json!(request.request_key(task).map_err(|_| invalid())?.path()),
-    );
-    Ok(
-        json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":arguments}}),
-    )
+    let Value::Object(mut arguments) = arguments else {
+        return Err(invalid());
+    };
+    arguments.insert(FIELD.into(), Value::String(path));
+    let mut answer =
+        json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}});
+    answer["hookSpecificOutput"]["updatedInput"] = Value::Object(arguments);
+    Ok(answer)
 }
 
 pub(super) fn file_key(arguments: &Value) -> Result<FileKey> {
@@ -160,7 +161,7 @@ mod tests {
         let task = Component::new(request.task_id().to_string())?;
         let file = request.to_file(task.clone())?;
         assert!(file.bytes.len() > acyclic_stream::MAX_RECORD_BYTES - 2048);
-        let answer = answer(&request, task, &json!({"Succeeded":{}}))?;
+        let answer = answer(request.clone(), task, &json!({"Succeeded":{}}))?;
         let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
         assert!(serde_json::to_vec(&arguments[FIELD])?.len() < 256);
         assert_eq!(native_tool_request("bash", arguments, &file)?, request);
@@ -179,7 +180,7 @@ mod tests {
                 }))?;
                 let task = Component::new(request.task_id().to_string())?;
                 let file = request.to_file(task.clone())?;
-                let answer = answer(&request,task,&json!({"Succeeded":{"stdout":"result"}}))?;
+                let answer = answer(request.clone(),task,&json!({"Succeeded":{"stdout":"result"}}))?;
                 let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
                 prop_assert_eq!(native_tool_request("bash",arguments.clone(),&file)?,request.clone());
                 prop_assert!(native_tool_request("write",arguments.clone(),&file).is_err());

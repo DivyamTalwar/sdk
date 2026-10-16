@@ -5,9 +5,10 @@ use serde_json::{Value, json};
 /// Unknown or unfinished outcomes never become a successful native result.
 pub fn tool_result(answer: Value) -> Result<Value> {
     let value = value(answer)?;
-    Ok(
-        json!({"content":[{"type":"text","text":value.to_string()}],"details":value,"isError":false}),
-    )
+    let mut result = json!({"content":[{"type":"text"}],"isError":false});
+    result["content"][0]["text"] = Value::String(value.to_string());
+    result["details"] = value;
+    Ok(result)
 }
 
 pub(super) fn value(answer: Value) -> Result<Value> {
