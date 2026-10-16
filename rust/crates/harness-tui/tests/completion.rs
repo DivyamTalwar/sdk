@@ -14,6 +14,11 @@ use proptest::prelude::*;
 #[path = "support/completion_sequences.rs"]
 mod sequences;
 
+#[test]
+fn unicode_theme_completion_preserves_the_configured_name() {
+    sequences::catalog_round_trip("shell", "sh", "Éclair Light").unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]

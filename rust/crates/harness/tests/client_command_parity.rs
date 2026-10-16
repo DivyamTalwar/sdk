@@ -5,6 +5,15 @@ use acyclic_harness::client::{
 use proptest::prelude::*;
 
 #[test]
+fn unicode_theme_resolution_matches_completion() -> Result<()> {
+    let catalog = CommandCatalog::builtins()?.with_themes(["Éclair Light".into()])?;
+    assert_eq!(catalog.complete_input("/theme écl")[0].replacement, "/theme Éclair Light");
+    assert_eq!(futures::executor::block_on(catalog.resolve("/theme éclair light", &DeniedReader, 1024))?,
+        CommandResolution::Submit { request: CommandRequest::Theme { name: "Éclair Light".into() } });
+    Ok(())
+}
+
+#[test]
 fn catalog_aliases_dispatch_without_model_text_or_reads() -> Result<()> {
     let catalog = CommandCatalog::builtins()?;
     assert_eq!(catalog.commands().count(), 30);

@@ -611,7 +611,8 @@ impl CommandCatalog {
                 match self
                     .themes
                     .iter()
-                    .find(|theme| theme.eq_ignore_ascii_case(arguments))
+                    .find(|theme| theme.chars().flat_map(char::to_lowercase)
+                        .eq(arguments.chars().flat_map(char::to_lowercase)))
                 {
                     Some(name) => CommandResolution::Submit {
                         request: CommandRequest::Theme { name: name.clone() },

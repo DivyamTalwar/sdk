@@ -33,9 +33,10 @@ impl CompletionMenu {
                     }
                     self.work.candidates += 1;
                     let score = match request.kind {
-                        CompletionKind::Command | CompletionKind::Theme => {
+                        CompletionKind::Command => {
                             super::prefix(&entry.item.value, &request.query).then_some(0)
                         }
+                        CompletionKind::Theme => super::theme_prefix(&entry.item.value, &request.query).then_some(0),
                         CompletionKind::Mention => {
                             super::fuzzy_score(&request.query, &entry.item.value)
                         }

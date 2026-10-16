@@ -10,6 +10,11 @@ fn prefix(value: &str, query: &str) -> bool {
     value.get(..query.len()).is_some_and(|head| head.eq_ignore_ascii_case(query))
 }
 
+fn theme_prefix(value: &str, query: &str) -> bool {
+    let mut value = value.chars().flat_map(char::to_lowercase);
+    query.chars().flat_map(char::to_lowercase).all(|c| value.next() == Some(c))
+}
+
 /// Completion namespace derived from command and workspace files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionKind {
@@ -350,7 +355,8 @@ impl CompletionMenu {
             return;
         }
         let score = match request.kind {
-            CompletionKind::Command | CompletionKind::Theme => prefix(&item.value, &request.query).then_some(0),
+            CompletionKind::Command => prefix(&item.value, &request.query).then_some(0),
+            CompletionKind::Theme => theme_prefix(&item.value, &request.query).then_some(0),
             CompletionKind::Mention => fuzzy_score(&request.query, &item.value),
         };
         if let Some(score) = score {

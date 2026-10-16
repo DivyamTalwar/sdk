@@ -146,13 +146,14 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
     editor.set_text("/THEME ", 1);
     menu.refresh(&editor);
-    editor.insert(&theme[..1].to_ascii_lowercase(), 2);
+    let initial = theme.chars().next().unwrap().to_lowercase().collect::<String>();
+    editor.insert(&initial, 2);
     menu.refresh(&editor);
     assert_eq!(menu.items().len(), 1);
     assert!(menu.accept(&mut editor, 2));
     assert_eq!(editor.text(), format!("/THEME {theme}"));
     assert!(editor.undo());
-    assert_eq!(editor.text(), format!("/THEME {}", theme[..1].to_ascii_lowercase()));
+    assert_eq!(editor.text(), format!("/THEME {initial}"));
     Ok(())
 }
 
