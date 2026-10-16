@@ -21,6 +21,79 @@ fn request() -> ChildrenRequest {
         limit: 1,
     }
 }
+
+#[wasm_bindgen_test]
+async fn publications_refresh_once_and_wake_only_affected_follows() {
+    enum Observed {
+        Record(usize, Result<Record, StreamError>),
+        Child(Result<Child, StreamError>),
+    }
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("writer");
+    for id in 0..128 {
+        append(&writer, &format!("agents/{id}/events"))
+            .await
+            .expect("seed");
+    }
+    // Opening after seeding excludes queued bootstrap broadcasts from the bound.
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reader");
+    let mut records = futures::stream::SelectAll::new();
+    for id in 0..128 {
+        records.push(
+            reader
+                .follow(
+                    StreamPath::new(format!("agents/{id}/events")).expect("path"),
+                    1,
+                )
+                .await
+                .expect("follow")
+                .map(move |record| Observed::Record(id, record))
+                .boxed_local(),
+        );
+    }
+    let mut children = reader
+        .children(ChildrenRequest {
+            parent: Some(StreamPath::new("agents").expect("parent")),
+            limit: 1,
+        })
+        .await
+        .expect("children");
+    for _ in 0..128 {
+        child(&mut children).await;
+    }
+    let mut observed = stream::select(records, children.map(Observed::Child));
+    assert!(futures::poll!(observed.next()).is_pending());
+    let initial_transactions = reader.inner.transactions.get();
+    let initial_reads = reader.inner.follow_reads.get();
+    for sequence in 1..=8 {
+        append(&writer, "agents/0/events")
+            .await
+            .expect("publication");
+        match observed.next().await.expect("follow ended") {
+            Observed::Record(id, record) => {
+                assert_eq!(id, 0);
+                assert_eq!(record.expect("record").sequence, sequence);
+            }
+            Observed::Child(child) => panic!("existing-path append created a child: {child:?}"),
+        }
+    }
+    assert!(
+        reader.inner.transactions.get() <= initial_transactions + reader.inner.messages.get(),
+        "a follower opened its own IndexedDB refresh transaction"
+    );
+    assert!(
+        reader.inner.refreshes.get() <= reader.inner.messages.get(),
+        "one publication started multiple refresh passes"
+    );
+    assert!(
+        reader.inner.follow_reads.get() - initial_reads <= 16,
+        "unrelated subscriptions performed snapshot work"
+    );
+}
 async fn child(children: &mut ChildStream) -> StreamPath {
     children
         .next()

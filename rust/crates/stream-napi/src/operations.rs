@@ -170,7 +170,57 @@ pub(super) async fn open_follow(
     .await?;
     Ok(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            token: cancellation_state(cancellation).unwrap_or_default(),
+            closed: Arc::new(AtomicBool::new(false)),
+        },
+    })
+}
+
+pub(super) fn record_frames(records: acyclic_stream::RecordStream) -> FollowFrames {
+    records
+        .map(|record| {
+            record.map(|record| {
+                wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                    .encode_to_vec()
+            })
+        })
+        .boxed()
+}
+
+pub(super) async fn open_children(
+    client: &Arc<grpc::Client>,
+    request: Buffer,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
+    let request =
+        wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
+            .map_err(|error| stream_error(&error))?;
+    let children = run_with_cancellation(
+        async {
+            client
+                .children(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
+        cancellation_state(cancellation),
+    )
+    .await?;
+    let frames = children
+        .map(|child| {
+            child.map(|child| {
+                wire::ChildrenResponse {
+                    child: Some(wire::Child {
+                        path: child.path.to_string(),
+                    }),
+                }
+                .encode_to_vec()
+            })
+        })
+        .boxed();
+    Ok(NativeStreamFollow {
+        state: FollowState {
+            records: Arc::new(Mutex::new(Some(frames))),
             token: cancellation_state(cancellation).unwrap_or_default(),
             closed: Arc::new(AtomicBool::new(false)),
         },

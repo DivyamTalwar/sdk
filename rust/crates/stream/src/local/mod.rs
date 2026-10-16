@@ -54,6 +54,8 @@ const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 #[cfg(acyclic_loom)]
 pub(crate) mod query_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod discovery_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =

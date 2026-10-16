@@ -27,6 +27,8 @@ pub mod http;
 mod browser;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod change;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+mod interest;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
@@ -56,6 +58,9 @@ pub mod wire_codec;
 #[path = "memory/recovery_model.rs"]
 /// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
+#[cfg(all(acyclic_loom, feature = "local"))]
+/// Bounded models of the real child-discovery providers.
+pub use memory::discovery_model as discovery_verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;

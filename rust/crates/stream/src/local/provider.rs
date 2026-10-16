@@ -125,17 +125,33 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        let changed = self.inner.changed.subscribe();
         let children = self
-            .visible(self.inner.provider.children(request))
+            .accepted(self.inner.provider.children(request))
             .await??;
         Ok(stream::try_unfold(
-            (self.clone(), children),
-            |(provider, mut children)| async move {
-                let Some(child) = children.next().await.transpose()? else {
+            (self.clone(), children, changed),
+            |(provider, mut children, mut changed)| async move {
+                let unavailable = Box::pin(async {
+                    loop {
+                        if changed.borrow_and_update().is_none() {
+                            return StreamError::Unavailable;
+                        }
+                        if changed.changed().await.is_err() {
+                            return StreamError::Unavailable;
+                        }
+                    }
+                });
+                // No visibility guard is held while either subscription parks.
+                let child = match futures::future::select(unavailable, children.next()).await {
+                    futures::future::Either::Left((error, _)) => return Err(error),
+                    futures::future::Either::Right((child, _)) => child,
+                };
+                let Some(child) = child.transpose()? else {
                     return Ok(None);
                 };
-                provider.visible(async {}).await?;
-                Ok(Some((child, (provider, children))))
+                provider.accepted(async {}).await?;
+                Ok(Some((child, (provider, children, changed))))
             },
         )
         .boxed())

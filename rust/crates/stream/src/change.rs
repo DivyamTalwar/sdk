@@ -6,7 +6,7 @@ use std::{
 };
 
 #[path = "change/sync.rs"]
-mod sync;
+pub(crate) mod sync;
 use sync::{Arc, Mutex};
 
 struct State {

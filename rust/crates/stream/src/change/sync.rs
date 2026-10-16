@@ -1,7 +1,7 @@
 #[cfg(acyclic_stream_loom)]
-pub(super) use loom::sync::Arc;
+pub(crate) use loom::sync::Arc;
 #[cfg(not(acyclic_stream_loom))]
-pub(super) use std::sync::{Arc, Mutex};
+pub(crate) use std::sync::{Arc, Mutex};
 
 #[cfg(acyclic_stream_loom)]
 mod checked {
@@ -47,4 +47,4 @@ mod checked {
     }
 }
 #[cfg(acyclic_stream_loom)]
-pub(super) use checked::{Mutex, assert_unlocked};
+pub(crate) use checked::{Mutex, assert_unlocked};

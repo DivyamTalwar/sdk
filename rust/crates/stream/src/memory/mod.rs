@@ -38,6 +38,9 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(acyclic_loom, feature = "local"))]
+/// Models the actual indexed child discovery and its local visibility adapter.
+pub mod discovery_model;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;

@@ -481,9 +481,7 @@ describe("website Stream contract", () => {
     const provider = new MemoryStreamProvider();
     const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
-    const children = [];
-    for await (const child of new StreamClient(provider).children("parent", 10)) children.push(child);
-    expect(children).toEqual([]);
+    expect((await new StreamClient(provider).childrenPage({ parent: "parent", limit: 10 })).children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
   });
 

@@ -114,7 +114,7 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     }));
     let follow = Arc::new(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -165,7 +165,7 @@ async fn unavailable_follow_item_is_retried_without_exposing_a_throwable_error()
         futures::stream::iter([Err(StreamError::Unavailable), Ok(record)]).boxed();
     let follow = NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -188,7 +188,7 @@ async fn repeated_unavailable_follow_items_are_cancellable() {
         futures::stream::repeat(Err(StreamError::Unavailable)).boxed();
     let follow = Arc::new(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -240,7 +240,7 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         *close_task_slot.lock().expect("close task slot poisoned") = Some(close_task);
         Poll::Ready(record.take().map(Ok))
     }));
-    *follow.state.records.lock().await = Some(records);
+    *follow.state.records.lock().await = Some(record_frames(records));
 
     let first = follow.next_result().await.expect("first read failed");
     assert!(first.value.is_none());

@@ -1,23 +1,7 @@
 use super::*;
-use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::{future::Future, task::Wake};
-
-struct Probe {
-    count: AtomicUsize,
-}
-impl Wake for Probe {
-    fn wake(self: std::sync::Arc<Self>) {
-        sync::assert_unlocked();
-        self.count.fetch_add(1, Ordering::SeqCst);
-    }
-}
-fn probe() -> (std::sync::Arc<Probe>, Waker) {
-    let count = std::sync::Arc::new(Probe {
-        count: AtomicUsize::new(0),
-    });
-    let wake = Waker::from(std::sync::Arc::clone(&count));
-    (count, wake)
-}
+use crate::probe::probe;
+use loom::sync::atomic::{AtomicBool, Ordering};
+use std::future::Future;
 
 fn snapshot_race(broken: bool) {
     loom::model(move || {

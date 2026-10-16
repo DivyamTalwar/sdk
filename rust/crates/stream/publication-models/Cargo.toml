@@ -5,7 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
+acyclic-stream = { path = "..", default-features = false, features = ["local"] }
 loom = "0.7.2"
+futures = "0.3.31"
 thiserror = "2.0"
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
@@ -15,6 +17,9 @@ path = "publication.rs"
 
 [workspace]
 members = ["."]
+
+[profile.dev]
+opt-level = 1
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_stream_loom)'] }
