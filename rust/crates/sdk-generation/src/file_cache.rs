@@ -56,10 +56,10 @@ pub(super) fn get(
 }
 
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    get(path, "sha256", || {
-        let bytes = sdk_docs::read_rustdoc(path).map_err(crate::docs_error)?;
-        Ok(crate::sha256_bytes(&bytes))
-    })
+    // The receipt reader already fences and memoizes the bytes on native identity.
+    // A second cache layer would reopen the same file for redundant observations.
+    let bytes = sdk_docs::read_rustdoc(path).map_err(crate::docs_error)?;
+    Ok(crate::sha256_bytes(&bytes))
 }
 
 pub(super) fn owner_metadata(
@@ -174,13 +174,7 @@ fn shared_identity(path: &Path, cache: &Path) -> Result<String, CliError> {
 }
 
 pub(super) fn rustdoc_digest(path: &Path, root: &Path) -> Result<String, CliError> {
-    let context = format!(
-        "rustdoc:{}",
-        crate::sha256_bytes(root.as_os_str().as_encoded_bytes())
-    );
-    get(path, &context, || {
-        sdk_docs::rustdoc_digest(path, root).map_err(|error| CliError(error.to_string()))
-    })
+    sdk_docs::rustdoc_digest(path, root).map_err(|error| CliError(error.to_string()))
 }
 
 #[cfg(test)]

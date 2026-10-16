@@ -117,7 +117,7 @@ thread_local! {
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Reuse Rustdoc inputs and tool-selection snapshots within one operation.
+/// Validate and reuse Rustdoc inputs; scope tool selection to one operation.
 pub fn with_rustdoc_cache<T>(operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<Cache>);
     impl Drop for Restore {
@@ -193,7 +193,18 @@ pub fn read_rustdoc(path: &Path) -> Result<Rc<[u8]>, Error> {
                 ))
             },
         ),
-        None => read(),
+        None => sdk_file_identity::cached(
+            &RefCell::new(BTreeMap::new()),
+            path.to_owned(),
+            || sdk_file_identity::stamp(path).map_err(Error::from),
+            read,
+            || {
+                Error::Invalid(format!(
+                    "Rustdoc receipt changed while reading {}",
+                    path.display()
+                ))
+            },
+        ),
     });
     if result.is_ok() {
         CACHE.with_borrow(|cache| {
