@@ -154,6 +154,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "filesystem_access"
+path = "fuzz_targets/filesystem_access.rs"
+required-features = ["filesystem-access"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "e2e_expectations"
 path = "fuzz_targets/e2e_expectations.rs"
 test = false
@@ -168,9 +176,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "filesystem_access"
-path = "fuzz_targets/filesystem_access.rs"
-required-features = ["filesystem-access"]
+name = "client_queries"
+path = "fuzz_targets/client_queries.rs"
 test = false
 doc = false
 bench = false

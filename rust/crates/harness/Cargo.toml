@@ -119,6 +119,10 @@ name = "client-interests"
 path = "tests/client_interests.rs"
 
 [[test]]
+name = "client-query"
+path = "tests/client_query.rs"
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
