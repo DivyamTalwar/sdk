@@ -1,5 +1,5 @@
 use super::{check, id, name};
-use crate::protocol::shape;
+use crate::protocol::{content, shape};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -34,23 +34,12 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         match kind {
             "message" => {
                 let role = item["role"].as_str().unwrap_or("");
-                check(
-                    matches!(role, "user" | "assistant" | "system" | "developer"),
-                    "OAR-SEQ-01",
-                    errors,
-                );
-                if let Some(parts) = item["content"].as_array() {
-                    for part in parts {
-                        let kind = part["type"].as_str().unwrap_or("");
-                        let accepted = if role == "assistant" {
-                            matches!(kind, "output_text" | "refusal")
-                        } else {
-                            matches!(kind, "input_text" | "input_image" | "input_file")
-                        };
-                        check(accepted && shape::content(part), "OAR-SEQ-03", errors);
+                let position = content::position(content::RESPONSES, role);
+                check(position.is_some(), "OAR-SEQ-01", errors);
+                if let Some(position) = position {
+                    if let Some(rule) = position.violation(&item["content"], false) {
+                        check(false, rule, errors);
                     }
-                } else {
-                    check(item["content"].is_string(), "OAR-SEQ-01", errors);
                 }
                 reasoning = false;
             }
@@ -68,11 +57,10 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     .as_str()
                     .is_some_and(|id| pending.remove(id));
                 check(matched, "OAR-TOOL-04", errors);
-                check(
-                    item["output"].is_string() || item["output"].is_array(),
-                    "OAR-TOOL-05",
-                    errors,
-                );
+                if let Some(rule) = content::RESPONSE_TOOL_OUTPUT.violation(&item["output"], false)
+                {
+                    check(false, rule, errors);
+                }
             }
             "reasoning" => {
                 check(

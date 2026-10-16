@@ -36,6 +36,22 @@ fn probes() -> Vec<(Adapter, Value, &'static str)> {
             "GEM-SEQ-05",
         ),
     ];
+    let (_, mut numeric_chat, _) = fixtures()[2].clone();
+    numeric_chat["messages"][1]["content"] = json!(123);
+    probes.push((Adapter::Chat, numeric_chat, "OAC-SEQ-03"));
+    probes.push((
+        Adapter::Chat,
+        json!({"messages":[{"role":"user","content":[{"type":"file","file":{}}]}]}),
+        "OAC-SEQ-02",
+    ));
+    for part in [
+        json!({"type":"input_text"}),
+        json!({"type":"output_text","text":"wrong position"}),
+    ] {
+        let (_, mut body, _) = fixtures()[1].clone();
+        body["input"][2]["output"] = json!([part]);
+        probes.push((Adapter::Responses, body, "OAR-TOOL-05"));
+    }
     let (_, mut chat, _) = fixtures()[2].clone();
     chat["messages"][1]["tool_calls"][0]
         .as_object_mut()
@@ -121,4 +137,44 @@ proptest! {
             prop_assert!(validate_input(adapter, &body).contains(&rule));
         }
     }
+}
+
+#[test]
+fn former_shape_shortcuts_fail_the_regressions() {
+    for (adapter, body, rule) in probes()
+        .into_iter()
+        .filter(|(_, _, rule)| matches!(*rule, "OAC-SEQ-03" | "OAC-SEQ-02" | "OAR-TOOL-05"))
+    {
+        let old_accepts = match rule {
+            "OAC-SEQ-03" => body["messages"][1]["tool_calls"].is_array(),
+            "OAC-SEQ-02" => {
+                let part = &body["messages"][0]["content"][0];
+                part["type"] == "text" || part["file"].is_object()
+            }
+            "OAR-TOOL-05" => body["input"][2]["output"].is_array(),
+            _ => unreachable!(),
+        };
+        assert!(old_accepts, "negative control must admit the bad fixture");
+        assert_rule(adapter, &body, rule, false);
+    }
+}
+
+#[test]
+fn only_null_or_absent_chat_content_can_use_the_tool_call_exception() {
+    let (_, body, _) = fixtures()[2].clone();
+    assert!(validate_input(Adapter::Chat, &body).is_empty());
+    let mut absent = body.clone();
+    absent["messages"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("content");
+    assert!(validate_input(Adapter::Chat, &absent).is_empty());
+    for scalar in [json!(42), json!(true), json!({})] {
+        let mut invalid = body.clone();
+        invalid["messages"][1]["content"] = scalar;
+        assert!(validate_input(Adapter::Chat, &invalid).contains(&"OAC-SEQ-03"));
+    }
+    let mut without_calls = body;
+    without_calls["messages"][1]["tool_calls"] = json!([]);
+    assert!(validate_input(Adapter::Chat, &without_calls).contains(&"OAC-SEQ-03"));
 }

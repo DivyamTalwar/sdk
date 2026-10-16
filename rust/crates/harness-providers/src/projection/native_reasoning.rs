@@ -23,7 +23,7 @@ struct Native<'a> {
 
 pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
     let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
-    if raw.get().as_bytes() != bytes {
+    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
         return None;
     }
     let item: Native<'_> = serde_json::from_slice(bytes).ok()?;
@@ -35,7 +35,7 @@ pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
         _ => return None,
     };
     let accepted = shape.fields.iter().all(|(path, constraint)| {
-        constraint.accepts_raw(match *path {
+        constraint.accepts_valid_raw(match *path {
             "/id" => item.id,
             "/thinking" => item.thinking,
             "/signature" => item.signature,
@@ -75,7 +75,7 @@ mod tests {
             for (adapter, item) in [
                 (Adapter::Anthropic, json!({"type":"thinking", "thinking":text, "signature":"signed=="})),
                 (Adapter::Anthropic, json!({"type":"redacted_thinking", "data":text})),
-                (Adapter::Responses, json!({"type":"reasoning", "id":"rs_saved", "summary":[], "encrypted_content":text})),
+                (Adapter::Responses, json!({"type":"reasoning", "id":"rs_saved", "summary":[{"type":"summary_text","text":text}], "encrypted_content":text})),
             ] {
                 let bytes = serde_json::to_vec(&item).unwrap();
                 let raw = validated(adapter, &bytes).expect("valid escaped native string");
@@ -93,6 +93,38 @@ mod tests {
         let raw: &RawValue = serde_json::from_slice(bad).unwrap();
         let fields: Native<'_> = serde_json::from_str(raw.get()).unwrap();
         assert!(fields.thinking.unwrap().get().starts_with('"'));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn nested_unpaired_surrogates_never_gain_native_continuity(
+            surrogate in 0xd800u16..=0xdfff, depth in 0..8usize,
+        ) {
+            let mut summary = format!(r#"{{"type":"summary_text","text":"\u{surrogate:04x}"}}"#);
+            for _ in 0..depth { summary = format!(r#"{{"nested":[{summary}]}}"#); }
+            let raw = format!(r#"{{"type":"reasoning","id":"rs_1","summary":[{summary}],"encrypted_content":"opaque"}}"#);
+            prop_assert!(serde_json::from_str::<serde_json::Value>(&raw).is_err());
+            prop_assert!(validated(Adapter::Responses, raw.as_bytes()).is_none());
+            // Removing strict traversal admits every generated malformed array.
+            let native: Native<'_> = serde_json::from_str(&raw).unwrap();
+            prop_assert!(native.summary.unwrap().get().starts_with('['));
+        }
+    }
+
+    #[test]
+    fn nested_native_strings_are_strict_without_reencoding() {
+        for bad in [
+            br#"{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"\ud800"}],"encrypted_content":"opaque"}"#.as_slice(),
+            br#"{"type":"reasoning","id":"rs_1","summary":[{"extra":{"\ud800":"value"}}],"encrypted_content":"opaque"}"#,
+            br#"{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque","extra":{"text":"\ud800"}}"#,
+        ] {
+            assert!(serde_json::from_slice::<serde_json::Value>(bad).is_err());
+            assert!(validated(Adapter::Responses, bad).is_none());
+            // Negative control: the former raw-array/type checks admit this.
+            let native: Native<'_> = serde_json::from_slice(bad).unwrap();
+            assert!(native.summary.unwrap().get().starts_with('['));
+        }
     }
 
     #[test]

@@ -125,6 +125,17 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 if let Some(raw) =
                     crate::projection::native_reasoning::validated(adapter, &block.continuity)
                 {
+                    // Independent bounded literal decoder: native admission must
+                    // reject invalid strings, including inside skipped fields.
+                    let bounds = acyclic_harness::JsonBounds {
+                        maximum_bytes: block.continuity.len() as u64,
+                        maximum_items: block.continuity.len() as u64,
+                        maximum_depth: 128,
+                    };
+                    assert!(
+                        acyclic_harness::json_value_bounded(raw, bounds, None, &mut |_| Ok(()),)
+                            .is_ok()
+                    );
                     assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
                 }
             }
@@ -292,6 +303,24 @@ mod properties {
             let chunks = input.as_bytes().chunks(width).map(|part| Ok(Bytes::copy_from_slice(part)));
             let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), 4096).try_collect::<Vec<_>>()).unwrap();
             prop_assert_eq!(frames, vec![lines.join("\n")]);
+        }
+    }
+
+    #[test]
+    fn checked_in_shape_regressions_obey_the_parser_oracles() {
+        for seed in [
+            include_bytes!("../fuzz/corpus/provider_stream/native-summary-surrogate.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-output-missing-text.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-output-wrong-position.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-numeric-call-content.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-file-without-source.json")
+                .as_slice(),
+        ] {
+            assert_stream_invariants(seed);
         }
     }
 

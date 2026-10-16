@@ -89,3 +89,6 @@ proptest! {
 
 #[path = "protocol_tests.rs"]
 mod protocol;
+
+#[path = "shape_table_tests.rs"]
+mod shape_table;
