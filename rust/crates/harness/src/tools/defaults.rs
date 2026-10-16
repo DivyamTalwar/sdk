@@ -42,11 +42,11 @@ pub(crate) fn bind_defaults(
             "bash" => command(
                 name,
                 "Run a bash command in the calling task's composed workspace view",
-            ),
+            )?,
             "fs" => command(
                 name,
                 "Run one git facade command, including diff, merge and discard of agents/<ref>",
-            ),
+            )?,
             "read" => crate::tool::files::read()?,
             "write" => crate::tool::files::write()?,
             "edit" => crate::tool::files::edit()?,
@@ -60,25 +60,29 @@ pub(crate) fn bind_defaults(
     Ok(())
 }
 
-fn command(name: &'static str, description: &str) -> Tool {
+fn command(name: &'static str, description: &str) -> Result<Tool> {
     let output = json!({"type":"object"});
-    Tool {
+    Ok(Tool {
         hook_names: if name == "bash" { &["Bash"] } else { &[] },
         definition: ToolDefinition {
             name: name.into(),
             revision: "1".into(),
             description: description.into(),
-            input_schema: json!({
-                "type":"object", "required":["command"],
-                "properties":{"command":{"type":"string","minLength":1}},
-                "additionalProperties":false
-            }),
+            input_schema: if name == "bash" {
+                crate::tool::schema::input::<super::BashInput>()?
+            } else {
+                json!({
+                    "type":"object", "required":["command"],
+                    "properties":{"command":{"type":"string","minLength":1}},
+                    "additionalProperties":false
+                })
+            },
             output_schema: output.clone(),
             projection_schema: crate::tool::json_projection_schema(output),
         },
         executor: Arc::new(WorkspaceExecutor { name }),
         projection: Arc::new(JsonToolProjection),
-    }
+    })
 }
 
 pub(crate) fn workspace<'a>(

@@ -1,4 +1,6 @@
 //! Standard coding tools and shared host executors.
+mod bash;
+pub use bash::BashInput;
 mod defaults;
 pub use defaults::defaults;
 mod command;

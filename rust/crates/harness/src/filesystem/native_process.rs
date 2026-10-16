@@ -80,6 +80,7 @@ pub struct NativeProcessAuthority {
     pub approvals: Arc<dyn ToolApprovalVerifier>,
 }
 
+pub(crate) mod bash;
 mod capture;
 mod invocation;
 pub use capture::NativeProcessObserver;

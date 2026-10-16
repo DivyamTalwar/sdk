@@ -152,7 +152,8 @@ proptest::proptest! {
 }
 
 #[tokio::test]
-async fn large_publication_range_uses_the_original_small_io_allowance() -> Result<()> {
+async fn large_publication_range_accounts_authentication_and_reads_only_the_selected_chunk()
+-> Result<()> {
     let (host, file) = published(&vec![b'x'; 2 * 1024 * 1024]).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget {
@@ -164,19 +165,36 @@ async fn large_publication_range_uses_the_original_small_io_allowance() -> Resul
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let bytes = host
-        .read_pinned_range(
-            &file,
-            acyclic_fs::ByteRange {
-                offset: 1024,
-                length: 16,
-            },
-            Some(&io),
+    let range = acyclic_fs::ByteRange {
+        offset: 1024,
+        length: 16,
+    };
+    let denied = host.read_pinned_range(&file, range, Some(&io)).await;
+    // Authenticating an immutable blob requires its complete selected chunk.
+    // This deliberately insufficient allowance must fail on the original ledger.
+    assert!(matches!(
+        denied,
+        Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
+            acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                counter: "bytes_hashed", maximum: 65536, ..
+            })
         )
-        .await?;
+    ));
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            source_bytes_read: 64 * 1024,
+            bytes_copied: 64 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let bytes = host.read_pinned_range(&file, range, Some(&io)).await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
     assert!(work.receipt().source_bytes_read < 64 * 1024);
-    assert!(work.receipt().bytes_hashed < 64 * 1024);
     assert!(work.receipt().bytes_copied < 64 * 1024);
+    assert!(work.receipt().bytes_hashed < file.descriptor().byte_length());
+    assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
     Ok(())
 }
