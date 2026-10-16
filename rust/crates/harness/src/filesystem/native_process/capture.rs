@@ -158,6 +158,14 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
     })
     .await
     .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
+    Ok((result(output), custody))
+}
+
+fn result(
+    output: std::io::Result<
+        std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
+    >,
+) -> Option<NativeProcessResult> {
     let result = match output {
         Ok(Ok(output)) => NativeProcessResult {
             success: output.status.success(),
@@ -182,9 +190,9 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
                 cleanup_completed: failure.cleanup_completed,
             }),
         },
-        Err(_) => return Ok((None, custody)),
+        Err(_) => return None,
     };
-    Ok((Some(result), custody))
+    Some(result)
 }
 
 #[cfg(test)]

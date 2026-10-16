@@ -4,6 +4,8 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 
+mod mounts;
+
 pub(super) type View = LazyWorkspace<
     LocalAuthorityBackend,
     LocalObjectBackend,
@@ -18,6 +20,7 @@ pub struct LocalWorkspace {
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
+    pub(super) mounts: Arc<crate::workspace::MountTable<()>>,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -30,6 +33,21 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) fn context_stage(&self) -> Arc<dyn crate::context::ContextStage> {
+        Arc::new(crate::context::SourceStage::new(
+            "workspace_volumes",
+            "1",
+            Arc::new(crate::context::Context {
+                messages: vec![crate::model::ModelMessage {
+                    role: crate::model::ModelRole::System,
+                    content: ModelContent::Text(self.mounts.context_line()),
+                }],
+                ..Default::default()
+            }),
+            crate::context::ContextPlacement::Prepend,
+        ))
+    }
+
     /// Binds the native checkout executor to this owner-selected project volume.
     pub fn executor(
         self: &Arc<Self>,
@@ -129,6 +147,7 @@ pub(super) async fn open(
         .await
         .map_err(storage)?;
     Ok(LocalWorkspace {
+        mounts: Arc::new(mounts::owner(&path, volume)?),
         path,
         view,
         filesystem: filesystem.clone(),

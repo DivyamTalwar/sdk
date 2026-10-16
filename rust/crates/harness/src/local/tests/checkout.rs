@@ -72,6 +72,19 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     assert_eq!(output?.text, "commands completed");
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
+    let mounts = harness.workspace().unwrap().mounts.context_line();
+    for request in &requests {
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| message.role == crate::model::ModelRole::System
+                    && message.content == crate::model::ModelContent::Text(mounts.clone()))
+                .count(),
+            1,
+            "each model step sees the same mount table used by bash"
+        );
+    }
     let results: std::collections::BTreeMap<_, _> = requests
         .iter()
         .flat_map(|request| &request.messages)

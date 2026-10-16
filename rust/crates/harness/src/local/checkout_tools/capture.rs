@@ -24,26 +24,15 @@ impl CheckoutTools {
     ) -> Result<()> {
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
-        let config = workspace.volume_config();
         let options = &self.capture_options;
         let policy = &self.capture_policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
         let baseline = slot.is_none();
-        let mut watcher = match slot.take() {
-            Some(watcher) => watcher,
-            None => {
-                let mut watcher = NativeWatch::open_with_profile(
-                    &self.workspace.path,
-                    config.profile,
-                    NativeWatchOptions::new(config.limits),
-                )
-                .map_err(storage)?;
-                watcher
-                    .exclude_subtrees(self.capture_policy.excluded_prefixes())
-                    .map_err(storage)?;
-                watcher
-            }
+        let mut watcher = if let Some(watcher) = slot.take() {
+            watcher
+        } else {
+            self.open_watcher()?
         };
         if watcher.root_identity() != self.workspace.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
@@ -136,6 +125,20 @@ impl CheckoutTools {
         }
         *slot = Some(watcher);
         Ok(())
+    }
+
+    fn open_watcher(&self) -> Result<NativeWatch> {
+        let config = self.workspace.view().workspace().volume_config();
+        let mut watcher = NativeWatch::open_with_profile(
+            &self.workspace.path,
+            config.profile,
+            NativeWatchOptions::new(config.limits),
+        )
+        .map_err(storage)?;
+        watcher
+            .exclude_subtrees(self.capture_policy.excluded_prefixes())
+            .map_err(storage)?;
+        Ok(watcher)
     }
 }
 

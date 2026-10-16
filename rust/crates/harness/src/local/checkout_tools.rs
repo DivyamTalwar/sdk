@@ -12,7 +12,6 @@ mod bash;
 mod capture;
 mod git;
 mod lock;
-mod mounts;
 mod output;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
@@ -24,7 +23,7 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    mounts: crate::workspace::MountTable<()>,
+    mounts: Arc<crate::workspace::MountTable<()>>,
     task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     // Lock order: checkout state -> coordinator, released before task-file
     // index -> provider visibility -> provider state. Command-local git cache
@@ -71,7 +70,7 @@ impl CheckoutTools {
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
             capture_policy,
-            mounts: mounts::owner(&workspace.path, project)?,
+            mounts: Arc::clone(&workspace.mounts),
             workspace,
             clock,
             task_files,

@@ -76,6 +76,7 @@ impl LocalHarness {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
             let (model, provider) = config.model;
+            let context = config.context;
             model.validate()?;
             let mut tools = ToolRegistry::default();
             if config.default_tools {
@@ -136,6 +137,11 @@ impl LocalHarness {
                     .await?,
                 )),
                 LocalProject::Volume { .. } => None,
+            };
+            #[cfg(feature = "native-execution")]
+            let context = match &workspace {
+                Some(workspace) => context.with(workspace.context_stage()),
+                None => context,
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
             // A configured project is opened, never silently replaced by an empty volume.
@@ -216,7 +222,7 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context: config.context,
+                context,
                 limits: config.limits,
                 compaction,
                 #[cfg(feature = "native-execution")]
