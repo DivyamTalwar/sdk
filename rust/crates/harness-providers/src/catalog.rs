@@ -1,4 +1,4 @@
-use crate::{Adapter, Authentication, ProviderSpec};
+use crate::{Adapter, Authentication, ImageInput, ProviderSpec};
 use acyclic_harness::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
@@ -63,7 +63,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
     ENDPOINTS
         .iter()
         .map(|&(id, adapter, authentication, base_url)| {
-            let models = MODELS
+            let models: BTreeMap<String, ModelContextCapacity> = MODELS
                 .iter()
                 .filter(|(provider, ..)| *provider == id)
                 .map(|&(_, name, context_tokens, output_tokens)| {
@@ -82,6 +82,21 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     adapter,
                     authentication,
                     base_url: base_url.into(),
+                    images: models
+                        .keys()
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                ImageInput {
+                                    maximum_bytes: 4 * 1024 * 1024,
+                                    maximum_total_bytes: 8 * 1024 * 1024,
+                                    maximum_images: 16,
+                                    maximum_dimension: 4096,
+                                    maximum_tokens: 16_384,
+                                },
+                            )
+                        })
+                        .collect(),
                     models,
                     max_event_bytes: 1024 * 1024,
                 },

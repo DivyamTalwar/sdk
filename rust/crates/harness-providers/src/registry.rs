@@ -92,6 +92,7 @@ impl Registry {
             capacity,
             key,
             transport: self.transport.clone(),
+            content: None,
         })
     }
 }
@@ -120,6 +121,24 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
     validate_url(&config.base_url)?;
     for capacity in config.models.values() {
         capacity.validate()?;
+    }
+    for (model, images) in &config.images {
+        let capacity = config
+            .models
+            .get(model)
+            .ok_or_else(|| invalid("image model has no declared context capacity"))?;
+        let portable = acyclic_harness::conversation::MAX_EXACT_JS_INTEGER;
+        if images.maximum_bytes == 0
+            || images.maximum_bytes > portable
+            || images.maximum_total_bytes < images.maximum_bytes
+            || images.maximum_total_bytes > portable
+            || matches!(images.maximum_images, 0 | u32::MAX)
+            || matches!(images.maximum_dimension, 0 | u32::MAX)
+            || images.maximum_tokens == 0
+            || images.maximum_tokens > capacity.context_tokens
+        {
+            return Err(invalid("invalid image input bounds"));
+        }
     }
     Ok(())
 }

@@ -1,0 +1,724 @@
+use super::*;
+use acyclic_harness::{
+    AgentId, Capabilities, IdempotencyKey,
+    conversation::{
+        BoundedContentFuture, ContentGrant, ContentIo, ContentPublisher, ContentResidencyVerifier,
+        FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    },
+    core::{AggregateKind, Authority, AuthorityIssuer},
+    filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost},
+    model::{
+        FileProjectionPolicy, ImageDetail, ModelContentPart, ModelDataPart, NativeMediaIntent,
+        NativeMediaPolicy, ToolResultContent,
+    },
+    resources::ProviderRef,
+};
+use base64::Engine as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5U8AAAAASUVORK5CYII=";
+
+struct Reads {
+    inner: Arc<dyn ContentResidencyVerifier>,
+    calls: AtomicUsize,
+}
+
+impl ContentResidencyVerifier for Reads {
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+        maximum: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.read(file, maximum, io)
+    }
+}
+
+async fn file(
+    bytes: &[u8],
+    mime: &str,
+    denied: bool,
+    io: Option<&ContentIo>,
+) -> Result<(FileRef, Arc<Reads>, Arc<dyn ContentPublisher>)> {
+    let agent = AgentId::from_bytes([81; 16]);
+    let provider = ProviderRef::new("images".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityIssuer::new(
+        "images",
+        [81; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "images".into(),
+        },
+    );
+    let capabilities = Capabilities::new([
+        volume.capability(VolumeOperation::Read, &mut None)?,
+        volume.capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    let scope = issuer.issue("images", &capabilities, Some(agent), None, &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let write = ContentGrant::verify(
+        &verifier,
+        &scope,
+        &volume,
+        VolumeOperation::Write,
+        65_536,
+        &mut None,
+    )?;
+    let file = host
+        .put_content(
+            &volume,
+            &write,
+            "attachments/image.png",
+            bytes,
+            mime,
+            "image.png",
+            65_536,
+            &IdempotencyKey::new("image")?,
+            None,
+            None,
+        )
+        .await?;
+    let publisher =
+        FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 65_536, None)?;
+    let scope = if denied {
+        issuer.issue(
+            "denied",
+            &Capabilities::default(),
+            Some(agent),
+            None,
+            &mut None,
+        )?
+    } else {
+        scope
+    };
+    let reader = FilesystemContentVerifier::new(host, &verifier, &scope, 65_536, io)?;
+    Ok((
+        file,
+        Arc::new(Reads {
+            inner: reader,
+            calls: AtomicUsize::new(0),
+        }),
+        publisher,
+    ))
+}
+
+fn image(file: &FileRef) -> ModelContentPart {
+    ModelContentPart::File {
+        file: file.clone(),
+        policy: policy(),
+    }
+}
+
+fn policy() -> FileProjectionPolicy {
+    FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+        intent: NativeMediaIntent::Image {
+            detail: ImageDetail::High,
+        },
+        maximum_bytes: 4096,
+        maximum_work: 1024,
+        configuration: None,
+    }))
+}
+
+fn enable(provider: &mut ResolvedModel) {
+    Arc::make_mut(&mut provider.config).images.insert(
+        provider.model.name.clone(),
+        ImageInput {
+            maximum_bytes: 4096,
+            maximum_total_bytes: 8192,
+            maximum_images: 4,
+            maximum_dimension: 1024,
+            maximum_tokens: 1024,
+        },
+    );
+}
+
+fn prepare(
+    provider: &ResolvedModel,
+    messages: Vec<ModelMessage>,
+) -> Result<(PreparedModelRequest, ModelDispatch)> {
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: provider.model.clone(),
+            messages,
+            tools: Vec::new(),
+            max_output_tokens: Some(64),
+        },
+        Limits::default(),
+        None,
+    )?;
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness::OperationId::new(),
+        step: 0,
+        request_digest: request.request_digest(),
+    };
+    Ok((request, dispatch))
+}
+
+fn user(parts: Vec<ModelContentPart>) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Parts(parts),
+    }
+}
+
+fn text(value: &str) -> ModelContentPart {
+    ModelContentPart::Text { text: value.into() }
+}
+
+fn expected_image(adapter: Adapter) -> serde_json::Value {
+    let url = format!("data:image/png;base64,{PNG}");
+    match adapter {
+        Adapter::Chat => json!({"type":"image_url", "image_url":{"url":url,"detail":"high"}}),
+        Adapter::Responses => json!({"type":"input_image", "image_url":url,"detail":"high"}),
+        Adapter::Anthropic => {
+            json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":PNG}})
+        }
+        Adapter::Gemini => json!({"inlineData":{"mimeType":"image/png","data":PNG}}),
+    }
+}
+
+fn message_parts<'a>(
+    adapter: Adapter,
+    body: &'a serde_json::Value,
+    index: usize,
+) -> &'a serde_json::Value {
+    match adapter {
+        Adapter::Chat | Adapter::Anthropic => &body["messages"][index]["content"],
+        Adapter::Responses => &body["input"][index]["content"],
+        Adapter::Gemini => &body["contents"][index]["parts"],
+    }
+}
+
+#[test]
+fn image_catalog_bounds_are_declarative_and_reject_invalid_models() -> Result<()> {
+    let (_, transport) = provider(Adapter::Chat, 200);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let valid = json!({
+        "adapter":"chat", "authentication":"optional", "base_url":"http://localhost:1234/v1",
+        "models":{"vision":{"context_tokens":8192,"output_tokens":1024}},
+        "images":{"vision":{"maximum_bytes":4096,"maximum_total_bytes":8192,"maximum_images":4,"maximum_dimension":1024,"maximum_tokens":1024}},
+        "max_event_bytes":4096,
+    });
+    let spec: ProviderSpec = serde_json::from_value(valid.clone()).expect("catalog");
+    registry.register("vision".into(), spec)?;
+    assert!(
+        registry
+            .resolve("vision/vision")?
+            .config
+            .images
+            .contains_key("vision")
+    );
+    for (field, value) in [
+        ("maximum_bytes", 0),
+        ("maximum_bytes", 9007199254740992u64),
+        ("maximum_total_bytes", 4095),
+        ("maximum_total_bytes", 9007199254740992u64),
+        ("maximum_images", 0),
+        ("maximum_images", u32::MAX as u64),
+        ("maximum_dimension", 0),
+        ("maximum_tokens", 0),
+        ("maximum_tokens", 8193),
+    ] {
+        let mut bad = valid.clone();
+        bad["images"]["vision"][field] = json!(value);
+        assert!(
+            registry
+                .register(
+                    "bad".into(),
+                    serde_json::from_value(bad).expect("catalog shape")
+                )
+                .is_err(),
+            "{field}={value}"
+        );
+        assert!(!registry.catalog().contains_key("bad"));
+    }
+    let mut unknown = valid;
+    unknown["models"] = json!({});
+    assert!(
+        registry
+            .register(
+                "bad".into(),
+                serde_json::from_value(unknown).expect("catalog shape")
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> Result<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG fixture");
+    for (adapter, _) in fixtures() {
+        let (file, reads, _) = file(&bytes, "image/png", false, None).await?;
+        let (mut provider, script) = provider(adapter, 200);
+        enable(&mut provider);
+        let provider = provider.with_content_reader(reads.clone());
+        let messages = vec![
+            user(vec![
+                text("before"),
+                image(&file),
+                text("between"),
+                image(&file),
+                text("after"),
+            ]),
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("earlier answer".into()),
+            },
+            user(vec![text("again"), image(&file)]),
+        ];
+        let (request, dispatch) = prepare(&provider, messages)?;
+        let count = provider.count_tokens(&request)?;
+        assert!(count.message_tokens[0] >= 2048);
+        assert!(count.message_tokens[0] < 2600);
+        assert_eq!(
+            reads.calls.load(Ordering::SeqCst),
+            0,
+            "counting never reads image bytes"
+        );
+        let digest = request.request_digest();
+        assert_eq!(
+            provider
+                .generate(request.clone(), dispatch)
+                .try_collect::<Vec<_>>()
+                .await?
+                .len(),
+            4
+        );
+        assert_eq!(digest, request.request_digest());
+        let recounted = provider.count_tokens(&request)?;
+        assert_eq!(count.message_tokens, recounted.message_tokens);
+        assert_eq!(count.fixed_tokens, recounted.fixed_tokens);
+        assert_eq!(reads.calls.load(Ordering::SeqCst), 3);
+        let sent = script.sent.lock().expect("capture");
+        assert_eq!(sent.len(), 1);
+        let body = json(&sent[0].body)?;
+        let parts = message_parts(adapter, &body, 0).as_array().expect("parts");
+        assert_eq!(parts.len(), 5, "{adapter:?}");
+        for (index, value) in [(0, "before"), (2, "between"), (4, "after")] {
+            assert_eq!(parts[index]["text"], value);
+        }
+        assert_eq!(parts[1], expected_image(adapter));
+        assert_eq!(parts[3], expected_image(adapter));
+        assert_eq!(message_parts(adapter, &body, 2)[1], expected_image(adapter));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_tool_results_keep_each_provider_wire_shape() -> Result<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG fixture");
+    for (adapter, _) in fixtures() {
+        let (file, reads, _) = file(&bytes, "image/png", false, None).await?;
+        let (mut provider, script) = provider(adapter, 200);
+        enable(&mut provider);
+        let provider = provider.with_content_reader(reads);
+        let messages = vec![
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Parts(vec![ModelContentPart::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        "shot".into(),
+                        "screenshot".into(),
+                        json!({}),
+                    ),
+                )]),
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Parts(vec![ModelContentPart::ToolResult {
+                    call_id: "shot".into(),
+                    name: "screenshot".into(),
+                    content: ToolResultContent::Parts {
+                        parts: vec![
+                            ModelDataPart::Text {
+                                text: "caption".into(),
+                            },
+                            ModelDataPart::File {
+                                file,
+                                policy: policy(),
+                            },
+                        ],
+                    },
+                }]),
+            },
+        ];
+        let (request, dispatch) = prepare(&provider, messages)?;
+        provider
+            .generate(request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let sent = script.sent.lock().expect("capture");
+        let body = json(&sent[0].body)?;
+        match adapter {
+            Adapter::Chat => {
+                assert_eq!(body["messages"][1]["role"], "tool");
+                assert_eq!(body["messages"][1]["content"], "caption");
+                assert_eq!(body["messages"][2]["role"], "user");
+                assert_eq!(body["messages"][2]["content"][1], expected_image(adapter));
+            }
+            Adapter::Responses => {
+                assert_eq!(body["input"][1]["output"][1], expected_image(adapter))
+            }
+            Adapter::Anthropic => assert_eq!(
+                body["messages"][1]["content"][0]["content"][1],
+                expected_image(adapter)
+            ),
+            Adapter::Gemini => {
+                assert_eq!(
+                    body["contents"][1]["parts"][0]["functionResponse"]["response"]["output"],
+                    "caption"
+                );
+                assert_eq!(body["contents"][1]["parts"][2], expected_image(adapter));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_fallbacks_never_read_files() -> Result<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG fixture");
+    for (adapter, _) in fixtures() {
+        for case in ["model", "format", "system", "assistant"] {
+            let mime = if case == "format" {
+                "image/svg+xml"
+            } else {
+                "image/png"
+            };
+            let (file, reads, _) = file(&bytes, mime, true, None).await?;
+            let (mut provider, script) = provider(adapter, 200);
+            if case != "model" {
+                enable(&mut provider);
+            }
+            let provider = provider.with_content_reader(reads.clone());
+            let role = match case {
+                "system" => ModelRole::System,
+                "assistant" => ModelRole::Assistant,
+                _ => ModelRole::User,
+            };
+            let mut messages = vec![ModelMessage {
+                role,
+                content: ModelContent::Parts(vec![image(&file)]),
+            }];
+            if role != ModelRole::User {
+                messages.push(user(vec![text("question")]));
+            }
+            let (request, dispatch) = prepare(&provider, messages)?;
+            provider
+                .generate(request, dispatch)
+                .try_collect::<Vec<_>>()
+                .await?;
+            assert_eq!(reads.calls.load(Ordering::SeqCst), 0, "{adapter:?} {case}");
+            let sent = script.sent.lock().expect("capture");
+            let body = json(&sent[0].body)?;
+            assert!(body.to_string().contains("omitted"));
+            assert!(!body.to_string().contains(PNG));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_bounds_and_authority_fail_before_http() -> Result<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG fixture");
+    for (adapter, _) in fixtures() {
+        for case in [
+            "count",
+            "aggregate",
+            "bytes",
+            "work",
+            "header",
+            "mime",
+            "dimensions",
+            "denied",
+            "integrity",
+            "reader",
+        ] {
+            let mut bytes = bytes.clone();
+            let mime = if case == "mime" {
+                "image/jpeg"
+            } else {
+                "image/png"
+            };
+            if case == "header" {
+                bytes.fill(0);
+            }
+            if case == "dimensions" {
+                bytes[16..20].copy_from_slice(&4096u32.to_be_bytes());
+            }
+            let (mut file, reads, _) = file(&bytes, mime, case == "denied", None).await?;
+            if case == "integrity" {
+                file = FileRef::new(
+                    file.volume().clone(),
+                    file.path().into(),
+                    file.version().into(),
+                    acyclic_harness::conversation::FileDescriptor::new(
+                        [0; 32],
+                        bytes.len() as u64,
+                        mime.into(),
+                    )?,
+                    file.display_name().into(),
+                    &mut None,
+                )?;
+            }
+            let (mut provider, script) = provider(adapter, 200);
+            enable(&mut provider);
+            let limits = Arc::make_mut(&mut provider.config)
+                .images
+                .get_mut("model")
+                .expect("limits");
+            match case {
+                "count" => limits.maximum_images = 1,
+                "aggregate" => limits.maximum_total_bytes = file.descriptor().byte_length(),
+                "bytes" => limits.maximum_bytes = file.descriptor().byte_length() - 1,
+                _ => {}
+            }
+            let mut parts = vec![image(&file)];
+            if matches!(case, "count" | "aggregate") {
+                parts.push(image(&file));
+            }
+            if case == "work" {
+                let ModelContentPart::File {
+                    policy: FileProjectionPolicy::Native(policy),
+                    ..
+                } = &mut parts[0]
+                else {
+                    unreachable!()
+                };
+                policy.maximum_work = 1;
+            }
+            if case != "reader" {
+                provider = provider.with_content_reader(reads.clone());
+            }
+            let (request, dispatch) = prepare(&provider, vec![user(parts)])?;
+            assert!(
+                provider
+                    .generate(request, dispatch)
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .is_err(),
+                "{adapter:?} {case}"
+            );
+            assert!(script.sent.lock().expect("capture").is_empty());
+            let expected = usize::from(matches!(
+                case,
+                "header" | "mime" | "dimensions" | "denied" | "integrity"
+            ));
+            assert_eq!(
+                reads.calls.load(Ordering::SeqCst),
+                expected,
+                "{adapter:?} {case}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_native_dispatch_uses_original_work_and_releases_content() -> Result<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG fixture");
+    for (adapter, response) in fixtures() {
+        let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let (file, reads, _) = file(&bytes, "image/png", false, Some(&io)).await?;
+        let (mut provider, _) = provider(adapter, 200);
+        enable(&mut provider);
+        let transport = Arc::new(super::native_tests::Fixture::new(response));
+        provider.transport = transport.clone();
+        let provider = provider.with_content_reader(reads.clone());
+        let (request, dispatch) =
+            prepare(&provider, vec![user(vec![text("describe"), image(&file)])])?;
+        let before = work.live_allocation_bytes();
+        let (count, hold) = provider.count_tokens_with_native_work(&request, &work)?;
+        assert!(count.message_tokens[0] >= 1024);
+        assert!(hold.work().shares_allocation_context(&work));
+        drop((count, hold));
+        let mut stream = provider
+            .generate_with_native_work(&request, dispatch, &work)?
+            .await?;
+        let mut events = 0;
+        while let Some(event) = stream.next().await {
+            let (event, hold) = event?;
+            assert!(hold.work().shares_allocation_context(&work));
+            drop((event, hold));
+            events += 1;
+        }
+        drop(stream);
+        assert_eq!(events, 4, "{adapter:?}");
+        assert_eq!(reads.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
+        assert!(work.receipt().items_examined >= bytes.len() as u64);
+        assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
+        drop(provider);
+        drop(reads);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_attach_and_paste_survive_manifest_reopen_and_model_projection() -> Result<()> {
+    use acyclic_harness::{
+        client::{attach_image, paste_image},
+        conversation::{
+            ConversationMessage, ConversationState, MessageKind, ModelContextSelection,
+            ReferencedAttachments, encode_attachment_manifest, load_manifest,
+        },
+        projection::select_model_context,
+        tui::{ClipboardContent, prepare_image},
+    };
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG fixture");
+    for (adapter, _) in fixtures() {
+        let (original, reads, publisher) = file(&bytes, "image/png", false, None).await?;
+        let attached = attach_image(original.clone(), reads.as_ref(), 4096).await?;
+        assert_eq!(
+            attached.file, original,
+            "attachment retains the selected version"
+        );
+        let clipboard = prepare_image(2, 2, vec![255; 16]).expect("clipboard image");
+        let ClipboardContent::Image { jpeg, .. } = &clipboard else {
+            unreachable!()
+        };
+        let paste = acyclic_harness::OperationId::new();
+        let pasted = paste_image(publisher.as_ref(), paste, &clipboard, 4096).await?;
+        assert_eq!(
+            paste_image(publisher.as_ref(), paste, &clipboard, 4096).await?,
+            pasted
+        );
+        assert_eq!(pasted.file.volume(), original.volume());
+        assert_eq!(pasted.file.descriptor().media_type(), "image/jpeg");
+        let attachments = vec![attached, pasted];
+        let manifest_bytes = encode_attachment_manifest(&attachments)?;
+        let (manifest, hold) = publisher
+            .stage_once(
+                acyclic_harness::OperationId::new(),
+                "drafts/input/attachments.json",
+                &manifest_bytes,
+                "application/vnd.acyclic.harness.attachments+json",
+                "attachments.json",
+                None,
+            )?
+            .await?;
+        drop(hold);
+        let (text, hold) = publisher
+            .stage_once(
+                acyclic_harness::OperationId::new(),
+                "drafts/input/prompt.txt",
+                b"describe both images",
+                "text/plain",
+                "prompt.txt",
+                None,
+            )?
+            .await?;
+        drop(hold);
+        let (restored, hold) = load_manifest(reads.as_ref(), &manifest, 2, None).await?;
+        assert_eq!(restored, attachments);
+        drop((restored, hold));
+        let message = ConversationMessage {
+            id: "10000000-0000-0000-0000-000000000001".parse().expect("id"),
+            sequence: 1,
+            kind: MessageKind::User,
+            content: text,
+            attachments: ReferencedAttachments::Manifest {
+                manifest,
+                item_count: 2,
+            },
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        let mut history = ConversationState::default();
+        history.bind(AgentId::from_bytes([81; 16]))?;
+        history.append(message.clone(), &mut None)?;
+        // Reopen only the canonical files and references, not transient provider parts.
+        let history: ConversationState =
+            serde_json::from_slice(&serde_json::to_vec(&history).expect("history"))
+                .expect("reopen history");
+        let selected = select_model_context(
+            &history,
+            1,
+            ModelContextSelection {
+                checkpoint: None,
+                conversation_revision: 1,
+                message_ids: vec![message.id],
+            },
+            reads.as_ref(),
+            Limits::default(),
+            2,
+            None,
+        )
+        .await?;
+        let (mut provider, script) = provider(adapter, 200);
+        enable(&mut provider);
+        let provider = provider.with_content_reader(reads);
+        let (request, dispatch) = prepare(&provider, selected.messages)?;
+        provider
+            .generate(request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let sent = script.sent.lock().expect("capture");
+        let body = json(&sent[0].body)?;
+        let parts = message_parts(adapter, &body, 0).as_array().expect("parts");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["text"], "describe both images");
+        let encoded_jpeg = base64::engine::general_purpose::STANDARD.encode(jpeg);
+        match adapter {
+            Adapter::Chat => {
+                assert_eq!(
+                    parts[1]["image_url"]["url"],
+                    format!("data:image/png;base64,{PNG}")
+                );
+                assert_eq!(
+                    parts[2]["image_url"]["url"],
+                    format!("data:image/jpeg;base64,{encoded_jpeg}")
+                );
+            }
+            Adapter::Responses => {
+                assert_eq!(
+                    parts[1]["image_url"],
+                    format!("data:image/png;base64,{PNG}")
+                );
+                assert_eq!(
+                    parts[2]["image_url"],
+                    format!("data:image/jpeg;base64,{encoded_jpeg}")
+                );
+            }
+            Adapter::Anthropic => {
+                assert_eq!(parts[1]["source"]["data"], PNG);
+                assert_eq!(parts[2]["source"]["data"], encoded_jpeg);
+            }
+            Adapter::Gemini => {
+                assert_eq!(parts[1]["inlineData"]["data"], PNG);
+                assert_eq!(parts[2]["inlineData"]["data"], encoded_jpeg);
+            }
+        }
+    }
+    Ok(())
+}

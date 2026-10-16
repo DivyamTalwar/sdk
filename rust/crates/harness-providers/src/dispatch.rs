@@ -45,8 +45,18 @@ pub(crate) async fn send(
     key: Option<&str>,
     account: Option<&str>,
 ) -> Result<(HttpResponse, usize)> {
-    let (url, headers, body) = self::request(provider, request, dispatch, key, account)?;
-    let input_bytes = body.len();
+    let images = crate::images::load(provider, request.request(), None).await?;
+    let (url, headers, body) = self::request(
+        provider,
+        request,
+        dispatch,
+        key,
+        account,
+        images.iter().map(|image| image.0.as_ref()),
+    )?;
+    // Image usage must not calibrate the text-only bytes/token estimator.
+    let input_bytes = if images.is_empty() { body.len() } else { 0 };
+    drop(images);
     let response = provider
         .transport
         .send(HttpRequest {
@@ -58,14 +68,15 @@ pub(crate) async fn send(
     Ok((response, input_bytes))
 }
 
-pub(crate) fn request(
+pub(crate) fn request<'a>(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
+    images: impl Iterator<Item = &'a [u8]>,
 ) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
-    let body = projection::body(provider, request.request())?;
+    let body = projection::body_with_images(provider, request.request(), images, false)?;
     let mut headers = BTreeMap::from([("accept".into(), "text/event-stream".into())]);
     if let Some(key) = key {
         let (name, value) = match provider.config.adapter {

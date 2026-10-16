@@ -44,11 +44,36 @@ async fn send(
         nodes,
         key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
     )?;
-    let (url, headers, body) = diagnostic(
-        dispatch::request(provider, request, dispatch_id, key, account),
+    let encoded = diagnostic(
+        crate::images::encoded_bytes(provider, request.request()),
         &mut allocation,
     )?;
-    let input_bytes = body.len();
+    if encoded != 0 {
+        let mut image_allocation = reserve(work, encoded, 0, 0)?;
+        allocation.absorb(&mut image_allocation)?;
+        // Metadata readers can scan the bounded input (e.g. JPEG markers).
+        work.charge(WorkCounters {
+            items_examined: encoded,
+            ..WorkCounters::UNCHARGED
+        })?;
+    }
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+    let images = diagnostic(
+        crate::images::load(provider, request.request(), Some(&io)).await,
+        &mut allocation,
+    )?;
+    let (url, headers, body) = diagnostic(
+        dispatch::request(
+            provider,
+            request,
+            dispatch_id,
+            key,
+            account,
+            images.iter().map(|image| image.0.as_ref()),
+        ),
+        &mut allocation,
+    )?;
+    let input_bytes = if images.is_empty() { body.len() } else { 0 };
     let retained = (std::mem::size_of::<crate::HttpRequest>()
         + std::mem::size_of::<RequestBody>()
         + url.capacity()
@@ -58,6 +83,7 @@ async fn send(
             .iter()
             .map(|(name, value)| name.capacity() + value.capacity())
             .sum::<usize>()) as u64;
+    drop(images);
     retain(&mut allocation, retained)?;
     let body = bytes::Bytes::from_owner(RequestBody {
         bytes: body,

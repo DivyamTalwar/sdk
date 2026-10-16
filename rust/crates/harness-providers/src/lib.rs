@@ -8,6 +8,7 @@ mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
+mod images;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
@@ -29,7 +30,7 @@ pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
-pub use spec::{Authentication, ProviderSpec};
+pub use spec::{Authentication, ImageInput, ProviderSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;

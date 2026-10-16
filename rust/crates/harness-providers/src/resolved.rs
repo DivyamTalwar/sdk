@@ -16,9 +16,19 @@ pub struct ResolvedModel {
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
+    pub(crate) content: Option<Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>>,
 }
 
 impl ResolvedModel {
+    /// Binds the caller-authorized filesystem reader; canonical requests retain file references.
+    pub fn with_content_reader(
+        mut self,
+        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+    ) -> Self {
+        self.content = Some(reader);
+        self
+    }
+
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model

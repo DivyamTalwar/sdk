@@ -27,6 +27,9 @@ mod chat_batch_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "image_tests.rs"]
+mod image_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 mod native_tests;
 
@@ -222,6 +225,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
             authentication: Authentication::ApiKey,
             base_url: "http://127.0.0.1:1234/v1".into(),
             models: BTreeMap::new(),
+            images: BTreeMap::new(),
             max_event_bytes: 4096,
         }),
         capacity: ModelContextCapacity {
@@ -230,6 +234,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         },
         key: Some("scripted-key".into()),
         transport: script.clone(),
+        content: None,
     };
     (provider, script)
 }
@@ -362,6 +367,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
             },
         )]),
         max_event_bytes: 4096,
+        images: BTreeMap::new(),
     };
     for base in [
         "http://example.test",

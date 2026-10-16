@@ -10,6 +10,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
         max_event_bytes: 4096,
+        images: BTreeMap::new(),
         models: BTreeMap::from([(
             "m".into(),
             ModelContextCapacity {

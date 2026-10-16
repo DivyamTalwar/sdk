@@ -26,7 +26,11 @@ pub use session::{
 };
 mod transport;
 pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
+mod attachments;
 mod content;
+pub use attachments::attach_image;
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+pub use attachments::paste_image;
 mod usage;
 mod views;
 pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};

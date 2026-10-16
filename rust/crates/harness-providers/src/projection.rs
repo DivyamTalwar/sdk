@@ -7,6 +7,7 @@ use acyclic_harness::{
         ModelRequest, ModelRole, PreparedModelRequest, ToolResultContent,
     },
 };
+use base64::Engine as _;
 use serde_json::{Value, json};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
@@ -36,6 +37,7 @@ pub(crate) fn count(
     prepared: &PreparedModelRequest,
 ) -> Result<ModelTokenCount> {
     let request = prepared.request();
+    crate::images::encoded_bytes(provider, request)?;
     let mut fixed = body(provider, request)?;
     let body_bytes = encoded_len(&fixed)?;
     let field = match provider.config.adapter {
@@ -60,13 +62,25 @@ pub(crate) fn count(
         .messages
         .iter()
         .map(|message| {
-            encoded_len(&Value::Array(project_message(
-                provider.config.adapter,
-                message,
-            )?))
+            let projected = project_message(provider, message, &mut std::iter::empty(), true)?;
+            let bytes = encoded_len(&Value::Array(projected))?;
+            let image_tokens =
+                crate::images::files(message).try_fold(0u32, |total, (file, policy)| {
+                    let amount = crate::images::support(provider, file, policy)?
+                        .map_or(0, |limits| limits.maximum_tokens);
+                    total
+                        .checked_add(amount)
+                        .ok_or_else(|| invalid("image token count overflows"))
+                })?;
+            let text = usize::try_from(crate::images::text_bytes(message)?)
+                .map_err(|_| invalid("text projection size overflows"))?;
+            let bytes = bytes
+                .checked_add(text)
+                .ok_or_else(|| invalid("text projection size overflows"))?;
+            Ok((bytes, image_tokens))
         })
         .collect::<Result<Vec<_>>>()?;
-    let total_messages: usize = message_bytes.iter().sum();
+    let total_messages: usize = message_bytes.iter().map(|(bytes, _)| bytes).sum();
     let fixed_bytes = encoded_len(&fixed)?.max(body_bytes.saturating_sub(total_messages));
     let tokens = |bytes| {
         provider
@@ -79,7 +93,11 @@ pub(crate) fn count(
         fixed_tokens: tokens(fixed_bytes)?,
         message_tokens: message_bytes
             .into_iter()
-            .map(tokens)
+            .map(|(bytes, images)| {
+                tokens(bytes)?
+                    .checked_add(images)
+                    .ok_or_else(|| invalid("image token count overflows"))
+            })
             .collect::<Result<_>>()?,
     })
 }
@@ -104,16 +122,42 @@ pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
 }
 
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
+    body_with_images(provider, request, std::iter::empty(), true)
+}
+
+pub(crate) fn body_with_images<'a>(
+    provider: &ResolvedModel,
+    request: &ModelRequest,
+    mut images: impl Iterator<Item = &'a [u8]>,
+    counting: bool,
+) -> Result<Value> {
+    crate::images::encoded_bytes(provider, request)?;
     let adapter = provider.config.adapter;
     let mut messages = Vec::new();
     let mut system = Vec::new();
+    let mut tool_images = Vec::new();
     for message in &request.messages {
+        if message.role != ModelRole::Tool {
+            messages.append(&mut tool_images);
+        }
         if message.role == ModelRole::System
             && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         {
-            system.push(text_content(&message.content)?);
+            system.push(text_content(
+                provider,
+                &message.content,
+                &mut images,
+                counting,
+            )?);
         } else {
-            for mut projected in project_message(adapter, message)? {
+            for mut projected in project_message(provider, message, &mut images, counting)? {
+                if adapter == Adapter::Chat
+                    && message.role == ModelRole::Tool
+                    && projected["role"] == "user"
+                {
+                    tool_images.push(projected);
+                    continue;
+                }
                 // A tool batch is one model turn, followed by one result turn.
                 if adapter == Adapter::Gemini
                     && messages
@@ -152,6 +196,10 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
                 }
             }
         }
+    }
+    messages.append(&mut tool_images);
+    if !counting && images.next().is_some() {
+        return Err(invalid("resolved images differ from the model request"));
     }
     let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {
         Adapter::Anthropic => json!({"name":tool.name,"description":tool.description,"input_schema":tool.input_schema}),
@@ -255,7 +303,13 @@ fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
     Ok(())
 }
 
-fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value>> {
+fn project_message<'a>(
+    provider: &ResolvedModel,
+    message: &ModelMessage,
+    images: &mut impl Iterator<Item = &'a [u8]>,
+    counting: bool,
+) -> Result<Vec<Value>> {
+    let adapter = provider.config.adapter;
     let role = match message.role {
         ModelRole::System => "system",
         ModelRole::User => "user",
@@ -263,15 +317,34 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
         ModelRole::Tool => "tool",
     };
     let mut texts = Vec::new();
+    let mut content = Vec::new();
     let mut calls = Vec::new();
     let mut results = Vec::new();
+    let mut extra_images = Vec::new();
     if let ModelContent::Text(text) = &message.content {
         texts.push(text.clone());
+        content.push(text_part(adapter, text));
     }
     for part in message.content.parts() {
         match part {
-            ModelContentPart::Text { text } => texts.push(text.clone()),
-            ModelContentPart::File { file, policy } => texts.push(file_text(file, policy)?),
+            ModelContentPart::Text { text } => {
+                texts.push(text.clone());
+                content.push(text_part(adapter, text));
+            }
+            ModelContentPart::File { file, policy } => {
+                let part = file_part(
+                    provider,
+                    file,
+                    policy,
+                    images,
+                    counting,
+                    message.role == ModelRole::User,
+                )?;
+                if let Some(text) = part["text"].as_str() {
+                    texts.push(text.to_owned());
+                }
+                content.push(part);
+            }
             ModelContentPart::ToolCall(acyclic_harness::model::ToolCall {
                 call_id,
                 name,
@@ -314,46 +387,70 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
                 name,
                 content,
             } => {
-                let text = result_text(content)?;
+                let parts = result_parts(provider, content, images, counting)?;
+                let text = parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let has_images = parts.iter().any(|part| !part["text"].is_string());
                 results.push(match adapter {
-                    Adapter::Anthropic => json!({"type":"tool_result","tool_use_id":call_id,"content":text}),
-                    Adapter::Responses => json!({"type":"function_call_output","call_id":call_id,"output":text}),
+                    Adapter::Anthropic => json!({"type":"tool_result","tool_use_id":call_id,"content":if has_images { json!(parts) } else { json!(text) }}),
+                    Adapter::Responses => json!({"type":"function_call_output","call_id":call_id,"output":if has_images { json!(parts) } else { json!(text) }}),
                     Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
                     Adapter::Gemini => json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}}),
                 });
+                if has_images && matches!(adapter, Adapter::Chat | Adapter::Gemini) {
+                    let mut captioned = vec![text_part(
+                        adapter,
+                        &format!("Images from tool {name} ({call_id}):"),
+                    )];
+                    captioned.extend(parts.into_iter().filter(|part| !part["text"].is_string()));
+                    if adapter == Adapter::Chat {
+                        extra_images.push(json!({"role":"user","content":captioned}));
+                    } else {
+                        results.extend(captioned);
+                    }
+                }
             }
         }
     }
     let mut output = Vec::new();
     match adapter {
         Adapter::Chat => {
-            if !texts.is_empty() || !calls.is_empty() || results.is_empty() {
-                let mut value = json!({"role":role,"content":if texts.is_empty() {Value::Null} else {json!(texts.join("\n"))}});
+            if !content.is_empty() || !calls.is_empty() || results.is_empty() {
+                let value = if content.len() == texts.len() {
+                    if texts.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(texts.join("\n"))
+                    }
+                } else {
+                    json!(content)
+                };
+                let mut value = json!({"role":role,"content":value});
                 if !calls.is_empty() {
                     value["tool_calls"] = json!(calls);
                 }
                 output.push(value);
             }
             output.extend(results);
+            output.extend(extra_images);
         }
         Adapter::Responses => {
-            if !texts.is_empty() {
-                output.push(json!({"role":role,"content":texts.join("\n")}));
+            if !content.is_empty() {
+                let value = if content.len() == texts.len() {
+                    json!(texts.join("\n"))
+                } else {
+                    json!(content)
+                };
+                output.push(json!({"role":role,"content":value}));
             }
             output.extend(calls);
             output.extend(results);
         }
         Adapter::Anthropic | Adapter::Gemini => {
-            let mut parts: Vec<_> = texts
-                .into_iter()
-                .map(|text| {
-                    if adapter == Adapter::Anthropic {
-                        json!({"type":"text","text":text})
-                    } else {
-                        json!({"text":text})
-                    }
-                })
-                .collect();
+            let mut parts = content;
             parts.extend(calls);
             parts.extend(results);
             output.push(if adapter == Adapter::Anthropic {
@@ -366,23 +463,73 @@ fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value
     Ok(output)
 }
 
-fn result_text(content: &ToolResultContent) -> Result<String> {
+fn text_part(adapter: Adapter, text: &str) -> Value {
+    match adapter {
+        Adapter::Gemini => json!({"text":text}),
+        Adapter::Responses => json!({"type":"input_text","text":text}),
+        _ => json!({"type":"text","text":text}),
+    }
+}
+
+fn image_part(
+    adapter: Adapter,
+    file: &acyclic_harness::conversation::FileRef,
+    policy: &acyclic_harness::model::NativeMediaPolicy,
+    bytes: &[u8],
+) -> Value {
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let mime = file.descriptor().media_type();
+    let detail = match policy.intent {
+        acyclic_harness::model::NativeMediaIntent::Image { detail } => match detail {
+            acyclic_harness::model::ImageDetail::Auto => "auto",
+            acyclic_harness::model::ImageDetail::Low => "low",
+            acyclic_harness::model::ImageDetail::High => "high",
+        },
+        _ => "auto",
+    };
+    match adapter {
+        Adapter::Anthropic => {
+            json!({"type":"image","source":{"type":"base64","media_type":mime,"data":data}})
+        }
+        Adapter::Gemini => json!({"inlineData":{"mimeType":mime,"data":data}}),
+        Adapter::Responses => {
+            json!({"type":"input_image","image_url":format!("data:{mime};base64,{data}"),"detail":detail})
+        }
+        Adapter::Chat => {
+            json!({"type":"image_url","image_url":{"url":format!("data:{mime};base64,{data}"),"detail":detail}})
+        }
+    }
+}
+
+fn result_parts<'a>(
+    provider: &ResolvedModel,
+    content: &ToolResultContent,
+    images: &mut impl Iterator<Item = &'a [u8]>,
+    counting: bool,
+) -> Result<Vec<Value>> {
     match content {
         ToolResultContent::Json { value } => {
-            serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
+            let text = serde_json::to_string(value).map_err(|error| invalid(error.to_string()))?;
+            Ok(vec![text_part(provider.config.adapter, &text)])
         }
         ToolResultContent::Parts { parts } => parts
             .iter()
             .map(|part| match part {
-                ModelDataPart::Text { text } => Ok(text.clone()),
-                ModelDataPart::File { file, policy } => file_text(file, policy),
+                ModelDataPart::Text { text } => Ok(text_part(provider.config.adapter, text)),
+                ModelDataPart::File { file, policy } => {
+                    file_part(provider, file, policy, images, counting, true)
+                }
             })
-            .collect::<Result<Vec<_>>>()
-            .map(|parts| parts.join("\n")),
+            .collect(),
     }
 }
 
-fn text_content(content: &ModelContent) -> Result<String> {
+fn text_content<'a>(
+    provider: &ResolvedModel,
+    content: &ModelContent,
+    images: &mut impl Iterator<Item = &'a [u8]>,
+    counting: bool,
+) -> Result<String> {
     if let ModelContent::Text(text) = content {
         return Ok(text.clone());
     }
@@ -391,11 +538,62 @@ fn text_content(content: &ModelContent) -> Result<String> {
         .iter()
         .map(|part| match part {
             ModelContentPart::Text { text } => Ok(text.clone()),
-            ModelContentPart::File { file, policy } => file_text(file, policy),
+            ModelContentPart::File { file, policy } => {
+                let part = file_part(provider, file, policy, images, counting, false)?;
+                part["text"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid("system image was not reduced to a fallback note"))
+            }
             _ => Err(invalid("system messages cannot contain tool exchanges")),
         })
         .collect::<Result<Vec<_>>>()
         .map(|parts| parts.join("\n"))
+}
+
+fn file_part<'a>(
+    provider: &ResolvedModel,
+    file: &acyclic_harness::conversation::FileRef,
+    policy: &FileProjectionPolicy,
+    images: &mut impl Iterator<Item = &'a [u8]>,
+    counting: bool,
+    allowed: bool,
+) -> Result<Value> {
+    if matches!(policy, FileProjectionPolicy::BoundedFull) {
+        let bytes = match images.next() {
+            Some(bytes) => bytes,
+            None if counting => &[],
+            None => return Err(invalid("text file was not resolved before dispatch")),
+        };
+        let text = std::str::from_utf8(bytes).map_err(|_| invalid("text file is not UTF-8"))?;
+        return Ok(text_part(provider.config.adapter, text));
+    }
+    if let FileProjectionPolicy::Native(policy) = policy
+        && matches!(
+            policy.intent,
+            acyclic_harness::model::NativeMediaIntent::Image { .. }
+        )
+    {
+        if allowed && crate::images::support(provider, file, policy)?.is_some() {
+            let bytes = match images.next() {
+                Some(bytes) => bytes,
+                None if counting => &[],
+                None => return Err(invalid("image file was not resolved before dispatch")),
+            };
+            return Ok(image_part(provider.config.adapter, file, policy, bytes));
+        }
+        let note = format!(
+            "[Image {} omitted: {}/{} does not support this image format or message role]",
+            file.display_name(),
+            provider.model.provider,
+            provider.model.name
+        );
+        return Ok(text_part(provider.config.adapter, &note));
+    }
+    Ok(text_part(
+        provider.config.adapter,
+        &file_text(file, policy)?,
+    ))
 }
 
 fn file_text(
