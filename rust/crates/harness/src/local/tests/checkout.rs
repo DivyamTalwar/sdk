@@ -3,11 +3,11 @@ use super::*;
 
 fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
-        ScriptedEvent::Event(ModelEvent::ToolCall {
-            call_id: format!("checkout-{index}"),
-            name: name.into(),
-            arguments: json!({"command":command}),
-        }),
+        ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+            format!("checkout-{index}"),
+            name.into(),
+            json!({"command":command}),
+        ))),
         ScriptedEvent::Event(ModelEvent::Completed {
             metadata: json!({}),
         }),
@@ -315,11 +315,11 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
 
 fn input_call(arguments: Value) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
-        ScriptedEvent::Event(ModelEvent::ToolCall {
-            call_id: "bash/input:1".into(),
-            name: "bash".into(),
+        ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+            "bash/input:1".into(),
+            "bash".into(),
             arguments,
-        }),
+        ))),
         ScriptedEvent::Event(ModelEvent::Completed {
             metadata: json!({}),
         }),
