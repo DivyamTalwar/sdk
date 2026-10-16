@@ -5,6 +5,27 @@ use std::fs::{File, FileTimes};
 use std::time::{Duration, UNIX_EPOCH};
 
 proptest! {
+    #[test]
+    fn selection_is_reused_only_within_a_command(commands in proptest::collection::vec(any::<bool>(), 1..24)) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("toolchain");
+        fs::write(&path, "channel").unwrap();
+        let lookups = Cell::new(0);
+        let mut expected = 0;
+        for (index, next_command) in commands.into_iter().enumerate() {
+            if index == 0 || next_command {
+                begin_run();
+                expected += 1;
+            }
+            let value = get(&path, "rustup-which:property", || {
+                lookups.set(lookups.get() + 1);
+                Ok("cargo".into())
+            }).unwrap();
+            prop_assert_eq!(value, "cargo");
+            prop_assert_eq!(lookups.get(), expected);
+        }
+    }
+
     // Property: probe keys cover every observable input and ignore env iteration order.
     #[test]
     fn cargo_probe_context_is_complete_and_order_independent(
@@ -87,6 +108,32 @@ fn cargo_probe_key_frames_environment_names_and_values() {
     let context =
         |key: &str, value: &str| cargo_context(Path::new("root"), "", [(key.into(), value.into())]);
     assert_ne!(context("A", "BC"), context("AB", "C"));
+}
+
+#[test]
+fn each_command_refreshes_selection_and_retains_unchanged_file_identities() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("toolchain");
+    fs::write(&path, "channel").unwrap();
+    let lookups = Cell::new(0);
+    let selection = || {
+        get(&path, "rustup-which:context", || {
+            lookups.set(lookups.get() + 1);
+            Ok("cargo".into())
+        })
+        .unwrap()
+    };
+    assert_eq!(selection(), "cargo");
+    assert_eq!(selection(), "cargo");
+    assert_eq!(lookups.get(), 1);
+    get(&path, "sha256", || Ok("digest".into())).unwrap();
+    crate::run(["help".into()]).unwrap();
+    get(&path, "sha256", || {
+        panic!("unchanged file identity was discarded")
+    })
+    .unwrap();
+    assert_eq!(selection(), "cargo");
+    assert_eq!(lookups.get(), 2);
 }
 
 #[test]

@@ -5,7 +5,8 @@ pub(super) fn rustc_host() -> Result<String, CliError> {
 }
 
 pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
-    let toolchain = fs::read_to_string(root.join("rust-toolchain.toml"))
+    let declaration = root.join("rust-toolchain.toml");
+    let toolchain = fs::read_to_string(&declaration)
         .map_err(io_error)?
         .lines()
         .find_map(|line| {
@@ -13,17 +14,24 @@ pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
             (key.trim() == "channel").then(|| value.trim().trim_matches('"').to_owned())
         })
         .ok_or_else(|| CliError("rust-toolchain.toml has no pinned channel".into()))?;
-    let output = Command::new("rustup")
-        .args(["which", "cargo", "--toolchain", &toolchain])
-        .output()
-        .map_err(io_error)?;
-    if !output.status.success() {
-        return Err(CliError(format!(
-            "pinned Cargo toolchain `{toolchain}` is unavailable: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let context = format!(
+        "rustup-which:{}",
+        cargo_context(root, &toolchain, std::env::vars_os())
+    );
+    let path = crate::file_cache::get(&declaration, &context, || {
+        let output = Command::new("rustup")
+            .args(["which", "cargo", "--toolchain", &toolchain])
+            .output()
+            .map_err(io_error)?;
+        if !output.status.success() {
+            return Err(CliError(format!(
+                "pinned Cargo toolchain `{toolchain}` is unavailable: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    })?;
+    let path = PathBuf::from(path);
     if !path.is_file() {
         return Err(CliError(format!(
             "rustup selected a missing Cargo executable {}",

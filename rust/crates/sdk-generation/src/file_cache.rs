@@ -88,6 +88,13 @@ thread_local! {
     static VALUES: RefCell<BTreeMap<(PathBuf, String), (Stamp, String)>> = const { RefCell::new(BTreeMap::new()) };
 }
 
+pub(super) fn begin_run() {
+    // Resolve rustup's selection afresh for each command; retain file identities.
+    VALUES.with_borrow_mut(|values| {
+        values.retain(|(_, context), _| !context.starts_with("rustup-which:"))
+    });
+}
+
 pub(super) fn get(
     path: &Path,
     context: &str,
