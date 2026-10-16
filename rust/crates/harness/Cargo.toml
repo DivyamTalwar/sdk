@@ -51,6 +51,11 @@ path = "tests/file_query.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "client-goal-views"
+path = "tests/client_goal_views.rs"
+required-features = ["wasm"]
+
+[[test]]
 name = "mcp-loom"
 path = "tests/mcp_loom.rs"
 
