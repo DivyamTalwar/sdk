@@ -1,5 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+pub(crate) mod command_query;
 mod follow;
 mod heads;
 mod schema;
@@ -18,7 +19,10 @@ use acyclic_stream::{
 };
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 /// Task-volume failure; reset requires a fresh bounded snapshot.
@@ -157,6 +161,8 @@ struct Index {
     next: u64,
     commit: CommitId,
     files: BTreeMap<FileKey, FileValue>,
+    executions: BTreeMap<(Option<Component>, u64), FileKey>,
+    pending_commands: BTreeSet<FileKey>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -401,5 +407,23 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue) {
+    if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
+        let owner = match &file.key {
+            FileKey::Session { session, .. } => Some(session.clone()),
+            _ => None,
+        };
+        index
+            .executions
+            .insert((owner, index.next), file.key.clone());
+        for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
+            if let Some(key) = command_query::related(&file.key, make) {
+                index.pending_commands.remove(&key);
+            }
+        }
+    } else if let Some(result) = command_query::related(&file.key, TaskFile::ExecutionResult) {
+        if !index.files.contains_key(&result) {
+            index.pending_commands.insert(file.key.clone());
+        }
+    }
     index.files.insert(file.key.clone(), file);
 }

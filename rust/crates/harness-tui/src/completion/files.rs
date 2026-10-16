@@ -5,6 +5,7 @@ use std::{io, rc::Rc};
 pub(super) struct Entry {
     pub kind: CompletionKind,
     pub item: Rc<Completion>,
+    pub theme: bool,
 }
 
 impl CompletionMenu {
@@ -26,6 +27,16 @@ impl CompletionMenu {
                 order
             });
         if let Some((_, old)) = self.files.remove(path) {
+            for entry in old.iter().filter(|entry| entry.theme) {
+                let name = entry.item.value.to_ascii_lowercase();
+                if let Some(count) = self.theme_commands.get_mut(&name) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.theme_commands.remove(&name);
+                        self.version = None;
+                    }
+                }
+            }
             for (index, entry) in old.iter().enumerate() {
                 if let Some(request) = &self.request {
                     if request.kind != entry.kind {
@@ -50,6 +61,13 @@ impl CompletionMenu {
             }
         }
         for (index, entry) in entries.iter().enumerate() {
+            if entry.theme {
+                *self
+                    .theme_commands
+                    .entry(entry.item.value.to_ascii_lowercase())
+                    .or_default() += 1;
+                self.version = None;
+            }
             self.rank_entry(order, index, entry);
         }
         if bytes.is_some() {
@@ -62,6 +80,8 @@ impl CompletionMenu {
     /// Replace a lost query's disposable fold before applying its new snapshot.
     pub fn clear_files(&mut self) {
         self.files.clear();
+        self.theme_commands.clear();
+        self.version = None;
         self.next_file = 0;
         self.items.clear();
         self.selected = 0;
@@ -71,6 +91,7 @@ impl CompletionMenu {
 fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
     let make = |kind, value: String, description, tool, append_space| Entry {
         kind,
+        theme: false,
         item: Rc::new(Completion {
             label: if kind == CompletionKind::Command {
                 format!("/{value}")
@@ -167,13 +188,16 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
                     {
                         return Err(io::Error::other("invalid command alias"));
                     }
-                    Ok(make(
+                    let mut entry = make(
                         CompletionKind::Command,
                         name,
                         description.into(),
                         tool,
                         append,
-                    ))
+                    );
+                    entry.theme = action == Some("theme")
+                        || action.is_none() && entry.item.value.eq_ignore_ascii_case("theme");
+                    Ok(entry)
                 })
                 .collect::<io::Result<Vec<_>>>()
         })

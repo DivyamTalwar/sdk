@@ -11,6 +11,66 @@ use loom::thread;
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+fn active_command_cut_control(broken: bool) {
+    model(move || {
+        let volume = Arc::new(block_on(TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("command-cut")?,
+        ))?);
+        let session = Component::new("session")?;
+        let request = Write::new(
+            FileKey::Session {
+                session: session.clone(),
+                file: TaskFile::Request(Component::new("request")?),
+            },
+            OwnedBytes::from_static(b"request"),
+        );
+        let base = block_on(volume.snapshot(&Query::Root, 0))?.generation;
+        let base = block_on(volume.create(base, &request))?;
+        let worker = thread::spawn({
+            let volume = volume.clone();
+            let session = session.clone();
+            move || {
+                block_on(volume.create(
+                    base,
+                    &Write::new(
+                        FileKey::Session {
+                            session,
+                            file: TaskFile::ExecutionResult(Component::new("request")?),
+                        },
+                        OwnedBytes::from_static(b"done"),
+                    ),
+                ))
+            }
+        });
+        let query = if broken {
+            Query::Root
+        } else {
+            Query::CommandSession { session, recent: 0 }
+        };
+        let snapshot = block_on(volume.snapshot(&query, 2))?;
+        if snapshot.generation.position == base.position {
+            assert_eq!(snapshot.files, vec![request]);
+        } else {
+            assert_eq!(snapshot.generation.position, base.position + 1);
+            assert!(snapshot.files.is_empty(), "settled request stayed active");
+        }
+        worker.join().map_err(|_| "publisher panicked")??;
+        Ok(())
+    });
+}
+
+#[test]
+fn active_command_snapshot_and_completion_share_one_cut() {
+    active_command_cut_control(false);
+}
+
+#[test]
+#[should_panic(expected = "settled request stayed active")]
+fn negative_control_detects_retaining_settled_commands() {
+    active_command_cut_control(true);
+}
+
 fn create_claim_control(broken: bool, session: bool) {
     model(move || {
         let volume = Arc::new(block_on(TaskVolume::open(

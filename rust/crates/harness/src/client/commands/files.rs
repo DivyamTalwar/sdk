@@ -240,6 +240,7 @@ impl CommandResolution {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert("history_page".into(), json!(back));
                 layout.insert("open_view".into(), json!("history"));
+                layout.insert("view_request".into(), json!(operation));
                 return Ok(config(
                     CommandFileRoot::Session,
                     "layout.json",
@@ -355,6 +356,7 @@ impl CommandResolution {
             }
             Self::Select { query } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                layout.insert("view_request".into(), json!(operation));
                 layout.insert(
                     "open_view".into(),
                     serde_json::to_value(query).map_err(codec)?,
