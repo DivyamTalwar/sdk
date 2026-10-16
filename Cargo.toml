@@ -14,8 +14,8 @@ members = [
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
-  "rust/crates/harness/fuzz",
   "rust/crates/harness-conformance",
+  "rust/crates/harness-fuzz",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
@@ -29,6 +29,7 @@ members = [
   "rust/crates/stream-napi",
   "rust/crates/harness-tui",
   "rust/crates/workers",
+  "rust/fuzz",
   "rust/crates/manifest",
   "plugin",
 ]

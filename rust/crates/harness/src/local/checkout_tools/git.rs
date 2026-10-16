@@ -88,13 +88,9 @@ impl CheckoutTools {
             argv.remove(0);
         }
         let repository_id = self.workspace.view().workspace().id();
-        let tree = git_workspace_tree(view, &argv, Some(lease.publication_permit()))
-            .await
-            .map_err(storage)?;
-        let patch = git_apply_patch(view, &self.workspace.path, &argv)
-            .await
-            .map_err(storage)?;
-        let (ignore, merge_drivers) = git_policy(view).await.map_err(storage)?;
+        let tree = git_workspace_tree(view, &argv, Some(lease.publication_permit())).await?;
+        let patch = git_apply_patch(view, &self.workspace.path, &argv).await?;
+        let (ignore, merge_drivers) = git_policy(view).await?;
         let executor = RootMaterializingGitExecutor {
             inner: WorkspaceGitExecutor {
                 fs: &self.workspace.filesystem,
@@ -112,16 +108,10 @@ impl CheckoutTools {
             root: &self.workspace.path,
             source_root_identity: self.workspace.identity,
             before_effect: || async {
-                let owner = context
-                    .task()
-                    .owned_mailbox
-                    .as_ref()
-                    .ok_or_else(|| GitError("git command has no execution owner".into()))?;
-                owner
-                    .verify_owner(None)
-                    .map_err(|error| GitError(error.to_string()))?
-                    .await
-                    .map_err(|error| GitError(error.to_string()))
+                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                    Error::Unauthorized("git command has no execution owner".into())
+                })?;
+                owner.verify_owner(None)?.await
             },
         };
         let repository =
@@ -135,12 +125,11 @@ impl CheckoutTools {
             i64::try_from(self.clock.now_unix_millis() / 1000).unwrap_or(i64::MAX),
             &executor,
         )
-        .await
-        .map_err(storage)?
+        .await?
         .ok_or_else(|| {
             Error::Conflict("recovered a pending fs transition; retry the command".into())
         })?;
-        let switched = executor.inner.switched_workspace().map_err(storage)?;
+        let switched = executor.inner.switched_workspace()?;
         Ok((
             ToolResult {
                 value: serde_json::json!({"result": output}),

@@ -1,7 +1,7 @@
 use super::*;
 
 impl WorkspaceGitExecutor<'_> {
-    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<LocalGeneration, GitError> {
+    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<LocalGeneration, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self
                 .workspace(reference.workspace_id)
@@ -55,18 +55,17 @@ impl WorkspaceGitExecutor<'_> {
                     )
                     .await
                     .map_err(display)
-                    .map_err(GitError)
             }
         }
     }
 
     /// Constructs a facade error.
-    pub fn error(message: impl Into<String>) -> GitError {
-        GitError(message.into())
+    pub(crate) fn error(message: impl Into<String>) -> Error {
+        Error::Conflict(message.into())
     }
 
     /// Takes the workspace selected by a branch switch.
-    pub fn switched_workspace(&self) -> Result<Option<LocalLazyWorkspace>, GitError> {
+    pub(crate) fn switched_workspace(&self) -> Result<Option<LocalLazyWorkspace>, Error> {
         self.switched
             .lock()
             .map_err(|_| Self::error("Git workspace switch lock is unavailable"))
@@ -74,10 +73,10 @@ impl WorkspaceGitExecutor<'_> {
     }
 
     /// Resolves a workspace through the repository lineage.
-    pub async fn workspace(
+    pub(crate) async fn workspace(
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
-    ) -> Result<LocalWorkspace, GitError> {
+    ) -> Result<LocalWorkspace, Error> {
         if workspace_id == self.current.id() {
             return Ok(self.current.clone());
         }
@@ -87,6 +86,5 @@ impl WorkspaceGitExecutor<'_> {
         )
         .await
         .map_err(display)
-        .map_err(GitError)
     }
 }

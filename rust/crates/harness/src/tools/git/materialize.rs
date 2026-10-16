@@ -1,7 +1,7 @@
 use super::*;
 
 /// Publishes git facade mutations into the ordinary checkout.
-pub struct RootMaterializingGitExecutor<'a, F> {
+pub(crate) struct RootMaterializingGitExecutor<'a, F> {
     /// Managed workspace executor.
     pub inner: WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
@@ -15,14 +15,14 @@ pub struct RootMaterializingGitExecutor<'a, F> {
 impl<F, Fut> RootMaterializingGitExecutor<'_, F>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), GitError>> + Send,
+    Fut: Future<Output = Result<(), Error>> + Send,
 {
     /// Publishes a generation transition into the checkout.
     pub async fn materialize(
         &self,
         operation_id: OperationId,
         from: LocalGeneration,
-    ) -> Result<(), GitError> {
+    ) -> Result<(), Error> {
         let target = self
             .inner
             .switched
@@ -60,21 +60,22 @@ pub(crate) async fn publish_checkout_transition<F, Fut>(
     from: LocalGeneration,
     to_generation: LocalGeneration,
     before_effect: &F,
-) -> Result<(), GitError>
+) -> Result<(), Error>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), GitError>> + Send,
+    Fut: Future<Output = Result<(), Error>> + Send,
 {
     before_effect().await?;
     let to = to_generation.id();
     if from.id() == to {
         return Ok(());
     }
-    let operation_directory =
-        root_materialization_directory(root, operation_id).map_err(GitError)?;
+    let operation_directory = NativeDirectory(root)
+        .publication_directory(operation_id)
+        .map_err(Error::Storage)?;
     let parent = operation_directory
         .parent()
-        .ok_or_else(|| GitError("staging parent is absent".into()))?;
+        .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
     std::fs::create_dir_all(parent).map_err(display)?;
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -83,7 +84,9 @@ where
         acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
             .map_err(display)?;
     if actual != source_root_identity {
-        return Err(GitError("checkout root changed before publication".into()));
+        return Err(Error::Storage(
+            "checkout root changed before publication".into(),
+        ));
     }
     let options = MaterializeOptions {
         destination: operation_directory.join("target"),
@@ -125,10 +128,12 @@ where
         .remove_materialization_async(operation_id)
         .await
         .map_err(display)?;
-    remove_tree_checked(
-        &root_materialization_root(root).map_err(GitError)?,
-        &operation_directory,
+    NativeDirectory(
+        &NativeDirectory(root)
+            .publication_root()
+            .map_err(Error::Storage)?,
     )
+    .remove(&operation_directory)
     .map_err(display)?;
     Ok(())
 }
@@ -136,9 +141,9 @@ where
 impl<F, Fut> GitFilesystemExecutor for RootMaterializingGitExecutor<'_, F>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), GitError>> + Send,
+    Fut: Future<Output = Result<(), Error>> + Send,
 {
-    type Error = GitError;
+    type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
         (self.before_effect)().await?;
