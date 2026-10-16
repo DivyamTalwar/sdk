@@ -190,6 +190,30 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
+        // This cancellation fixture supplies an explicit immutable catalog, as
+        // before; per-turn instruction discovery is covered by local context tests.
+        let manifest =
+            crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?;
+        let bytes = manifest.encode(Limits::default())?;
+        let digest = blake3::hash(&bytes);
+        let context_manifest = FilesystemContentPublisher::new(
+            files.clone(),
+            &self.volumes[2],
+            &verifier,
+            &signed,
+            Limits::default().file_bytes,
+            None,
+        )?
+        .stage_once(
+            OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
+            &format!("inputs/context/{digest}.json"),
+            &bytes,
+            "application/json",
+            "context-manifest.json",
+            None,
+        )?
+        .await?
+        .0;
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -206,8 +230,9 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context_manifest: None,
+            context_manifest: Some(context_manifest),
             context_read_observer: None,
+            #[cfg(feature = "native-execution")]
             checkout_context: false,
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
