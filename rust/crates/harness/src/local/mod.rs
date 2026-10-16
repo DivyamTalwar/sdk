@@ -103,7 +103,13 @@ impl LocalHarness {
             }
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let installation = if config.model.is_some() {
-                mcp::install(&config.project, config.settings, tools, config.mcp_limits).await?
+                mcp::install(
+                    &config.project,
+                    |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
+                    tools,
+                    config.mcp_limits,
+                )
+                .await?
             } else {
                 crate::mcp::McpInstallation {
                     tools,
