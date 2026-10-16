@@ -477,12 +477,7 @@ pub(super) fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>,
     files.sort();
     let mut result = BTreeMap::new();
     for path in files {
-        if path.file_name() == Some(OsStr::new("generation-manifest.v1.json"))
-            || path.file_name() == Some(OsStr::new("generation-manifest.v1.sha256"))
-            // The catalog changes as qualified versions are admitted; it is
-            // not an immutable artifact belonging to one generation.
-            || path == output.join("sdk-docs-versions.v1.json")
-        {
+        if !is_immutable_artifact(output, &path) {
             continue;
         }
         let relative = path.strip_prefix(output).unwrap_or(&path);
@@ -492,6 +487,15 @@ pub(super) fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>,
         );
     }
     Ok(result)
+}
+
+pub(super) fn is_immutable_artifact(output: &Path, path: &Path) -> bool {
+    !matches!(path.file_name().and_then(OsStr::to_str),
+        Some("generation-manifest.v1.json" | "generation-manifest.v1.sha256"))
+        // The changing catalog and its coordination lock are not artifacts.
+        // Windows enforces the lock on reads, including inventory hashing.
+        && path != output.join("sdk-docs-versions.v1.json")
+        && path != output.join(".sdk-docs-versions.v1.lock")
 }
 
 pub(super) fn artifact_hashes_with_scope(

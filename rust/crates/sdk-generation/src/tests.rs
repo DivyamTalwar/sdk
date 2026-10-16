@@ -87,6 +87,14 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     let output = root.join("output");
     write(&output, "sdk-docs-data.v1.json", b"docs");
     write(&output, ".profile-build/debug/cache.bin", b"cache-v1");
+    write(&output, ".sdk-docs-versions.v1.lock", b"coordination");
+    write(&output, "assets/.sdk-docs-versions.v1.lock", b"published");
+    let lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(output.join(".sdk-docs-versions.v1.lock"))
+        .unwrap();
+    lock.lock().unwrap();
     write(
         &output,
         "assets/.profile-build/qualified-example.txt",
@@ -94,6 +102,11 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     );
     let before = artifact_hashes(&output).expect("artifact inventory should build");
     assert!(before.contains_key("sdk-docs-data.v1.json"));
+    assert!(!before.contains_key(".sdk-docs-versions.v1.lock"));
+    assert_eq!(
+        before["assets/.sdk-docs-versions.v1.lock"],
+        sha256_bytes(b"published")
+    );
     assert!(!before
         .keys()
         .any(|path| path.starts_with(".profile-build/")));
@@ -109,7 +122,23 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
         before, after,
         "internal cache mutation must not alter artifacts"
     );
+    drop(lock);
     let _ = fs::remove_dir_all(root);
+}
+
+proptest::proptest! {
+    #[test]
+    fn mutable_catalog_files_are_excluded_only_at_the_output_root(
+        parents in proptest::collection::vec("[a-z]{1,8}", 0..6),
+    ) {
+        let output = Path::new("output");
+        let mut directory = output.to_owned();
+        for parent in &parents { directory.push(parent); }
+        for name in [".sdk-docs-versions.v1.lock", "sdk-docs-versions.v1.json"] {
+            proptest::prop_assert_eq!(is_immutable_artifact(output, &directory.join(name)), !parents.is_empty());
+        }
+        proptest::prop_assert!(is_immutable_artifact(output, &directory.join("published.json")));
+    }
 }
 
 #[test]

@@ -72,7 +72,15 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn init_git(root: &Path, message: &str) {
-    git(root, &["init", "--quiet", "--template="]);
+    git(
+        root,
+        &[
+            "init",
+            "--quiet",
+            "--template=",
+            "--initial-branch=sdk-fixture",
+        ],
+    );
     use std::io::Write;
     fs::OpenOptions::new().append(true).open(root.join(".git/config")).unwrap()
         .write_all(b"\n[user]\nname = sdk-generation-test\nemail = sdk-generation-test@example.invalid\n[core]\nautocrlf = false\nexcludesFile =\n[commit]\ngpgSign = false\n[maintenance]\nauto = false\n").unwrap();
@@ -291,6 +299,14 @@ fn manifest(root: &Path, include_plugin: bool, source_state: &str) -> Value {
 }
 
 fn git_revision(root: &Path) -> String {
+    if let (Ok(head), Ok(revision)) = (
+        fs::read(root.join(".git/HEAD")),
+        fs::read(root.join(".git/refs/heads/sdk-fixture")),
+    ) {
+        if let Some(revision) = paths::fixed_revision(&head, &revision) {
+            return revision.to_owned();
+        }
+    }
     let output = Command::new(runtime::git())
         .current_dir(root)
         .args(["rev-parse", "HEAD"])

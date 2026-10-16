@@ -5,6 +5,8 @@ mod package_manifest;
 mod paths;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    let _ = paths::fixed_revision(b"ref: refs/heads/sdk-fixture\n", bytes);
+    let _ = paths::fixed_revision(bytes, b"0123456789012345678901234567890123456789");
     if let Ok(text) = std::str::from_utf8(bytes) {
         let mut fields = text.splitn(3, '\n');
         if let (Some(old), Some(new), Some(path)) = (fields.next(), fields.next(), fields.next()) {

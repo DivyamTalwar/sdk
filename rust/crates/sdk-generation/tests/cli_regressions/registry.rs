@@ -368,14 +368,10 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         )
         .unwrap();
         let revision = git_revision(&other_fixture.root);
-        git(
-            &fixture.root,
-            &[
-                "fetch",
-                "--quiet",
-                other_fixture.root.to_str().unwrap(),
-                &revision,
-            ],
+        // Share immutable objects, then let real Git verify the ancestry below.
+        super::replay::copy_git_objects(
+            &other_fixture.root.join(".git/objects"),
+            &fixture.root.join(".git/objects"),
         );
         git(
             &fixture.root,

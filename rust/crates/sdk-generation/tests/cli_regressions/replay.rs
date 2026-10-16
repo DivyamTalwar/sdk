@@ -65,6 +65,21 @@ pub(super) fn copy_historical_fixture(template: &(Fixture, PathBuf)) -> (Fixture
     )
 }
 
+pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_git_objects(&entry.path(), &target);
+        } else if target.exists() {
+            assert_eq!(fs::read(entry.path()).unwrap(), fs::read(target).unwrap());
+        } else {
+            fs::hard_link(entry.path(), target).unwrap();
+        }
+    }
+}
+
 pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
     fn rebase(value: &mut Value, original: &Fixture, relocated: &Fixture) {
         match value {
