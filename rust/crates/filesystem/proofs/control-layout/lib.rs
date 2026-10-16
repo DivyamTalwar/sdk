@@ -5,7 +5,7 @@ pub mod performance;
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(1)]
+#[kani::unwind(25)]
 fn complete_arc_layout_and_admission() {
     use performance::{WorkBudget, WorkCounters};
     use std::alloc::Layout;
