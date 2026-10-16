@@ -185,11 +185,11 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         .map_err(super::super::storage)?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "seed".into(),
-                name: "write".into(),
-                arguments: json!({"path":"seed", "text":"from tool\n", "media_type":"text/plain", "display_name":"seed"}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "seed".into(),
+                "write".into(),
+                json!({"path":"seed", "text":"from tool\n", "media_type":"text/plain", "display_name":"seed"}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),

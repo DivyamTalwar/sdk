@@ -58,24 +58,29 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 }
 
 #[tokio::test]
-async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> Result<()> {
+async fn open_selects_checkout_once_and_rebinding_reuses_shared_state() -> Result<()> {
     let (_directory, harness, publisher) = fixture().await?;
     let workspace = publisher.tools.workspace.clone();
     let before = workspace
         .selection_reads
         .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        before, 1,
+        "initial open must select the checkout exactly once"
+    );
     CheckoutTools::new(
         workspace.clone(),
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(&harness.task_files().inner),
     )
     .await?;
     assert_eq!(
         workspace
             .selection_reads
             .load(std::sync::atomic::Ordering::Relaxed),
-        before + 1,
-        "open reloaded Git state after selecting the checkout"
+        before,
+        "rebinding reloaded Git state instead of reusing the shared checkout owner"
     );
     Ok(())
 }

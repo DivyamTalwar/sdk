@@ -8,11 +8,14 @@ cargo test -p acyclic-harness --features filesystem-local,native-execution,termi
 python3 scripts/qualify-graphcoder-artifact.py \
     contract::errors::tests:: task_volume::files:: local::tests::task_files:: local::tests::checkout:: \
     local::tests::volume_tools:: local::tests::volumes:: local::tests::checkout_reopen:: \
-    local::tests::checkout_reconciliation:: local::tests::reconciliation_interruptions::
+    local::tests::checkout_reconciliation:: local::tests::reconciliation_interruptions:: \
+    local::checkout_tools::publisher::tests:: tools::git::view::tests::
 
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test client_session documents::
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test context-discovery manifest::
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test default_tools
+cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test git_executor facade_commits_branches_merges_and_inspects_managed_files
+cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test main saved_tool_metadata::
 cargo build -p acyclic-harness-fuzz --bin ui_prompt
 timeout 8 "$artifact_dir/debug/ui_prompt" rust/crates/harness-fuzz/corpus/ui_prompt -runs=64 -max_len=4096
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --lib --no-run --message-format=json |
