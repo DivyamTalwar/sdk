@@ -186,7 +186,9 @@ impl CommandResolution {
                         scope: CommandTaskScope::All
                     } | CommandRequest::Resume {
                         scope: CommandTaskScope::All
-                    }
+                    } | CommandRequest::New
+                        | CommandRequest::ClearAll
+                        | CommandRequest::Export
                 ) {
                     CommandFileRoot::Session
                 } else {
@@ -205,10 +207,16 @@ impl CommandResolution {
             }
             Self::Confirm { request } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                layout.insert(
-                    "confirmation".into(),
-                    serde_json::to_value(request).map_err(codec)?,
-                );
+                let mut confirmation = json!({"request":request,"operation":operation});
+                if matches!(request, CommandRequest::Delete) {
+                    let task = layout
+                        .get("selected_task")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| Error::Invalid("delete requires a selected task".into()))?;
+                    crate::TaskId::parse(task)?;
+                    confirmation["task"] = json!(task);
+                }
+                layout.insert("confirmation".into(), confirmation);
                 return Ok(config(
                     CommandFileRoot::Session,
                     "layout.json",

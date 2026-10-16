@@ -7,7 +7,8 @@
     "file_values": {
       "session/layout.json": {
         "open_view": "goal",
-        "retained": "layout"
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
       }
     }
   },

@@ -34,7 +34,11 @@ fuzz_target!(|input: &[u8]| {
             );
         }
     }
-    let snapshot: CommandFileSnapshot = serde_json::from_slice(input).unwrap_or_default();
+    let snapshot: CommandFileSnapshot = serde_json::from_slice(input).unwrap_or_else(|_| serde_json::from_value(serde_json::json!({
+            "config":{"settings.json":{"diff_mode":"auto","diff_modes":["auto","unified","split"]}},
+            "task":{"settings.json":{"agent_mode":"code","agent_modes":["code","plan"]}},
+            "session":{"layout.json":{"selected_task":"00000000-0000-0000-0000-000000000005"},"attention.json":{"tasks":["00000000-0000-0000-0000-000000000003"]}}
+        })).unwrap());
     if let Ok(resolution) = serde_json::from_slice::<CommandResolution>(input) {
         if let Ok(changes) = resolution.file_changes(&snapshot, OperationId::new()) {
             assert!(changes.len() <= 1);

@@ -101,6 +101,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "bytes",
+ "futures",
  "libfuzzer-sys",
  "rmcp",
  "serde",

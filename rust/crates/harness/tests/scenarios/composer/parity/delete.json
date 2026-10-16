@@ -12,9 +12,14 @@
     "file_values": {
       "session/layout.json": {
         "confirmation": {
-          "kind": "delete"
+          "operation": "00000000-0000-0000-0000-000000000001",
+          "task": "00000000-0000-0000-0000-000000000005",
+          "request": {
+            "kind": "delete"
+          }
         },
-        "retained": "layout"
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
       }
     }
   },

@@ -29,7 +29,10 @@ fn snapshot() -> CommandFileSnapshot {
         (
             CommandFileRoot::Session,
             BTreeMap::from([
-                ("layout.json".into(), json!({"retained":"layout"})),
+                (
+                    "layout.json".into(),
+                    json!({"retained":"layout","selected_task":"00000000-0000-0000-0000-000000000005"}),
+                ),
                 (
                     "attention.json".into(),
                     json!({"tasks":["00000000-0000-0000-0000-000000000003","00000000-0000-0000-0000-000000000004"]}),
@@ -208,6 +211,29 @@ fn task_settings_and_session_controls_have_distinct_roots() -> Result<()> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+
+    // Navigation after a deletion request must not retarget the persisted
+    // confirmation. The operation and task are bound before another query cut.
+    #[test]
+    fn confirmation_keeps_its_target_across_navigation(
+        selected in 1_u128..u128::MAX, next in 1_u128..u128::MAX,
+    ) {
+        let selected = uuid::Uuid::from_u128(selected).to_string();
+        let next = uuid::Uuid::from_u128(next).to_string();
+        let mut state = snapshot();
+        let session = state.get_mut(&CommandFileRoot::Session).unwrap();
+        session.get_mut("layout.json").unwrap()["selected_task"] = json!(selected);
+        session.insert("attention.json".into(), json!({"tasks":[next]}));
+        let operation = OperationId::new();
+        let confirm = CommandResolution::Confirm { request: acyclic_harness::client::CommandRequest::Delete };
+        let pending = confirm.file_changes(&state, operation).unwrap();
+        prop_assert_eq!(&pending[0].contents["confirmation"]["task"], &json!(selected));
+        prop_assert_eq!(&pending[0].contents["confirmation"]["operation"], &json!(operation));
+        state.get_mut(&CommandFileRoot::Session).unwrap().insert("layout.json".into(), pending[0].contents.clone());
+        let navigation = CommandResolution::Select { query: CommandQuery::Attention }.file_changes(&state, OperationId::new()).unwrap();
+        prop_assert_eq!(&navigation[0].contents["selected_task"], &json!(next));
+        prop_assert_eq!(&navigation[0].contents["confirmation"], &pending[0].contents["confirmation"]);
+    }
 
     // Arbitrary catalog descriptions cannot bypass destructive confirmation or
     // turn ordinary requests into approval prompts.
