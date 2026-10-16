@@ -225,6 +225,12 @@ pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
 }
 
 fn load(path: &Path, io: &mut CredentialIo<'_>) -> Result<(Vec<u8>, Value)> {
+    let bytes = read(path, io)?;
+    let auth = document(&bytes, io)?;
+    Ok((bytes, auth))
+}
+
+fn read(path: &Path, io: &mut CredentialIo<'_>) -> Result<Vec<u8>> {
     io.charge(WorkCounters {
         backend_read_operations: 2,
         object_probes: 1,
@@ -274,9 +280,13 @@ fn load(path: &Path, io: &mut CredentialIo<'_>) -> Result<(Vec<u8>, Value)> {
         return Err(invalid("Codex auth.json changed while reading"));
     }
     bytes.truncate(read);
-    let auth = io.json(&bytes)?;
+    Ok(bytes)
+}
+
+fn document(bytes: &[u8], io: &mut CredentialIo<'_>) -> Result<Value> {
+    let auth = io.json(bytes)?;
     validate_auth(&auth)?;
-    Ok((bytes, auth))
+    Ok(auth)
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -284,9 +294,7 @@ pub(crate) fn decode_auth(bytes: &[u8]) -> Result<Value> {
     if bytes.len() as u64 > MAX_AUTH_BYTES {
         return Err(invalid("Codex auth.json exceeds limit"));
     }
-    let auth = crate::json(bytes)?;
-    validate_auth(&auth)?;
-    Ok(auth)
+    document(bytes, &mut CredentialIo::new(None)?)
 }
 
 fn validate_auth(auth: &Value) -> Result<()> {
@@ -351,18 +359,18 @@ fn persist_with(
     file.write_all(b"\n")
         .and_then(|()| file.as_file().sync_all())
         .map_err(|_| invalid("cannot flush Codex credential update"))?;
-    let (bytes, current) = load(path, io)?;
+    let bytes = read(path, io)?;
     if bytes != original {
-        return Ok(current);
+        return document(&bytes, io);
     }
     before_replace()?;
     // The CLI does not cooperate with a lock. Compare the whole document (also
     // preserving non-token CLI edits), after staging/fsync and immediately before
     // rename. This is best-effort: a CLI write during this final read + rename
     // window cannot be excluded by a portable filesystem conditional replacement.
-    let (bytes, current) = load(path, io)?;
+    let bytes = read(path, io)?;
     if bytes != original {
-        return Ok(current);
+        return document(&bytes, io);
     }
     io.charge(WorkCounters {
         backend_write_operations: 1,
