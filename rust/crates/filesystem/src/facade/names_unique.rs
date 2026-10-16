@@ -94,42 +94,47 @@ fn retain_ambiguous_keys(
             .ok_or(WorkError::Overflow)?,
         ..WorkCounters::UNCHARGED
     })?;
-    let count = keys
+    let mut cursor = 0;
+    let mut retained_count = 0;
+    while cursor < keys.value.len() {
+        let mut end = cursor + 1;
+        while end < keys.value.len() && keys.value[end] == keys.value[cursor] {
+            end += 1;
+        }
+        if end > cursor + 1 {
+            keys.value.swap(cursor, retained_count);
+            retained_count += 1;
+        }
+        cursor = end;
+    }
+    if retained_count == 0 {
+        keys.retire(accounting)?;
+        return Owned::allocate(0, accounting);
+    }
+    keys.value.truncate(retained_count);
+    let payload = keys
         .value
         .iter()
-        .enumerate()
-        .filter(|(index, key)| {
-            *index > 0
-                && keys.value[*index - 1] == **key
-                && (*index == 1 || keys.value[*index - 2] != **key)
-        })
-        .count();
-    let mut retained = Owned::<Vec<Vec<u8>>>::allocate(count, accounting)?;
+        .map(|key| key.capacity() as u64)
+        .sum::<u64>();
     let backing = (keys.value.capacity() * size_of::<Vec<u8>>()) as u64;
-    let mut input = keys.value.into_iter().peekable();
-    while let Some(key) = input.next() {
-        let ambiguous = input.peek() == Some(&key);
-        while let Some(duplicate) = input.next_if(|next| next == &key) {
-            let bytes = duplicate.capacity() as u64;
-            drop(duplicate);
-            accounting.release_owned(&mut keys.allocation, bytes)?;
-        }
-        let bytes = key.capacity() as u64;
-        if ambiguous {
-            let mut owner = crate::kernel::split_allocation(&mut keys.allocation, bytes)?;
-            retained.allocation.absorb(&mut owner)?;
-            retained.bytes = retained
-                .bytes
-                .checked_add(bytes)
-                .ok_or(WorkError::Overflow)?;
-            retained.value.push(key);
-        } else {
-            drop(key);
-            accounting.release_owned(&mut keys.allocation, bytes)?;
-        }
-    }
-    drop(input);
-    retire_allocation(keys.allocation, backing, accounting)?;
+    let discarded = keys
+        .bytes
+        .checked_sub(backing)
+        .and_then(|bytes| bytes.checked_sub(payload))
+        .ok_or(WorkError::Overflow)?;
+    accounting.release_owned(&mut keys.allocation, discarded)?;
+    keys.bytes -= discarded;
+    let mut retained = Owned::<Vec<Vec<u8>>>::allocate(retained_count, accounting)?;
+    retained.value.append(&mut keys.value);
+    let mut owner = crate::kernel::split_allocation(&mut keys.allocation, payload)?;
+    retained.allocation.absorb(&mut owner)?;
+    retained.bytes = retained
+        .bytes
+        .checked_add(payload)
+        .ok_or(WorkError::Overflow)?;
+    keys.bytes -= payload;
+    keys.retire(accounting)?;
     Ok(retained)
 }
 
