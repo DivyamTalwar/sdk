@@ -25,12 +25,12 @@ pub(crate) struct Call {
     metadata: Value,
 }
 
-pub(crate) struct State {
+pub(crate) struct State<'work> {
     calls: BTreeMap<u64, Call>,
     metadata: serde_json::Map<String, Value>,
     pub(crate) terminal: bool,
     thinking: BTreeMap<u64, Value>,
-    budget: budget::Budget,
+    budget: budget::Budget<'work>,
 }
 
 pub(crate) fn events<'a>(
@@ -142,7 +142,7 @@ pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEven
     Ok(calls)
 }
 
-impl State {
+impl<'work> State<'work> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         use acyclic_harness::model::json_value_logical_owned_bytes as owned;
@@ -180,7 +180,18 @@ impl State {
         }
     }
 
-    fn call(&mut self, index: u64) -> Result<(&mut Call, &mut budget::Budget)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native(
+        maximum: usize,
+        work: &'work acyclic_fs::NativeMaterializationWork,
+    ) -> Self {
+        Self {
+            budget: budget::Budget::native(maximum, work),
+            ..Self::new(maximum)
+        }
+    }
+
+    fn call(&mut self, index: u64) -> Result<(&mut Call, &mut budget::Budget<'work>)> {
         let call = match self.calls.entry(index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {

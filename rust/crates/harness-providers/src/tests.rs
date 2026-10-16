@@ -20,6 +20,8 @@ use std::{
 mod api_key_tests;
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
+#[path = "chat_batch_tests.rs"]
+mod chat_batch_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]

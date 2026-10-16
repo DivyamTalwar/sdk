@@ -11,12 +11,16 @@ pub(super) struct Size {
     pub items: usize,
 }
 
-pub(super) struct Budget {
+pub(super) struct Budget<'work> {
     used: Size,
     limit: Size,
+    #[cfg(not(target_arch = "wasm32"))]
+    work: Option<&'work acyclic_fs::NativeMaterializationWork>,
+    #[cfg(target_arch = "wasm32")]
+    _work: std::marker::PhantomData<&'work ()>,
 }
 
-impl Budget {
+impl<'work> Budget<'work> {
     #[cfg(test)]
     pub fn used(&self) -> (usize, usize) {
         (self.used.bytes, self.used.items)
@@ -28,6 +32,17 @@ impl Budget {
                 bytes: maximum,
                 items: maximum.min(1024),
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            work: None,
+            #[cfg(target_arch = "wasm32")]
+            _work: std::marker::PhantomData,
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native(maximum: usize, work: &'work acyclic_fs::NativeMaterializationWork) -> Self {
+        Self {
+            work: Some(work),
+            ..Self::new(maximum)
         }
     }
     pub fn replace(&mut self, old: Size, new: Size) -> Result<()> {
@@ -83,10 +98,30 @@ impl Budget {
             .checked_add(delta.len())
             .ok_or_else(|| invalid("tool size overflow"))?;
         if required > target.capacity() {
-            self.add(required - target.capacity(), 0)?;
-            target
-                .try_reserve_exact(required - target.len())
-                .map_err(|_| invalid("tool buffer allocation failed"))?;
+            let old = target.capacity();
+            let available = (self.limit.bytes - self.used.bytes)
+                .checked_add(old)
+                .ok_or_else(|| invalid("tool capacity overflow"))?;
+            if required > available {
+                return Err(invalid(
+                    "retained model state exceeds aggregate byte or item limit",
+                ));
+            }
+            let capacity = required.max(old.saturating_mul(2)).max(8).min(available);
+            // Only a growth can relocate old text. Native frame admission covers
+            // decoding/copying the incoming fragment; it never recharges the prefix.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.work {
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_copied: target.len() as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                })?;
+            }
+            self.add(capacity - old, 0)?;
+            if target.try_reserve_exact(capacity - target.len()).is_err() {
+                self.used.bytes -= capacity - old;
+                return Err(invalid("tool buffer allocation failed"));
+            }
         }
         target.push_str(delta);
         Ok(())

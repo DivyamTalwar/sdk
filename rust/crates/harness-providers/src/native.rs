@@ -9,8 +9,12 @@ use acyclic_harness::{
 };
 use futures::StreamExt as _;
 
-struct Parser {
-    state: stream::State,
+#[cfg(test)]
+#[path = "native_accounting_tests.rs"]
+mod accounting_tests;
+
+struct Parser<'work> {
+    state: stream::State<'work>,
     allocation: NativeAllocation,
 }
 
@@ -142,9 +146,7 @@ fn reserve(
         capacity,
         operations,
         WorkCounters {
-            bytes_copied: bytes
-                .saturating_mul(8)
-                .saturating_add(prior.saturating_mul(2)),
+            bytes_copied: bytes.saturating_mul(8),
             items_examined: nodes,
             ..Default::default()
         },
@@ -213,7 +215,7 @@ pub(crate) fn generate<'a>(
             let adapter = provider.config.adapter;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
-                    let mut parser = Parser { state: stream::State::new(maximum), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
+                    let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
                     futures::pin_mut!(frames, cancelled);

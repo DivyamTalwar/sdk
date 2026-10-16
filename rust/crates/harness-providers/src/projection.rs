@@ -128,6 +128,25 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
                             .ok_or_else(|| invalid("invalid projected Gemini parts"))?
                             .append(parts);
                     }
+                } else if adapter == Adapter::Chat
+                    && projected["role"] == "assistant"
+                    && projected["tool_calls"].is_array()
+                    && messages.last().is_some_and(|last| {
+                        last["role"] == "assistant" && last["tool_calls"].is_array()
+                    })
+                {
+                    let previous = messages
+                        .last_mut()
+                        .ok_or_else(|| invalid("missing tool batch"))?;
+                    previous["tool_calls"]
+                        .as_array_mut()
+                        .ok_or_else(|| invalid("invalid Chat calls"))?
+                        .append(
+                            projected["tool_calls"]
+                                .as_array_mut()
+                                .ok_or_else(|| invalid("invalid Chat calls"))?,
+                        );
+                    merge_chat_text(&mut previous["content"], projected["content"].take());
                 } else {
                     messages.push(projected);
                 }
@@ -212,6 +231,28 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         }
     }
     Ok(body)
+}
+
+fn merge_chat_text(previous: &mut Value, next: Value) {
+    if next.is_null() {
+        return;
+    }
+    if previous.is_null() {
+        *previous = next;
+        return;
+    }
+    if let (Value::String(first), Value::String(second)) = (&mut *previous, &next) {
+        first.push('\n');
+        first.push_str(second);
+        return;
+    }
+    let parts = |value| match value {
+        Value::Array(parts) => parts,
+        text => vec![object([("type", "text".into()), ("text", text)])],
+    };
+    let mut merged = parts(previous.take());
+    merged.extend(parts(next));
+    *previous = Value::Array(merged);
 }
 
 fn project_message(adapter: Adapter, message: &ModelMessage) -> Result<Vec<Value>> {
