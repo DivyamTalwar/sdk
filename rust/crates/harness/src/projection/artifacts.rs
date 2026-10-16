@@ -3,7 +3,7 @@ use crate::conversation::{ContentHold, FileRef};
 use crate::model::{ToolCall, ToolResultContent};
 use serde_json::Value;
 
-pub(super) async fn read_tool_call(
+pub(crate) async fn read_tool_call(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
     maximum: u64,
@@ -138,7 +138,7 @@ pub(super) async fn read_result(
     serde_json::from_value(normalized).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-pub(super) async fn read_value<'a>(
+pub(crate) async fn read_value<'a>(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
     maximum: u64,
