@@ -29,6 +29,7 @@ mod commit;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod completion;
 mod coordinator;
+mod intent_cache;
 mod journal;
 mod observe;
 mod proof;

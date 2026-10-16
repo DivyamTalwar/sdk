@@ -1,5 +1,12 @@
 use super::*;
 
+fn intent_fingerprint(key: &str, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
+    if let Some(io) = work.as_deref_mut() {
+        io.hashed_bytes(key.len() as u64)?;
+    }
+    Ok(*blake3::hash(key.as_bytes()).as_bytes())
+}
+
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     pub(crate) client: std::sync::Arc<P>,
@@ -10,6 +17,7 @@ pub struct DistributedCoordinator<P> {
     pub(super) scheduler: Scheduler,
     pub(super) revision: u64,
     pub(super) last_committed_at_ms: u64,
+    intents: super::intent_cache::IntentCache,
     pub(super) content_verifier: Arc<dyn ContentResidencyVerifier>,
     pub(super) payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
@@ -29,6 +37,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             scheduler: Scheduler::new(),
             revision: 0,
             last_committed_at_ms: 0,
+            intents: super::intent_cache::IntentCache::default(),
             content_verifier,
             payload_store,
         };
@@ -84,7 +93,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if let Some(work) = quota.work().as_deref_mut() {
             work.check_cancellation()?;
         }
-        let (revision, key, _, committed_at_ms, event) = decode(&record, quota.work())?;
+        let (revision, key, digest, committed_at_ms, event) = decode(&record, quota.work())?;
         let event_bytes = if quota.work().is_some() {
             event.logical_owned_bytes()? + key.capacity() as u64
         } else {
@@ -95,15 +104,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.verify_content(&spec.state, quota.work()).await?;
         }
         self.verify_published_result(&event, quota.work()).await?;
-        if read_intent(
-            &self.client,
-            &key,
-            Some(self.revision),
-            replayed_intent_digest,
-            quota.work(),
-        )
-        .await?
-        .is_some()
+        let fingerprint = intent_fingerprint(&key, quota.work())?;
+        if self
+            .verified_intent(&key, &fingerprint, quota.work())
+            .await?
+            .is_some()
         {
             return Err(guarded_boundary(
                 quota.work(),
@@ -122,6 +127,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ));
         }
         self.scheduler.apply(&event, quota.work())?;
+        self.intents.record(revision, fingerprint, digest);
         self.revision = revision;
         self.last_committed_at_ms = committed_at_ms;
         drop((key, event, record));
@@ -136,18 +142,41 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<bool>> {
         let mut custody = CodecQuota::new(work, 0)?;
-        let Some(intent) = read_intent(
-            &self.client,
-            key,
-            Some(self.revision),
-            replayed_intent_digest,
-            custody.work(),
-        )
-        .await?
+        let fingerprint = intent_fingerprint(key, custody.work())?;
+        let Some(intent) = self
+            .verified_intent(key, &fingerprint, custody.work())
+            .await?
         else {
             return Ok(None);
         };
         Ok(Some(&intent == digest))
+    }
+
+    async fn verified_intent(
+        &self,
+        key: &str,
+        fingerprint: &[u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<[u8; 32]>> {
+        if let Some(io) = work.as_deref_mut() {
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: self.intents.len() as u64,
+            })?;
+        }
+        match self.intents.get(fingerprint, self.revision) {
+            Some(known) => Ok(known),
+            None => {
+                read_intent(
+                    &self.client,
+                    key,
+                    Some(self.revision),
+                    replayed_intent_digest,
+                    work,
+                )
+                .await
+            }
+        }
     }
 
     pub(super) async fn verify_content(
