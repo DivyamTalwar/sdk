@@ -57,6 +57,7 @@ impl CheckoutTools {
         if workspace
             .filesystem
             .workspace_id(&project.storage_name(&mut None)?)
+            .map_err(acyclic_fs::WorkspaceError::from)
             .map_err(Error::from)?
             != workspace.view().workspace().id()
         {

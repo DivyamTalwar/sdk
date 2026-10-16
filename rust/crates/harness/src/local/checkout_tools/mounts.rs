@@ -25,13 +25,13 @@ pub(super) fn owner(root: &Path, volume: &VolumeRef) -> Result<crate::workspace:
         layers: vec![vec![Rule {
             id: "owner".into(),
             effect: Effect::Allow,
-            principal: PrincipalPattern {
-                relation: Some(Relation::SelfTask),
-                ..PrincipalPattern::default()
-            },
+            principal: PrincipalPattern::default(),
             actions,
             resource: resource.clone(),
-            conditions: Conditions::default(),
+            conditions: Conditions {
+                relation: Some(Relation::SelfTask),
+                ..Conditions::default()
+            },
         }]],
     });
     let capability = Capability {

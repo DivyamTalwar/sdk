@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_fs::{
     CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
-    NativeWatchOptions, WatchBatch, WorkBudget, WorkCounters, capture_baseline,
+    NativeWatchOptions, PublicationPermit, WatchBatch, WorkBudget, WorkCounters, capture_baseline,
     capture_watch_batch,
     kernel::NamespacePath,
     model::{CheckoutMode, GenerationSelector},
