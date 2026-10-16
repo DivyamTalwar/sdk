@@ -28,6 +28,7 @@ pub(super) struct Scanner {
     syntax: Syntax,
     processed: usize,
     fed: usize,
+    discarded: usize,
     frontier: usize,
     #[cfg(test)]
     replay: bool,
@@ -123,20 +124,35 @@ impl Syntax {
         }
     }
 
-    fn agrees_before(&self, previous: &Self, base: usize, end: usize) -> bool {
-        fn agrees(left: &[Range<usize>], right: &[Range<usize>], base: usize, end: usize) -> bool {
+    fn changed_before(&self, previous: &Self, base: usize, end: usize) -> Option<usize> {
+        fn first_difference(
+            left: &[Range<usize>],
+            right: &[Range<usize>],
+            base: usize,
+            end: usize,
+        ) -> Option<usize> {
             let clipped = |range: &Range<usize>| {
                 #[cfg(test)]
                 work::scan(1);
                 let range = range.start.max(base)..range.end.min(end);
                 (!range.is_empty()).then_some(range)
             };
-            left.iter()
-                .filter_map(clipped)
-                .eq(right.iter().filter_map(clipped))
+            let mut left = left.iter().filter_map(clipped);
+            let mut right = right.iter().filter_map(clipped);
+            loop {
+                match (left.next(), right.next()) {
+                    (None, None) => return None,
+                    (Some(left), Some(right)) if left == right => {}
+                    (left, right) => {
+                        return left.into_iter().chain(right).map(|range| range.start).min();
+                    }
+                }
+            }
         }
-        agrees(&self.opaque, &previous.opaque, base, end)
-            && agrees(&self.links, &previous.links, base, end)
+        first_difference(&self.opaque, &previous.opaque, base, end)
+            .into_iter()
+            .chain(first_difference(&self.links, &previous.links, base, end))
+            .min()
     }
 }
 
@@ -194,7 +210,9 @@ impl Scanner {
     pub(super) fn discard_before(&mut self, position: usize) {
         let before = self.tokens.ready.len();
         self.tokens.discard_before(position);
-        self.fed = self.fed.saturating_sub(before - self.tokens.ready.len());
+        let removed = before - self.tokens.ready.len();
+        self.discarded += removed;
+        self.fed = self.fed.saturating_sub(removed);
         self.atomic.clear();
     }
 
@@ -206,7 +224,12 @@ impl Scanner {
         lines: &mut Vec<Line>,
         first: usize,
     ) -> Option<(usize, usize)> {
-        self.render.render(source, events, references, lines, first)
+        #[cfg(test)]
+        let rendering = work::rendering(true);
+        let result = self.render.render(source, events, references, lines, first);
+        #[cfg(test)]
+        work::rendering(rendering);
+        result
     }
 
     #[cfg(test)]
@@ -256,22 +279,36 @@ impl Scanner {
         let mut syntax = Syntax::new(source, events);
         syntax.absolute(base, sentinel);
         let pending = self.tokens.preview().map(|token| token.range.start);
-        // Parser-resolved scopes can override an earlier tentative bracket or
-        // HTML opener. Retain lexical state only while those classifications
-        // agree over the bytes already consumed; newly appended scopes need
-        // no replay. Coordinates stay in the original append-only source.
-        let replay = !syntax.agrees_before(&self.syntax, base, self.processed);
+        let changed = syntax.changed_before(&self.syntax, base, self.processed);
         #[cfg(test)]
-        let replay = replay || self.replay;
-        if replay {
-            self.state.reset();
-            self.processed = base;
-            self.fed = 0;
-            self.frontier = base;
+        let replay = self.replay;
+        #[cfg(not(test))]
+        let replay = false;
+        if replay || changed.is_some() {
+            let restored = if replay {
+                None
+            } else {
+                changed.and_then(|position| {
+                    self.state
+                        .restore_at(position)
+                        .filter(|ordinal| *ordinal >= self.discarded)
+                        .map(|ordinal| (position, ordinal))
+                })
+            };
+            if let Some((position, ordinal)) = restored {
+                self.processed = position;
+                self.fed = ordinal - self.discarded;
+                self.frontier = self.frontier.min(position);
+            } else {
+                self.state.reset();
+                self.processed = base;
+                self.fed = 0;
+                self.frontier = base;
+            }
         }
         let (mut opaque, mut link) = (0, 0);
         let state = &mut self.state;
-        for token in self.tokens.ready.range(self.fed..) {
+        for (offset, token) in self.tokens.ready.range(self.fed..).enumerate() {
             if token.range.end <= self.processed {
                 continue;
             }
@@ -279,6 +316,9 @@ impl Scanner {
             work::scan(1);
             let start = token.range.start.max(base).max(self.processed);
             let end = token.range.end;
+            if matches!(token.kind, Kind::Open { .. } | Kind::AngleOpen) {
+                state.remember(start, self.discarded + self.fed + offset);
+            }
             #[cfg(test)]
             {
                 self.fed_bytes += end - start;

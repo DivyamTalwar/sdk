@@ -185,8 +185,8 @@ impl Text {
         })
     }
 
-    // The caller retains the exact source of this append-only value. Validate
-    // UTF-8 against that contiguous source instead of walking old chunk nodes.
+    // The caller retains a contiguous source with the same UTF-8 boundaries.
+    // CR/LF-to-space code normalization preserves those boundaries and offsets.
     pub(crate) fn source_range(&self, range: Range<usize>, source: &str) -> Option<Self> {
         if self.len() != source.len() || source.get(range.clone()).is_none() {
             return None;

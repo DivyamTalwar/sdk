@@ -27,6 +27,126 @@ fn render(events: &[Event<'_>]) -> Vec<Line> {
     lines
 }
 
+fn sequence(actions: &[u8]) -> (Output, Vec<Event<'static>>) {
+    let mut output = Output::default();
+    let mut events = Vec::new();
+    for action in actions {
+        match action {
+            0..=3 => {
+                let value = ["a", "界", "❤️", " "][usize::from(*action)];
+                output.append(Output::text(text(value)));
+                events.push(Event::Text(value.into()));
+            }
+            4 | 5 => {
+                output.append(Output::newline(*action == 4));
+                events.push(if *action == 4 {
+                    Event::Text("\n".into())
+                } else {
+                    Event::HardBreak
+                });
+            }
+            _ => {
+                output = output.masked(
+                    Style {
+                        italic: true,
+                        ..Style::default()
+                    },
+                    None,
+                );
+                events.insert(0, Event::Start(Tag::Emphasis));
+                events.push(Event::End(TagEnd::Emphasis));
+            }
+        }
+    }
+    (output, events)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn row_suffix_preserves_scope_body(
+        prefix in prop::collection::vec(0u8..7, 0..32),
+        body in prop::collection::vec(0u8..7, 0..32),
+        context in prop::collection::vec(0u8..7, 0..32),
+    ) {
+        let (prefix, _) = sequence(&prefix);
+        let (body, events) = sequence(&body);
+        let mut joined = prefix.clone();
+        joined.append(body);
+        let suffix = joined.suffix_after(&prefix).expect("sibling prefix");
+        prop_assert_eq!(suffix.lines(), render(&events));
+        let (mut context, mut model) = sequence(&context);
+        context.append(suffix);
+        model.extend(events);
+        prop_assert_eq!(context.lines(), render(&model));
+    }
+}
+
+#[test]
+fn suffix_property_detects_lost_conditional_breaks() {
+    let (prefix, _) = sequence(&[0, 4, 0]);
+    let (body, events) = sequence(&[5, 0]);
+    let mut joined = prefix.clone();
+    joined.append(body);
+    FORGET_BREAK_KIND.set(true);
+    let broken = joined.suffix_after(&prefix).expect("sibling prefix");
+    FORGET_BREAK_KIND.set(false);
+    assert_ne!(broken.lines(), render(&events));
+}
+
+fn scope_work(count: usize, scan: bool) -> (usize, usize) {
+    let (prefix, _) = sequence(&[0, 4, 0, 4, 0]);
+    let mut body = Output::default();
+    let before = crate::work::current();
+    for _ in 0..count {
+        body.append(Output::text(text("x")));
+        body.append(Output::newline(true));
+    }
+    SCAN_SUFFIX.set(scan);
+    for _ in 0..count {
+        let mut joined = prefix.clone();
+        joined.append(body);
+        body = joined
+            .suffix_after(&prefix)
+            .expect("sibling prefix")
+            .masked(
+                Style {
+                    italic: true,
+                    ..Style::default()
+                },
+                None,
+            );
+    }
+    SCAN_SUFFIX.set(false);
+    let used = crate::work::current() - before;
+    let mut nodes = Default::default();
+    let mut texts = Default::default();
+    let mut links = Default::default();
+    let (payload, metadata) = body.middle.retained(&mut nodes, &mut texts, &mut links);
+    assert_eq!(body.lines().len(), count + 1);
+    (used, payload + metadata)
+}
+
+#[test]
+fn nested_row_scopes_share_their_bodies() {
+    for count in [64, 128, 256, 1024] {
+        let small = scope_work(count, false);
+        let large = scope_work(count * 2, false);
+        assert!(large.0 <= 2 * small.0 + 4096, "work {small:?} -> {large:?}");
+        assert!(
+            large.1 <= 2 * small.1 + 4096,
+            "storage {small:?} -> {large:?}"
+        );
+    }
+}
+
+#[test]
+fn scope_work_detects_scanning_the_body() {
+    let small = scope_work(128, true);
+    let large = scope_work(256, true);
+    assert!(large.0 > 2 * small.0 + 4096);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
@@ -77,9 +197,9 @@ fn measure(count: usize, scan: bool) -> (usize, usize) {
     let mut prefix = Rows::default();
     let before = crate::work::current();
     for _ in 0..count {
-        prefix = prefix.concat(Rows::line(text("x")));
-        let old = prefix.clone().concat(Rows::line(text("a")));
-        let next = prefix.clone().concat(Rows::line(text("b")));
+        prefix = prefix.concat(Rows::line(text("x"), true));
+        let old = prefix.clone().concat(Rows::line(text("a"), true));
+        let next = prefix.clone().concat(Rows::line(text("b"), true));
         let changes = next.changed(&old);
         if !scan {
             assert_eq!(changes.len(), 1);

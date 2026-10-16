@@ -26,6 +26,7 @@ proptest! {
     #[test]
     fn retained_scanner_matches_replay(
         checkpoints in any::<bool>(),
+        character_chunks in any::<bool>(),
         parts in prop::collection::vec(prop_oneof![
             any::<char>().prop_map(|c| c.to_string()),
             prop::sample::select(vec![
@@ -38,6 +39,9 @@ proptest! {
         let mut replay = Scanner { replay: true, ..Scanner::default() };
         let mut source = String::new();
         let mut base = 0;
+        let parts: Vec<String> = if character_chunks {
+            parts.into_iter().flat_map(|part| part.chars().map(String::from).collect::<Vec<_>>()).collect()
+        } else { parts };
         for part in parts {
             source.push_str(&part);
             let frontier = advance(&mut retained, &source, base);
@@ -60,6 +64,44 @@ proptest! {
             }
         }
     }
+}
+
+fn scope_feed_is_bounded(parts: &[&str], replay: bool) -> bool {
+    let mut scanner = Scanner {
+        replay,
+        ..Scanner::default()
+    };
+    let mut source = String::from("x ");
+    for part in parts {
+        let start = source.len();
+        for character in part.chars() {
+            source.push(character);
+            let before = scanner.fed_bytes;
+            advance(&mut scanner, &source, 0);
+            if scanner.fed_bytes - before > 2 * (source.len() - start + 2) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn resolving_scopes_does_not_replay_the_old_prefix(
+        parts in prop::collection::vec(prop::sample::select(vec![
+            "[x](u)", "![x](u)", "[a *b*](u)", "![a ![b](v)](u)",
+            "<https://x>", "<a@b.example>", "<i>", "</i>", "<!--\n x\n-->", "[x][r]",
+        ]), 1..24),
+    ) {
+        prop_assert!(scope_feed_is_bounded(&parts, false), "parts {:?}", parts);
+    }
+}
+
+#[test]
+fn scope_counter_detects_restoring_the_entire_paragraph() {
+    assert!(!scope_feed_is_bounded(&["[x](u)"; 16], true));
 }
 
 fn fed_bytes(count: usize, replay: bool) -> (usize, usize) {

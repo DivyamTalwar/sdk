@@ -8,14 +8,18 @@ pub(super) struct Rows {
 
 struct Node {
     count: usize,
+    displayed: usize,
     visible: Option<usize>,
+    first: (Spans, bool),
+    last: (Spans, bool),
     kind: Kind,
 }
 
 enum Kind {
-    Line(Spans),
+    Line(Spans, bool),
     Concat(Rows, Rows),
     Mask(Rows, Style, Option<Arc<str>>),
+    Suffix(Rows, usize, usize),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -52,9 +56,13 @@ impl<'a> Mask<'a> {
 pub(super) struct Row<'a> {
     pub(super) spans: &'a Spans,
     pub(super) mask: Mask<'a>,
+    required: bool,
 }
 
 impl Row<'_> {
+    fn displayed(&self) -> bool {
+        self.required || !self.spans.is_empty()
+    }
     pub(super) fn owned(&self) -> Line {
         Line {
             spans: self
@@ -70,14 +78,21 @@ impl Rows {
         self.root.as_ref().map_or(0, |node| node.count)
     }
 
-    pub(super) fn line(spans: Spans) -> Self {
+    fn displayed(&self) -> usize {
+        self.root.as_ref().map_or(0, |node| node.displayed)
+    }
+
+    pub(super) fn line(spans: Spans, required: bool) -> Self {
         #[cfg(test)]
         crate::work::scan(1);
         Self {
             root: Some(Arc::new(Node {
                 count: 1,
+                displayed: usize::from(required || !spans.is_empty()),
                 visible: (!spans.is_empty()).then_some(0),
-                kind: Kind::Line(spans),
+                first: (spans.clone(), required),
+                last: (spans.clone(), required),
+                kind: Kind::Line(spans, required),
             })),
         }
     }
@@ -94,9 +109,12 @@ impl Rows {
         Self {
             root: Some(Arc::new(Node {
                 count: self.len() + other.len(),
+                displayed: self.displayed() + other.displayed(),
+                first: self.root.as_ref().expect("nonempty prefix").first.clone(),
+                last: other.root.as_ref().expect("nonempty suffix").last.clone(),
                 visible: other
                     .last_visible()
-                    .map(|index| self.len() + index)
+                    .map(|index| self.displayed() + index)
                     .or_else(|| self.last_visible()),
                 kind: Kind::Concat(self, other),
             })),
@@ -112,7 +130,16 @@ impl Rows {
         Self {
             root: Some(Arc::new(Node {
                 count: self.len(),
+                displayed: self.displayed(),
                 visible: self.last_visible(),
+                first: {
+                    let (spans, required) = &self.root.as_ref().expect("nonempty rows").first;
+                    (spans.clone().masked(style, link.clone()), *required)
+                },
+                last: {
+                    let (spans, required) = &self.root.as_ref().expect("nonempty rows").last;
+                    (spans.clone().masked(style, link.clone()), *required)
+                },
                 kind: Kind::Mask(self, style, link),
             })),
         }
@@ -133,12 +160,109 @@ impl Rows {
         self.root.as_ref().and_then(|node| node.visible)
     }
 
+    fn row(&self, mut index: usize) -> Option<(Spans, bool)> {
+        let mut rows = self;
+        let mut masks = Vec::new();
+        let (mut spans, required) = loop {
+            let node = rows.root.as_ref()?;
+            #[cfg(test)]
+            crate::work::scan(1);
+            if index == 0 {
+                break node.first.clone();
+            }
+            if index == node.count.checked_sub(1)? {
+                break node.last.clone();
+            }
+            match &node.kind {
+                Kind::Line(..) => return None,
+                Kind::Concat(left, right) => {
+                    if index < left.len() {
+                        rows = left;
+                    } else {
+                        index -= left.len();
+                        rows = right;
+                    }
+                }
+                Kind::Mask(child, style, link) => {
+                    masks.push((*style, link.clone()));
+                    rows = child;
+                }
+                Kind::Suffix(child, skip, _) => {
+                    index += skip;
+                    rows = child;
+                }
+            }
+        };
+        for (style, link) in masks.into_iter().rev() {
+            spans = spans.masked(style, link);
+        }
+        Some((spans, required))
+    }
+
+    fn suffix(&self, skip: usize) -> Option<Self> {
+        if skip == 0 {
+            return Some(self.clone());
+        }
+        if skip == self.len() {
+            return Some(Self::default());
+        }
+        let first = self.row(skip)?;
+        let node = self.root.as_ref()?;
+        let displayed = self.prefix_displayed(skip)?;
+        #[cfg(test)]
+        crate::work::scan(1);
+        Some(Self {
+            root: Some(Arc::new(Node {
+                count: self.len().checked_sub(skip)?,
+                displayed: self.displayed().checked_sub(displayed)?,
+                visible: node.visible.and_then(|index| index.checked_sub(displayed)),
+                first,
+                last: node.last.clone(),
+                kind: Kind::Suffix(self.clone(), skip, displayed),
+            })),
+        })
+    }
+
+    fn prefix_displayed(&self, mut count: usize) -> Option<usize> {
+        let (mut result, mut subtract) = (0usize, 0usize);
+        let mut rows = self;
+        loop {
+            if count == 0 {
+                return result.checked_sub(subtract);
+            }
+            let node = rows.root.as_ref()?;
+            #[cfg(test)]
+            crate::work::scan(1);
+            if count == node.count {
+                return (result + node.displayed).checked_sub(subtract);
+            }
+            match &node.kind {
+                Kind::Line(..) => return None,
+                Kind::Concat(left, right) => {
+                    if count <= left.len() {
+                        rows = left;
+                    } else {
+                        count -= left.len();
+                        result += left.displayed();
+                        rows = right;
+                    }
+                }
+                Kind::Mask(child, ..) => rows = child,
+                Kind::Suffix(child, skip, displayed) => {
+                    count += skip;
+                    subtract += displayed;
+                    rows = child;
+                }
+            }
+        }
+    }
+
     // Compare shared chunks before descending to individual rows. Appending a
     // row, or changing one scope, never scans an unchanged row prefix.
     pub(super) fn changed<'a>(&'a self, previous: &'a Self) -> Vec<(usize, Row<'a>)> {
         let mut before = previous.iter();
         let mut after = self.iter();
-        let mut index = 0;
+        let (mut index, mut before_index) = (0, 0);
         let mut changed = Vec::new();
         while let (Some(&(old, old_mask)), Some(&(new, new_mask))) =
             (before.pending.last(), after.pending.last())
@@ -148,13 +272,14 @@ impl Rows {
             let shared = std::ptr::eq(old, new) && old_mask.same(new_mask);
             #[cfg(test)]
             let shared = shared && !SCAN_SHARED.get();
-            if shared {
-                index += old.count;
+            if shared && (index == before_index || new.displayed == 0) {
+                index += new.displayed;
+                before_index += old.displayed;
                 before.pending.pop();
                 after.pending.pop();
-            } else if matches!(old.kind, Kind::Mask(..)) {
+            } else if matches!(old.kind, Kind::Mask(..) | Kind::Suffix(..)) {
                 before.expand();
-            } else if matches!(new.kind, Kind::Mask(..)) {
+            } else if matches!(new.kind, Kind::Mask(..) | Kind::Suffix(..)) {
                 after.expand();
             } else if old.count > new.count {
                 before.expand();
@@ -164,26 +289,33 @@ impl Rows {
                 before.expand();
                 after.expand();
             } else {
-                let Kind::Line(spans) = &new.kind else {
+                let Kind::Line(spans, required) = &new.kind else {
                     unreachable!("one row")
                 };
-                #[cfg(test)]
-                if changed.len() == changed.capacity() {
-                    crate::work::copy(changed.len() * std::mem::size_of::<(usize, Row<'_>)>());
+                if new.displayed != 0 {
+                    #[cfg(test)]
+                    if changed.len() == changed.capacity() {
+                        crate::work::copy(changed.len() * std::mem::size_of::<(usize, Row<'_>)>());
+                    }
+                    changed.push((
+                        index,
+                        Row {
+                            spans,
+                            mask: new_mask,
+                            required: *required,
+                        },
+                    ));
                 }
-                changed.push((
-                    index,
-                    Row {
-                        spans,
-                        mask: new_mask,
-                    },
-                ));
-                index += 1;
+                index += new.displayed;
+                before_index += old.displayed;
                 before.pending.pop();
                 after.pending.pop();
             }
         }
         for row in after {
+            if !row.displayed() {
+                continue;
+            }
             #[cfg(test)]
             if changed.len() == changed.capacity() {
                 crate::work::copy(changed.len() * std::mem::size_of::<(usize, Row<'_>)>());
@@ -209,7 +341,7 @@ impl Rows {
             }
             metadata += std::mem::size_of::<Node>() + 2 * std::mem::size_of::<usize>();
             match &node.kind {
-                Kind::Line(spans) => {
+                Kind::Line(spans, _) => {
                     let (bytes, size) = spans.retained(nodes, texts, links);
                     payload += bytes;
                     metadata += size;
@@ -226,6 +358,12 @@ impl Rows {
                         payload += link.len();
                     }
                 }
+                Kind::Suffix(child, ..) => pending.extend(child.root.iter()),
+            }
+            for (spans, _) in [&node.first, &node.last] {
+                let (bytes, size) = spans.retained(nodes, texts, links);
+                payload += bytes;
+                metadata += size;
             }
         }
         (payload, metadata)
@@ -262,7 +400,26 @@ impl Iter<'_> {
                 self.pending
                     .extend(child.root.as_deref().map(|node| (node, mask)));
             }
-            Kind::Line(_) => self.pending.push((node, mask)),
+            Kind::Line(..) => self.pending.push((node, mask)),
+            Kind::Suffix(child, skip, _) => {
+                self.pending
+                    .extend(child.root.as_deref().map(|node| (node, mask)));
+                self.skip(*skip);
+            }
+        }
+    }
+
+    fn skip(&mut self, mut count: usize) {
+        while count != 0 {
+            let &(node, _) = self.pending.last().expect("row range");
+            #[cfg(test)]
+            crate::work::scan(1);
+            if node.count <= count {
+                count -= node.count;
+                self.pending.pop();
+            } else {
+                self.expand();
+            }
         }
     }
 }
@@ -272,9 +429,13 @@ impl<'a> Iterator for Iter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let &(node, mask) = self.pending.last()?;
-            if let Kind::Line(spans) = &node.kind {
+            if let Kind::Line(spans, required) = &node.kind {
                 self.pending.pop();
-                return Some(Row { spans, mask });
+                return Some(Row {
+                    spans,
+                    mask,
+                    required: *required,
+                });
             }
             self.expand();
         }
@@ -290,12 +451,13 @@ impl Drop for Rows {
                 continue;
             };
             match &mut node.kind {
-                Kind::Line(_) => {}
+                Kind::Line(..) => {}
                 Kind::Concat(left, right) => {
                     current = left.root.take();
                     pending.extend(right.root.take());
                 }
                 Kind::Mask(child, _, _) => current = child.root.take(),
+                Kind::Suffix(child, ..) => current = child.root.take(),
             }
         }
     }
@@ -313,6 +475,39 @@ pub(super) struct Output {
 }
 
 impl Output {
+    pub(super) fn suffix_after(&self, prefix: &Self) -> Option<Self> {
+        #[cfg(test)]
+        if SCAN_SUFFIX.get() {
+            for row in self.middle.iter() {
+                let _ = row.owned();
+            }
+        }
+        let Some(start) = &prefix.tail else {
+            return Some(Self {
+                head: self.head.suffix_after(&prefix.head),
+                middle: self.middle.clone(),
+                tail: self.tail.clone(),
+                required: self.required,
+            });
+        };
+        let at = 1 + prefix.middle.len();
+        let last = 1 + self.middle.len();
+        if at == last {
+            return Some(Self::text(self.tail.as_ref()?.suffix_after(start)));
+        }
+        let index = at - 1;
+        let (row, required) = self.middle.row(index)?;
+        Some(Self {
+            head: row.suffix_after(start),
+            middle: self.middle.suffix(index + 1)?,
+            tail: self.tail.clone(),
+            #[cfg(test)]
+            required: required || FORGET_BREAK_KIND.get(),
+            #[cfg(not(test))]
+            required,
+        })
+    }
+
     pub(super) fn visible(&self) -> usize {
         #[cfg(test)]
         if SCAN_VISIBLE.get() {
@@ -338,7 +533,7 @@ impl Output {
     }
 
     fn len(&self) -> usize {
-        self.head_count() + self.middle.len() + usize::from(self.tail.is_some())
+        self.head_count() + self.middle.displayed() + usize::from(self.tail.is_some())
     }
 
     pub(super) fn text(head: Spans) -> Self {
@@ -368,11 +563,7 @@ impl Output {
             last.freeze();
             if let Some(tail) = tail {
                 let joined = self.tail.take().expect("existing final row");
-                let row = if required || !joined.is_empty() {
-                    Rows::line(joined)
-                } else {
-                    Rows::default()
-                };
+                let row = Rows::line(joined, required);
                 self.middle = std::mem::take(&mut self.middle).concat(row).concat(middle);
                 self.tail = Some(tail);
             }
@@ -403,7 +594,12 @@ impl Output {
                 spans: self.head.clone(),
             });
         }
-        lines.extend(self.middle.iter().map(|row| row.owned()));
+        lines.extend(
+            self.middle
+                .iter()
+                .filter(|row| row.displayed())
+                .map(|row| row.owned()),
+        );
         lines.extend(self.tail.iter().cloned().map(|spans| Line { spans }));
         lines
     }
@@ -474,3 +670,9 @@ pub(in crate::inline_scan) use SCAN_VISIBLE as RESCAN_VISIBLE;
 
 #[cfg(test)]
 thread_local! { pub(in crate::inline_scan) static SCAN_VISIBLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! { static FORGET_BREAK_KIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! { static SCAN_SUFFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

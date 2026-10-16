@@ -1,39 +1,41 @@
 use crate::Text;
 use std::ops::Range;
 
+#[path = "inline_rank.rs"]
+mod rank;
+
 #[derive(Default)]
 pub(super) struct Input {
     origin: Option<usize>,
     raw: Text,
     code: Text,
-    normalized: String,
-    offsets: Vec<usize>,
-    nonspace: Vec<usize>,
+    nonspace: rank::Rank,
     breaks: Vec<usize>,
-    break_counts: Vec<usize>,
+    break_counts: rank::Rank,
+    indent: rank::Rank,
+    leading: bool,
 }
 
 impl Input {
     fn feed(&mut self, source: &str, start: usize) {
+        if self.origin.is_none() {
+            self.leading = true;
+        }
         let origin = *self.origin.get_or_insert(start);
         let source = source.get(origin..).expect("inline source");
         let delta = source
             .get(self.raw.len()..)
             .expect("append-only inline source");
-        if self.offsets.is_empty() {
-            self.offsets.push(0);
-            self.nonspace.push(0);
-            self.break_counts.push(0);
-        }
         #[cfg(test)]
         {
             crate::work::render_feed(delta.len());
         }
         let raw_start = self.raw.len();
         self.raw.push_str(delta);
-        let from = self.normalized.len();
-        let mut nonspace = *self.nonspace.last().expect("initial prefix");
+        let mut normalized = String::with_capacity(delta.len());
         for (offset, character) in delta.char_indices() {
+            let indent = self.leading && matches!(character, ' ' | '\t');
+            self.leading = indent || matches!(character, '\r' | '\n');
             if matches!(character, '\r' | '\n') {
                 #[cfg(test)]
                 if self.breaks.len() == self.breaks.capacity() {
@@ -41,40 +43,26 @@ impl Input {
                 }
                 self.breaks.push(origin + raw_start + offset);
             }
-            let normalized = match character {
-                '\r' | '\n' => Some(' '),
-                c => Some(c),
+            let value = match character {
+                '\r' | '\n' => ' ',
+                c => c,
             };
-            if let Some(character) = normalized {
-                #[cfg(test)]
-                if self.normalized.capacity() - self.normalized.len() < character.len_utf8() {
-                    crate::work::copy(self.normalized.len());
-                }
-                self.normalized.push(character);
-                nonspace += usize::from(character != ' ');
-            }
-            #[cfg(test)]
-            crate::work::copy(character.len_utf8() * 3 * std::mem::size_of::<usize>());
-            for _ in 0..character.len_utf8() {
-                #[cfg(test)]
-                {
-                    if self.offsets.len() == self.offsets.capacity() {
-                        crate::work::copy(self.offsets.len() * std::mem::size_of::<usize>());
-                    }
-                    if self.nonspace.len() == self.nonspace.capacity() {
-                        crate::work::copy(self.nonspace.len() * std::mem::size_of::<usize>());
-                    }
-                    if self.break_counts.len() == self.break_counts.capacity() {
-                        crate::work::copy(self.break_counts.len() * std::mem::size_of::<usize>());
-                    }
-                }
-                self.offsets.push(self.normalized.len());
-                self.nonspace.push(nonspace);
-                self.break_counts.push(self.breaks.len());
+            normalized.push(value);
+            for byte in 0..character.len_utf8() {
+                self.nonspace.push(value != ' ');
+                self.break_counts
+                    .push(byte == 0 && matches!(character, '\r' | '\n'));
+                self.indent.push(indent);
             }
         }
-        self.code
-            .push_str(self.normalized.get(from..).expect("normalized append"));
+        #[cfg(test)]
+        crate::work::copy(normalized.len());
+        debug_assert_eq!(
+            normalized.len(),
+            delta.len(),
+            "normalization preserves byte offsets"
+        );
+        self.code.push_str(&normalized);
     }
 
     fn text(&self, source: &str, range: Range<usize>) -> Option<Text> {
@@ -85,28 +73,48 @@ impl Input {
         )
     }
 
-    fn code(&self, range: Range<usize>) -> Option<Text> {
+    fn literal_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         let origin = self.origin?;
         let (left, right) = (
             range.start.checked_sub(origin)?,
             range.end.checked_sub(origin)?,
         );
-        let mut start = *self.offsets.get(left)?;
-        let mut end = *self.offsets.get(right)?;
-        if self.normalized.as_bytes().get(start) == Some(&b' ')
-            && self.normalized.as_bytes().get(end.checked_sub(1)?) == Some(&b' ')
-            && self.nonspace.get(right)? > self.nonspace.get(left)?
+        if self.break_counts.before(right)? != self.break_counts.before(left)? {
+            return None;
+        }
+        let skipped = self.indent.before(right)? - self.indent.before(left)?;
+        Some(range.start + skipped..range.end)
+    }
+
+    fn code(&self, range: Range<usize>, source: &str) -> Option<Text> {
+        let origin = self.origin?;
+        let (mut start, mut end) = (
+            range.start.checked_sub(origin)?,
+            range.end.checked_sub(origin)?,
+        );
+        let source = source.get(origin..)?;
+        source.get(start..end)?;
+        if start == end {
+            return Some(Text::default());
+        }
+        let space = |byte: &u8| matches!(byte, b' ' | b'\r' | b'\n');
+        if source.as_bytes().get(start).is_some_and(space)
+            && source
+                .as_bytes()
+                .get(end.checked_sub(1)?)
+                .is_some_and(space)
+            && self.nonspace.before(end)? > self.nonspace.before(start)?
         {
             start += 1;
             end -= 1;
         }
-        self.code.source_range(start..end, &self.normalized)
+        self.code.source_range(start..end, source)
     }
 
     fn newlines(&self, range: Range<usize>) -> Option<impl Iterator<Item = usize> + '_> {
         let origin = self.origin?;
-        let first = *self.break_counts.get(range.start.checked_sub(origin)?)?;
-        let end = *self.break_counts.get(range.end.checked_sub(origin)?)?;
+        let first = self.break_counts.before(range.start.checked_sub(origin)?)?;
+        let end = self.break_counts.before(range.end.checked_sub(origin)?)?;
         Some(self.breaks.get(first..end)?.iter().copied())
     }
 
@@ -115,14 +123,13 @@ impl Input {
         let (raw, raw_meta) = self.raw.retained(texts);
         let (code, code_meta) = self.code.retained(texts);
         (
-            raw + code + self.normalized.capacity(),
+            raw + code,
             raw_meta
                 + code_meta
-                + (self.offsets.capacity()
-                    + self.nonspace.capacity()
-                    + self.breaks.capacity()
-                    + self.break_counts.capacity())
-                    * std::mem::size_of::<usize>(),
+                + self.nonspace.retained()
+                + self.break_counts.retained()
+                + self.indent.retained()
+                + self.breaks.capacity() * std::mem::size_of::<usize>(),
         )
     }
 }
@@ -137,3 +144,7 @@ thread_local! { static REPLAY: std::cell::Cell<bool> = const { std::cell::Cell::
 #[cfg(test)]
 #[path = "../tests/inline_glyphs.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/inline_render_work.rs"]
+mod work_tests;

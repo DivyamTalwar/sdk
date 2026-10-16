@@ -131,7 +131,6 @@ impl Spans {
     // Both values are frozen cursors in the same immutable sibling list.
     // The inline forest owns and validates their ancestry before constructing
     // the view; no traversal or copying of the enclosed children is needed.
-    #[cfg(test)]
     pub(crate) fn suffix_after(&self, start: &Self) -> Self {
         debug_assert!(self.tail.is_none() && start.tail.is_none());
         let result = Self {

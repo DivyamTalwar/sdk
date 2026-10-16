@@ -166,6 +166,8 @@ impl Renderer {
     }
 
     pub(crate) fn event_in(&mut self, event: &Event<'_>, references: Option<&crate::References>) {
+        #[cfg(test)]
+        let rendering = crate::work::rendering(true);
         if let Some(table) = &mut self.table {
             if matches!(event, Event::End(TagEnd::Table)) {
                 if let Some(table) = self.table.take() {
@@ -180,6 +182,8 @@ impl Renderer {
             } else {
                 table.event(event, references);
             }
+            #[cfg(test)]
+            crate::work::rendering(rendering);
             return;
         }
         match event {
@@ -220,6 +224,8 @@ impl Renderer {
             }
             Event::FootnoteReference(text) => self.text(&format!("[{text}]")),
         }
+        #[cfg(test)]
+        crate::work::rendering(rendering);
     }
 
     fn start(&mut self, tag: &Tag<'_>, references: Option<&crate::References>) {

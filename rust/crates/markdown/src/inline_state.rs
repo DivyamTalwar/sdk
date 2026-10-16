@@ -4,6 +4,8 @@ use super::{
     tokens::Kind,
 };
 use std::{collections::HashMap, ops::Range};
+#[path = "inline_anchors.rs"]
+mod anchors;
 #[path = "inline_eof.rs"]
 mod eof;
 
@@ -19,6 +21,7 @@ pub(super) struct State {
     codes: Vec<Code>,
     code_lengths: HashMap<usize, usize>,
     eof: Option<Box<eof::Projections>>,
+    anchors: HashMap<usize, anchors::Anchor>,
     #[cfg(test)]
     stale: bool,
     #[cfg(test)]
@@ -41,6 +44,7 @@ struct Snapshot {
     labels: [Option<Range<usize>>; 2],
     opaque: Option<usize>,
     frontier: usize,
+    code: (usize, Option<usize>),
 }
 
 struct Code {
@@ -50,6 +54,9 @@ struct Code {
 
 impl State {
     pub(super) fn reset(&mut self) {
+        #[cfg(test)]
+        crate::work::scan(self.anchors.len());
+        self.anchors.clear();
         self.delimiter.reset();
         self.forest.reset();
         self.invalid = false;
@@ -82,10 +89,24 @@ impl State {
             labels: self.labels.clone(),
             opaque: self.opaque,
             frontier: self.earliest(usize::MAX),
+            code: (
+                self.codes.len(),
+                self.codes.last().map(|code| code.opening.start),
+            ),
         }
     }
 
     fn restore(&mut self, before: Snapshot) {
+        if !self.has_code_prefix(before.code) {
+            self.invalid = true;
+            return;
+        }
+        while self.codes.len() > before.code.0 {
+            let code = self.codes.pop().expect("later code opener");
+            #[cfg(test)]
+            crate::work::scan(1);
+            self.code_lengths.remove(&code.opening.len());
+        }
         self.delimiter.restore(before.delimiter);
         self.invalid |= !self.forest.restore(before.forest);
         self.bracket = before.bracket;
@@ -142,10 +163,12 @@ impl State {
             self.ticks(range, kind == Kind::Escape('`'));
             return;
         }
-        let cursor = if matches!(kind, Kind::Escape(_)) {
-            self.forest.escape(range.clone())
-        } else {
-            self.forest.text(range.clone())
+        let cursor = match kind {
+            Kind::Escape('\n') | Kind::Break | Kind::Entity => {
+                self.forest.leaf(range.clone(), kind)
+            }
+            Kind::Escape(_) => self.forest.escape(range.clone()),
+            _ => self.forest.text(range.clone()),
         };
         if !matches!(kind, Kind::Open { .. } | Kind::Close | Kind::ParenOpen) {
             self.labels = [None, None];
@@ -287,6 +310,7 @@ impl State {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         self.delimiter.retained()
+            + self.anchors.capacity() * std::mem::size_of::<(usize, anchors::Anchor)>()
             + self.forest.retained()
             + self.brackets.capacity() * std::mem::size_of::<Bracket>()
             + self.codes.capacity() * std::mem::size_of::<Code>()

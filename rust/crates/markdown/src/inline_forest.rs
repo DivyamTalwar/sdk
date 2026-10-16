@@ -9,6 +9,9 @@ enum Kind {
     Text,
     Escape,
     Code,
+    Atom(usize),
+    Break(bool),
+    Entity,
     Emphasis,
     Strong,
     StrongEmphasis,
@@ -21,6 +24,7 @@ struct Node {
     children: usize,
     stop: usize,
     kind: Kind,
+    output: Option<(usize, usize, usize)>,
 }
 
 const PAGE: usize = 8;
@@ -93,6 +97,7 @@ impl Forest {
                 children,
                 stop,
                 kind,
+                output: None,
             });
         self.length += 1;
         self.root = self.length;
@@ -109,6 +114,20 @@ impl Forest {
 
     pub(super) fn escape(&mut self, range: Range<usize>) -> usize {
         self.append(range, 0, 0, Kind::Escape)
+    }
+
+    pub(super) fn atom(&mut self, range: Range<usize>, output: usize) -> usize {
+        self.append(range, 0, 0, Kind::Atom(output))
+    }
+
+    pub(super) fn leaf(&mut self, range: Range<usize>, token: super::tokens::Kind) -> usize {
+        let kind = match token {
+            super::tokens::Kind::Escape('\n') => Kind::Break(true),
+            super::tokens::Kind::Break => Kind::Break(false),
+            super::tokens::Kind::Entity => Kind::Entity,
+            _ => return self.text(range),
+        };
+        self.append(range, 0, 0, kind)
     }
 
     pub(super) fn code(&mut self, opening: Range<usize>, closing: Range<usize>) {

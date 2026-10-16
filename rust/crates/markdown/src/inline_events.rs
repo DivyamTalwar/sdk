@@ -9,6 +9,8 @@ use std::{collections::HashMap, sync::Arc};
 #[path = "inline_rows.rs"]
 mod rows;
 use rows::Output;
+#[path = "inline_projection.rs"]
+mod projection;
 #[cfg(test)]
 pub(super) use rows::RESCAN_VISIBLE;
 
@@ -17,6 +19,7 @@ enum Key {
     Leaf(u8, usize, usize),
     Join(usize, usize),
     Mask(usize, u64, usize),
+    Suffix(usize, usize),
 }
 
 #[derive(Default)]
@@ -27,6 +30,7 @@ pub(in crate::inline_scan) struct Cache {
     targets: HashMap<(usize, usize), Arc<str>>,
     last: usize,
     committed: usize,
+    epoch: usize,
 }
 
 struct Frame {
@@ -193,7 +197,8 @@ impl Cache {
             #[cfg(test)]
             crate::work::scan(width);
             text_output(
-                self.input.code(range.start + width..range.end - width)?,
+                self.input
+                    .code(range.start + width..range.end - width, source.original)?,
                 style,
             )
         } else {
@@ -224,7 +229,9 @@ impl Cache {
     ) -> Option<(usize, usize)> {
         #[cfg(test)]
         if REPLAY.get() {
+            let epoch = self.epoch.checked_add(1).expect("render epoch");
             *self = Self::default();
+            self.epoch = epoch;
         }
         self.input.feed(source.original, source.start);
         if self.nodes.is_empty() {
