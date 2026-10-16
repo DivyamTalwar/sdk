@@ -1,4 +1,4 @@
-import { gcAndSweep, heapStats } from "bun:jsc";
+import { estimateShallowMemoryUsageOf, gcAndSweep, heapStats } from "bun:jsc";
 import { type ClientCommand } from "../src/client.js";
 
 const { MemoryOutbox: Before } = await import(process.env.HARNESS_OUTBOX_BEFORE ??
@@ -55,23 +55,28 @@ for (const count of [0, 1, 64, 1024]) {
         process.stderr.write("OUTBOX_END\n");
         continue;
       }
-      const before = heapStats();
+      const before = heapStats().objectTypeCounts;
+      const censusResult = stores[index]!.load();
+      const after = heapStats().objectTypeCounts;
+      checksum += (await censusResult).length;
+      gcAndSweep();
       const original = globalThis.Set;
-      let sets = 0;
+      let sets = 0, estimatedSetBytes = 0;
       globalThis.Set = new Proxy(original, { construct(target, args, newTarget) {
+        const value = Reflect.construct(target, args, newTarget);
         sets++;
-        return Reflect.construct(target, args, newTarget);
+        estimatedSetBytes += estimateShallowMemoryUsageOf(value);
+        return value;
       } });
       let result: Promise<readonly ClientCommand[]>;
       try { result = stores[index]!.load(); }
       finally { globalThis.Set = original; }
       const loaded = await result;
-      const after = heapStats();
       checksum += loaded.length;
-      console.log(JSON.stringify({ count, legacy: index === 0, sets,
-        heapSizeDelta: after.heapSize - before.heapSize,
-        extraMemoryDelta: after.extraMemorySize - before.extraMemorySize,
-        heapCapacity: after.heapCapacity, processRss: process.memoryUsage().rss }));
+      console.log(JSON.stringify({ count, legacy: index === 0, sets, estimatedSetBytes,
+        uninstrumentedSetCensus: (after.Set ?? 0) - (before.Set ?? 0),
+        uninstrumentedArrayCensus: (after.Array ?? 0) - (before.Array ?? 0),
+        processRss: process.memoryUsage().rss }));
     }
   }
 }
