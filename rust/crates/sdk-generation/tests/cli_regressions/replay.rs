@@ -59,24 +59,78 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
             _ => {}
         }
     }
-    let rows: Value = serde_json::from_slice(
-        &fs::read(relocated.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
-    for row in rows.as_array().unwrap() {
-        let file = relocated.rustdoc.join(
-            row["rustdocFile"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("rustdoc/")
-                .unwrap(),
-        );
-        let mut value: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-        rebase(&mut value, original, relocated);
-        fs::write(file, serde_json::to_vec(&value).unwrap()).unwrap();
+    fn receipts(directory: &Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                receipts(&path, files);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                files.push(path);
+            }
+        }
     }
+    let mut files = Vec::new();
+    receipts(&relocated.rustdoc, &mut files);
+    let mut changed = BTreeMap::new();
+    for file in files {
+        let mut value: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        if value.get("format_version").is_none() {
+            continue;
+        }
+        let relative = file.strip_prefix(&relocated.output).unwrap();
+        let original_file = original.output.join(relative);
+        let logical = rustdoc_digest(&original_file, &original.root).unwrap();
+        rebase(&mut value, original, relocated);
+        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            rustdoc_digest(&file, &relocated.root).unwrap(),
+            logical,
+            "rebasing every physical receipt must preserve its logical digest: {}",
+            file.display()
+        );
+        changed.insert(
+            relative.to_str().unwrap().replace('\\', "/"),
+            (hash_file(&original_file), hash_file(&file)),
+        );
+    }
+    // Relocation changes physical receipt bytes. Re-attest only those verified
+    // rewrites; preserve all source identities and logical Rustdoc digests.
+    let manifest_path = relocated.output.join("generation-manifest.v1.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let release_path = relocated
+        .output
+        .join(manifest["releaseManifest"].as_str().unwrap());
+    let mut release: Value = serde_json::from_slice(&fs::read(&release_path).unwrap()).unwrap();
+    for row in release["artifacts"].as_array_mut().unwrap() {
+        if let Some((old, new)) = changed.get(row["path"].as_str().unwrap()) {
+            assert_eq!(row["sha256"].as_str().unwrap(), old);
+            row["sha256"] = json!(new);
+        }
+    }
+    let old_release = hash_file(&release_path);
+    let digest_path = release_path.with_extension("sha256");
+    let old_sidecar = hash_file(&digest_path);
+    fs::write(&release_path, serde_json::to_vec_pretty(&release).unwrap()).unwrap();
+    fs::write(&digest_path, hash_file(&release_path)).unwrap();
+    for (path, old) in [(&release_path, old_release), (&digest_path, old_sidecar)] {
+        changed.insert(
+            path.strip_prefix(&relocated.output)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/"),
+            (old, hash_file(path)),
+        );
+    }
+    for (path, (old, new)) in changed {
+        assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
+        manifest["artifacts"][&path] = json!(new);
+    }
+    write_manifest(&relocated.output, &manifest);
 }
-
 // Replay the production projection from every real Cargo-produced receipt.
 // Compilation is performed once; copies retain the full matrix and source bytes.
 pub(super) fn metadata(fixture: &Fixture) -> cargo_metadata::Metadata {

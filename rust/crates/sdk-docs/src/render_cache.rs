@@ -1,43 +1,103 @@
 use crate::{public_api::PublicItemSignature, Error};
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
-type Rendered = BTreeMap<Vec<u8>, Vec<PublicItemSignature>>;
+#[derive(Default)]
+struct Cache {
+    rendered: RefCell<BTreeMap<Vec<u8>, Vec<PublicItemSignature>>>,
+    files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
+    parsed: RefCell<BTreeMap<Rc<[u8]>, Rc<rustdoc_types::Crate>>>,
+}
 thread_local! {
-    // Owned by one calling thread; no synchronization or lock order is involved.
-    static RENDERED: RefCell<Option<Rendered>> = const { RefCell::new(None) };
+    // Every entry belongs to one calling operation; nested operations restore it.
+    static CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
+    #[cfg(test)]
+    static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Reuse rendering of byte-identical Rustdoc inputs within one operation.
-/// Reads, source attestations and profile qualification still run for every receipt.
+/// Reuse immutable Rustdoc reads, decoding and rendering within one operation.
 pub fn with_rustdoc_cache<T>(operation: impl FnOnce() -> T) -> T {
-    struct Restore(Option<Rendered>);
+    struct Restore(Option<Cache>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            RENDERED.with_borrow_mut(|cache| *cache = self.0.take());
+            CACHE.with_borrow_mut(|cache| *cache = self.0.take());
         }
     }
-    let _restore = Restore(RENDERED.replace(Some(BTreeMap::new())));
+    let _restore = Restore(CACHE.replace(Some(Cache::default())));
     operation()
+}
+
+/// Read a Rustdoc receipt, reusing only matching native file observations.
+pub fn read_rustdoc(path: &Path) -> Result<Rc<[u8]>, Error> {
+    let read = || {
+        std::fs::read(path)
+            .map(|bytes| {
+                #[cfg(test)]
+                READS.set(READS.get() + 1);
+                Rc::from(bytes)
+            })
+            .map_err(Error::from)
+    };
+    CACHE.with_borrow(|cache| match cache {
+        Some(cache) => sdk_file_identity::cached(
+            &cache.files,
+            path.to_owned(),
+            || sdk_file_identity::stamp(path).map_err(Error::from),
+            read,
+            || {
+                Error::Invalid(format!(
+                    "Rustdoc receipt changed while reading {}",
+                    path.display()
+                ))
+            },
+        ),
+        None => read(),
+    })
+}
+
+pub(crate) fn decode(raw: Rc<[u8]>) -> Result<Rc<rustdoc_types::Crate>, serde_json::Error> {
+    if let Some(parsed) = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .and_then(|cache| cache.parsed.borrow().get(&raw).cloned())
+    }) {
+        return Ok(parsed);
+    }
+    let parsed = Rc::new(crate::public_api::decode::from_slice(&raw)?);
+    CACHE.with_borrow(|cache| {
+        if let Some(cache) = cache {
+            cache.parsed.borrow_mut().insert(raw, Rc::clone(&parsed));
+        }
+    });
+    Ok(parsed)
 }
 
 pub(crate) fn extract(
     bytes: &[u8],
     render: impl FnOnce() -> Result<Vec<PublicItemSignature>, Error>,
 ) -> Result<Vec<PublicItemSignature>, Error> {
-    if let Some(items) =
-        RENDERED.with_borrow(|cache| cache.as_ref().and_then(|cache| cache.get(bytes)).cloned())
-    {
+    if let Some(items) = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .and_then(|cache| cache.rendered.borrow().get(bytes).cloned())
+    }) {
         return Ok(items);
     }
     let items = render()?;
-    RENDERED.with_borrow_mut(|cache| {
+    CACHE.with_borrow(|cache| {
         if let Some(cache) = cache {
-            cache.insert(bytes.to_vec(), items.clone());
+            cache
+                .rendered
+                .borrow_mut()
+                .insert(bytes.to_vec(), items.clone());
         }
     });
     Ok(items)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +114,21 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn decoded_receipts_bind_every_input_byte(version in ".{0,20}") {
+            let mut value: serde_json::Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/rustdoc_adapter/valid.json")).unwrap();
+            with_rustdoc_cache(|| {
+                for version in [version.clone(), format!("{version}!")] {
+                    value["crate_version"] = serde_json::json!(&version);
+                    let bytes: Rc<[u8]> = serde_json::to_vec(&value).unwrap().into();
+                    let first = decode(Rc::clone(&bytes)).unwrap();
+                    let second = decode(bytes).unwrap();
+                    prop_assert!(Rc::ptr_eq(&first, &second));
+                    prop_assert_eq!(first.crate_version.as_deref(), Some(version.as_str()));
+                }
+                Ok(())
+            })?;
+        }
         #[test]
         fn reuse_requires_every_input_byte_and_ends_with_the_operation(
             inputs in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..32), 0..32),
@@ -72,8 +147,35 @@ mod tests {
                 prop_assert_eq!(calls, unique);
                 Ok(())
             })?;
-            prop_assert!(RENDERED.with_borrow(|cache| cache.is_none()));
+            prop_assert!(CACHE.with_borrow(|cache| cache.is_none()));
         }
+    }
+
+    #[test]
+    fn receipt_reads_reuse_unchanged_bytes_and_recheck_native_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("receipt");
+        std::fs::write(&path, b"before").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        with_rustdoc_cache(|| {
+            let before = READS.get();
+            let first = read_rustdoc(&path).unwrap();
+            let second = read_rustdoc(&path).unwrap();
+            assert!(Rc::ptr_eq(&first, &second));
+            assert_eq!(READS.get() - before, 1);
+            std::fs::write(&path, b"edited").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            assert_eq!(&*read_rustdoc(&path).unwrap(), b"edited");
+            std::fs::remove_file(&path).unwrap();
+            assert!(read_rustdoc(&path).is_err());
+            assert_eq!(&*first, b"before");
+        });
+        assert!(CACHE.with_borrow(|cache| cache.is_none()));
     }
 
     #[test]
@@ -90,10 +192,10 @@ mod tests {
                 item(b"outer")
             );
             assert_eq!(
-                RENDERED.with_borrow(|cache| cache.as_ref().unwrap().len()),
+                CACHE.with_borrow(|cache| cache.as_ref().unwrap().rendered.borrow().len()),
                 1
             );
         });
-        assert!(RENDERED.with_borrow(|cache| cache.is_none()));
+        assert!(CACHE.with_borrow(|cache| cache.is_none()));
     }
 }

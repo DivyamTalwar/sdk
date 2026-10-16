@@ -845,6 +845,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     );
     super::replay::copy_tree(&fixture.output, &relocated.output);
     super::replay::copy_tree(&fixture.root.join("target"), &relocated.root.join("target"));
+    super::replay::relocate_receipts(&fixture, &relocated);
     std::thread::scope(|scope| {
         for checkout in [&fixture, &relocated] {
             scope.spawn(move || {
@@ -853,7 +854,6 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             });
         }
     });
-    super::replay::relocate_receipts(&fixture, &relocated);
     let (data, availability) = super::replay::project(&relocated, &metadata);
     sdk_docs::write_bundle_files(&data, &relocated.output, false).unwrap();
     assert_eq!(

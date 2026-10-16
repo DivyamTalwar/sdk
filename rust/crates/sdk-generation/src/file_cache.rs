@@ -1,98 +1,43 @@
 use crate::{io_error, CliError};
+use sdk_file_identity::{stamp, Stamp};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Stamp {
-    length: u64,
-    modified: SystemTime,
-    created: Option<SystemTime>,
-    #[cfg(unix)]
-    native: (u64, u64, i64, i64),
-    #[cfg(windows)]
-    native: (u64, [u8; 16], i64),
-}
-
-fn stamp(path: &Path) -> Result<Stamp, CliError> {
-    #[cfg(windows)]
-    let file = fs::File::open(path).map_err(io_error)?;
-    #[cfg(windows)]
-    let metadata = file.metadata().map_err(io_error)?;
-    #[cfg(not(windows))]
-    let metadata = fs::metadata(path).map_err(io_error)?;
-    if !metadata.is_file() {
-        return Err(CliError(format!(
-            "expected a regular file: {}",
-            path.display()
-        )));
-    }
-    Ok(Stamp {
-        length: metadata.len(),
-        modified: metadata.modified().map_err(io_error)?,
-        created: metadata.created().ok(),
-        #[cfg(unix)]
-        native: {
-            use std::os::unix::fs::MetadataExt;
-            (
-                metadata.dev(),
-                metadata.ino(),
-                metadata.ctime(),
-                metadata.ctime_nsec(),
-            )
-        },
-        #[cfg(windows)]
-        native: windows_identity(&file).map_err(io_error)?,
-    })
-}
-
-#[cfg(windows)]
-fn windows_identity(file: &fs::File) -> std::io::Result<(u64, [u8; 16], i64)> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
-    };
-    let mut basic = std::mem::MaybeUninit::<FILE_BASIC_INFO>::uninit();
-    let mut id = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
-    // SAFETY: both buffers have the API's exact type/size and outlive the calls;
-    // the file owns the live handle. Read the buffers only after both succeed.
-    unsafe {
-        if GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileBasicInfo,
-            basic.as_mut_ptr().cast(),
-            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
-        ) == 0
-            || GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileIdInfo,
-                id.as_mut_ptr().cast(),
-                std::mem::size_of::<FILE_ID_INFO>() as u32,
-            ) == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        let id = id.assume_init();
-        Ok((
-            id.VolumeSerialNumber,
-            id.FileId.Identifier,
-            basic.assume_init().ChangeTime,
-        ))
-    }
-}
-
+type Values<S> = RefCell<BTreeMap<(PathBuf, String), (S, String)>>;
 thread_local! {
-    // Calling-thread ownership avoids locks and cross-invocation environment races.
-    static VALUES: RefCell<BTreeMap<(PathBuf, String), (Stamp, String)>> = const { RefCell::new(BTreeMap::new()) };
+    // Calling-thread ownership; every public command starts with empty state.
+    static VALUES: Values<Stamp> = const { RefCell::new(BTreeMap::new()) };
+    static CONCRETE: RefCell<BTreeSet<PathBuf>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+fn clear<S>(values: &Values<S>) {
+    values.borrow_mut().clear();
 }
 
 pub(super) fn begin_run() {
-    // Resolve rustup's selection afresh for each command; retain file identities.
-    VALUES.with_borrow_mut(|values| {
-        values.retain(|(_, context), _| !context.starts_with("rustup-which:"))
-    });
+    VALUES.with(clear);
+    CONCRETE.with_borrow_mut(BTreeSet::clear);
+}
+
+pub(super) fn resolved_cargo(path: &Path) {
+    CONCRETE.with_borrow_mut(|paths| paths.insert(path.to_owned()));
+}
+
+pub(super) fn is_resolved_cargo(path: &Path) -> bool {
+    CONCRETE.with_borrow(|paths| paths.contains(path))
+}
+
+fn observed<S: Clone + Eq>(
+    values: &Values<S>,
+    key: (PathBuf, String),
+    observe: impl FnMut() -> Result<S, CliError>,
+    initialize: impl FnOnce() -> Result<String, CliError>,
+) -> Result<String, CliError> {
+    sdk_file_identity::cached(values, key, observe, initialize, || {
+        CliError("file changed while reading identity".into())
+    })
 }
 
 pub(super) fn get(
@@ -104,29 +49,79 @@ pub(super) fn get(
         std::path::absolute(path).map_err(io_error)?,
         context.to_owned(),
     );
-    let before = stamp(&key.0)?;
-    if let Some(value) = VALUES.with(|values| {
-        values
-            .borrow()
-            .get(&key)
-            .filter(|(cached, _)| *cached == before)
-            .map(|(_, value)| value.clone())
-    }) {
-        return Ok(value);
-    }
-    let value = initialize()?;
-    if stamp(&key.0)? != before {
-        return Err(CliError(format!(
-            "file changed while reading identity: {}",
-            path.display()
-        )));
-    }
-    VALUES.with(|values| values.borrow_mut().insert(key, (before, value.clone())));
-    Ok(value)
+    VALUES.with(|values| observed(values, key, || stamp(path).map_err(io_error), initialize))
 }
 
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
     get(path, "sha256", || crate::sha256_file(path))
+}
+
+pub(super) fn tool_identity(path: &Path) -> Result<String, CliError> {
+    let cache = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .join("target/sdk-tool-identities-v2");
+    get(path, "tool-sha256", || shared_identity(path, &cache))
+}
+
+fn shared_identity(path: &Path, cache: &Path) -> Result<String, CliError> {
+    let path = std::path::absolute(path).map_err(io_error)?;
+    let before = stamp(&path).map_err(io_error)?;
+    let path_key = crate::sha256_bytes(path.as_os_str().as_encoded_bytes());
+    let Ok(bytes) = serde_json::to_vec(&(path.as_os_str().as_encoded_bytes(), &before)) else {
+        return crate::sha256_file(&path);
+    };
+    let key = crate::sha256_bytes(&bytes);
+    let record = cache.join(path_key.trim_start_matches("sha256:"));
+    if fs::create_dir_all(cache).is_err() {
+        return crate::sha256_file(&path);
+    }
+    let lock = match fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(cache.join(format!("{}.lock", path_key.trim_start_matches("sha256:"))))
+    {
+        Ok(lock) => lock,
+        Err(_) => return crate::sha256_file(&path),
+    };
+    let unchanged = || {
+        if stamp(&path).map_err(io_error)? != before {
+            return Err(CliError("file changed while reading identity".into()));
+        }
+        Ok(())
+    };
+    crate::shared_cache::get_or_compute(
+        &lock,
+        || {
+            unchanged().map_err(std::io::Error::other)?;
+            use std::io::Read;
+            let cached = fs::File::open(&record)
+                .ok()
+                .and_then(|file| {
+                    let mut bytes = Vec::new();
+                    file.take(513).read_to_end(&mut bytes).ok().map(|_| bytes)
+                })
+                .and_then(|bytes| crate::cache_record::decode(&bytes, &key));
+            unchanged().map_err(std::io::Error::other)?;
+            Ok(cached)
+        },
+        || {
+            let digest = crate::sha256_file(&path).map_err(std::io::Error::other)?;
+            unchanged().map_err(std::io::Error::other)?;
+            Ok(digest)
+        },
+        |digest| {
+            use std::io::Write;
+            let mut file = tempfile::NamedTempFile::new_in(cache)?;
+            file.write_all(&crate::cache_record::encode(&key, digest))?;
+            file.persist(&record).map_err(|error| error.error)?;
+            Ok(())
+        },
+    )
+    .map_err(io_error)
 }
 
 pub(super) fn rustdoc_digest(path: &Path, root: &Path) -> Result<String, CliError> {

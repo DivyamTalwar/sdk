@@ -188,19 +188,7 @@ pub(super) fn normalize_rustdoc_filenames(value: &mut serde_json::Value, reposit
 }
 
 pub(super) fn stable_rustdoc_filename(filename: &str, repository_root: &Path) -> String {
-    let path = PathBuf::from(filename);
-    if !path.is_absolute() {
-        return filename.replace('\\', "/");
-    }
-    if let Ok(canonical) = path.canonicalize() {
-        if let Ok(relative) = canonical.strip_prefix(repository_root) {
-            return format!("<root>/{}", normalize_path(relative));
-        }
-    }
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| format!("<external>/{name}"))
-        .unwrap_or_else(|| "<external>/generated-source".into())
+    crate::path_identity::stable_filename(filename, &repository_root.to_string_lossy())
 }
 
 pub(super) fn validate_generated_sha256(value: &str) -> Result<(), Error> {

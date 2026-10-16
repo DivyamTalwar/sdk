@@ -11,6 +11,16 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             for windows in [false, true] {
                 if let Some(rebased) = paths::rebase(path, old, new, windows) {
                     assert_eq!(paths::rebase(&rebased, new, new, windows), Some(rebased));
+                    let before = paths::stable_filename(path, old);
+                    if before.starts_with("<root>/") {
+                        assert_eq!(
+                            paths::stable_filename(
+                                &paths::rebase(path, old, new, windows).unwrap(),
+                                new
+                            ),
+                            before
+                        );
+                    }
                 }
             }
         }

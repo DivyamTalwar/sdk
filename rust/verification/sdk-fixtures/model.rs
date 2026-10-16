@@ -8,6 +8,9 @@ use loom::sync::{
 };
 use sdk_fixture_verification::get_or_try_init;
 
+#[path = "../../crates/sdk-generation/src/shared_cache.rs"]
+mod shared_cache;
+
 fn model(broken: bool) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = Some(2);
@@ -111,5 +114,96 @@ fn producer_then_cfg_slots_publish_without_nested_locks() {
         for calls in calls.iter() {
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
+    });
+}
+
+fn shared_identity_model(broken: bool, fail_first: bool) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(move || {
+        let lock = Arc::new(shared_cache::Lock::new(()));
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let jobs = [0, 1].map(|_| {
+            let lock = Arc::clone(&lock);
+            let bytes = Arc::clone(&bytes);
+            let calls = Arc::clone(&calls);
+            loom::thread::spawn(move || {
+                let read = || {
+                    let bytes = bytes.lock().unwrap();
+                    Ok((bytes.as_slice() == [1, 2]).then(|| bytes.clone()))
+                };
+                let compute = || {
+                    let call = calls.fetch_add(1, Ordering::SeqCst);
+                    if fail_first && call == 0 {
+                        return Err(std::io::Error::other("unavailable"));
+                    }
+                    Ok(vec![1, 2])
+                };
+                let publish = |value: &Vec<u8>| {
+                    bytes.lock().unwrap().push(value[0]);
+                    loom::thread::yield_now();
+                    bytes.lock().unwrap().push(value[1]);
+                    Ok(())
+                };
+                if broken {
+                    shared_cache::without_lock(read, compute, publish)
+                } else {
+                    shared_cache::get_or_compute(&lock, read, compute, publish)
+                }
+            })
+        });
+        let results = jobs.map(|job| job.join().unwrap());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if fail_first { 2 } else { 1 },
+            "identity cache invariant: duplicate computation"
+        );
+        assert_eq!(
+            results.iter().filter(|result| result.is_err()).count(),
+            usize::from(fail_first)
+        );
+        for value in results.into_iter().flatten() {
+            assert_eq!(value, [1, 2], "identity cache invariant: torn publication");
+        }
+        assert_eq!(
+            *bytes.lock().unwrap(),
+            [1, 2],
+            "identity cache invariant: torn stored identity"
+        );
+    });
+}
+
+#[test]
+fn shared_identity_is_computed_once_and_published_whole() {
+    shared_identity_model(false, false);
+}
+
+#[test]
+#[should_panic(expected = "identity cache invariant")]
+fn shared_identity_model_detects_omitted_process_lock() {
+    shared_identity_model(true, false);
+}
+
+#[test]
+fn failed_shared_computation_releases_the_lock_for_retry() {
+    shared_identity_model(false, true);
+}
+
+#[test]
+#[should_panic(expected = "nested identity cache lock")]
+fn shared_identity_lock_order_checker_rejects_nesting() {
+    loom::model(|| {
+        let a = shared_cache::Lock::new(());
+        let b = shared_cache::Lock::new(());
+        let _: std::io::Result<()> = shared_cache::get_or_compute(
+            &a,
+            || {
+                shared_cache::get_or_compute(&b, || Ok(None), || Ok(()), |_| Ok(()))?;
+                Ok(None)
+            },
+            || Ok(()),
+            |_| Ok(()),
+        );
     });
 }

@@ -186,12 +186,10 @@ pub(super) fn cargo_discovery_inputs(
         }
     }
     let environment_sha256 = discovery_environment_inputs(std::env::vars_os(), cfg!(windows))?;
-    let git_sha256 = crate::file_cache::sha256_file(&frontier_git()?).map_err(|e| e.to_string())?;
-    let cargo_sha256 = crate::file_cache::sha256_file(cargo).map_err(|e| e.to_string())?;
-    let context =
-        serde_json::to_string(&(&config_sha256, &environment_sha256)).map_err(|e| e.to_string())?;
-    let cargo_version =
-        crate::toolchains::cargo_version(cargo, root, &context).map_err(|e| e.to_string())?;
+    let git_sha256 =
+        crate::file_cache::tool_identity(&frontier_git()?).map_err(|e| e.to_string())?;
+    let cargo_sha256 = crate::file_cache::tool_identity(cargo).map_err(|e| e.to_string())?;
+    let cargo_version = crate::toolchains::cargo_version(cargo, root).map_err(|e| e.to_string())?;
     Ok(CargoDiscoveryInputs {
         git_sha256,
         cargo_sha256,

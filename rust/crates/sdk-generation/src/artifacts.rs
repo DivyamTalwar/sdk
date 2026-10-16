@@ -143,6 +143,8 @@ pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
 }
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
     let bytes = fs::read(path).map_err(io_error)?;
+    #[cfg(test)]
+    HASH_BYTES.set(HASH_BYTES.get() + bytes.len() as u64);
     let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut result = String::with_capacity(7 + digest.as_ref().len() * 2);
@@ -153,6 +155,9 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
     }
     Ok(result)
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static HASH_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 
 pub(super) fn receipt_source_attestation(path: &Path) -> Result<Option<String>, CliError> {
     let sidecar = path.with_extension("source.sha256");
@@ -185,10 +190,10 @@ pub fn materialize_generated_sources(
 ) -> Result<Vec<GeneratedSource>, CliError> {
     let mut filenames = BTreeSet::new();
     for receipt in rustdoc_files {
-        let value: serde_json::Value =
-            serde_json::from_slice(&fs::read(receipt).map_err(io_error)?).map_err(|e| {
-                CliError(format!("invalid Rustdoc JSON {}: {e}", receipt.display()))
-            })?;
+        let value: serde_json::Value = serde_json::from_slice(
+            &sdk_docs::read_rustdoc(receipt).map_err(docs_error)?,
+        )
+        .map_err(|e| CliError(format!("invalid Rustdoc JSON {}: {e}", receipt.display())))?;
         collect_span_filenames(&value, &mut filenames);
     }
     let mut candidates = BTreeMap::<String, Vec<PathBuf>>::new();

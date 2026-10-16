@@ -38,24 +38,21 @@ pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
             path.display()
         )));
     }
+    let path = path.canonicalize().map_err(io_error)?;
+    crate::file_cache::resolved_cargo(&path);
     Ok(path)
 }
 
 pub(super) fn toolchain_identity(cargo: &Path) -> Result<String, CliError> {
     Ok(
-        cargo_version(cargo, &std::env::current_dir().map_err(io_error)?, "")?
+        cargo_version(cargo, &std::env::current_dir().map_err(io_error)?)?
             .trim()
             .to_owned(),
     )
 }
 
-pub(super) fn cargo_version(
-    cargo: &Path,
-    root: &Path,
-    discovery: &str,
-) -> Result<String, CliError> {
-    let context = cargo_context(root, discovery, std::env::vars_os());
-    crate::file_cache::get(cargo, &context, || {
+pub(super) fn cargo_version(cargo: &Path, root: &Path) -> Result<String, CliError> {
+    let probe = || {
         let output = Command::new(cargo)
             .current_dir(root)
             .arg("-vV")
@@ -65,7 +62,13 @@ pub(super) fn cargo_version(
             return Err(CliError("pinned Cargo identity query failed".into()));
         }
         String::from_utf8(output.stdout).map_err(|error| CliError(error.to_string()))
-    })
+    };
+    if crate::file_cache::is_resolved_cargo(cargo) {
+        crate::file_cache::get(cargo, "cargo-vV", probe)
+    } else {
+        // A proxy's own stamp does not identify the toolchain it dispatches to.
+        probe()
+    }
 }
 
 pub(super) fn cargo_context(
@@ -73,7 +76,7 @@ pub(super) fn cargo_context(
     discovery: &str,
     environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> String {
-    // A Cargo wrapper can observe its working directory, config and environment.
+    // Tool selection can observe its working directory, declaration and environment.
     // Frame every environment byte, retaining only its digest in the cache key.
     let mut context = Vec::new();
     for bytes in [root.as_os_str().as_encoded_bytes(), discovery.as_bytes()] {

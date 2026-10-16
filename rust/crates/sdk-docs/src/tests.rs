@@ -807,4 +807,5 @@ mod projection;
 mod publication;
 mod scratch;
 
+mod identity;
 mod rustdoc_adapter;

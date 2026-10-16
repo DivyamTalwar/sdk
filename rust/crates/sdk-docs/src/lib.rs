@@ -16,11 +16,12 @@ use std::path::{Component, Path, PathBuf};
 mod cargo_home;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
+mod path_identity;
 mod public_api;
 mod render_cache;
 mod sync;
 pub use cargo_home::with_cargo_home;
-pub use render_cache::with_rustdoc_cache;
+pub use render_cache::{read_rustdoc, with_rustdoc_cache};
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;
 /// Rust-owned executable examples and generated consumer projections.
@@ -34,7 +35,7 @@ pub const GENERATOR_VERSION: &str = "0.1.0";
 /// filenames are normalized to repository-relative or basename identities
 /// before hashing, while the receipt bytes used for projection remain intact.
 pub fn rustdoc_digest(path: &Path, repository_root: &Path) -> Result<String, Error> {
-    let bytes = fs::read(path)?;
+    let bytes = read_rustdoc(path)?;
     let normalized = normalized_rustdoc_digest_bytes(&bytes, repository_root)?;
     Ok(format!("sha256:{}", sha256_hex(&normalized)))
 }
