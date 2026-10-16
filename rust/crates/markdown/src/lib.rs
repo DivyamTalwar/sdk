@@ -179,11 +179,13 @@ impl Markdown {
     /// Current unwrapped lines. A partial delimiter remains visible until it
     /// forms valid Markdown; no input is hidden waiting for a future delta.
     pub fn lines(&self) -> &[Line] {
-        &self.lines[..self.visible_lines]
+        self.lines.get(..self.visible_lines).unwrap_or_default()
     }
 
     fn visible_end(&self, start: usize, end: usize, fallback: usize) -> usize {
-        self.lines[start..end]
+        self.lines
+            .get(start..end)
+            .unwrap_or_default()
             .iter()
             .rposition(|line| {
                 #[cfg(test)]
@@ -311,17 +313,10 @@ impl Markdown {
                 if stack.is_empty() {
                     out.lines.push(Line::default());
                 }
-                if matches!(
-                    end,
-                    TagEnd::Emphasis
-                        | TagEnd::Strong
-                        | TagEnd::Strikethrough
-                        | TagEnd::Link
-                        | TagEnd::Image
-                ) {
+                if inline_end(*end) {
                     continue;
                 }
-                let next_block = following_blocks[index];
+                let next_block = following_blocks.get(index).copied().unwrap_or_default();
                 if range.end >= prefix.len()
                     && (leaf_end || (stack.is_empty() && next_block))
                     && (closed || sealed(&source, range.end, *end, next_block))
@@ -509,6 +504,13 @@ fn is_leaf(tag: &Tag<'_>) -> bool {
     )
 }
 
+fn inline_end(tag: TagEnd) -> bool {
+    matches!(
+        tag,
+        TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image
+    )
+}
+
 fn is_leaf_end(tag: TagEnd) -> bool {
     matches!(
         tag,
@@ -631,8 +633,8 @@ fn following_blocks(source: &str, events: &[(Event<'_>, Range<usize>)]) -> Vec<b
     let newline = source.rfind('\n');
     let mut next = false;
     let mut following = vec![false; events.len()];
-    for (index, (event, range)) in events.iter().enumerate().rev() {
-        following[index] = next;
+    for ((event, range), following) in events.iter().rev().zip(following.iter_mut().rev()) {
+        *following = next;
         if matches!(event, Event::Start(_)) {
             next = newline.is_some_and(|newline| range.start <= newline);
         }
