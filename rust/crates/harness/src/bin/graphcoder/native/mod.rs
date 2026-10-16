@@ -176,9 +176,11 @@ pub(super) async fn runtime(
         )?;
         source.with_project_source_policy(issuer, policy)?;
     }
-    let toolset = acyclic_harness::tools::defaults()?.extend(
-        acyclic_harness::filesystem::recursive_tools(Some(source.clone()), MAX_FRAME_BYTES as u64)?,
-    )?;
+    let mut toolset = acyclic_harness::tools::defaults()?;
+    toolset.extend(acyclic_harness::filesystem::recursive_tools(
+        Some(source.clone()),
+        MAX_FRAME_BYTES as u64,
+    )?)?;
     let (toolset, context) = {
         let reader = FilesystemContentVerifier::new(
             files.clone(),

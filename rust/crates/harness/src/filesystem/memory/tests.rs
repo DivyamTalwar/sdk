@@ -161,7 +161,8 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
         file_bytes: 65536,
         ..Default::default()
     };
-    let mut tools = crate::tools::defaults()?.extend(crate::filesystem::recursive_tools::<
+    let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
         MemoryStream,
         MemoryAuthorityBackend,
         MemoryObjectBackend,
@@ -482,7 +483,8 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let mut tools = crate::tools::defaults()?.extend(crate::filesystem::recursive_tools::<
+    let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
         MemoryStream,
         MemoryAuthorityBackend,
         MemoryObjectBackend,
