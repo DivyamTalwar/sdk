@@ -548,7 +548,7 @@ export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { 
  */
 export interface ToolCall {
     /**
-     * Provider-owned call identity, scoped by the executor's dispatch.
+     * Harness-minted canonical call identity; provider bindings live in metadata.
      */
     call_id: string;
     /**
@@ -1476,7 +1476,7 @@ export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | 
 /**
  * Ordered streaming model event.
  */
-export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | ({ kind: "tool_call" } & ToolCall) | { kind: "completed"; metadata: WasmModelJsonValue };
+export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "reasoning_block"; block: ReasoningBlock } | ({ kind: "tool_call" } & ToolCall) | { kind: "completed"; metadata: WasmModelJsonValue };
 
 /**
  * Ordinary configurable threshold compaction; no model-family heuristic.
@@ -1516,6 +1516,24 @@ export interface ContextDiscovery {
      * Explicit work and byte limits.
      */
     limits: ContextDiscoveryLimits;
+}
+
+/**
+ * Origin identity used when choosing native replay or foreign context.
+ */
+export interface ReasoningOrigin {
+    /**
+     * Protocol family, rather than a display name or registry alias.
+     */
+    provider: string;
+    /**
+     * Exact selected model that produced this block.
+     */
+    model: string;
+    /**
+     * Nonsecret scope digest; None means ownership is unknown.
+     */
+    credential_scope: number[] | undefined;
 }
 
 /**
@@ -1604,6 +1622,11 @@ export interface ForkToolArguments {
 }
 
 /**
+ * Preservation result recorded without changing the original transcript block.
+ */
+export type ReasoningOutcome = "preserved-readable" | "preserved-opaque" | "missing-content" | "suppressed-display" | "unsupported-shape";
+
+/**
  * Provider evidence of a consistent boundary across selected resources.
  */
 export interface AttestedBoundary {
@@ -1623,21 +1646,29 @@ export interface AttestedBoundary {
 export type ResourceRequest = Record<string, bigint>;
 
 /**
- * Provider-owned additive upper bounds for an exact prepared request.
+ * Provider-neutral reasoning retained in the canonical transcript.
  */
-export interface ModelTokenCount {
+export interface ReasoningBlock {
     /**
-     * Binds every count to the exact canonical model request.
+     * Meaning of the retained content, independent of its wire representation.
      */
-    request_digest: number[];
+    kind: ReasoningKind;
     /**
-     * Upper bound for tools, options and request framing independent of messages.
+     * Readable content verified by the origin adapter, when available.
      */
-    fixed_tokens: number;
+    text: string | undefined;
     /**
-     * Ordered per-message upper bounds, including message-specific framing.
+     * Provider family, model and credential ownership of the native payload.
      */
-    message_tokens: number[];
+    origin: ReasoningOrigin;
+    /**
+     * Exact native continuation bytes; projection never edits this payload.
+     */
+    continuity: number[];
+    /**
+     * What the origin adapter could preserve.
+     */
+    outcome: ReasoningOutcome;
 }
 
 /**
@@ -1657,6 +1688,11 @@ export interface Worker {
      */
     labels?: Record<string, string>;
 }
+
+/**
+ * Reasoning shapes normalized by the adapters.
+ */
+export type ReasoningKind = "readable" | "summary" | "encrypted" | "redacted" | "signature" | "opaque";
 
 /**
  * Refresh timing selected by the embedding admitted workflow.
@@ -1861,7 +1897,7 @@ export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projecti
 /**
  * Structured content requiring an explicit provider projection.
  */
-export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | ({ kind: "tool_call" } & ToolCall) | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
+export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "reasoning"; block: ReasoningBlock } | ({ kind: "tool_call" } & ToolCall) | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
 
 /**
  * Structured parent and stable logical child slot.
@@ -1880,7 +1916,7 @@ export interface ParentLink {
 /**
  * Submission backpressure is distinct from malformed input and provider failure.
  */
-export type FileClientError = { kind: "CommandQuota"; detail: { limit: bigint } } | { kind: "ByteQuota"; detail: { limit: bigint } } | { kind: "Harness"; detail: string };
+export type FileClientError = { kind: "Rejected"; detail: { request: FileKey; reason: string } } | { kind: "CommandQuota"; detail: { limit: bigint } } | { kind: "ByteQuota"; detail: { limit: bigint } } | { kind: "Harness"; detail: string };
 
 /**
  * Terminal outcome of admitted work.
@@ -1901,6 +1937,28 @@ export type ToolFile = "Request" | { Arguments: bigint } | { Stdout: bigint } | 
  * Transient model-visible text or structured parts.
  */
 export type ModelContent = string | ModelContentPart | ModelContentPart[];
+
+/**
+ * Verified input admission count and separate planning weights for one request.
+ */
+export interface ModelTokenCount {
+    /**
+     * Binds every count to the exact canonical model request.
+     */
+    request_digest: number[];
+    /**
+     * Verified total input count, including all provider framing and media.
+     */
+    input_tokens: bigint;
+    /**
+     * Planning weight for tools, options and framing; never an admission proof.
+     */
+    fixed_tokens: number;
+    /**
+     * Ordered per-message planning weights for compaction selection.
+     */
+    message_tokens: number[];
+}
 
 /**
  * Work atomically claimed from the coordinator.
@@ -2630,7 +2688,7 @@ export class WasmTaskRuntime {
      * operations. Counting receives exact canonical bytes and their Rust digest;
      * Rust validates the response binding and ordered message dimensions.
      */
-    configureModel(model: Model, generate: (request: Uint8Array, dispatch: ModelDispatch, signal: AbortSignal) => AsyncIterator<ModelEvent>, reconcile: (attempt: ModelDispatch & { observed: ModelEvent[] }) => ModelEvent[] | null | Promise<ModelEvent[] | null>, capacity: ((model: Model) => ModelContextCapacity) | undefined, count_tokens: ((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined, compaction: CompactionPolicy): void;
+    configureModel(model: Model, generate: (request: Uint8Array, dispatch: ModelDispatch, signal: AbortSignal) => AsyncIterator<ModelEvent>, reconcile: (attempt: ModelDispatch & { observed: ModelEvent[] }) => ModelEvent[] | null | Promise<ModelEvent[] | null>, capacity: ((model: Model) => ModelContextCapacity) | undefined, count_tokens: ((request: Uint8Array, request_digest: number[]) => ModelTokenCount | Promise<ModelTokenCount>) | undefined, compaction: CompactionPolicy): void;
     /**
      * A page observation is not a retained model-consumption acknowledgment.
      */
@@ -3137,9 +3195,93 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly captureDiscoveredContext: (a: any, b: any) => any;
-    readonly contextForRequest: (a: any, b: any, c: any, d: any) => any;
-    readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
+    readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
+    readonly defaultCompactionPolicy: () => [number, number, number];
+    readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number];
+    readonly modelContentInventory: (a: any, b: any) => [number, number, number];
+    readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
+    readonly validateModelContent: (a: any, b: any) => [number, number];
+    readonly validateModelMessages: (a: any, b: any) => [number, number];
+    readonly validateModelTokenCount: (a: any, b: any, c: any) => [bigint, number, number];
+    readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
+    readonly validateThresholdCompaction: (a: any, b: any, c: any) => [number, number, number];
+    readonly validateUserInput: (a: any) => [number, number];
+    readonly __wbg_wasmbrowseraggregate_free: (a: number, b: number) => void;
+    readonly __wbg_wasmbrowserhistoryreader_free: (a: number, b: number) => void;
+    readonly __wbg_wasmclientquery_free: (a: number, b: number) => void;
+    readonly __wbg_wasmfileclient_free: (a: number, b: number) => void;
+    readonly __wbg_wasmqueryviews_free: (a: number, b: number) => void;
+    readonly __wbg_wasmtaskvolume_free: (a: number, b: number) => void;
+    readonly wasmbrowseraggregate_execute: (a: number, b: any) => any;
+    readonly wasmbrowseraggregate_head: (a: number) => [number, number, number];
+    readonly wasmbrowseraggregate_historyReader: (a: number) => [number, number, number];
+    readonly wasmbrowseraggregate_openBrowser: (a: any, b: any, c: number) => any;
+    readonly wasmbrowseraggregate_reconcile: (a: number, b: any) => any;
+    readonly wasmbrowseraggregate_refreshThrough: (a: number, b: bigint, c: number) => any;
+    readonly wasmbrowseraggregate_snapshot: (a: number) => [number, number, number];
+    readonly wasmbrowserhistoryreader_latestConversationMessage: (a: number, b: bigint) => any;
+    readonly wasmbrowserhistoryreader_openBrowser: (a: any) => any;
+    readonly wasmbrowserhistoryreader_operationEvent: (a: number, b: any) => any;
+    readonly wasmbrowserhistoryreader_pin: (a: number, b: bigint) => any;
+    readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
+    readonly wasmclientquery_follow: (a: number, b: any, c: any, d: any) => any;
+    readonly wasmclientquery_open: (a: number, b: any, c: any, d: any) => any;
+    readonly wasmclientquery_reconnect: (a: number, b: number) => any;
+    readonly wasmclientquery_views: (a: number) => number;
+    readonly wasmfileclient_cursor: (a: number) => [number, number, number];
+    readonly wasmfileclient_enqueue: (a: number, b: any, c: any) => any;
+    readonly wasmfileclient_flush: (a: number) => any;
+    readonly wasmfileclient_open: (a: number, b: number, c: any) => any;
+    readonly wasmfileclient_pending: (a: number) => [number, number, number];
+    readonly wasmqueryviews_cursor: (a: number) => [number, number, number];
+    readonly wasmqueryviews_files: (a: number) => [number, number, number];
+    readonly wasmqueryviews_segments: (a: number, b: any) => [number, number, number];
+    readonly wasmtaskvolume_create: (a: number, b: number, c: number) => any;
+    readonly wasmtaskvolume_head: (a: number) => any;
+    readonly wasmtaskvolume_open: (a: number, b: number, c: number) => any;
+    readonly wasmtaskvolume_write: (a: number, b: any, c: any, d: number, e: number, f: any) => any;
+    readonly wasmcontentstore_generation: (a: number) => [number, number, number];
+    readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
+    readonly wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmcontentstore_new: (a: any, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly wasmcontentstore_pathConflicts: (a: number, b: number, c: number) => number;
+    readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
+    readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
+    readonly wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+    readonly __wbg_wasmtaskregistry_free: (a: number, b: number) => void;
+    readonly wasmtaskregistry_new: () => number;
+    readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
+    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
+    readonly decodeAggregateKind: (a: number) => [number, number, number];
+    readonly decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly validateWireAdmission: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireCancel: (a: number, b: number) => [number, number];
+    readonly validateWireCancellation: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireCommand: (a: number, b: number) => [number, number];
+    readonly validateWireCommandProtocol: (a: number, b: number) => [number, number];
+    readonly validateWireHandshake: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireObserve: (a: number, b: number) => [number, number];
+    readonly validateWireResume: (a: number, b: number) => [number, number];
+    readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly admitBatch: (a: any) => [number, number, number];
+    readonly admitBatchRequest: (a: any) => [number, number, number];
+    readonly admitTask: (a: any) => [number, number, number];
+    readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly taskAdmissionIdentities: (a: any) => [number, number, number];
+    readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
+    readonly validateTaskRequirements: (a: any) => [number, number];
+    readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+    readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
+    readonly wasmclientviews_release: (a: number, b: any) => [number, number];
+    readonly wasmclientviews_residency: (a: number) => [number, number, number];
+    readonly wasmclientviews_restore: (a: number, b: any) => [number, number];
+    readonly wasmclientviews_sequence: (a: number) => bigint;
+    readonly wasmclientviews_status: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_view: (a: number, b: any, c: any) => [number, number, number];
     readonly __wbg_wasmtaskruntime_free: (a: number, b: number) => void;
     readonly mcpCallbackOperation: (a: any) => [number, number, number, number];
     readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
@@ -3165,33 +3307,12 @@ export interface InitOutput {
     readonly wasmtaskruntime_send: (a: number, b: any, c: number, d: number, e: number, f: number, g: any) => any;
     readonly wasmtaskruntime_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly wasmtaskruntime_workerTick: (a: number, b: any, c: any, d: number, e: number) => any;
-    readonly decodeCanonicalJson: (a: number, b: number) => [number, number, number];
-    readonly decodeExecutionEventJson: (a: number, b: number) => [number, number, number];
-    readonly decodeJson: (a: number, b: number) => [number, number, number];
-    readonly digestCanonicalJson: (a: any) => [number, number, number, number];
-    readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
-    readonly decodeAggregateKind: (a: number) => [number, number, number];
-    readonly decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
-    readonly validateWireAdmission: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly validateWireCancel: (a: number, b: number) => [number, number];
-    readonly validateWireCancellation: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly validateWireCommand: (a: number, b: number) => [number, number];
-    readonly validateWireCommandProtocol: (a: number, b: number) => [number, number];
-    readonly validateWireHandshake: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly validateWireObserve: (a: number, b: number) => [number, number];
-    readonly validateWireResume: (a: number, b: number) => [number, number];
-    readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly applyContextProjection: (a: any, b: any, c: any, d: any, e: any) => [number, number, number];
-    readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
-    readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
-    readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
-    readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
-    readonly validateContextSelection: (a: any, b: any) => [number, number];
-    readonly validateModelContextSelection: (a: any, b: any) => [number, number];
-    readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
-    readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_restore: (a: number, b: any) => [number, number];
-    readonly wasmclientviews_sequence: (a: number) => bigint;
+    readonly deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly validateAuthorityPathSegment: (a: any) => [number, number, number, number];
+    readonly validateComponentLabel: (a: any) => [number, number, number, number];
+    readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
+    readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly decodeAttachmentManifest: (a: any, b: number, c: number, d: number) => [number, number, number];
     readonly encodeAttachmentManifest: (a: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -3201,14 +3322,25 @@ export interface InitOutput {
     readonly validateToolValue: (a: any, b: any) => [number, number, number];
     readonly validateWorkflowAdmission: (a: any) => [number, number, number];
     readonly verifyFileBytes: (a: any, b: number, c: number) => [number, number];
-    readonly wasmcontentstore_generation: (a: number) => [number, number, number];
-    readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
-    readonly wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
-    readonly wasmcontentstore_new: (a: any, b: number, c: number, d: number, e: number) => [number, number, number];
-    readonly wasmcontentstore_pathConflicts: (a: number, b: number, c: number) => number;
-    readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
-    readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
-    readonly wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+    readonly captureDiscoveredContext: (a: any, b: any) => any;
+    readonly contextForRequest: (a: any, b: any, c: any, d: any) => any;
+    readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
+    readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
+    readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
+    readonly __wbg_wasmclientviews_free: (a: number, b: number) => void;
+    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];
+    readonly decodeCanonicalJson: (a: number, b: number) => [number, number, number];
+    readonly decodeExecutionEventJson: (a: number, b: number) => [number, number, number];
+    readonly decodeJson: (a: number, b: number) => [number, number, number];
+    readonly digestCanonicalJson: (a: any) => [number, number, number, number];
+    readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
+    readonly applyContextProjection: (a: any, b: any, c: any, d: any, e: any) => [number, number, number];
+    readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
+    readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
+    readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
+    readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
+    readonly validateContextSelection: (a: any, b: any) => [number, number];
+    readonly validateModelContextSelection: (a: any, b: any) => [number, number];
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];
@@ -3234,61 +3366,6 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
-    readonly admitBatch: (a: any) => [number, number, number];
-    readonly admitBatchRequest: (a: any) => [number, number, number];
-    readonly admitTask: (a: any) => [number, number, number];
-    readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly taskAdmissionIdentities: (a: any) => [number, number, number];
-    readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
-    readonly validateTaskRequirements: (a: any) => [number, number];
-    readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
-    readonly wasmclientviews_release: (a: number, b: any) => [number, number];
-    readonly wasmclientviews_residency: (a: number) => [number, number, number];
-    readonly wasmclientviews_status: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_view: (a: number, b: any, c: any) => [number, number, number];
-    readonly __wbg_wasmbrowseraggregate_free: (a: number, b: number) => void;
-    readonly __wbg_wasmbrowserhistoryreader_free: (a: number, b: number) => void;
-    readonly __wbg_wasmclientquery_free: (a: number, b: number) => void;
-    readonly __wbg_wasmfileclient_free: (a: number, b: number) => void;
-    readonly __wbg_wasmqueryviews_free: (a: number, b: number) => void;
-    readonly __wbg_wasmtaskvolume_free: (a: number, b: number) => void;
-    readonly wasmbrowseraggregate_execute: (a: number, b: any) => any;
-    readonly wasmbrowseraggregate_head: (a: number) => [number, number, number];
-    readonly wasmbrowseraggregate_historyReader: (a: number) => [number, number, number];
-    readonly wasmbrowseraggregate_openBrowser: (a: any, b: any, c: number) => any;
-    readonly wasmbrowseraggregate_reconcile: (a: number, b: any) => any;
-    readonly wasmbrowseraggregate_refreshThrough: (a: number, b: bigint, c: number) => any;
-    readonly wasmbrowseraggregate_snapshot: (a: number) => [number, number, number];
-    readonly wasmbrowserhistoryreader_latestConversationMessage: (a: number, b: bigint) => any;
-    readonly wasmbrowserhistoryreader_openBrowser: (a: any) => any;
-    readonly wasmbrowserhistoryreader_operationEvent: (a: number, b: any) => any;
-    readonly wasmbrowserhistoryreader_pin: (a: number, b: bigint) => any;
-    readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
-    readonly wasmclientquery_follow: (a: number, b: any, c: any, d: any) => any;
-    readonly wasmclientquery_open: (a: number, b: any, c: any, d: any) => any;
-    readonly wasmclientquery_reconnect: (a: number, b: number) => any;
-    readonly wasmclientquery_views: (a: number) => number;
-    readonly wasmfileclient_cursor: (a: number) => [number, number, number];
-    readonly wasmfileclient_enqueue: (a: number, b: any, c: number, d: number) => any;
-    readonly wasmfileclient_flush: (a: number) => any;
-    readonly wasmfileclient_open: (a: number, b: number, c: any) => any;
-    readonly wasmfileclient_pending: (a: number) => [number, number, number];
-    readonly wasmqueryviews_cursor: (a: number) => [number, number, number];
-    readonly wasmqueryviews_files: (a: number) => [number, number, number];
-    readonly wasmqueryviews_segments: (a: number, b: any) => [number, number, number];
-    readonly wasmtaskvolume_create: (a: number, b: number, c: number) => any;
-    readonly wasmtaskvolume_head: (a: number) => any;
-    readonly wasmtaskvolume_open: (a: number, b: number, c: number) => any;
-    readonly wasmtaskvolume_write: (a: number, b: any, c: any, d: number, e: number, f: any) => any;
-    readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
-    readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
-    readonly __wbg_wasmtaskregistry_free: (a: number, b: number) => void;
-    readonly wasmtaskregistry_new: () => number;
-    readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
-    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
-    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
     readonly __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
     readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
     readonly wasmmcphttpinitialization_initializedRequest: (a: number) => [number, number, number];
@@ -3301,30 +3378,11 @@ export interface InitOutput {
     readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: any, g: any) => [number, number, number];
     readonly wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
     readonly wasmmcphttptransport_serviceJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
-    readonly deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly validateAuthorityPathSegment: (a: any) => [number, number, number, number];
-    readonly validateComponentLabel: (a: any) => [number, number, number, number];
-    readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
-    readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly __wbg_wasmclientviews_free: (a: number, b: number) => void;
-    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];
     readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
     readonly validateToolProjection: (a: any, b: any, c: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];
-    readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
-    readonly defaultCompactionPolicy: () => [number, number, number];
-    readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number];
-    readonly modelContentInventory: (a: any, b: any) => [number, number, number];
-    readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
-    readonly validateModelContent: (a: any, b: any) => [number, number];
-    readonly validateModelMessages: (a: any, b: any) => [number, number];
-    readonly validateModelTokenCount: (a: any, b: any, c: any) => [bigint, number, number];
-    readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
-    readonly validateThresholdCompaction: (a: any, b: any, c: any) => [number, number, number];
-    readonly validateUserInput: (a: any) => [number, number];
     readonly __wbg_intounderlyingbytesource_free: (a: number, b: number) => void;
     readonly intounderlyingbytesource_autoAllocateChunkSize: (a: number) => number;
     readonly intounderlyingbytesource_cancel: (a: number) => void;
