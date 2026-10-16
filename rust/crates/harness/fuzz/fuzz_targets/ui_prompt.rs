@@ -2,7 +2,7 @@
 use acyclic_harness::{
     client::{CommandSession, PromptFiles, restore_tui_prompt},
     task_volume::{FileKey, Query, TaskVolume, Write},
-    tui::{Editor, InputKeymap, PromptInput},
+    tui::{ClientRenderer, Editor, InputKeymap, PromptInput},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use libfuzzer_sys::fuzz_target;
@@ -12,12 +12,13 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {
         return;
     }
-    let mut fields = data.splitn(3, |byte| *byte == 0);
+    let mut fields = data.splitn(4, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();
     let Some(history) = fields.next() else {
         return;
     };
     let keymap = fields.next();
+    let notifications = fields.next();
     let expected_keymap = keymap.map_or(Some(InputKeymap::default()), |bytes| {
         std::str::from_utf8(bytes)
             .ok()
@@ -44,6 +45,9 @@ fuzz_target!(|data: &[u8]| {
             if let Some(bytes) = keymap {
                 writes.push((".ui/config/keymap.json".into(), bytes));
             }
+            if let Some(bytes) = notifications {
+                writes.push((format!(".ui/session-{session}/notifications.json"), bytes));
+            }
             for (path, bytes) in writes {
                 let cut = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
                 volume
@@ -59,6 +63,23 @@ fuzz_target!(|data: &[u8]| {
             else {
                 return;
             };
+            let mut renderer = ClientRenderer::default();
+            let result = renderer.screen_for(&files);
+            let expected: Result<Vec<String>, _> =
+                serde_json::from_slice(notifications.unwrap_or(b"[]"));
+            match expected {
+                Err(_) => assert!(result.is_err()),
+                Ok(messages) => {
+                    let screen = result.unwrap();
+                    assert_eq!(screen.notifications.len(), messages.len());
+                    for (row, message) in screen.notifications.iter().zip(messages) {
+                        let text: String =
+                            row.spans.iter().map(|span| span.content.as_ref()).collect();
+                        assert_eq!(text, message.escape_debug().to_string());
+                        assert!(!text.chars().any(char::is_control));
+                    }
+                }
+            }
             let mut input = PromptInput::new(Editor::new("original"));
             let mut projected = input.clone();
             let mut live = PromptFiles::default();

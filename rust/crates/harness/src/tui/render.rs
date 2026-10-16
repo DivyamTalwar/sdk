@@ -47,6 +47,9 @@ pub struct ClientRenderer {
     header: Line<'static>,
     status: Line<'static>,
     notices: Vec<Line<'static>>,
+    notice_file: Option<crate::task_volume::FileValue>,
+    file_notices: Vec<Line<'static>>,
+    composed_notices: Vec<Line<'static>>,
     diff_cut: Option<(
         crate::conversation::VolumeRef,
         crate::resources::GenerationRef,
@@ -165,6 +168,12 @@ impl ClientRenderer {
             .and_then(|task| task.reason.as_deref())
             .map(|text| vec![Line::raw(text.to_owned())])
             .unwrap_or_default();
+        self.compose_notices();
+    }
+
+    fn compose_notices(&mut self) {
+        self.composed_notices.clone_from(&self.notices);
+        self.composed_notices.extend_from_slice(&self.file_notices);
     }
 
     /// Current followed lifecycle, used by the shared prompt's queue indicator.
@@ -175,11 +184,25 @@ impl ClientRenderer {
     /// Compose the panel selected by the followed command layout file.
     /// Unknown views retain the document overview until their widget is available.
     pub fn screen_for<P: acyclic_stream::StreamProvider + ?Sized>(
-        &self,
+        &mut self,
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<Screen<'_>> {
         use crate::client::CommandFileRoot;
         let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let feedback = files.state_file(CommandFileRoot::Session, "notifications.json")?;
+        if self.notice_file.as_ref() != feedback {
+            let messages: Vec<String> = feedback
+                .map(|file| serde_json::from_slice(&file.bytes))
+                .transpose()
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?
+                .unwrap_or_default();
+            self.file_notices = messages
+                .into_iter()
+                .map(|message| Line::raw(message.escape_debug().to_string()))
+                .collect();
+            self.notice_file = feedback.cloned();
+            self.compose_notices();
+        }
         let mut screen = self.screen();
         match layout
             .as_ref()
@@ -209,7 +232,7 @@ impl ClientRenderer {
             diff: &self.diff,
             goal: &self.goal,
             plans: &self.plans,
-            notifications: &self.notices,
+            notifications: &self.composed_notices,
             status: self.status.clone(),
             ..Screen::default()
         }

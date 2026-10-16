@@ -306,7 +306,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
         let reader = self.files.as_ref().ok_or_else(|| {
             Error::Unauthorized("command input requires bound file authority".into())
         })?;
-        super::apply_tui_input(files, reader.as_ref(), effect).await
+        super::handle_tui_input(files, reader.as_ref(), effect).await
     }
 
     /// Shared renderer state and outbox.

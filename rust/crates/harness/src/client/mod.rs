@@ -110,7 +110,7 @@ pub use native_input::stdin_jsonl;
 #[cfg(feature = "tui")]
 mod input_files;
 #[cfg(feature = "tui")]
-pub use input_files::{apply_tui_input, restore_tui_prompt, save_tui_draft};
+pub use input_files::{apply_tui_input, handle_tui_input, restore_tui_prompt, save_tui_draft};
 #[cfg(feature = "tui")]
 mod prompt_files;
 #[cfg(feature = "tui")]

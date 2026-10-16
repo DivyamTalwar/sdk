@@ -38,6 +38,30 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
+/// Process a user action, retaining ordinary command errors as session feedback.
+/// Authority, storage and ambiguous publication failures still reach the caller.
+pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
+    files: &mut CommandSession<P>,
+    reader: &dyn ContentResidencyVerifier,
+    effect: InputEffect,
+) -> Result<()> {
+    let messages = match apply_tui_input(files, reader, effect).await {
+        Ok(()) => Vec::new(),
+        Err(error @ (Error::Invalid(_) | Error::NotFound(_) | Error::Unsupported(_))) => {
+            vec![error.to_string()]
+        }
+        Err(error) => return Err(error),
+    };
+    let current = files.state(CommandFileRoot::Session, "notifications.json")?;
+    let next = serde_json::json!(messages);
+    if current.as_ref() != Some(&next) && (current.is_some() || !messages.is_empty()) {
+        files
+            .write_state(CommandFileRoot::Session, "notifications.json", &next)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Load one session's persisted prompt before accepting input.
 pub fn restore_tui_prompt<P: StreamProvider + ?Sized>(
     files: &CommandSession<P>,

@@ -1,0 +1,181 @@
+use acyclic_harness::{
+    Error, OperationId,
+    client::{ClientViews, CommandFileRoot, CommandSession, handle_tui_input},
+    task_volume::{FileKey, Query, TaskFile, TaskVolume},
+    tui::{
+        ClientRenderer, InputEffect, PromptInput, Viewport,
+        ratatui::{Terminal, backend::TestBackend},
+    },
+};
+use acyclic_stream::{MemoryStream, StreamPath};
+use std::sync::Arc;
+
+struct NoFiles;
+impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+
+async fn volume() -> Arc<TaskVolume<MemoryStream>> {
+    Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("feedback").unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+}
+async fn session(volume: Arc<TaskVolume<MemoryStream>>, id: u8) -> CommandSession<MemoryStream> {
+    CommandSession::open(
+        volume,
+        OperationId::from_bytes([id; 16])
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        64,
+    )
+    .await
+    .unwrap()
+}
+fn submit(text: &str) -> InputEffect {
+    InputEffect::Submit {
+        text: text.into(),
+        queued: false,
+        edit: None,
+    }
+}
+fn painted(renderer: &mut ClientRenderer, files: &CommandSession<MemoryStream>) -> String {
+    let screen = renderer.screen_for(files).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            screen.render(
+                frame,
+                &PromptInput::default(),
+                &mut Viewport::default(),
+                0,
+                0,
+            );
+        })
+        .unwrap();
+    super::screen_text(&terminal)
+}
+
+#[tokio::test]
+async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
+    let volume = volume().await;
+    let mut files = session(volume.clone(), 4).await;
+    handle_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
+        .await
+        .unwrap();
+    let mut renderer = ClientRenderer::default();
+    assert!(painted(&mut renderer, &files).contains("Unknown command: /not-a-command"));
+    let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
+    handle_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
+        .await
+        .unwrap();
+    let snapshot = volume.snapshot(&Query::Root, 64).await.unwrap();
+    assert_eq!(snapshot.generation, before);
+    assert!(snapshot.files.iter().all(|file| !matches!(
+        file.key,
+        FileKey::Session {
+            file: TaskFile::Request(_),
+            ..
+        } | FileKey::Task {
+            file: TaskFile::Request(_),
+            ..
+        }
+    )));
+    assert!(files.take_request().is_none());
+    handle_tui_input(&mut files, &NoFiles, submit("/diff extra"))
+        .await
+        .unwrap();
+    assert!(painted(&mut renderer, &files).contains("/diff accepts no arguments"));
+    handle_tui_input(
+        &mut files,
+        &NoFiles,
+        InputEffect::Submit {
+            text: "replacement".into(),
+            queued: false,
+            edit: Some("prior-message".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(painted(&mut renderer, &files).contains("native UI effect file binding"));
+    assert!(files.take_request().is_none());
+    handle_tui_input(&mut files, &NoFiles, submit("ordinary chat"))
+        .await
+        .unwrap();
+    assert!(files.take_request().is_some());
+    assert!(files.take_request().is_none());
+    assert!(!painted(&mut renderer, &files).contains("Unknown command"));
+    assert_eq!(
+        files
+            .state(CommandFileRoot::Session, "notifications.json")
+            .unwrap(),
+        Some(serde_json::json!([]))
+    );
+    drop(files);
+    let files = session(volume, 4).await;
+    assert!(
+        ClientRenderer::default()
+            .screen_for(&files)
+            .unwrap()
+            .notifications
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn stale_publication_is_propagated_without_turning_into_feedback() {
+    let volume = volume().await;
+    let mut stale = session(volume.clone(), 4).await;
+    let _other = session(volume.clone(), 5).await;
+    let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
+    let error = handle_tui_input(&mut stale, &NoFiles, submit("/diff"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Conflict(_)));
+    assert_eq!(
+        volume.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    assert!(
+        stale
+            .state(CommandFileRoot::Session, "notifications.json")
+            .unwrap()
+            .is_none()
+    );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: notification-file round trips retain literal Unicode text while
+    // emitting no terminal controls; malformed replacements preserve the cache.
+    #[test]
+    fn followed_feedback_round_trips_and_rejects_partial_updates(chars in proptest::collection::vec(proptest::char::any(), 0..32)) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut files = session(volume().await, 4).await;
+            let message: String = chars.into_iter().collect();
+            files.write_state(CommandFileRoot::Session, "notifications.json", &serde_json::json!([message])).await.unwrap();
+            let mut renderer = ClientRenderer::default();
+            let rows = renderer.screen_for(&files).unwrap().notifications.to_vec();
+            proptest::prop_assert_eq!(rows.len(), 1);
+            let text: String = rows[0].spans.iter().map(|span| span.content.as_ref()).collect();
+            proptest::prop_assert_eq!(&text, &message.escape_debug().to_string());
+            proptest::prop_assert!(!text.chars().any(char::is_control));
+            let first = painted(&mut renderer, &files);
+            proptest::prop_assert_eq!(painted(&mut ClientRenderer::default(), &files), first);
+            files.write_state(CommandFileRoot::Session, "notifications.json", &serde_json::json!(false)).await.unwrap();
+            proptest::prop_assert!(renderer.screen_for(&files).is_err());
+            proptest::prop_assert_eq!(renderer.screen().notifications, rows.as_slice());
+            files.write_state(CommandFileRoot::Session, "notifications.json", &serde_json::json!([])).await.unwrap();
+            proptest::prop_assert!(renderer.screen_for(&files).unwrap().notifications.is_empty());
+            // Ordinary ClientViews updates still compose their lifecycle feedback.
+            renderer.update(&ClientViews::default(), &acyclic_harness::wire::Authority { kind: acyclic_harness::wire::AggregateKind::Task as i32, id: "task".into() });
+            proptest::prop_assert!(renderer.screen_for(&files).unwrap().notifications.is_empty());
+            Ok(())
+        })?;
+    }
+}
