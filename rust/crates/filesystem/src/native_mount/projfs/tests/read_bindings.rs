@@ -1,11 +1,16 @@
 use super::*;
 
 fn notify(runtime: &Runtime, kind: PRJ_NOTIFICATION) -> HRESULT {
-    let name = HSTRING::from("read.txt");
+    notify_at(runtime, "read.txt", 0, kind)
+}
+
+fn notify_at(runtime: &Runtime, path: &str, process: u32, kind: PRJ_NOTIFICATION) -> HRESULT {
+    let name = HSTRING::from(path);
     let data = PRJ_CALLBACK_DATA {
         InstanceContext: std::ptr::from_ref(runtime).cast_mut().cast(),
         FilePathName: PCWSTR(name.as_ptr()),
         FileId: GUID::from_u128(1),
+        TriggeringProcessId: process,
         ..Default::default()
     };
     // SAFETY: the callback data, name and runtime stay live for this call.
@@ -29,6 +34,67 @@ fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
     );
     assert_eq!(work.receipt().backend_read_operations - before, 2);
     assert!(lock_recover(&runtime.metadata_baselines).is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+async fn mounted_nested_fallback_negative_control_replays_self_notifications()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let source = windows_checkout_source().await?;
+    let parent = windows_path("nested");
+    let path = parent.child(windows_name("read.txt"));
+    source.create_directory(&parent, FileMetadata::default(), &work)?;
+    source.create_file(&path, FileMetadata::default(), None, &work)?;
+    source.write_range(&path, 0, Bytes::from_static(b"contents"))?;
+    let (_root, destination, mut session) = mount_source(&source)?;
+    assert_eq!(
+        std::fs::read(destination.join("nested/read.txt"))?,
+        b"contents"
+    );
+    session.flush_callbacks(&work)?;
+    let runtime = Arc::clone(
+        session
+            .driver
+            .as_ref()
+            .and_then(|driver| driver.runtime.as_ref())
+            .ok_or("mount has no runtime")?,
+    );
+    let notify_self = |kind| {
+        assert_eq!(
+            notify_at(&runtime, "nested\\read.txt", std::process::id(), kind),
+            HR_OK
+        );
+    };
+    for suppress in [true, false, true] {
+        lock_recover(&runtime.projection).remove(&path);
+        // Replay delivery so kernel-side self-notification filtering cannot
+        // make either control vacuous. The same guard and native fallback
+        // run with suppression enabled, disabled, then restored.
+        super::super::probe_guard::with_guard(
+            || suppress.then(|| MetadataProbeGuard::enter(&runtime.metadata_probes, &path)),
+            || {
+                notify_self(PRJ_NOTIFICATION_FILE_OPENED);
+                let host = host_windows_metadata(&runtime.metadata_root, &path, &work, None);
+                notify_self(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION);
+                host
+            },
+        )?;
+        runtime.callbacks.drain();
+        // Only the ordinary-close callback inserts this leaf binding. Parent
+        // traversal can issue callbacks too, but cannot insert the leaf key.
+        assert_eq!(
+            lock_recover(&runtime.projection).contains_key(&path),
+            !suppress,
+            "an unsuppressed fallback must produce a spurious leaf callback"
+        );
+        assert!(!has_pending_capture(&runtime.post_operation_failure, &path));
+        assert!(lock_recover(&runtime.metadata_probes).is_empty());
+        assert!(lock_recover(&runtime.metadata_baselines).is_empty());
+    }
+    drop(runtime);
+    session.stop()?;
+    Ok(())
 }
 
 #[tokio::test]
