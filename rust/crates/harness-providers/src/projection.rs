@@ -511,7 +511,10 @@ fn project_text(
 ) {
     match adapter {
         Adapter::Chat => texts.push(text),
-        Adapter::Responses => ordered.push(Item::Json(json!({"role":role,"content":text}))),
+        Adapter::Responses => ordered.push(Item::Json(json!({
+            "type":"message", "role":if role == "tool" { "user" } else { role },
+            "content":[{"type":"input_text","text":text}],
+        }))),
         Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),
     }

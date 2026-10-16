@@ -321,7 +321,7 @@ async fn codex_login_preserves_encrypted_reasoning_before_function_calls_across_
         conversation::Limits,
         model::{
             ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage, ModelRole,
-            PreparedModelRequest, ToolCall, ToolResultContent,
+            PreparedModelRequest, ToolResultContent,
         },
     };
     let native = json!({"id":"rs_native","type":"reasoning","encrypted_content":"encrypted-exact==","summary":[{"type":"summary_text","text":"plan"}]});
@@ -357,19 +357,27 @@ async fn codex_login_preserves_encrypted_reasoning_before_function_calls_across_
         )
         .try_collect::<Vec<_>>()
         .await?;
-    let call = events
+    // Persist canonical reasoning and calls together, in their original order.
+    let bytes = serde_json::to_vec(&events).expect("fixture event encoding");
+    let replay: Vec<ModelEvent> = serde_json::from_slice(&bytes).expect("fixture event decoding");
+    let parts: Vec<_> = replay
         .into_iter()
-        .find_map(|event| match event {
-            ModelEvent::ToolCall(call) => Some(call),
+        .filter_map(|event| match event {
+            ModelEvent::ReasoningBlock { block } => Some(ModelContentPart::Reasoning { block }),
+            ModelEvent::ToolCall(call) => Some(ModelContentPart::ToolCall(call)),
             _ => None,
         })
-        .expect("tool call");
-    // Persist and reconstruct through the shared canonical tool-call envelope.
-    let bytes = serde_json::to_vec(&call).expect("fixture encoding");
-    let call: ToolCall = serde_json::from_slice(&bytes).expect("fixture decoding");
+        .collect();
+    assert!(matches!(
+        parts.as_slice(),
+        [
+            ModelContentPart::Reasoning { .. },
+            ModelContentPart::ToolCall(_)
+        ]
+    ));
     request.messages.push(ModelMessage {
         role: ModelRole::Assistant,
-        content: ModelContent::Part(ModelContentPart::ToolCall(call)),
+        content: ModelContent::Parts(parts),
     });
     request.messages.push(ModelMessage {
         role: ModelRole::Tool,
