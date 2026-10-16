@@ -105,7 +105,37 @@ pub(super) async fn run(value: Value) -> TestResult {
         (model, provider.clone()),
     ))
     .await?;
-    let output = harness.run(&case.prompt).await?;
+    let output = match harness.run(&case.prompt).await {
+        Ok(output) => output,
+        Err(error) => {
+            let requests: BTreeMap<_, _> = provider
+                .0
+                .iter()
+                .map(|(name, model)| (name.as_str(), model.requests().len()))
+                .collect();
+            let children = harness
+                .task_files()
+                .observe(Query::Children, None, 64)
+                .await?
+                .snapshot
+                .ok_or("missing child failure snapshot")?;
+            let statuses: BTreeMap<_, _> = children
+                .files
+                .iter()
+                .filter(|file| file.key.path().ends_with("/status.json"))
+                .map(|file| {
+                    (
+                        file.key.path(),
+                        String::from_utf8_lossy(&file.bytes).into_owned(),
+                    )
+                })
+                .collect();
+            return Err(format!(
+                "{error}; model requests: {requests:?}; child statuses: {statuses:?}"
+            )
+            .into());
+        }
+    };
     if output.text != case.expect.text {
         return Err(format!("unexpected parent output: {:?}", output.text).into());
     }
