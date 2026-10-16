@@ -242,10 +242,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         recent_tokens: 16,
         retention: Default::default(),
     });
-    let runtime = fixture
-        .runtime(None)
-        .await?
-        .with_private_volume(&private, None)?;
+    let runtime = open(&fixture, &private).await?;
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     runtime.task_host().start_task(&lease, &mut None).await?;
@@ -316,10 +313,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
     );
     drop(execution);
     drop(runtime);
-    let reopened = fixture
-        .runtime(None)
-        .await?
-        .with_private_volume(&private, None)?;
+    let reopened = open(&fixture, &private).await?;
     for _ in 0..2 {
         let mut execution = reopened
             .stock_execution(
@@ -343,6 +337,37 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
     }
     assert_eq!(model.reconciliations().len(), 1);
     Ok(())
+}
+
+async fn open(fixture: &Fixture, private: &VolumeRef) -> Result<Runtime> {
+    // This scenario admits two model effects: one summary and one response.
+    // The shared deadline/tool fixture admits only a single model effect.
+    Runtime::open(
+        fixture.stream.clone(),
+        fixture.filesystem.clone(),
+        &fixture.volume,
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.signed,
+        &fixture.scope,
+        &fixture.tasks,
+        &fixture.machines,
+        &fixture.tools,
+        SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 1,
+            model_steps: 2,
+        },
+        1,
+        65_536,
+        fixture.clock.clone(),
+        None,
+        &[],
+        &ResumableToolRegistry::default(),
+        None,
+    )
+    .await?
+    .with_private_volume(private, None)
 }
 
 async fn append_selection(
