@@ -23,7 +23,7 @@ mod result;
 mod session;
 #[cfg(feature = "filesystem")]
 mod tool_input;
-mod volume;
+pub(crate) mod volume;
 
 pub use answer::hook_answer;
 pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};

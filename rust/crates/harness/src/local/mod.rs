@@ -103,13 +103,21 @@ impl LocalHarness {
             let installation = if config.model.is_some() {
                 mcp::install(&config.project, config.settings, tools, config.mcp_limits).await?
             } else {
-                crate::mcp::McpInstallation { tools, capabilities:Capabilities::default(), diagnostics:Vec::new() }
+                crate::mcp::McpInstallation {
+                    tools,
+                    capabilities: Capabilities::default(),
+                    diagnostics: Vec::new(),
+                }
             };
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = match &config.model {
                 Some((model, provider)) => compaction::select(
-                    config.compaction, model, provider.as_ref(), &tools, config.limits,
+                    config.compaction,
+                    model,
+                    provider.as_ref(),
+                    &tools,
+                    config.limits,
                 )?,
                 None => crate::context::CompactionPolicy::Disabled,
             };
