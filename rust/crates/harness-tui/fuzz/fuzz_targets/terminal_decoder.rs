@@ -12,7 +12,6 @@ fuzz_target!(|bytes: &[u8]| {
     for bytes in bytes.chunks(chunk) {
         if split.feed(bytes).is_err() {
             split_ok = false;
-            break;
         }
     }
     assert_eq!(whole_ok, split_ok);

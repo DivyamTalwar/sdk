@@ -13,9 +13,37 @@ pub struct Decoder {
     probe: Probe,
     text: Vec<u8>,
     alt: bool,
-    paste: Option<Vec<u8>>,
+    paste: Option<Paste>,
     cr: bool,
     events: Vec<InputEvent>,
+}
+
+#[derive(Default)]
+struct Paste {
+    bytes: Vec<u8>,
+    ending: usize,
+    rejected: bool,
+}
+
+impl Paste {
+    fn push(&mut self, byte: u8) -> bool {
+        const END: &[u8] = b"\x1b[201~";
+        if !self.rejected {
+            self.bytes.push(byte);
+        }
+        self.ending = if END.get(self.ending) == Some(&byte) {
+            self.ending + 1
+        } else {
+            usize::from(byte == 0x1b)
+        };
+        // A candidate terminator is not part of the payload. Hold at most the
+        // limit plus six candidate bytes, then drain without retaining bytes.
+        if !self.rejected && self.bytes.len().saturating_sub(self.ending) > PROBE_LIMIT {
+            self.rejected = true;
+            self.bytes.clear();
+        }
+        self.ending == END.len()
+    }
 }
 
 impl Decoder {
@@ -27,26 +55,40 @@ impl Decoder {
 
     /// Consume an arbitrary transport chunk. Drain typed events with `take_events`.
     pub fn feed(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let mut failure = None;
         for &byte in bytes {
-            if let Some(paste) = &mut self.paste {
-                paste.push(byte);
-                if paste.ends_with(b"\x1b[201~") {
-                    paste.truncate(paste.len() - 6);
-                    let text = String::from_utf8(std::mem::take(paste))
-                        .map_err(|_| io::ErrorKind::InvalidData)?;
-                    self.paste = None;
-                    self.events.push(InputEvent::Paste(text));
-                } else if paste.len() > PROBE_LIMIT + 6 {
-                    return Err(io::ErrorKind::InvalidData.into());
+            let result = self.byte(byte);
+            if let Err(error) = result {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    // A rejected unit is consumed completely before returning its error. The
+    // rest of this transport chunk is still classified and retained as events.
+    fn byte(&mut self, byte: u8) -> io::Result<()> {
+        if let Some(paste) = &mut self.paste {
+            if paste.push(byte) {
+                let mut paste = self.paste.take().ok_or(io::ErrorKind::InvalidData)?;
+                if paste.rejected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "bracketed paste exceeds input limit",
+                    ));
                 }
-                continue;
+                paste.bytes.truncate(paste.bytes.len() - 6);
+                let text =
+                    String::from_utf8(paste.bytes).map_err(|_| io::ErrorKind::InvalidData)?;
+                self.events.push(InputEvent::Paste(text));
             }
-            if self.probe.idle() && byte != 0x1b {
-                self.input(&[byte])?;
-            } else {
-                self.probe.feed(&[byte]);
-                self.drain_input()?;
-            }
+            return Ok(());
+        }
+        if self.probe.idle() && byte != 0x1b {
+            self.input(&[byte])?;
+        } else {
+            self.probe.feed(&[byte]);
+            self.drain_input()?;
         }
         Ok(())
     }
@@ -64,17 +106,23 @@ impl Decoder {
     }
 
     fn drain_input(&mut self) -> io::Result<()> {
+        let mut failure = None;
         while let Some(frame) = self.probe.input.pop_front() {
             let result = self.input(&frame);
             self.probe.recycle(frame);
-            result?;
+            if let Err(error) = result {
+                failure.get_or_insert(error);
+            }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
     fn input(&mut self, frame: &[u8]) -> io::Result<()> {
         if frame == b"\x1b[200~" {
-            self.paste = Some(Vec::new());
+            self.text.clear();
+            self.alt = false;
+            self.cr = false;
+            self.paste = Some(Paste::default());
             return Ok(());
         }
         if frame == b"\x1b[I" {
@@ -90,7 +138,7 @@ impl Decoder {
             return Ok(());
         }
         if frame.starts_with(b"\x1b[") || frame.starts_with(b"\x1bO") {
-            if let Some(key) = decode_key(frame) {
+            if let Some(key) = decode_key(frame, self.probe.replies.keyboard_flags.is_some()) {
                 self.events.push(InputEvent::Key(key));
             }
             return Ok(());
@@ -129,6 +177,14 @@ impl Decoder {
                 Err(_) => {
                     self.text.clear();
                     self.alt = false;
+                    self.cr = false;
+                    // The byte that exposed a malformed prefix can itself
+                    // begin valid input. Do not lose that resynchronization.
+                    if byte.is_ascii() {
+                        self.character(char::from(byte))?;
+                    } else if (0xc2..=0xf4).contains(&byte) {
+                        self.text.push(byte);
+                    }
                     return Err(io::ErrorKind::InvalidData.into());
                 }
             }
@@ -150,6 +206,10 @@ impl Decoder {
             '\u{7f}' | '\u{8}' => (KeyCode::Backspace, KeyModifiers::NONE),
             '\u{1}'..='\u{1a}' => (
                 KeyCode::Char(char::from_u32(u32::from(c) + 96).ok_or(io::ErrorKind::InvalidData)?),
+                KeyModifiers::CONTROL,
+            ),
+            '\u{1c}'..='\u{1f}' => (
+                KeyCode::Char(char::from_u32(u32::from(c) + 64).ok_or(io::ErrorKind::InvalidData)?),
                 KeyModifiers::CONTROL,
             ),
             _ => (KeyCode::Char(c), KeyModifiers::NONE),
@@ -176,23 +236,13 @@ fn key_number(code: KeyCode) -> Option<u32> {
         KeyCode::Tab => 9,
         KeyCode::Esc => 27,
         KeyCode::Backspace => 127,
-        KeyCode::Insert => 57348,
-        KeyCode::Delete => 57349,
-        KeyCode::Left => 57350,
-        KeyCode::Right => 57351,
-        KeyCode::Up => 57352,
-        KeyCode::Down => 57353,
-        KeyCode::PageUp => 57354,
-        KeyCode::PageDown => 57355,
-        KeyCode::Home => 57356,
-        KeyCode::End => 57357,
         KeyCode::CapsLock => 57358,
         KeyCode::ScrollLock => 57359,
         KeyCode::NumLock => 57360,
         KeyCode::PrintScreen => 57361,
         KeyCode::Pause => 57362,
         KeyCode::Menu => 57363,
-        KeyCode::F(n @ 1..=35) => 57363 + u32::from(n),
+        KeyCode::F(n @ 13..=35) => 57363 + u32::from(n),
         _ => return None,
     })
 }
@@ -204,23 +254,14 @@ fn numbered_key(number: u32) -> Option<KeyCode> {
         13 => KeyCode::Enter,
         27 => KeyCode::Esc,
         127 => KeyCode::Backspace,
-        57348 => KeyCode::Insert,
-        57349 => KeyCode::Delete,
-        57350 => KeyCode::Left,
-        57351 => KeyCode::Right,
-        57352 => KeyCode::Up,
-        57353 => KeyCode::Down,
-        57354 => KeyCode::PageUp,
-        57355 => KeyCode::PageDown,
-        57356 => KeyCode::Home,
-        57357 => KeyCode::End,
         57358 => KeyCode::CapsLock,
         57359 => KeyCode::ScrollLock,
         57360 => KeyCode::NumLock,
         57361 => KeyCode::PrintScreen,
         57362 => KeyCode::Pause,
         57363 => KeyCode::Menu,
-        57364..=57398 => KeyCode::F(u8::try_from(number - 57363).ok()?),
+        57376..=57398 => KeyCode::F(u8::try_from(number - 57363).ok()?),
+        57344..=63743 => return None,
         _ => KeyCode::Char(char::from_u32(number).filter(|c| !c.is_control())?),
     })
 }
@@ -231,7 +272,30 @@ pub fn encode_key(key: KeyEvent) -> io::Result<Vec<u8>> {
     if key.state.contains(KeyEventState::KEYPAD) {
         return Err(io::ErrorKind::Unsupported.into());
     }
-    let code = key_number(key.code).ok_or(io::ErrorKind::Unsupported)?;
+    let (code, action) = match key.code {
+        KeyCode::Insert => (2, '~'),
+        KeyCode::Delete => (3, '~'),
+        KeyCode::PageUp => (5, '~'),
+        KeyCode::PageDown => (6, '~'),
+        KeyCode::Left => (1, 'D'),
+        KeyCode::Right => (1, 'C'),
+        KeyCode::Up => (1, 'A'),
+        KeyCode::Down => (1, 'B'),
+        KeyCode::Home => (1, 'H'),
+        KeyCode::End => (1, 'F'),
+        KeyCode::F(1) => (1, 'P'),
+        KeyCode::F(2) => (1, 'Q'),
+        KeyCode::F(3) => (13, '~'),
+        KeyCode::F(4) => (1, 'S'),
+        KeyCode::F(n @ 5..=12) => {
+            let number = [15, 17, 18, 19, 20, 21, 23, 24]
+                .get(usize::from(n - 5))
+                .copied()
+                .ok_or(io::ErrorKind::Unsupported)?;
+            (number, '~')
+        }
+        _ => (key_number(key.code).ok_or(io::ErrorKind::Unsupported)?, 'u'),
+    };
     // Reserved kitty functional code points cannot also encode literal text.
     if matches!(key.code, KeyCode::Char(c) if (57344..=63743).contains(&u32::from(c))) {
         return Err(io::ErrorKind::Unsupported.into());
@@ -260,7 +324,7 @@ pub fn encode_key(key: KeyEvent) -> io::Result<Vec<u8>> {
         KeyEventKind::Repeat => 2,
         KeyEventKind::Release => 3,
     };
-    Ok(format!("\x1b[{code};{}:{kind}u", modifiers + 1).into_bytes())
+    Ok(format!("\x1b[{code};{}:{kind}{action}", modifiers + 1).into_bytes())
 }
 
 fn modifiers(value: u16) -> Option<(KeyModifiers, KeyEventState)> {
@@ -291,7 +355,7 @@ fn modifiers(value: u16) -> Option<(KeyModifiers, KeyEventState)> {
     Some((modifiers, state))
 }
 
-fn decode_key(frame: &[u8]) -> Option<KeyEvent> {
+fn decode_key(frame: &[u8], kitty: bool) -> Option<KeyEvent> {
     let text = std::str::from_utf8(frame).ok()?;
     let body = text
         .strip_prefix("\x1b[")
@@ -300,8 +364,14 @@ fn decode_key(frame: &[u8]) -> Option<KeyEvent> {
     let parameters = body.get(..body.len().checked_sub(1)?)?;
     let mut fields = parameters.split(';');
     let first = fields.next()?;
-    let mut modifier = fields.next().unwrap_or("1").split(':');
+    let modifier_field = fields.next().unwrap_or("1");
+    let kitty = kitty || action == 'u' || modifier_field.contains(':');
+    let mut modifier = modifier_field.split(':');
     let (mut modifiers, state) = modifiers(modifier.next()?.parse().ok()?)?;
+    if !kitty && modifiers.contains(KeyModifiers::SUPER) {
+        modifiers.remove(KeyModifiers::SUPER);
+        modifiers.insert(KeyModifiers::META);
+    }
     let kind = match modifier.next().unwrap_or("1") {
         "1" => KeyEventKind::Press,
         "2" => KeyEventKind::Repeat,
@@ -317,10 +387,32 @@ fn decode_key(frame: &[u8]) -> Option<KeyEvent> {
         }
         '~' if first == "27" => numbered_key(fields.next()?.parse().ok()?)?,
         '~' => match first {
+            "1" | "7" => KeyCode::Home,
+            "4" | "8" => KeyCode::End,
             "2" => KeyCode::Insert,
             "3" => KeyCode::Delete,
             "5" => KeyCode::PageUp,
             "6" => KeyCode::PageDown,
+            "11" => KeyCode::F(1),
+            "12" => KeyCode::F(2),
+            "13" => KeyCode::F(3),
+            "14" => KeyCode::F(4),
+            "15" => KeyCode::F(5),
+            "17" => KeyCode::F(6),
+            "18" => KeyCode::F(7),
+            "19" => KeyCode::F(8),
+            "20" => KeyCode::F(9),
+            "21" => KeyCode::F(10),
+            "23" => KeyCode::F(11),
+            "24" => KeyCode::F(12),
+            "25" => KeyCode::F(13),
+            "26" => KeyCode::F(14),
+            "28" => KeyCode::F(15),
+            "29" => KeyCode::F(16),
+            "31" => KeyCode::F(17),
+            "32" => KeyCode::F(18),
+            "33" => KeyCode::F(19),
+            "34" => KeyCode::F(20),
             _ => return None,
         },
         'A' => KeyCode::Up,
