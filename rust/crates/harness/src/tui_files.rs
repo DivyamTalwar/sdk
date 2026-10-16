@@ -1,6 +1,6 @@
 //! Completion is a disposable fold of the ordinary task-volume live query.
 use crate::{
-    task_volume::{ChangeStream, Cursor, Query, TaskVolume},
+    task_volume::{Change, ChangeStream, Cursor, Query, TaskVolume},
     tui::PromptInput,
 };
 use acyclic_stream::StreamProvider;
@@ -48,15 +48,18 @@ impl CompletionFiles {
         })
     }
 
-    /// Apply the next committed file change and refresh the popup. Compose this
-    /// future with terminal input in the host's event loop.
-    pub async fn next(&mut self, input: &mut PromptInput) -> crate::Result<()> {
-        let change = self
-            .changes
+    /// Read without changing the prompt or committed query cursor. A selected
+    /// event loop applies this value synchronously after its wait has completed.
+    pub async fn read_change(&mut self) -> crate::Result<Change> {
+        self.changes
             .next()
             .await
             .ok_or_else(|| crate::Error::Storage("completion query ended; reobserve".into()))?
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+            .map_err(|e| crate::Error::Storage(e.to_string()))
+    }
+
+    /// Publish a selected change atomically before advancing the query cursor.
+    pub fn apply_change(&mut self, change: Change, input: &mut PromptInput) -> crate::Result<()> {
         if let Some(file) = change.file {
             input
                 .completion
@@ -66,5 +69,11 @@ impl CompletionFiles {
         self.cursor = change.cursor;
         input.refresh_completions();
         Ok(())
+    }
+
+    /// Apply one committed file change outside a competing event-loop wait.
+    pub async fn next(&mut self, input: &mut PromptInput) -> crate::Result<()> {
+        let change = self.read_change().await?;
+        self.apply_change(change, input)
     }
 }

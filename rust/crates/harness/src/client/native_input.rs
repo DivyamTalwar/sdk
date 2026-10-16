@@ -25,7 +25,10 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
     let delivery = tokio::select! {
         event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         delivery = client.read_delivery() => delivery?,
-        change = completions.next(prompt) => { change?; return Ok(None); },
+        change = completions.read_change() => {
+            completions.apply_change(change?, prompt)?;
+            return Ok(None);
+        },
     };
     let delivery = delivery.ok_or_else(|| {
         Error::Conflict("live replay ended; reconnect from the committed cursor".into())

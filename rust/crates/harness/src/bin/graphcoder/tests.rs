@@ -440,7 +440,11 @@ async fn completion_popup_follows_real_task_volume_publications() {
         )
         .await
         .unwrap();
-    files.next(&mut input).await.unwrap();
+    let cursor = files.cursor.clone();
+    let change = files.read_change().await.unwrap();
+    assert_eq!(files.cursor, cursor);
+    assert!(!input.completion.active(&input.editor));
+    files.apply_change(change, &mut input).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     terminal
         .draw(|frame| {
