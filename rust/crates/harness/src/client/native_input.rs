@@ -21,10 +21,12 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
     input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
+    commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     let delivery = tokio::select! {
         event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         delivery = client.read_delivery() => delivery?,
+        change = commands.observe_change() => { change?; return Ok(None); },
         change = completions.read_change() => {
             completions.apply_change(change?, prompt)?;
             return Ok(None);

@@ -2,7 +2,7 @@ use acyclic_harness::{
     client::{self, FileClientState, HarnessClient},
     local::LocalHarness,
     tui::{
-        self, InputEffect, PromptBox, PromptInput, Viewport,
+        self, PromptBox, PromptInput, Viewport,
         key_event::InputEvent,
         ratatui::{Terminal, backend::CrosstermBackend},
         term::{Environment, ScreenMode, Tty},
@@ -19,6 +19,7 @@ pub async fn run(
     inline: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let authority = target.owner.ok_or("client target has no owner")?;
+    let mut commands = client::local_ui(&local, &target.operation_id, &authority).await?;
     let mut tty = Tty::open()?;
     tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
@@ -44,6 +45,7 @@ pub async fn run(
         },
     ));
     let mut input = PromptInput::default();
+    client::restore_tui_prompt(&commands, &mut input)?;
     let mut completions = client::local_completions(&local, &mut input).await?;
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
@@ -51,6 +53,9 @@ pub async fn run(
     client.replay().await?;
     renderer.update(client.session().views(), &authority);
     loop {
+        if commands.exit_requested()? {
+            return Ok(());
+        }
         input.busy = renderer.is_busy();
         input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
@@ -61,8 +66,14 @@ pub async fn run(
             let scroll = screen.tail_scroll(frame.area(), &input);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
         })?;
-        let Some(event) =
-            client::next_tui_event(&mut client, &mut events, &mut completions, &mut input).await?
+        let Some(event) = client::next_tui_event(
+            &mut client,
+            &mut events,
+            &mut completions,
+            &mut input,
+            &mut commands,
+        )
+        .await?
         else {
             renderer.update(client.session().views(), &authority);
             continue;
@@ -82,11 +93,8 @@ pub async fn run(
             InputEvent::Resize(_, _) | InputEvent::Focus(_) => Vec::new(),
         };
         for effect in effects {
-            if effect == InputEffect::Quit {
-                return Ok(());
-            }
-            client::local_input(&local, &mut client, effect).await?;
+            client.tui_input(&mut commands, effect).await?;
         }
-        client::local_draft(&local, &input).await?;
+        client::save_tui_draft(&mut commands, &input).await?;
     }
 }

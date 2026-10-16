@@ -455,3 +455,126 @@ async fn completion_popup_follows_real_task_volume_publications() {
     assert!(input.completion.accept(&mut input.editor, 1));
     assert_eq!(input.editor.text(), "@新しい.rs ");
 }
+
+#[tokio::test]
+async fn submitted_commands_quit_and_drafts_use_real_query_files() {
+    use acyclic_harness::{
+        client::{
+            CommandFileRoot, CommandResolution, CommandSession, apply_tui_input,
+            restore_tui_prompt, save_tui_draft,
+        },
+        task_volume::{FileKey, Query, TaskFile, TaskVolume},
+        tui::{Editor, InputEffect, Screen},
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    struct NoFiles;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+    let volume = std::sync::Arc::new(
+        TaskVolume::open(
+            std::sync::Arc::new(MemoryStream::default()),
+            StreamPath::new("commands").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let identity = OperationId::from_bytes([7; 16]).into_bytes().into();
+    let mut files = CommandSession::open(volume.clone(), identity, 65_536, 64)
+        .await
+        .unwrap();
+    let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
+    let submit = |text: &str| InputEffect::Submit {
+        text: text.into(),
+        queued: false,
+        edit: None,
+    };
+    assert!(
+        apply_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        volume.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    apply_tui_input(&mut files, &NoFiles, submit("/diff"))
+        .await
+        .unwrap();
+    assert_eq!(
+        files
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+    apply_tui_input(&mut files, &NoFiles, submit("ordinary chat"))
+        .await
+        .unwrap();
+    let request = files.take_request().unwrap();
+    assert!(matches!(
+        request.key,
+        FileKey::Session {
+            file: TaskFile::Request(_),
+            ..
+        }
+    ));
+    let decoded: CommandResolution = serde_json::from_slice(&request.bytes).unwrap();
+    assert!(matches!(decoded, CommandResolution::Prompt { text, .. } if text == "ordinary chat"));
+    let input = PromptInput::new(Editor::new("日本語 draft"));
+    save_tui_draft(&mut files, &input).await.unwrap();
+    let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
+    save_tui_draft(&mut files, &input).await.unwrap();
+    assert_eq!(
+        volume.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    drop(files);
+    let mut files = CommandSession::open(volume, identity, 65_536, 64)
+        .await
+        .unwrap();
+    let mut restored = PromptInput::default();
+    restore_tui_prompt(&files, &mut restored).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &restored, &mut Viewport::default(), 0, 0);
+        })
+        .unwrap();
+    assert!(screen_text(&terminal).contains("日本語 draft"));
+    apply_tui_input(&mut files, &NoFiles, InputEffect::Quit)
+        .await
+        .unwrap();
+    assert!(files.exit_requested().unwrap());
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: malformed history cannot partially replace a valid draft; valid
+    // draft publication, replay and repeated restoration preserve normalized text.
+    #[test]
+    fn prompt_file_restore_is_atomic_and_round_trips(text in ".{0,24}", malformed_history in proptest::bool::ANY) {
+        use acyclic_harness::{client::{CommandSession, CommandFileRoot, restore_tui_prompt, save_tui_draft}, tui::Editor, task_volume::TaskVolume};
+        use acyclic_stream::{MemoryStream, StreamPath};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let volume = std::sync::Arc::new(TaskVolume::open(std::sync::Arc::new(MemoryStream::default()), StreamPath::new("prompt").unwrap()).await.unwrap());
+            let mut files = CommandSession::open(volume, OperationId::from_bytes([9;16]).into_bytes().into(), 65_536, 64).await.unwrap();
+            files.write_state(CommandFileRoot::Session, "draft.json", &serde_json::json!(text)).await.unwrap();
+            files.write_state(CommandFileRoot::Config, "history.json", &if malformed_history { serde_json::json!(false) } else { serde_json::json!(["prior"]) }).await.unwrap();
+            let mut input = PromptInput::new(Editor::new("original"));
+            let result = restore_tui_prompt(&files, &mut input);
+            if malformed_history {
+                proptest::prop_assert!(result.is_err());
+                proptest::prop_assert_eq!(input.editor.text(), "original");
+                proptest::prop_assert!(input.history().entries().is_empty());
+            } else {
+                proptest::prop_assert!(result.is_ok());
+                save_tui_draft(&mut files, &input).await.unwrap();
+                let mut replayed = PromptInput::default();
+                restore_tui_prompt(&files, &mut replayed).unwrap();
+                proptest::prop_assert_eq!(replayed.editor.text(), input.editor.text());
+                proptest::prop_assert_eq!(replayed.history().entries(), input.history().entries());
+            }
+            Ok(())
+        })?;
+    }
+}

@@ -275,6 +275,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .catalog
             .resolve(input, reader, self.maximum_bytes)
             .await?;
+        self.publish_resolution(resolution).await
+    }
+
+    /// Publish a typed key action through the same files as slash commands.
+    pub async fn publish_resolution(
+        &mut self,
+        resolution: CommandResolution,
+    ) -> Result<OperationId> {
         let operation = OperationId::new();
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {

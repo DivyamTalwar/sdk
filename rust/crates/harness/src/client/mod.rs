@@ -99,10 +99,15 @@ pub use local::{connect_local, local_prompt};
     feature = "tui",
     not(target_arch = "wasm32")
 ))]
-pub use local::{local_completions, local_draft, local_input};
+pub use local::{local_completions, local_ui};
 #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
 mod native_input;
 #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
 pub use native_input::next_tui_event;
 #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
 pub use native_input::stdin_jsonl;
+
+#[cfg(feature = "tui")]
+mod input_files;
+#[cfg(feature = "tui")]
+pub use input_files::{apply_tui_input, restore_tui_prompt, save_tui_draft};

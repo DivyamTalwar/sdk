@@ -1,5 +1,5 @@
 //! Local bindings shared by native clients; presentation never owns a host.
-use super::{ClientStateStore, FileClientState, HarnessClient};
+use super::{FileClientState, HarnessClient};
 use crate::{Error, OperationId, Result, local::LocalHarness, wire};
 use std::sync::Arc;
 
@@ -29,40 +29,6 @@ pub async fn local_prompt(
     ))
 }
 
-/// Applies a UI action by writing its task/private/config-volume files.
-#[cfg(feature = "tui")]
-pub async fn local_input<S: ClientStateStore>(
-    local: &LocalHarness,
-    client: &mut HarnessClient<S>,
-    effect: crate::tui::InputEffect,
-) -> Result<()> {
-    if let crate::tui::InputEffect::Submit { text, .. } = effect {
-        if text.starts_with('/') {
-            // TODO(#617): bind the file-driven command dispatcher, including unknown-command rejection.
-            return Err(Error::Unsupported(
-                "TODO #617: local command-file dispatch binding".into(),
-            ));
-        }
-        let command = local_prompt(local, OperationId::new(), &text).await?;
-        return client.submit(command, |_| Ok(())).await;
-    }
-    // TODO(#495): expose private/config-volume UI writes for drafts, history,
-    // scroll/layout and clipboard/external-editor request files.
-    Err(Error::Unsupported(
-        "TODO #495: UI file-write binding is not exposed".into(),
-    ))
-}
-
-/// Persists prompt drafts/history through the bound private/config live-query files.
-#[cfg(feature = "tui")]
-pub async fn local_draft(_local: &LocalHarness, _input: &crate::tui::PromptInput) -> Result<()> {
-    // TODO(#495): bind the prompt draft and history file writes, and load/follow
-    // their initial snapshots into PromptInput before accepting terminal input.
-    Err(Error::Unsupported(
-        "TODO #495: prompt draft/history volume binding".into(),
-    ))
-}
-
 /// Follow the local host's ordinary command/workspace files into the prompt.
 #[cfg(feature = "tui")]
 pub async fn local_completions(
@@ -71,4 +37,31 @@ pub async fn local_completions(
 ) -> Result<crate::tui_files::CompletionFiles> {
     // TODO(#495): take this resident query bound from the followed client settings.
     crate::tui_files::CompletionFiles::observe(local.task_files(), input, None, 4096).await
+}
+
+/// Open the file-backed UI session. Its identity is supplied by the client binding.
+#[cfg(feature = "tui")]
+pub async fn local_ui(
+    local: &LocalHarness,
+    operation: &str,
+    owner: &wire::Authority,
+) -> Result<super::CommandSession<acyclic_stream::LocalStream>> {
+    if owner.kind != wire::AggregateKind::Task as i32 {
+        return Err(Error::Invalid("local UI requires a task owner".into()));
+    }
+    let session = uuid::Uuid::from_bytes(OperationId::parse(operation)?.into_bytes());
+    // TODO(#495): obtain the stable UI-session identity and bounds from client settings.
+    let mut files =
+        super::CommandSession::open(Arc::clone(local.task_files()), session, 65_536, 4096).await?;
+    if files.selected_task()?.is_none() {
+        let task = crate::TaskId::parse(&owner.id)?;
+        let mut layout = files
+            .state(super::CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_else(|| serde_json::json!({}));
+        layout["selected_task"] = serde_json::Value::String(task.to_string());
+        files
+            .write_state(super::CommandFileRoot::Session, "layout.json", &layout)
+            .await?;
+    }
+    Ok(files)
 }

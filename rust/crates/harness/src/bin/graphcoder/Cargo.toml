@@ -22,5 +22,7 @@ tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-harness = { path = "../../..", features = ["test-support"] }
+serde_json.workspace = true
 acyclic-stream = { path = "../../../../stream", default-features = false }
 proptest.workspace = true

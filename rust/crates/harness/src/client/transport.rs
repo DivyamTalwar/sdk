@@ -296,6 +296,19 @@ impl<S: ClientStateStore> HarnessClient<S> {
             .await
     }
 
+    /// Forward a key action as ordinary command/UI file publications.
+    #[cfg(feature = "tui")]
+    pub async fn tui_input<P: acyclic_stream::StreamProvider + ?Sized>(
+        &self,
+        files: &mut super::CommandSession<P>,
+        effect: crate::tui::InputEffect,
+    ) -> Result<()> {
+        let reader = self.files.as_ref().ok_or_else(|| {
+            Error::Unauthorized("command input requires bound file authority".into())
+        })?;
+        super::apply_tui_input(files, reader.as_ref(), effect).await
+    }
+
     /// Shared renderer state and outbox.
     pub fn session(&self) -> &ClientSession<S> {
         &self.session
