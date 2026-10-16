@@ -295,6 +295,7 @@ dependencies = [
  "proptest",
  "prost",
  "prost-build",
+ "prost-reflect",
  "protoc-bin-vendored",
  "regex-lite",
  "reqwest 0.12.28",
@@ -332,6 +333,19 @@ dependencies = [
  "acyclic-native-runtime",
  "blake3",
  "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "acyclic-harness-fuzz"
+version = "0.0.0"
+dependencies = [
+ "acyclic-harness",
+ "acyclic-stream",
+ "futures",
+ "libfuzzer-sys",
+ "prost",
  "serde_json",
  "tempfile",
 ]
@@ -577,6 +591,16 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "acyclic-sdk-fuzz"
+version = "0.0.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness",
+ "libfuzzer-sys",
+ "serde_json",
 ]
 
 [[package]]
