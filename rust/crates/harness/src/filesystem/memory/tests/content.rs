@@ -1,5 +1,42 @@
 use super::*;
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Recovery authenticates the publication operation, not the later head or
+    // a placeholder version; the requested path must still match its receipt.
+    #[test]
+    fn publication_recovery_preserves_operation_identity(
+        key in "[a-z0-9]{1,32}",
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..1024),
+    ) {
+        let result = futures::executor::block_on(async {
+            let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+            let write = ContentGrant::verify(
+                &storage.verifier(), &storage.scope, &storage.volume,
+                VolumeOperation::Write, 1024, &mut None,
+            )?;
+            let key = IdempotencyKey::new(key)?;
+            let original = storage.host.put_content(
+                &storage.volume, &write, "original", &body, "application/octet-stream",
+                "original", 1024, &key, None, None, None,
+            ).await?;
+            storage.host.put_content(
+                &storage.volume, &write, "original", b"replacement", "text/plain",
+                "replacement", 1024, &IdempotencyKey::new("later-head/edit")?,
+                None, None, None,
+            ).await?;
+            assert_eq!(storage.host.content_for_operation(
+                &storage.volume, &write, &key, "original", 1024, None, None,
+            ).await?, Some(original));
+            assert!(storage.host.content_for_operation(
+                &storage.volume, &write, &key, "different", 1024, None, None,
+            ).await.is_err());
+            Ok::<_, Error>(())
+        });
+        proptest::prop_assert!(result.is_ok(), "{result:?}");
+    }
+}
+
 #[tokio::test]
 async fn stock_publisher_finite_once_observes_original_metadata_after_head_changes() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;

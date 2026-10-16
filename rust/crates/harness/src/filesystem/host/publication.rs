@@ -71,8 +71,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::wire::ErrorCode::Storage,
         )?;
         recorded.0.0.validate(&mut Some(&mut io.history_io()))?;
+        let version = fork_preparer_io::hex_key(&operation.into_bytes(), Some(io))?;
+        let _version_hold = io.guard_owned(version.capacity() as u64)?;
         if recorded.0.0.volume() != volume
-            || recorded.0.0.version() != "pending"
+            || recorded.0.0.version() != version
             || expected_path.is_some_and(|path| path != recorded.0.0.path())
         {
             return Err(stock_boundary(
