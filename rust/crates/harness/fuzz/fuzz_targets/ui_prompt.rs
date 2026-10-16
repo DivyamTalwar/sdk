@@ -105,6 +105,16 @@ fuzz_target!(|data: &[u8]| {
                     }
                 }
             }
+            // The notification assertion above includes malformed files. Clear
+            // that independent input before checking valid settings/help below.
+            files
+                .write_state(
+                    CommandFileRoot::Session,
+                    "notifications.json",
+                    &serde_json::json!([]),
+                )
+                .await
+                .unwrap();
             let mut input = PromptInput::new(Editor::new("original"));
             let mut projected = input.clone();
             let mut live = PromptFiles::default();
