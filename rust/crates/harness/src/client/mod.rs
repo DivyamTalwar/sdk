@@ -61,6 +61,8 @@ mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod query_subscription;
 mod session_views;
+mod swarm_views;
+pub use swarm_views::{StatusView, SwarmChange, SwarmViewLimits, SwarmViews};
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{QuerySubscription, query_error};
 #[cfg(feature = "test-support")]

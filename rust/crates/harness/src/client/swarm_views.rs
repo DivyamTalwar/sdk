@@ -1,0 +1,213 @@
+//! One disposable fold for overview status and selected full-fidelity files.
+use super::{ClientInterests, FileViews, InterestTier, QueryViewLimits, SwarmUpdate, query_error};
+use crate::{Error, Result, task_volume::{Cursor, FileKey, FileValue, HeadFile}};
+use acyclic_stream::{StreamPath, StreamWatermarks, wire, wire_codec};
+use bytes::Bytes;
+use std::collections::BTreeMap;
+
+/// Bounds depend on selected content and retained latest status, not event history.
+#[derive(Clone, Copy, Debug)]
+pub struct SwarmViewLimits {
+    pub agents: usize,
+    pub selected: usize,
+    pub overview_values: usize,
+    pub overview_bytes: u64,
+    pub query: QueryViewLimits,
+}
+
+/// Exact latest values for one agent; the producer owns their schema.
+pub struct StatusView {
+    after: Option<wire::SessionCursor>,
+    watermarks: StreamWatermarks,
+    values: BTreeMap<Bytes, StatusValue>,
+}
+
+struct StatusValue {
+    after: wire::SessionCursor,
+    value: wire::SessionLatestValue,
+}
+
+impl Default for StatusView {
+    fn default() -> Self {
+        Self { after: None, watermarks: StreamWatermarks { accepted: 0, durable: 0 }, values: BTreeMap::new() }
+    }
+}
+
+impl StatusView {
+    pub fn cursor(&self) -> Option<&wire::SessionCursor> { self.after.as_ref() }
+    pub fn watermarks(&self) -> StreamWatermarks { self.watermarks }
+    pub fn values(&self) -> impl Iterator<Item = &wire::SessionLatestValue> { self.values.values().map(|v| &v.value) }
+}
+
+#[derive(Default)]
+struct AgentViews {
+    status: StatusView,
+    files: Option<FileViews>,
+}
+
+/// Renderer hints contain the actual file delta, never another event schema.
+pub enum SwarmChange {
+    Layout,
+    Snapshot { agent: StreamPath },
+    File { agent: StreamPath, file: Option<FileValue> },
+    Status { agent: StreamPath, key: Bytes },
+    Watermark { agent: StreamPath, overview: bool },
+}
+
+/// Cache only. Layout, content and status remain authoritative in followed files.
+pub struct SwarmViews {
+    layout: ClientInterests,
+    agents: BTreeMap<StreamPath, AgentViews>,
+    limits: SwarmViewLimits,
+    overview_values: usize,
+    overview_bytes: u64,
+}
+
+impl SwarmViews {
+    pub fn new(root: StreamPath, limits: SwarmViewLimits) -> Result<Self> {
+        Ok(Self { layout: ClientInterests::from_layout(root, [], [], 0)?, agents: BTreeMap::new(), limits,
+            overview_values: 0, overview_bytes: 0 })
+    }
+
+    pub fn layout(&self) -> &ClientInterests { &self.layout }
+    pub fn status(&self, agent: &StreamPath) -> Option<&StatusView> { self.agents.get(agent).map(|a| &a.status) }
+    pub fn cursor(&self, agent: &StreamPath) -> Option<&Cursor> {
+        self.agents.get(agent)?.files.as_ref().map(FileViews::cursor)
+    }
+    pub fn file(&self, agent: &StreamPath, key: &FileKey) -> Option<&HeadFile> {
+        self.agents.get(agent)?.files.as_ref()?.file(key)
+    }
+    pub fn files<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a HeadFile> {
+        self.agents.get(agent).and_then(|a| a.files.as_ref()).into_iter().flat_map(FileViews::files)
+    }
+
+    fn admit_agent(&self, agent: &StreamPath) -> Result<()> {
+        if self.layout.tier(agent).is_none() || (!self.agents.contains_key(agent) && self.agents.len() >= self.limits.agents) {
+            return Err(Error::Invalid("swarm view agent outside its root or bound".into()));
+        }
+        Ok(())
+    }
+
+    /// A new session acquires explicit replacement snapshots. Platform placement
+    /// moves within the same session leave the cache and checked cursors intact.
+    pub(crate) fn start_session(&mut self, root: &StreamPath) -> Result<()> {
+        if self.layout.root() != root { return Err(Error::Invalid("swarm view root differs".into())); }
+        self.agents.clear();
+        self.overview_values = 0;
+        self.overview_bytes = 0;
+        Ok(())
+    }
+
+    /// Validation precedes mutation. Prefetch promotion preserves every segment
+    /// and cursor; demotion releases only content while retaining overview status.
+    pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
+        match update {
+            SwarmUpdate::Layout(layout) => {
+                if layout.root() != self.layout.root() || layout.full_fidelity().count() > self.limits.selected {
+                    return Err(Error::Invalid("swarm view layout outside its root or bound".into()));
+                }
+                for removed in layout.changes(&self.layout)?.unsubscribe() {
+                    if let Some(agent) = self.agents.get_mut(removed) { agent.files = None; }
+                }
+                self.layout = layout;
+                Ok(SwarmChange::Layout)
+            }
+            SwarmUpdate::Snapshot { agent, snapshot } => {
+                self.admit_agent(&agent)?;
+                if self.layout.tier(&agent) == Some(InterestTier::Overview) {
+                    return Err(Error::Invalid("unselected agent received content".into()));
+                }
+                let files = FileViews::snapshot(snapshot, self.limits.query).map_err(query_error)?;
+                if self.agents.get(&agent).is_some_and(|a| a.files.is_some()) {
+                    return Err(Error::Conflict("content snapshot already installed".into()));
+                }
+                self.agents.entry(agent.clone()).or_default().files = Some(files);
+                Ok(SwarmChange::Snapshot { agent })
+            }
+            SwarmUpdate::Data { agent, overview: false, data } => {
+                let files = self.agents.get_mut(&agent).and_then(|a| a.files.as_mut())
+                    .ok_or_else(|| Error::Conflict("content arrived before its snapshot".into()))?;
+                let change = files.session_change(&data).map_err(query_error)?;
+                files.prepare(&change).map_err(query_error)?(files).map_err(query_error)?;
+                Ok(SwarmChange::File { agent, file: change.file })
+            }
+            SwarmUpdate::Data { agent, overview: true, data } => self.status_data(agent, data),
+            SwarmUpdate::Watermark { agent, overview: false, watermark } => {
+                let files = self.agents.get_mut(&agent).and_then(|a| a.files.as_mut())
+                    .ok_or_else(|| Error::Conflict("content watermark arrived before its snapshot".into()))?;
+                files.session_watermark(watermark).map_err(query_error)?;
+                Ok(SwarmChange::Watermark { agent, overview: false })
+            }
+            SwarmUpdate::Watermark { agent, overview: true, watermark } => {
+                self.admit_agent(&agent)?;
+                let current = self.agents.get(&agent).map(|a| a.status.watermarks).unwrap_or(StreamWatermarks { accepted: 0, durable: 0 });
+                if watermark.durable > watermark.accepted || watermark.accepted < current.accepted || watermark.durable < current.durable {
+                    return Err(Error::Invalid("status watermark regressed".into()));
+                }
+                self.agents.entry(agent.clone()).or_default().status.watermarks = StreamWatermarks { accepted: watermark.accepted, durable: watermark.durable };
+                Ok(SwarmChange::Watermark { agent, overview: true })
+            }
+        }
+    }
+
+    fn status_data(&mut self, agent: StreamPath, data: wire::SessionData) -> Result<SwarmChange> {
+        self.admit_agent(&agent)?;
+        let mut after = data.after.ok_or_else(|| Error::Invalid("status cursor missing".into()))?;
+        if after.next == 0 || data.durable > data.accepted || after.next > data.accepted {
+            return Err(Error::Invalid("invalid status watermarks".into()));
+        }
+        let mut value = match data.item {
+            Some(wire::session_data::Item::LatestValue(value)) => value,
+            Some(wire::session_data::Item::Record(record)) => {
+                let decoded = wire_codec::record(record.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+                if decoded.sequence.checked_add(1) != Some(after.next)
+                    || wire_codec::session::record_anchor(&after).map_err(|e| Error::Invalid(e.to_string()))? != Some(decoded.commit_id) {
+                    return Err(Error::Invalid("status record cursor differs".into()));
+                }
+                wire::SessionLatestValue { key: Bytes::new(), value: record.value, attention: false }
+            }
+            _ => return Err(Error::Invalid("status received a non-value frame".into())),
+        };
+        let previous = self.agents.get(&agent).map(|a| &a.status);
+        if previous.and_then(|s| s.after.as_ref()).is_some_and(|old| old.next > after.next || (old.next == after.next && old.opaque != after.opaque)) {
+            return Err(Error::Conflict("status cursor regressed".into()));
+        }
+        let old = previous.and_then(|s| s.values.get(&value.key));
+        if old.is_some_and(|old| old.after == after && old.value != value) {
+            return Err(Error::Conflict("one status cut contains conflicting values".into()));
+        }
+        let size = |value: &wire::SessionLatestValue, cursor: &wire::SessionCursor| (value.key.len() as u64)
+            .checked_add(value.value.len() as u64).and_then(|size| size.checked_add(cursor.opaque.len() as u64));
+        let retained = size(&value, &after).ok_or_else(|| Error::Invalid("status bytes overflow".into()))?;
+        let bytes = self.overview_bytes.checked_sub(old.and_then(|old| size(&old.value, &old.after)).unwrap_or(0))
+            .and_then(|bytes| bytes.checked_add(retained))
+            .ok_or_else(|| Error::Invalid("status bytes overflow".into()))?;
+        let count = self.overview_values.checked_add(usize::from(old.is_none()))
+            .ok_or_else(|| Error::Invalid("status count overflow".into()))?;
+        if bytes > self.limits.overview_bytes || count > self.limits.overview_values {
+            return Err(Error::Invalid("status view bound reached".into()));
+        }
+        // A protobuf Bytes slice may pin a much larger transport allocation.
+        // Compact once into one exact buffer, accounting key, body and cursor.
+        let length = usize::try_from(retained).map_err(|_| Error::Invalid("status bytes overflow".into()))?;
+        let key_end = value.key.len();
+        let value_end = key_end + value.value.len();
+        let mut compact = Vec::with_capacity(length);
+        compact.extend_from_slice(&value.key);
+        compact.extend_from_slice(&value.value);
+        compact.extend_from_slice(&after.opaque);
+        let compact = Bytes::from(compact.into_boxed_slice());
+        value.key = compact.slice(..key_end);
+        value.value = compact.slice(key_end..value_end);
+        after.opaque = compact.slice(value_end..);
+        let status = &mut self.agents.entry(agent.clone()).or_default().status;
+        status.after = Some(after.clone());
+        status.watermarks.accepted = status.watermarks.accepted.max(data.accepted);
+        status.watermarks.durable = status.watermarks.durable.max(data.durable);
+        let key = value.key.clone();
+        status.values.insert(key.clone(), StatusValue { after, value });
+        self.overview_bytes = bytes;
+        self.overview_values = count;
+        Ok(SwarmChange::Status { agent, key })
+    }
+}

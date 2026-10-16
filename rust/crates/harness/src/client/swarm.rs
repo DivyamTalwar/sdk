@@ -310,6 +310,10 @@ impl SwarmClient {
                             state.routes.remove(&channel);
                         }
                     }
+                    // Release demoted content before acquiring replacements.
+                    // A prefetch promotion keeps its existing cache and follow.
+                    publish(SwarmUpdate::Layout(demand.clone())).await?;
+                    state.demand = demand;
                     for path in added {
                         state.discover(path.clone(), self.limits.agents, &mut update)?;
                         let snapshot = heads(path.clone(), self.limits.snapshot_files).await
@@ -323,8 +327,6 @@ impl SwarmClient {
                         state.routes.insert(channel, (path, false));
                     }
                     state.send(&mut session, update).await?;
-                    publish(SwarmUpdate::Layout(demand.clone())).await?;
-                    state.demand = demand;
                 },
                 frame = incoming.next() => {
                     let frame = frame.ok_or_else(|| Error::Storage("platform session ended".into()))??;
