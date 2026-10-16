@@ -8,6 +8,8 @@ proptest::proptest! {
         let destination = parent.join(name);
         let reported = super::super::native_mount_control_paths(&destination).unwrap();
         let actual = MountDestinationGuard::paths_for_canonical(&destination).unwrap();
+        let restored: PathBuf = serde_json::from_slice(&serde_json::to_vec(&destination).unwrap()).unwrap();
+        proptest::prop_assert_eq!(super::super::native_mount_control_paths(&restored).unwrap(), reported.clone());
         proptest::prop_assert_eq!(&reported[0], &actual.0);
         proptest::prop_assert_eq!(&reported[1], &actual.1);
         proptest::prop_assert_ne!(&reported[0], &reported[1]);
