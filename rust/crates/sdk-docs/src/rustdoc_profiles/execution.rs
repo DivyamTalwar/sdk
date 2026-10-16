@@ -102,6 +102,7 @@ pub fn load_metadata(
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 
+#[derive(Clone)]
 pub(crate) struct RustdocProducer {
     cargo: PathBuf,
     targets: BTreeSet<String>,

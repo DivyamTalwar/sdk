@@ -206,21 +206,13 @@ pub(super) fn execute_historical_profiles(
             cargo.to_owned(),
         );
         let metadata = metadata.clone();
-        let environment = sdk_docs::command("cargo");
-        crate::parallel::map(jobs, move |owner| {
-            sdk_docs::with_command_environment(&environment, || {
-                sdk_docs::with_rustdoc_cache(|| {
-                    compile_historical_profiles(
-                        &root,
-                        &output,
-                        &rustdoc_dir,
-                        &metadata,
-                        &cargo,
-                        &owner,
-                    )
-                })
-            })
-        })
+        rustc_host()?;
+        crate::parallel::map(
+            jobs,
+            sdk_docs::rustdoc_worker(move |owner| {
+                compile_historical_profiles(&root, &output, &rustdoc_dir, &metadata, &cargo, &owner)
+            }),
+        )
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()

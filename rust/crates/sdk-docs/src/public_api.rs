@@ -51,16 +51,17 @@ fn extract_uncached(
 ) -> Result<Vec<PublicItemSignature>, Error> {
     let value = (*crate::render_cache::json(raw)?).clone();
     let adapted = adapt(value, krate)?;
-    let mut temp = tempfile::NamedTempFile::new()?;
-    {
-        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
-        serde_json::to_writer(&mut writer, &adapted)?;
-        writer.flush()?;
-    }
-    let api = public_api::Builder::from_rustdoc_json(temp.path())
-        .include_function_parameter_names(true)
-        .build()
-        .map_err(|error| Error::Invalid(format!("public-api: {error}")))?;
+    let api = crate::render_cache::with_adapter(json_path, |temp| {
+        {
+            let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+            serde_json::to_writer(&mut writer, &adapted)?;
+            writer.flush()?;
+        }
+        public_api::Builder::from_rustdoc_json(temp.path())
+            .include_function_parameter_names(true)
+            .build()
+            .map_err(|error| Error::Invalid(format!("public-api: {error}")))
+    })?;
     api.items()
         .map(|item| {
             let item_id = Id(item.id().0);

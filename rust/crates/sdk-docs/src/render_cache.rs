@@ -8,6 +8,7 @@ use std::{
 
 #[derive(Default)]
 struct Cache {
+    adapter: RefCell<Option<tempfile::NamedTempFile>>,
     producers: RefCell<
         BTreeMap<
             BTreeMap<std::ffi::OsString, std::ffi::OsString>,
@@ -19,6 +20,38 @@ struct Cache {
     parsed: RefCell<BTreeMap<Rc<[u8]>, Rc<rustdoc_types::Crate>>>,
     json: RefCell<BTreeMap<Rc<[u8]>, Rc<serde_json::Value>>>,
     normalized: RefCell<BTreeMap<PathBuf, BTreeMap<Rc<[u8]>, Rc<[u8]>>>>,
+}
+
+// public-api accepts a path only. Reuse one private adapter per operation,
+// on the receipt volume when writable, and truncate before every rendering.
+pub(crate) fn with_adapter<T>(
+    receipt: &Path,
+    render: impl FnOnce(&mut tempfile::NamedTempFile) -> Result<T, Error>,
+) -> Result<T, Error> {
+    use std::io::{Seek, SeekFrom};
+    let cached = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .and_then(|cache| cache.adapter.borrow_mut().take())
+    });
+    let mut file = match cached {
+        Some(file) => file,
+        None => receipt
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .and_then(|path| tempfile::NamedTempFile::new_in(path).ok())
+            .map(Ok)
+            .unwrap_or_else(tempfile::NamedTempFile::new)?,
+    };
+    file.as_file_mut().set_len(0)?;
+    file.as_file_mut().seek(SeekFrom::Start(0))?;
+    let result = render(&mut file);
+    CACHE.with_borrow(|cache| {
+        if let Some(cache) = cache {
+            *cache.adapter.borrow_mut() = Some(file);
+        }
+    });
+    result
 }
 
 pub(crate) fn producer(
@@ -63,6 +96,42 @@ pub fn with_rustdoc_cache<T>(operation: impl FnOnce() -> T) -> T {
     }
     let _restore = Restore(CACHE.replace(Some(Cache::default())));
     operation()
+}
+
+/// Inherit immutable producer selection in workers joined within this operation.
+/// Receipt buffers and temporary files remain private to each worker.
+pub fn rustdoc_worker<T, R>(
+    operation: impl Fn(T) -> R + Send + Sync,
+) -> impl Fn(T) -> R + Send + Sync {
+    let producers = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .map(|cache| {
+                cache
+                    .producers
+                    .borrow()
+                    .iter()
+                    .map(|(environment, producer)| (environment.clone(), (**producer).clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default()
+    });
+    let environment = crate::command("cargo");
+    move |input| {
+        crate::with_command_environment(&environment, || {
+            with_rustdoc_cache(|| {
+                CACHE.with_borrow(|cache| {
+                    *cache.as_ref().unwrap().producers.borrow_mut() = producers
+                        .iter()
+                        .map(|(environment, producer)| {
+                            (environment.clone(), Rc::new(producer.clone()))
+                        })
+                        .collect();
+                });
+                operation(input)
+            })
+        })
+    }
 }
 
 /// Read a Rustdoc receipt, reusing only matching native file observations.
@@ -277,6 +346,33 @@ mod tests {
                 Ok(())
             })?;
             prop_assert!(CACHE.with_borrow(|cache| cache.is_none()));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn adapter_reuse_truncates_rewinds_and_cleans_each_operation(
+            bytes in prop::collection::vec(any::<u8>(), 0..1024),
+            shorter in 0usize..1024,
+        ) {
+            use std::io::Write;
+            let directory = tempfile::tempdir().unwrap();
+            let receipt = directory.path().join("receipt.json");
+            let path = with_rustdoc_cache(|| {
+                let mut path = None;
+                for input in [&bytes[..], &bytes[..shorter.min(bytes.len())], &[]] {
+                    with_adapter(&receipt, |file| {
+                        if let Some(previous) = &path { assert_eq!(file.path(), previous); }
+                        path = Some(file.path().to_owned());
+                        assert_eq!(file.path().parent(), Some(directory.path()));
+                        file.write_all(input)?;
+                        assert_eq!(std::fs::read(file.path())?, input);
+                        Ok(())
+                    }).unwrap();
+                }
+                path.unwrap()
+            });
+            prop_assert!(!path.exists());
         }
     }
 

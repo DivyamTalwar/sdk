@@ -106,3 +106,46 @@ fn a_new_operation_refreshes_installed_targets_in_the_same_home() {
         });
     });
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn worker_inheritance_is_environment_bound_and_does_not_escape_into_new_operations(
+        homes in prop::collection::vec("[a-z]{1,6}", 1..8),
+    ) {
+        for home in homes {
+            let mut environment = Command::new("rustup");
+            environment.env("RUSTUP_HOME", &home);
+            let select = || crate::render_cache::producer(|| Ok(RustdocProducer {
+                cargo: home.clone().into(), targets: BTreeSet::from([home.clone()]),
+                compiler: Compiler { rustc: home.clone().into(), host: home.clone(), cfgs: (home.clone(), home.clone()) },
+            })).unwrap();
+            crate::with_command_environment(&environment, || crate::with_rustdoc_cache(|| {
+                select();
+                let worker = crate::rustdoc_worker(|_| {
+                    let cached = crate::render_cache::producer(|| panic!("worker repeated selection")).unwrap();
+                    assert_eq!(cached.cargo, PathBuf::from(&home));
+                    assert!(cached.targets.contains(&home));
+                    let mut other = Command::new("rustup");
+                    other.env("RUSTUP_HOME", format!("other-{home}"));
+                    let calls = Cell::new(0);
+                    crate::with_command_environment(&other, || {
+                        crate::render_cache::producer(|| { calls.set(calls.get()+1); Ok((*cached).clone()) }).unwrap();
+                    });
+                    assert_eq!(calls.get(), 1, "another environment must resolve afresh");
+                });
+                // Move the immutable snapshot through the actual production worker path.
+                std::thread::scope(|scope| {
+                    let worker = &worker;
+                    let a = scope.spawn(move || worker(()));
+                    let b = scope.spawn(move || worker(()));
+                    a.join().unwrap(); b.join().unwrap();
+                });
+            }));
+            crate::with_command_environment(&environment, || crate::with_rustdoc_cache(|| {
+                prop_assert!(crate::render_cache::producer(|| Err(ProfileError::InvalidRustdoc("fresh selection".into()))).is_err());
+                Ok(())
+            }))?;
+        }
+    }
+}

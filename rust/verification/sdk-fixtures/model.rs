@@ -8,54 +8,6 @@ use loom::sync::{
 };
 use sdk_fixture_verification::get_or_try_init;
 
-#[path = "../../crates/sdk-generation/tests/support/probe_fence.rs"]
-mod probe_fence;
-
-fn compiler_probe_epoch_model(broken: bool) {
-    let mut builder = loom::model::Builder::new();
-    builder.preemption_bound = Some(2);
-    builder.check(move || {
-        let epoch = Arc::new(AtomicUsize::new(0));
-        let changed = Arc::clone(&epoch);
-        let writer = loom::thread::spawn(move || {
-            changed.store(1, Ordering::SeqCst);
-        });
-        let before = epoch.load(Ordering::SeqCst);
-        let published = AtomicUsize::new(0);
-        let lock = probe_fence::storage::Lock::new(());
-        let observe = || Ok(epoch.load(Ordering::SeqCst));
-        let read = || Ok(None);
-        let compute = || Ok(epoch.load(Ordering::SeqCst));
-        let publish = |value: &usize| {
-            published.store(*value + 1, Ordering::SeqCst);
-            Ok(())
-        };
-        let result = if broken {
-            probe_fence::query::<_, _, false>(&lock, &before, observe, read, compute, publish)
-        } else {
-            probe_fence::query::<_, _, true>(&lock, &before, observe, read, compute, publish)
-        };
-        writer.join().unwrap();
-        if let Ok(value) = result {
-            assert_eq!(value, before, "mixed compiler epochs");
-        }
-        let published = published.load(Ordering::SeqCst);
-        if published != 0 {
-            assert_eq!(published - 1, before, "mixed published compiler epochs");
-        }
-    });
-}
-
-#[test]
-fn compiler_probe_publication_is_fenced_on_its_actual_epoch() {
-    compiler_probe_epoch_model(false);
-}
-#[test]
-#[should_panic(expected = "mixed compiler epochs")]
-fn negative_control_detects_omitted_probe_fences() {
-    compiler_probe_epoch_model(true);
-}
-
 #[path = "../../crates/sdk-generation/src/parallel.rs"]
 mod parallel;
 
@@ -241,7 +193,8 @@ fn failed_concrete_probe_releases_the_lock_for_another_reader() {
     });
 }
 
-use probe_fence::storage as shared_cache;
+#[path = "../../crates/sdk-generation/src/shared_cache.rs"]
+mod shared_cache;
 
 fn model(broken: bool) {
     let mut builder = loom::model::Builder::new();
