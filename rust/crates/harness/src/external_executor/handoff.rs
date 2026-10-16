@@ -180,7 +180,11 @@ mod tests {
                 }))?;
                 let task = Component::new(request.task_id().to_string())?;
                 let file = request.to_file(task.clone())?;
-                let answer = answer(request.clone(),task,&json!({"Succeeded":{"stdout":"result"}}))?;
+                let handed_off = request.clone();
+                let ExternalAction::RunTool {arguments: input,..} = &handed_off.action else {unreachable!()};
+                let payload = input["command"].as_str().unwrap().as_ptr();
+                let answer = answer(handed_off,task,&json!({"Succeeded":{"stdout":"result"}}))?;
+                prop_assert_eq!(answer["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap().as_ptr(),payload);
                 let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
                 prop_assert_eq!(native_tool_request("bash",arguments.clone(),&file)?,request.clone());
                 prop_assert!(native_tool_request("write",arguments.clone(),&file).is_err());

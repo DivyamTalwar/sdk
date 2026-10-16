@@ -59,7 +59,10 @@ proptest! {
     #[test]
     fn canonical_tool_result_substitution_preserves_the_value(text in ".{0,128}") {
         let value = json!({"text":text});
-        let result = tool_result(json!({"Succeeded":value}))?;
+        let outcome = json!({"Succeeded":value});
+        let payload = outcome["Succeeded"]["text"].as_str().unwrap().as_ptr();
+        let result = tool_result(outcome)?;
+        prop_assert_eq!(result["details"]["text"].as_str().unwrap().as_ptr(),payload);
         prop_assert_eq!(result["details"].clone(),value.clone());
         prop_assert_eq!(serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap())?,value);
         prop_assert_eq!(result["isError"].as_bool(),Some(false));
