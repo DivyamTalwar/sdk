@@ -1,6 +1,20 @@
 use super::*;
 
-pub(super) async fn verify_model_contents_scoped<'a>(
+pub(crate) async fn verify_model_contents_scoped<'a>(
+    journal: &dyn ExecutionJournal,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
+    limits: Limits,
+    scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+    context: Option<&crate::runtime::TaskContext>,
+) -> Result<()> {
+    verify_model_contents_with_summary_authorization::<true>(
+        journal, contents, limits, scope, io, context,
+    )
+    .await
+}
+
+pub(crate) async fn verify_model_contents_with_summary_authorization<'a, const SUMMARIES: bool>(
     journal: &dyn ExecutionJournal,
     contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
     limits: Limits,
@@ -23,6 +37,7 @@ pub(super) async fn verify_model_contents_scoped<'a>(
                 };
                 if (!granted
                     || (scope.is_none() && crate::conversation::is_internal_path(file.path())))
+                    && SUMMARIES
                     && binding.is_none()
                     && journal.authenticate_summary(file, io)?.await?
                 {

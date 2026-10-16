@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyCoordinatorOriginsLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -84,4 +84,23 @@ test("filesystem qualification models the production mutex only in its dedicated
   ]);
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --fs-binding --all-features/);
+});
+
+test("coordinator qualification instruments real Stream locks and rejects skipped models", () => {
+  for (const passed of [0, 1]) {
+    const calls = [];
+    const run = (command, args, options) => {
+      calls.push([command, args]);
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
+        assert.ok(args.includes("--lib"));
+      }
+      return { status: 0, stderr: "", stdout: command === "cargo"
+        ? JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } })
+        : summary(passed, 0, 100) };
+    };
+    if (passed) qualifyCoordinatorOriginsLoom(undefined, run);
+    else assert.throws(() => qualifyCoordinatorOriginsLoom(undefined, run), /requires a nonzero/);
+    assert.deepEqual(calls[1][1], ["distributed::tests::model_checking::origin_publication_fences_competing_writers", "--exact"]);
+  }
 });

@@ -2,10 +2,17 @@
 
 use acyclic_harness::OperationId;
 use libfuzzer_sys::fuzz_target;
+#[path = "../../src/distributed/origin_sequence.rs"]
+mod origin_sequence;
 #[path = "../../src/executor/summary_identity.rs"]
 mod summary_identity;
 
 fuzz_target!(|input: &[u8]| {
+    if let Some(sequence) = origin_sequence::decode(input) {
+        assert_eq!(input, sequence.to_le_bytes());
+    } else {
+        assert_ne!(input.len(), 8);
+    }
     if input.len() > 4096 {
         return;
     }

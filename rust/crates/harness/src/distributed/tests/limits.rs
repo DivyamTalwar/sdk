@@ -23,9 +23,25 @@ async fn append_source(
         &mut None,
     )?;
     let length = bytes.len() as u64;
-    acyclic_stream::Stream::new(std::sync::Arc::clone(client), COORDINATOR_PATH)?
-        .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), COORDINATOR_PATH)?;
+    if let Some(path) = origins::event_path(&event, &mut None)? {
+        let (retry, _) = stream_key(key.len(), format_args!("{key}"), &mut None)?;
+        origins::append_origin::<true, _>(
+            client,
+            &stream,
+            OwnedBytes::from(bytes),
+            revision - 1,
+            retry,
+            event.operation_id(),
+            path,
+            &mut None,
+        )
         .await?;
+    } else {
+        stream
+            .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)
+            .await?;
+    }
     Ok(length)
 }
 
@@ -375,5 +391,75 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         assert_eq!(client.io_snapshot().writes, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
     }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn indexed_original_reservation_work_is_independent_of_coordinator_history() -> Result<()> {
+    let client = Arc::new(LostSessionAck::<MemoryStream>::default());
+    let operation = OperationId::from_bytes([130; 16]);
+    let (owner, issuer, scope, fence, time) = historical_source(&client, operation).await?;
+    let verifier = issuer.verifier(&mut None)?;
+    let mut measurements = Vec::new();
+    for extra in [0, 128] {
+        if extra != 0 {
+            for n in 0..extra {
+                let mut bytes = [0; 16];
+                bytes[..4].copy_from_slice(&(n as u32).to_le_bytes());
+                append_source(
+                    &client,
+                    4 + n,
+                    &format!("unrelated-{n}"),
+                    SchedulerEvent::Declared {
+                        spec: Box::new(spec(OperationId::from_bytes(bytes), 0)?),
+                    },
+                    time + 3 + n,
+                )
+                .await?;
+            }
+        }
+        client.reset_io();
+        let cancellation = CancellationToken::new();
+        let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .expect("native observer");
+        let mut work =
+            HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let proof = original_reservation_proof(
+            &client,
+            &owner,
+            &scope,
+            &verifier,
+            operation,
+            &fence,
+            &mut Some(&mut work),
+        )
+        .await?;
+        assert_eq!(proof.0.operation_id, operation);
+        let custody = work.into_custody()?;
+        let measured = native.receipt();
+        let calls = client.io_snapshot();
+        assert_eq!(calls.writes, 0);
+        println!(
+            "indexed owner history={} calls={} bytes={} items={}",
+            3 + extra,
+            calls.reads,
+            measured.source_bytes_read,
+            measured.items_examined
+        );
+        measurements.push((
+            calls.reads,
+            measured.source_bytes_read,
+            measured.items_examined,
+        ));
+        drop((proof, custody));
+    }
+    assert_eq!(measurements[0], measurements[1]);
+    // A deliberate full-source scan is the former algorithm's cost control.
+    // The same source observer must expose the additional work.
+    client.reset_io();
+    let scanned = read_coordinator_event_page(&client, 0, 1024).await?;
+    assert_eq!(scanned.len(), 131);
+    assert!(client.io_snapshot().read_bytes > measurements[0].1);
     Ok(())
 }

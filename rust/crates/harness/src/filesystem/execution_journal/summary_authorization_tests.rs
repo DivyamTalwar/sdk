@@ -70,6 +70,36 @@ async fn summary_authentication_binds_the_task_execution_even_in_a_shared_volume
     publish(&first, &file, &proof(operation, file.clone())).await?;
     assert!(first.authenticate_summary(&file, None)?.await?);
     assert!(!second.authenticate_summary(&file, None)?.await?);
+    // An inherited checkpoint may carry an explicit exact read capability. It
+    // does not inherit the automatic exception for another task's summaries.
+    let content = crate::model::ModelContent::Part(crate::model::ModelContentPart::File {
+        file: file.clone(),
+        policy: crate::model::FileProjectionPolicy::BoundedFull,
+    });
+    let denied = crate::runtime::RuntimeScope::new(
+        crate::Capabilities::new([] as [&str; 0]),
+        Limits::default(),
+    )?;
+    let explicit = crate::runtime::RuntimeScope::new(
+        crate::Capabilities::new([file.read_capability(&mut None)?]),
+        Limits::default(),
+    )?;
+    for (scope, permitted) in [(&denied, false), (&explicit, true)] {
+        let result = crate::executor::verify_model_contents_scoped(
+            &second,
+            std::iter::once(&content),
+            Limits::default(),
+            Some(scope),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            result.is_ok(),
+            permitted,
+            "inherited summary requires its exact read grant: {result:?}"
+        );
+    }
     // A caller cannot rebind another task's owner to the first task's operation.
     let forged = fixture
         .execution(fixture.owner(81).await?, operation)?
@@ -200,5 +230,75 @@ async fn malformed_provenance_at_the_correct_lookup_key_exercises_payload_guards
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn complete_summary_output_identity_is_required_even_at_a_valid_provenance_key() -> Result<()> {
+    use proptest::prelude::*;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::new(),
+        65_536,
+    ))?;
+    let operation = OperationId::new();
+    let file = runtime.block_on(output(
+        storage.journal().as_ref(),
+        operation,
+        "summary:0:output",
+    ))?;
+    proptest::test_runner::TestRunner::default()
+        .run(
+            &(0usize..7, "[a-z]{1,16}", any::<u8>()),
+            |(field, suffix, byte)| {
+                let mut summary = proof(operation, file.clone());
+                let mut path = file.path().to_owned();
+                let mut version = file.version().to_owned();
+                let mut digest = *file.descriptor().sha256();
+                let mut length = file.descriptor().byte_length();
+                let mut media = file.descriptor().media_type().to_owned();
+                let mut label = file.display_name().to_owned();
+                let mut volume = file.volume().clone();
+                match field {
+                    0 => path.push_str(&suffix),
+                    1 => version.push_str(&suffix),
+                    2 => digest[byte as usize % 32] ^= 1,
+                    3 => length += 1,
+                    4 => media.push_str(&suffix),
+                    5 => label.push_str(&suffix),
+                    _ => {
+                        volume = VolumeRef::new(
+                            file.volume().provider().clone(),
+                            format!("foreign-{suffix}"),
+                            file.volume().class(),
+                            file.volume().owner().clone(),
+                            &mut None,
+                        )?
+                    }
+                }
+                summary.output = FileRef::new(
+                    volume,
+                    path,
+                    version,
+                    crate::conversation::FileDescriptor::new(digest, length, media)?,
+                    label,
+                    &mut None,
+                )?;
+                prop_assert!(!super::summary_authorization::payload_matches::<true>(
+                    &summary, operation, &file
+                ));
+                prop_assert!(
+                    super::summary_authorization::payload_matches::<false>(
+                        &summary, operation, &file
+                    ),
+                    "assertion deletion was not detected by the same property"
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
     Ok(())
 }
