@@ -38,9 +38,16 @@ pub(crate) async fn folded_checkout(
             metadata: FileMetadata::default(),
         });
     }
-    checkout
-        .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
+    let mut mutations = mutations.into_iter();
+    while !mutations.as_slice().is_empty() {
+        let batch = mutations
+            .by_ref()
+            .take(config.limits.maximum_mutations_per_batch as usize)
+            .collect();
+        checkout
+            .apply_authored_transaction(batch, WorkBudget::UNBOUNDED, &cancellation)
+            .await?;
+    }
     checkout.volume.config.case_sensitivity = CaseSensitivity::ProfileFolded;
     Ok(checkout)
 }
