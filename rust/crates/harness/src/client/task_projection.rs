@@ -44,7 +44,15 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
         .chain(std::iter::once(files))
         .flat_map(|query| query.files().keys())
         .filter_map(|key| match key {
-            FileKey::Task { task, .. } => Some(format!("AGGREGATE_KIND_TASK:{}", task.as_str())),
+            FileKey::Task {
+                task,
+                file:
+                    TaskFile::Chunk { .. }
+                    | TaskFile::Tool {
+                        file: ToolFile::Stdout(_) | ToolFile::Stderr(_),
+                        ..
+                    },
+            } => Some(format!("AGGREGATE_KIND_TASK:{}", task.as_str())),
             _ => None,
         })
         .collect();

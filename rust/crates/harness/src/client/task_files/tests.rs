@@ -103,6 +103,24 @@ async fn changing_and_resetting_one_volume_preserves_other_task_views() {
     let foreign = client.views().transcripts[&second].clone();
     let (volume, empty) = volumes.remove(0);
     let cut = volume.snapshot(&Query::Tasks, 16).await.unwrap();
+    // A caller may submit a request naming another task. That editable input
+    // cannot take ownership of the other volume's rendered text.
+    volume
+        .append(
+            cut.generation,
+            &FileValue::new(
+                FileKey::Task {
+                    task: Component::new(&owners[1].id).unwrap(),
+                    file: TaskFile::Request(Component::new("foreign-request").unwrap()),
+                },
+                b"request".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+    client.next_change().await.unwrap();
+    assert_eq!(client.views().transcripts[&second], foreign);
+    let cut = volume.snapshot(&Query::Tasks, 16).await.unwrap();
     volume
         .append(
             cut.generation,
