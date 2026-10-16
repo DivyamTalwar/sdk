@@ -157,13 +157,21 @@ async fn access_policy_storage_failed_preconditions_leave_the_record_unchanged()
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("policy-preconditions"))?;
     let mut checkout = current(&workspace, true).await?;
-    assert!(
-        unbounded!(
-            checkout,
-            write_access_policy(b"absent", NamedAttributeWriteMode::Replace)
+    let rejected = checkout
+        .write_access_policy(
+            b"absent",
+            NamedAttributeWriteMode::Replace,
+            WorkBudget {
+                backend_write_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
         )
-        .is_err()
-    );
+        .await
+        .err()
+        .ok_or("absent policy was replaced")?;
+    assert!(matches!(rejected.error, FsError::CreationRejected));
+    assert_eq!(rejected.work.backend_write_operations, 0);
     assert_eq!(recorded(&mut checkout).await?, None);
     unbounded!(
         checkout,

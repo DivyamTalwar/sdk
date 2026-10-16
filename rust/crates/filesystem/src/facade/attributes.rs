@@ -127,6 +127,11 @@ pub(super) async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore
     let root = match metadata.named_attributes {
         MetadataField::Value(root) => root,
         MetadataField::Unavailable if value.is_none() => return Err(FsError::NotFound),
+        MetadataField::Unavailable
+            if matches!(value, Some((_, NamedAttributeWriteMode::Replace))) =>
+        {
+            return Err(FsError::CreationRejected);
+        }
         MetadataField::Unavailable => {
             let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
                 encode_attribute_page(
