@@ -17,10 +17,12 @@ proptest! {
         let round_trip: Value = serde_json::from_slice(&serde_json::to_vec(&value)?)?;
         prop_assert_eq!(&round_trip, &value);
         prop_assert!(valid(&round_trip, &digest, "linux", "x86_64", &version));
-        prop_assert!(!valid(&value, &format!("{digest}0"), "linux", "x86_64", &version));
+        let altered_digest = format!("{digest}0");
+        let altered_version = format!("{version}-other");
+        prop_assert!(!valid(&value, &altered_digest, "linux", "x86_64", &version));
         prop_assert!(!valid(&value, &digest, "windows", "x86_64", &version));
         prop_assert!(!valid(&value, &digest, "linux", "aarch64", &version));
-        prop_assert!(!valid(&value, &digest, "linux", "x86_64", &format!("{version}-other")));
+        prop_assert!(!valid(&value, &digest, "linux", "x86_64", &altered_version));
         value.as_object_mut().ok_or_else(|| std::io::Error::other("fixture object"))?.insert("passed".into(), Value::Bool(false));
         prop_assert!(!valid(&value, &digest, "linux", "x86_64", &version));
     }
