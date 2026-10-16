@@ -1,6 +1,9 @@
 use super::*;
+#[path = "inline_delimiters.rs"]
+mod delimiters;
 #[path = "inline_tokens.rs"]
 mod tokens;
+use delimiters::{Delimiters, Run};
 use tokens::{Kind, Tokens};
 
 #[derive(Default)]
@@ -11,7 +14,7 @@ pub(super) struct Scanner {
 
 #[derive(Default)]
 struct State {
-    delimiter: Option<usize>,
+    delimiter: Delimiters,
     bracket: Vec<usize>,
     labels: Vec<Range<usize>>,
     opaque: Option<usize>,
@@ -19,7 +22,7 @@ struct State {
 
 impl State {
     fn neutral(&self) -> bool {
-        self.delimiter.is_none()
+        self.delimiter.neutral()
             && self.bracket.is_empty()
             && self.labels.is_empty()
             && self.opaque.is_none()
@@ -45,7 +48,7 @@ impl State {
 
     fn earliest(&self, end: usize) -> usize {
         [
-            self.delimiter,
+            self.delimiter.first(),
             self.bracket.first().copied(),
             self.labels.first().map(|label| label.start),
             self.opaque,
@@ -224,7 +227,7 @@ impl Scanner {
         let syntax = Syntax::new(source, events);
         let pending = self.tokens.preview().map(|token| token.range.start);
         let pending = pending.map(|start| start.saturating_sub(base) + sentinel);
-        let (mut outer, mut opaque, mut link) = (0, 0, 0);
+        let (mut opaque, mut link) = (0, 0);
         let mut state = State::default();
         let mut frontier = sentinel;
         for token in &self.tokens.ready {
@@ -235,9 +238,8 @@ impl Scanner {
             if inside(&syntax.opaque, &mut opaque, start) {
                 state.labels.clear();
             } else {
-                let protected = inside(&syntax.outer, &mut outer, start);
                 let linked = inside(&syntax.links, &mut link, start);
-                literal(start..end, token.kind, &mut state, protected, linked);
+                literal(start..end, token.kind, &mut state, linked);
             }
             if state.neutral()
                 && (self.tokens.neutral() || pending.is_some_and(|start| start >= end))
@@ -305,7 +307,7 @@ impl Scanner {
     }
 }
 
-fn literal(range: Range<usize>, kind: Kind, state: &mut State, protected: bool, linked: bool) {
+fn literal(range: Range<usize>, kind: Kind, state: &mut State, linked: bool) {
     if !matches!(kind, Kind::Open { .. } | Kind::Close | Kind::ParenOpen) {
         state.labels.clear();
     }
@@ -341,24 +343,11 @@ fn literal(range: Range<usize>, kind: Kind, state: &mut State, protected: bool, 
             byte,
             before,
             after,
-        } if !protected && can_open(before, after, byte) => {
-            state.delimiter.get_or_insert(range.start);
+        } if !linked => {
+            state
+                .delimiter
+                .feed(Run::new(range, byte, before, after), |_| {});
         }
         _ => {}
     }
-}
-
-fn can_open(before: char, after: char, delimiter: u8) -> bool {
-    if !before.is_ascii() || !after.is_ascii() {
-        return true;
-    }
-    let left = !after.is_whitespace()
-        && (!after.is_ascii_punctuation()
-            || before.is_whitespace()
-            || before.is_ascii_punctuation());
-    let right = !before.is_whitespace()
-        && (!before.is_ascii_punctuation()
-            || after.is_whitespace()
-            || after.is_ascii_punctuation());
-    left && (delimiter != b'_' || !right || before.is_ascii_punctuation())
 }
