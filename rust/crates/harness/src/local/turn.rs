@@ -187,7 +187,7 @@ impl LocalHarness {
             .map(Some)
     }
 
-    async fn finish_turn_inputs(
+    pub(super) async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
