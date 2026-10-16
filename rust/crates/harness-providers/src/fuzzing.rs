@@ -34,8 +34,14 @@ pub fn assert_stream_invariants(input: &[u8]) {
     }
     if kind == b'A' {
         if let Ok(auth) = crate::codex::decode_auth(input) {
+            let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
             let canonical = serde_json::to_vec(&auth).unwrap();
-            assert_eq!(crate::codex::decode_auth(&canonical).unwrap(), auth);
+            let restored = crate::codex::decode_auth(&canonical).unwrap();
+            assert_eq!(
+                crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
+                refresh
+            );
+            assert_eq!(restored, auth);
         }
         return;
     }

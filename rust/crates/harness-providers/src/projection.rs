@@ -147,6 +147,25 @@ pub(crate) fn body(
                             .ok_or_else(|| invalid("invalid projected Gemini parts"))?
                             .append(parts);
                     }
+                } else if adapter == Adapter::Chat
+                    && projected["role"] == "assistant"
+                    && projected["tool_calls"].is_array()
+                    && messages.last().is_some_and(|last| {
+                        last["role"] == "assistant" && last["tool_calls"].is_array()
+                    })
+                {
+                    let previous = messages
+                        .last_mut()
+                        .ok_or_else(|| invalid("missing tool batch"))?;
+                    previous["tool_calls"]
+                        .as_array_mut()
+                        .ok_or_else(|| invalid("invalid Chat calls"))?
+                        .append(
+                            projected["tool_calls"]
+                                .as_array_mut()
+                                .ok_or_else(|| invalid("invalid Chat calls"))?,
+                        );
+                    merge_chat_text(&mut previous["content"], projected["content"].take())?;
                 } else {
                     messages.push(projected);
                 }
@@ -248,6 +267,28 @@ pub(crate) fn body(
         }
     }
     Ok(body)
+}
+
+fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
+    match (previous, next) {
+        (_, Value::Null) => {}
+        (previous @ Value::Null, next) => *previous = next,
+        (Value::String(previous), Value::String(next)) => {
+            previous.push('\n');
+            previous.push_str(&next);
+        }
+        (Value::Array(previous), Value::Array(mut next)) => previous.append(&mut next),
+        (Value::Array(previous), Value::String(next)) => {
+            previous.push(json!({"type":"text", "text":next}));
+        }
+        (previous @ Value::String(_), Value::Array(mut next)) => {
+            let text = previous.take();
+            next.insert(0, json!({"type":"text", "text":text}));
+            *previous = Value::Array(next);
+        }
+        _ => return Err(invalid("invalid Chat tool batch content")),
+    }
+    Ok(())
 }
 
 fn project_message(

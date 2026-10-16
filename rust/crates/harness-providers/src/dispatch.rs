@@ -20,13 +20,13 @@ pub(crate) fn generate(
         let body = encode(provider, &request, None).await?;
         let body = bytes::Bytes::from(body);
         let input_bytes = body.len();
-        let auth = authenticate(provider).await?;
+        let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let response = send(provider, dispatch, body.clone(), auth.0.as_deref(), auth.1.as_deref()).await?;
         #[cfg(not(target_arch = "wasm32"))]
         let response = if response.status == 401 {
             if let Some(login) = &provider.codex_login {
                 drop(response);
-                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref()).await?;
+                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
                 send(provider, dispatch, body, Some(&key), account.as_deref()).await?
             } else { response }
         } else { response };
@@ -43,12 +43,15 @@ pub(crate) fn generate(
     })
 }
 
-pub(crate) async fn authenticate(
-    provider: &ResolvedModel,
-) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
+pub(crate) async fn authenticate<'a>(
+    provider: &'a ResolvedModel,
+    #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
+) -> Result<(Option<Cow<'a, str>>, Option<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(login) = &provider.codex_login {
-        let (key, account) = login.bearer(provider.transport.as_ref(), None).await?;
+        let (key, account) = login
+            .bearer(provider.transport.as_ref(), None, custody)
+            .await?;
         return Ok((Some(Cow::Owned(key)), account));
     }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))

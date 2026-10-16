@@ -6,7 +6,7 @@ fn cli_write_after_comparison_before_persist_is_adopted() -> Result<()> {
     for account_switch in [false, true] {
         let (root, login, _) = fixture(&jwt(0), 200)?;
         let path = root.path().join("auth.json");
-        let (original, _) = load(&path)?;
+        let (original, _) = load(&path, &mut CredentialIo::new(None)?)?;
         let mut cli = auth("cli-access");
         cli["tokens"]["refresh_token"] = json!("cli-rotated");
         if account_switch {
@@ -14,10 +14,23 @@ fn cli_write_after_comparison_before_persist_is_adopted() -> Result<()> {
         }
         let cli_bytes = serde_json::to_vec(&cli).expect("fixture encoding");
         login.check_account(&auth("original"))?;
-        let adopted = persist_with(&path, &original, auth("provider-access"), || {
-            // Exact former race: the first comparison has already succeeded.
-            std::fs::write(&path, &cli_bytes).map_err(|_| invalid("fixture write"))
-        })?;
+        let adopted = persist_with(
+            &path,
+            &original,
+            auth("provider-access"),
+            || {
+                // Exact former race: the first comparison has already succeeded.
+                let staged: Vec<_> = std::fs::read_dir(root.path())
+                    .expect("fixture directory")
+                    .map(|entry| entry.expect("fixture entry").path())
+                    .filter(|entry| entry != &path)
+                    .collect();
+                assert_eq!(staged.len(), 1, "stage inside the auth directory");
+                assert_eq!(staged[0].parent(), path.parent());
+                std::fs::write(&path, &cli_bytes).map_err(|_| invalid("fixture write"))
+            },
+            &mut CredentialIo::new(None)?,
+        )?;
         assert_eq!(adopted, cli);
         assert_eq!(std::fs::read(&path).expect("fixture read"), cli_bytes);
         assert_eq!(login.check_account(&adopted).is_err(), account_switch);
@@ -51,8 +64,12 @@ impl HttpTransport for RacingCli {
                 // Publish a complete credential document while independent readers run.
                 let mut update = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())
                     .map_err(|_| invalid("fixture staging"))?;
-                update.write_all(&self.cli_bytes).map_err(|_| invalid("fixture write"))?;
-                update.persist(&self.path).map_err(|_| invalid("fixture replace"))?;
+                update
+                    .write_all(&self.cli_bytes)
+                    .map_err(|_| invalid("fixture write"))?;
+                update
+                    .persist(&self.path)
+                    .map_err(|_| invalid("fixture replace"))?;
             }
             let (status, value) = self
                 .replies
@@ -94,7 +111,7 @@ async fn cli_write_during_successful_refresh_wins_without_extra_auth_directory_f
             json!({"access_token":"discard-provider-access", "refresh_token":"discard-provider-refresh"}),
         )],
     );
-    assert_eq!(login.bearer(&transport, None).await?.0, cli_access);
+    assert_eq!(login.bearer(&transport, None, None).await?.0, cli_access);
     assert_eq!(
         std::fs::read(&transport.path).map_err(|_| invalid("fixture read"))?,
         transport.cli_bytes
@@ -118,7 +135,7 @@ async fn rejected_refresh_reloads_a_fresh_cli_bearer_once() -> Result<()> {
             auth(&cli_access),
             vec![(status, json!({"error":"invalid_grant"}))],
         );
-        assert_eq!(login.bearer(&transport, None).await?.0, cli_access);
+        assert_eq!(login.bearer(&transport, None, None).await?.0, cli_access);
         assert_eq!(
             transport
                 .requests
@@ -152,7 +169,7 @@ async fn rejected_refresh_retries_the_changed_on_disk_refresh_token() -> Result<
                 ),
             ],
         );
-        assert_eq!(login.bearer(&transport, None).await?.0, "updated");
+        assert_eq!(login.bearer(&transport, None, None).await?.0, "updated");
         let requests = transport
             .requests
             .lock()
@@ -179,7 +196,7 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
             vec![(status, json!({"access_token":"provider-token"}))],
         );
         assert!(matches!(
-            login.bearer(&transport, None).await,
+            login.bearer(&transport, None, None).await,
             Err(acyclic_harness::Error::Unauthorized(_))
         ));
         assert_eq!(
@@ -204,8 +221,8 @@ async fn independent_login_instances_compare_and_swap_against_the_same_cli_file(
         ],
     );
     let (left, right) = futures::join!(
-        first.bearer(&transport, None),
-        second.bearer(&transport, None)
+        first.bearer(&transport, None, None),
+        second.bearer(&transport, None, None)
     );
     assert_eq!(left?.0, cli_access);
     assert_eq!(right?.0, cli_access);
@@ -221,7 +238,7 @@ async fn oauth_transient_statuses_keep_the_retryable_classification() -> Result<
     for status in [429, 500, 503] {
         let (_root, login, transport) = fixture(&jwt(0), status)?;
         let error = login
-            .bearer(&transport, None)
+            .bearer(&transport, None, None)
             .await
             .expect_err("transient failure");
         assert!(error.to_string().contains(&status.to_string()));

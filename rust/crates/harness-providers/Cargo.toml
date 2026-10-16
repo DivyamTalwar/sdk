@@ -28,6 +28,7 @@ url = "2.5.7"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["filesystem"] }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+blake3.workspace = true
 base64 = "=0.22.1"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 reqwest.workspace = true
