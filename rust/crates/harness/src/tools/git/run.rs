@@ -32,6 +32,18 @@ pub struct Output {
 
 /// Runs one git-facade command against the task-selected workspace.
 pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Output> {
+    run_with_guard(workspace, args, || std::future::ready(Ok(()))).await
+}
+
+pub(crate) async fn run_with_guard<F, Fut>(
+    workspace: Workspace<'_>,
+    args: &[String],
+    before_effect: F,
+) -> crate::Result<Output>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = crate::Result<()>> + Send,
+{
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
@@ -58,7 +70,7 @@ pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Out
             inner: executor,
             root: workspace.root,
             source_root_identity: identity,
-            before_effect: || std::future::ready(Ok(())),
+            before_effect,
         };
         let command = run_git_command(
             &repository,
