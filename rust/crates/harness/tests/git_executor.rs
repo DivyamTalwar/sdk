@@ -101,7 +101,7 @@ async fn run(
         git::Workspace {
             filesystem: fs,
             store,
-            view: lazy,
+            view: lazy.into(),
             root: std::path::Path::new("."),
             repository: repository_id,
             lease: None,
@@ -114,7 +114,10 @@ async fn run(
     .await?;
     Ok((
         output.command.ok_or("pending git transition")?,
-        output.switched,
+        output
+            .switched
+            .map(git::OwnedView::into_checkout)
+            .transpose()?,
     ))
 }
 
@@ -361,7 +364,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
             git::Workspace {
                 filesystem: &fs,
                 store: &store,
-                view: &main,
+                view: (&main).into(),
                 root: &root,
                 repository: repo,
                 lease: Some(lease.clone()),

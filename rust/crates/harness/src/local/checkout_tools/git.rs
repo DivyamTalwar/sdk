@@ -16,7 +16,7 @@ impl CheckoutTools {
             crate::tools::git::Workspace {
                 filesystem: &self.workspace.filesystem,
                 store: &self.workspace.store,
-                view,
+                view: view.into(),
                 root: &self.workspace.path,
                 repository: self.workspace.view().workspace().id(),
                 lease: None,
@@ -35,7 +35,10 @@ impl CheckoutTools {
             ToolResult {
                 value: serde_json::json!({"result":command}),
             },
-            output.switched,
+            output
+                .switched
+                .map(crate::tools::git::OwnedView::into_checkout)
+                .transpose()?,
         ))
     }
 }
