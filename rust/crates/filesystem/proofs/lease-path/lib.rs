@@ -16,11 +16,20 @@ mod proofs {
         assert!(length >= encoding::MAX_ENCODED_BYTES - 19);
     }
 
+    #[kani::proof_for_contract(encoding::write_identity)]
+    #[kani::unwind(33)]
+    fn every_identity_fits_its_fixed_hex_component() {
+        let identity: [u8; 16] = kani::any();
+        let mut text: [u8; 32] = kani::any();
+        encoding::write_identity(identity, &mut text, kani::any());
+    }
+
     // Composition: the first proof establishes this precondition for every u64.
     // This proof covers every length in that range independently of the expiry,
     // a stronger domain than just the corresponding canonical lengths.
     #[kani::proof]
-    #[kani::unwind(21)]
+    #[kani::unwind(33)]
+    #[kani::stub_verified(encoding::write_identity)]
     fn every_lease_path_fits_its_exact_buffer() {
         let expiry: u64 = kani::any();
         let workspace: [u8; 16] = kani::any();
@@ -34,7 +43,8 @@ mod proofs {
 
     #[kani::proof]
     #[kani::should_panic]
-    #[kani::unwind(21)]
+    #[kani::unwind(33)]
+    #[kani::stub_verified(encoding::write_identity)]
     fn maximum_expiry_overflows_a_116_byte_buffer() {
         let mut text = [0; 116];
         encoding::write_buffer(
