@@ -247,3 +247,72 @@ async fn legacy_admissions_are_upgraded_once_then_reopen_without_ancestry_reads(
     assert_eq!(warm, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn individually_valid_model_and_summary_do_not_overflow_an_inheritance_file() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let volume = super::super::tests::volume(directory.path()).await?;
+    let config = || {
+        Ok::<_, Error>(
+            super::super::tests::volume_config(
+                directory.path(),
+                volume.clone(),
+                Arc::new(ScriptedModelProvider::new([])),
+            )?
+            .without_default_tools()
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .limits(Limits {
+                file_bytes: 4096,
+                ..Limits::default()
+            }),
+        )
+    };
+    let local = LocalHarness::open(config()?).await?;
+    let root = child(&local, None).await?;
+    let model = "m".repeat(1500);
+    let summary = "s".repeat(3000);
+    for (name, value) in [
+        ("settings", json!({"model":model})),
+        ("context", json!({"summary":summary})),
+    ] {
+        assert!(serde_json::to_vec(&value).unwrap().len() <= 4096);
+        write(&local, root, name, value).await?;
+    }
+    // The previous combined envelope rejects these individually valid files.
+    let mut old = local.resolved_inheritance(root).await?;
+    old["parent"] = json!(root);
+    assert!(matches!(
+        retain(&local.task_files.inner, key(TaskId::new(), "old-envelope")?, old, 4096).await,
+        Err(Error::Invalid(message)) if message == "inherited state exceeds file bound"
+    ));
+    let next = child(&local, Some(root)).await?;
+    drop(local);
+    let local = LocalHarness::open(config()?).await?;
+    assert_eq!(local.resolved_value(next, "model").await?, Some(model));
+    assert_eq!(local.resolved_value(next, "summary").await?, Some(summary));
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+    #[test]
+    fn inherited_value_files_preserve_each_source_bound(
+        model in prop::collection::vec(any::<char>(), 0..32),
+        summary in prop::collection::vec(any::<char>(), 0..32),
+    ) {
+        let model: String = model.into_iter().collect();
+        let summary: String = summary.into_iter().collect();
+        let bound = [json!({"model":model}), json!({"summary":summary})]
+            .iter().map(|value| serde_json::to_vec(value).unwrap().len()).max().unwrap().max(40) as u64;
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let volume = TaskVolume::open(
+                Arc::new(acyclic_stream::MemoryStream::default()),
+                acyclic_stream::StreamPath::new("inherited-source-bounds").unwrap(),
+            ).await.unwrap();
+            let task = TaskId::new();
+            let expected = json!({"model":model,"summary":summary,"parent":TaskId::new()});
+            assert_eq!(retain_inheritance(&volume, task, expected.clone(), bound).await.unwrap(), expected);
+            assert_eq!(read_inheritance(&volume, task, bound).await.unwrap(), Some(expected));
+        });
+    }
+}

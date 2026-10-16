@@ -51,3 +51,45 @@ fn concurrent_inheritance_creation_returns_the_first_retained_binding() {
 fn negative_control_detects_using_the_losing_inheritance() {
     first_publication(true);
 }
+
+#[test]
+fn partial_inheritance_publication_completes_without_replacing_saved_fields() {
+    loom::model(|| {
+        for cut in 0..3 {
+            let volume = block_on(TaskVolume::open(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("partial-inheritance").unwrap(),
+            ))
+            .unwrap();
+            let task = TaskId::from_bytes([1; 16]);
+            let mut expected = json!({"model":"new model","summary":"new summary","parent":null});
+            for field in ["model", "summary"].into_iter().take(cut) {
+                let value = json!(format!("saved {field}"));
+                block_on(retain(
+                    &volume,
+                    key(task, &format!("inherited-{field}")).unwrap(),
+                    value.clone(),
+                    128,
+                ))
+                .unwrap();
+                expected[field] = value;
+            }
+            assert_eq!(
+                block_on(read_inheritance(&volume, task, 128)).unwrap(),
+                None
+            );
+            let accepted = block_on(retain_inheritance(
+                &volume,
+                task,
+                json!({"model":"new model","summary":"new summary","parent":null}),
+                128,
+            ))
+            .unwrap();
+            assert_eq!(accepted, expected);
+            assert_eq!(
+                block_on(read_inheritance(&volume, task, 128)).unwrap(),
+                Some(expected)
+            );
+        }
+    });
+}

@@ -55,6 +55,43 @@ fn validate(value: &Value) -> Result<()> {
     .map_err(storage)?;
     Ok(())
 }
+// The parent marker is published last: its presence means both independently
+// bounded values are retained. Each immutable component uses the same modeled
+// first-publication path, including retry/reopen after a partial publication.
+async fn read_inheritance<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    maximum: u64,
+) -> Result<Option<Value>> {
+    let Some(parent) = read(volume, &key(task, "inherited")?, maximum).await? else {
+        return Ok(None);
+    };
+    let mut value = json!({"parent":parent});
+    for field in ["model", "summary"] {
+        value[field] = read(volume, &key(task, &format!("inherited-{field}"))?, maximum)
+            .await?
+            .ok_or_else(|| Error::Invalid(format!("retained {field} is absent")))?;
+    }
+    validate(&value)?;
+    Ok(Some(value))
+}
+async fn retain_inheritance<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    mut value: Value,
+    maximum: u64,
+) -> Result<Value> {
+    validate(&value)?;
+    for field in ["model", "summary", "parent"] {
+        let name = if field == "parent" {
+            "inherited".into()
+        } else {
+            format!("inherited-{field}")
+        };
+        value[field] = retain(volume, key(task, &name)?, value[field].take(), maximum).await?;
+    }
+    Ok(value)
+}
 // First publication pins inheritance. A competing creator's accepted value,
 // including after a lost acknowledgement, is always the value returned.
 async fn retain<P: StreamProvider + ?Sized>(
@@ -103,8 +140,7 @@ impl LocalHarness {
         task: TaskId,
         parent: Option<TaskId>,
     ) -> Result<()> {
-        let key = key(task, "inherited")?;
-        if read(&self.task_files.inner, &key, self.limits.file_bytes)
+        if read_inheritance(&self.task_files.inner, task, self.limits.file_bytes)
             .await?
             .is_some()
         {
@@ -115,19 +151,14 @@ impl LocalHarness {
             None => json!({"model":null,"summary":null}),
         };
         value["parent"] = json!(parent);
-        retain(&self.task_files.inner, key, value, self.limits.file_bytes).await?;
+        retain_inheritance(&self.task_files.inner, task, value, self.limits.file_bytes).await?;
         Ok(())
     }
     fn inherited(&self, task: TaskId) -> BoxProviderFuture<'_, Result<Value>> {
         Box::pin(async move {
-            if let Some(value) = read(
-                &self.task_files.inner,
-                &key(task, "inherited")?,
-                self.limits.file_bytes,
-            )
-            .await?
+            if let Some(value) =
+                read_inheritance(&self.task_files.inner, task, self.limits.file_bytes).await?
             {
-                validate(&value)?;
                 return Ok(value);
             }
             // Upgrade admissions made before inheritance was retained. Stop at the
@@ -144,12 +175,9 @@ impl LocalHarness {
             let mut parent = None;
             let mut value = json!({"model":null,"summary":null});
             while let Some(candidate) = futures::TryStreamExt::try_next(&mut ancestors).await? {
-                if let Some(saved) = read(
-                    &self.task_files.inner,
-                    &key(candidate, "inherited")?,
-                    self.limits.file_bytes,
-                )
-                .await?
+                if let Some(saved) =
+                    read_inheritance(&self.task_files.inner, candidate, self.limits.file_bytes)
+                        .await?
                 {
                     value = saved;
                     parent = Some(candidate);
@@ -162,9 +190,9 @@ impl LocalHarness {
                     value = self.apply_own_inheritance(parent, value).await?;
                 }
                 value["parent"] = json!(parent);
-                value = retain(
+                value = retain_inheritance(
                     &self.task_files.inner,
-                    key(candidate, "inherited")?,
+                    candidate,
                     value,
                     self.limits.file_bytes,
                 )
