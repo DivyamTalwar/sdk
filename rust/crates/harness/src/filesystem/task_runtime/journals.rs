@@ -292,3 +292,36 @@ where
         )
     }
 }
+
+#[cfg(test)]
+mod future_sizes {
+    use super::*;
+
+    #[test]
+    fn execution_journal_open_future_stays_bounded() {
+        type Runtime = FilesystemTaskRuntime<
+            acyclic_stream::MemoryStream,
+            acyclic_fs::MemoryAuthorityBackend,
+            acyclic_fs::MemoryObjectBackend,
+        >;
+        // This unpolled wrapper includes the concrete journal-opening future.
+        let arguments: Option<(&Runtime, LeaseFence, &TaskAdmissionRecord)> = None;
+        let future = async move {
+            let (runtime, fence, admission) = arguments.unwrap();
+            runtime
+                .open_execution_journal(
+                    TaskId::from_bytes([1; 16]),
+                    fence,
+                    OperationId::from_bytes([2; 16]),
+                    admission,
+                )
+                .await
+        };
+        let bytes = std::mem::size_of_val(&future);
+        eprintln!("execution journal opener future: {bytes} bytes");
+        assert!(
+            bytes < 4096,
+            "execution journal opener future: {bytes} bytes"
+        );
+    }
+}
