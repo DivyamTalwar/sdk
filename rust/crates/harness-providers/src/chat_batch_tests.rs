@@ -45,7 +45,9 @@ proptest! {
                 let batch = &messages[start];
                 prop_assert_eq!(&batch["role"], "assistant");
                 prop_assert_eq!(batch["tool_calls"].as_array().unwrap().len(), calls);
-                prop_assert_eq!(batch["content"].as_array().unwrap().len(), calls);
+                let expected: String = (0..calls).map(|index| format!("call {index}"))
+                    .collect::<Vec<_>>().join("\n");
+                prop_assert_eq!(batch["content"].as_str().unwrap(), expected);
                 for index in 0..calls {
                     let id = format!("{turn}-{index}");
                     prop_assert_eq!(&batch["tool_calls"][index]["id"], &id);
