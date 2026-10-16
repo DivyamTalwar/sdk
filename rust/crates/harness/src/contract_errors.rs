@@ -39,6 +39,9 @@ pub enum Error {
         /// The task's retained failure diagnostic.
         message: String,
     },
+    /// Automatic admission stopped with a file-driven blocked goal.
+    #[error("goal blocked: {0}")]
+    GoalBlocked(crate::goal::GoalBlockedReason),
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -348,7 +351,7 @@ impl Error {
             },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) => ErrorCode::Unsupported,
+            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
@@ -416,6 +419,7 @@ impl Error {
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
                 | Self::TaskFailed { .. }
+                | Self::GoalBlocked(_)
         )
     }
 }

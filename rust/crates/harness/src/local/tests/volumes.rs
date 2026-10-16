@@ -17,10 +17,10 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         super::checked_commands::call(5, "fs", "status --volume ../scratch"),
         ScriptedTurn::Text("inspected".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider.clone()),
-    ))
+    )?)
     .await?;
     assert_eq!(
         harness.run("inspect the bound volumes").await?.text,
@@ -104,9 +104,11 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     ]);
     let repository;
     {
-        let harness =
-            LocalHarness::open(LocalHarnessConfig::new(directory.path(), (model()?, first)))
-                .await?;
+        let harness = LocalHarness::open(crate::test_support::local_harness_config(
+            directory.path(),
+            (model()?, first),
+        )?)
+        .await?;
         assert_eq!(harness.run("make a branch").await?.text, "branched");
         let workspace = harness.workspace().unwrap();
         repository = workspace.view().workspace().id();
@@ -120,10 +122,10 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
         super::checked_commands::call(1, "fs", "status"),
         ScriptedTurn::Text("resumed".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, second.clone()),
-    ))
+    )?)
     .await?;
     let workspace = harness.workspace().unwrap();
     assert_eq!(workspace.view().workspace().id(), repository);
@@ -202,10 +204,10 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         super::checked_commands::call(2, "fs", "status"),
         ScriptedTurn::Text("composed".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider.clone()),
-    ))
+    )?)
     .await?;
     assert_eq!(
         harness.run("copy across the granted volumes").await?.text,
@@ -352,10 +354,10 @@ async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Resu
         ),
         ScriptedTurn::Text("published".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider.clone()),
-    ))
+    )?)
     .await?;
     assert_eq!(harness.run("write into scratch").await?.text, "published");
     let requests = provider.requests();

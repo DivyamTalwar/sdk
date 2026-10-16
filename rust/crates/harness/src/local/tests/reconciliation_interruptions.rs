@@ -6,7 +6,11 @@ use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn open(path: &Path) -> Result<LocalHarness> {
-    LocalHarness::open(LocalHarnessConfig::new(path, (model()?, text()))).await
+    LocalHarness::open(crate::test_support::local_harness_config(
+        path,
+        (model()?, text()),
+    )?)
+    .await
 }
 
 async fn capture(harness: &LocalHarness) -> Result<()> {
@@ -126,10 +130,10 @@ async fn sweep(text: &str) -> Result<()> {
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let mut harness = LocalHarness::open(LocalHarnessConfig::new(
+    let mut harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider),
-    ))
+    )?)
     .await?;
     super::checkout_reopen::run(&harness).await?;
     // Learn the finite native effect boundaries on the real publication path.
@@ -249,10 +253,10 @@ async fn negative_control(text: &str) -> Result<()> {
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider),
-    ))
+    )?)
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
