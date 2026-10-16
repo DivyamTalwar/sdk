@@ -125,5 +125,23 @@
       "Finish the objective"
     ],
     "path": "GOAL.md"
+  },
+  {
+    "name": "unmounted-stock-project-writer-blocks-private-goal-without-consuming-cap",
+    "initial_goal": "Finish the objective",
+    "path": "GOAL.md",
+    "unreachable": true,
+    "cap": 2,
+    "writes": [
+      "---\nstatus: done\n---\nFinish the objective"
+    ],
+    "tasks": 1,
+    "calls": 2,
+    "final_goal": "---\nstatus: blocked\nreason: \"GOAL.md is not reachable through the task view.\"\n---\nFinish the objective",
+    "panel": [
+      "Status: blocked | Continuations: 0",
+      "Reason: GOAL.md is not reachable through the task view.",
+      "Finish the objective"
+    ]
   }
 ]

@@ -21,6 +21,8 @@ struct Case {
     panel: Vec<String>,
     initial_goal: Option<String>,
     path: String,
+    #[serde(default)]
+    unreachable: bool,
 }
 
 #[cfg(feature = "tui")]
@@ -43,19 +45,7 @@ async fn run(case: Case) -> Result<()> {
     let project = volume(directory.path()).await?;
     let script = script(&case);
     let provider = scripted(script);
-    let config = || -> Result<LocalHarnessConfig> {
-        let policy = if case.enabled == Some(false) {
-            None
-        } else {
-            Some(GoalContinuationPolicy {
-                max_continuations: case.cap.unwrap_or(32),
-            })
-        };
-        Ok(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .goal_continuations(policy),
-        )
-    };
+    let config = || goal_config(&case, directory.path(), project.clone(), provider.clone());
     let harness = LocalHarness::open(config()?).await?;
     if let Some(initial) = &case.initial_goal {
         write_goal(&harness, initial).await?;
@@ -163,6 +153,10 @@ async fn run(case: Case) -> Result<()> {
             "stock writer's actual destination"
         );
     }
+    if case.unreachable {
+        check_output(&case, harness.resume(task_id).await)?;
+        assert_eq!(provider.requests().len(), case.calls);
+    }
     // Reopen/replay never reissues model work or resets the finite allowance.
     drop(followed);
     drop(stream);
@@ -182,13 +176,46 @@ async fn run(case: Case) -> Result<()> {
     Ok(())
 }
 
+fn goal_config(
+    case: &Case,
+    directory: &Path,
+    project: VolumeRef,
+    provider: Arc<dyn ModelProvider>,
+) -> Result<LocalHarnessConfig> {
+    let policy = (case.enabled != Some(false)).then_some(GoalContinuationPolicy {
+        max_continuations: case.cap.unwrap_or(32),
+    });
+    let config = volume_config(directory, project, provider)?.goal_continuations(policy);
+    // Without bash the local host binds the stock project writer without a
+    // scratch mount. Keep that real unreachable route covered after #503.
+    Ok(if case.unreachable {
+        config
+            .without_default_tools()
+            .tool(crate::tool::files::write()?)
+    } else {
+        config
+    })
+}
+
 fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Result<()> {
-    assert_eq!(
-        output?.text,
-        format!("settle-{}", case.writes.len() - 1),
-        "{}",
-        case.name
-    );
+    if case.unreachable {
+        let reason = crate::goal::GoalBlockedReason::TaskViewUnreachable;
+        assert!(
+            matches!(&output, Err(Error::GoalBlocked(actual)) if actual == &reason),
+            "{}: {output:?}",
+            case.name
+        );
+        let error = Error::GoalBlocked(reason);
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
+        assert!(!error.is_native_failure());
+    } else {
+        assert_eq!(
+            output?.text,
+            format!("settle-{}", case.writes.len() - 1),
+            "{}",
+            case.name
+        );
+    }
     Ok(())
 }
 
