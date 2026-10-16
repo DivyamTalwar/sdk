@@ -680,11 +680,11 @@ proptest! {
         policy.layers[0][0].conditions.expires_at = expiry;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&policy)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let mut labels: Vec<String> = serde_json::from_slice(include_bytes!("../fuzz/corpus/filesystem_access/ceiling-set"))?;
+        let mut labels: Vec<String> = serde_json::from_slice(include_bytes!("../../harness-fuzz/corpus/filesystem_access/ceiling-set"))?;
         labels.push(name.clone());
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&labels)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let mut file: serde_json::Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/filesystem_access/file-ref"))?;
+        let mut file: serde_json::Value = serde_json::from_slice(include_bytes!("../../harness-fuzz/corpus/filesystem_access/file-ref"))?;
         file["path"] = format!("notes/{name}").into();
         let file: FileRef = serde_json::from_value(file)?;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&file)?)
