@@ -10,9 +10,10 @@ mod tests;
 pub const SCHEMA: u32 = 2;
 
 /// A portable, canonical namespace component.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct Component(Arc<str>);
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct Component(#[cfg_attr(feature = "wasm", tsify(type = "string"))] Arc<str>);
 
 impl Component {
     /// Validates a task, request, tool, principal or mount identity.
@@ -63,7 +64,9 @@ pub enum Owner {
 }
 
 /// Tool records share the same immutable segment storage as assistant chunks.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ToolFile {
     /// Completed, validated tool invocation.
     Request,
@@ -78,7 +81,9 @@ pub enum ToolFile {
 }
 
 /// Files below one task, with numeric sequence identities rather than path strings.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum TaskFile {
     /// Immutable submitted command, including cancellation and other intents.
     Request(Component),
@@ -174,8 +179,9 @@ impl TaskFile {
 }
 
 /// Canonical logical input source path, fenced to commands/ or workspace/.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InputPath(String);
 
 impl TryFrom<String> for InputPath {
@@ -204,7 +210,8 @@ impl From<InputPath> for String {
 }
 
 /// Logical private-volume file identity; chunk keys retain no full path string.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileKey {
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
@@ -383,7 +390,7 @@ impl FileKey {
         }
     }
 
-    pub(super) fn mutable(&self) -> bool {
+    pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
             Self::Goal
@@ -399,6 +406,8 @@ impl FileKey {
 
 /// Folder selectors have bounded matching cost and allocate no per-chunk paths.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum Query {
     /// Entire private task volume.
     Root,
@@ -695,7 +704,8 @@ impl Query {
 }
 
 /// Assistant channel; tools derive their channel from their logical key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Channel {
     /// Visible assistant Markdown.
     Text,

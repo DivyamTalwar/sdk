@@ -378,6 +378,7 @@ dependencies = [
  "futures",
  "libfuzzer-sys",
  "prost",
+ "serde",
  "serde_json",
  "tempfile",
 ]

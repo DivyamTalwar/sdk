@@ -1,16 +1,25 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: Box<dyn StreamProvider>,
+    provider: Arc<dyn StreamProvider>,
+}
+
+impl WasmStream {
+    /// Shares the same platform provider with other Rust WASM packages.
+    #[must_use]
+    pub fn provider(&self) -> Arc<dyn StreamProvider> {
+        Arc::clone(&self.provider)
+    }
 }
 
 #[wasm_bindgen]
 impl WasmStream {
     #[wasm_bindgen(constructor)]
     #[must_use]
+    /// Creates the canonical in-memory Streams provider.
     pub fn new() -> Self {
         Self {
-            provider: Box::new(MemoryStream::default()),
+            provider: Arc::new(MemoryStream::default()),
         }
     }
 
@@ -27,7 +36,7 @@ impl WasmStream {
             ..Default::default()
         };
         Ok(Self {
-            provider: Box::new(
+            provider: Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
                     .map_err(js_error)?,

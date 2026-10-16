@@ -69,10 +69,13 @@ impl From<StreamError> for Error {
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Generation {
     /// Volume identity, including its provider path.
     pub volume: [u8; 32],
     /// Durable history incarnation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Next append-only segment position.
     pub position: u64,
@@ -169,6 +172,11 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    /// Authenticated provider path bound to this volume's history identity.
+    pub fn path(&self) -> &StreamPath {
+        &self.path
+    }
+
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {
@@ -196,6 +204,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 })
                 .await?;
         }
+        Self::open_existing(provider, path).await
+    }
+
+    /// Opens a published volume without creating or writing any state.
+    pub async fn open_existing(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let mut records = provider
             .read(ReadRequest {
                 path: path.clone(),
@@ -229,6 +242,24 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         };
         volume.refresh(&mut *volume.index.lock().await).await?;
         Ok(volume)
+    }
+
+    /// Current publication fence without copying the file index.
+    pub async fn head(&self) -> Result<Generation> {
+        let mut index = self.index.lock().await;
+        self.refresh(&mut index).await?;
+        Ok(self.generation(&index))
+    }
+
+    /// Current query cut without copying the materialized files.
+    pub async fn cut(&self, query: &Query) -> Result<Cursor> {
+        let mut index = self.index.lock().await;
+        self.refresh(&mut index).await?;
+        self.cursor(
+            query,
+            self.generation(&index),
+            self.provider.watermarks(self.path.clone()).await?,
+        )
     }
 
     fn generation(&self, index: &Index) -> Generation {
