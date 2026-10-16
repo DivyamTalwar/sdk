@@ -10,9 +10,7 @@ use futures::StreamExt as _;
 
 #[tokio::test]
 async fn local_goal_publications_render_status_reason_and_retained_count() -> Result<()> {
-    let cases: Vec<Case> = serde_json::from_str(include_str!("../goals.json"))
-        .map_err(super::super::super::storage)?;
-    futures::future::try_join_all(cases.into_iter().map(render_case)).await?;
+    futures::future::try_join_all(cases()?.into_iter().map(render_case)).await?;
     Ok(())
 }
 
