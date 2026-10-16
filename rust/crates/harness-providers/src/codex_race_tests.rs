@@ -2,7 +2,7 @@ use super::*;
 use std::collections::VecDeque;
 
 #[test]
-fn cli_write_after_comparison_before_persist_is_adopted() -> Result<()> {
+fn cli_write_after_staging_before_final_comparison_is_adopted() -> Result<()> {
     for account_switch in [false, true] {
         let (root, login, _) = fixture(&jwt(0), 200)?;
         let path = root.path().join("auth.json");
@@ -19,7 +19,7 @@ fn cli_write_after_comparison_before_persist_is_adopted() -> Result<()> {
             &original,
             auth("provider-access"),
             || {
-                // Exact former race: the first comparison has already succeeded.
+                // The initial comparison has succeeded, but the final re-read is still ahead.
                 let staged: Vec<_> = std::fs::read_dir(root.path())
                     .expect("fixture directory")
                     .map(|entry| entry.expect("fixture entry").path())
@@ -208,7 +208,8 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
 }
 
 #[tokio::test]
-async fn independent_login_instances_compare_and_swap_against_the_same_cli_file() -> Result<()> {
+async fn independent_login_instances_adopt_cli_credentials_published_during_refresh() -> Result<()>
+{
     let (root, first, _) = fixture(&jwt(0), 200)?;
     let second = CodexLogin::from_path(root.path().join("auth.json"));
     let cli_access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 7200);

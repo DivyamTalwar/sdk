@@ -131,7 +131,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 request.messages.push(ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
-                        call_id: "call_echo".into(),
+                        call_id: dispatch.tool_call_id(0),
                         name: "echo".into(),
                         content: ToolResultContent::Json {
                             value: json!({"ok":true}),

@@ -382,7 +382,7 @@ async fn codex_login_preserves_encrypted_reasoning_before_function_calls_across_
     request.messages.push(ModelMessage {
         role: ModelRole::Tool,
         content: ModelContent::Part(ModelContentPart::ToolResult {
-            call_id: "call_echo".into(),
+            call_id: dispatch.tool_call_id(0),
             name: "echo".into(),
             content: ToolResultContent::Json {
                 value: json!({"ok":true}),

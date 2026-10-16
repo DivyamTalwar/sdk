@@ -80,8 +80,11 @@ fn fixtures() -> [(Adapter, &'static str); 4] {
     ]
 }
 
-fn chunks(input: &str, width: usize) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
-    let bytes = Bytes::copy_from_slice(input.as_bytes());
+fn chunks(
+    input: impl AsRef<[u8]>,
+    width: usize,
+) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
+    let bytes = Bytes::copy_from_slice(input.as_ref());
     let chunks: Vec<_> = (0..bytes.len())
         .step_by(width)
         .map(|start| Ok(bytes.slice(start..(start + width).min(bytes.len()))))

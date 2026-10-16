@@ -195,7 +195,6 @@ pub(crate) async fn count(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
-                source_bytes_read: chunk.len() as u64,
                 bytes_copied: chunk.len() as u64,
                 items_examined: 1,
                 ..Default::default()

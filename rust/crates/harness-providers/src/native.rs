@@ -234,7 +234,6 @@ pub(crate) fn generate<'a>(
                         let (bytes, nodes) = shape(frame.data.as_bytes());
                         let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                         parser.allocation.absorb(&mut admission)?;
-                        work.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::UNCHARGED })?;
                         let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data), &mut parser.allocation)?;
                         let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                         drop(frame);

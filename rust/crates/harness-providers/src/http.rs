@@ -30,6 +30,7 @@ pub struct HttpResponse {
 #[cfg(not(target_arch = "wasm32"))]
 impl HttpResponse {
     /// Admits the concrete body stream before boxing it on the issued ledger.
+    /// Charges received bytes once; downstream codecs charge their own copies/decoding.
     pub fn with_native_body<S>(
         status: u16,
         stream: S,
