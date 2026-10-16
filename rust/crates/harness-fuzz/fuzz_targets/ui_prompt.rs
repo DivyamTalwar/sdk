@@ -86,6 +86,51 @@ fuzz_target!(|data: &[u8]| {
                 .await
                 .unwrap(),
             );
+            // The same file client must reassemble arbitrary byte boundaries
+            // before projecting UTF-8, then match reopening at the final cut.
+            let owner = acyclic_harness::wire::Authority {
+                kind: acyclic_harness::wire::AggregateKind::Task as i32,
+                id: acyclic_harness::TaskId::from_bytes([7; 16]).to_string(),
+            };
+            let mut client =
+                acyclic_harness::client::TaskFileClient::observe(volume.as_ref(), &owner, 16, 8192)
+                    .await
+                    .unwrap();
+            let mut cut = volume.snapshot(&Query::Tasks, 16).await.unwrap().generation;
+            for (index, bytes) in [&data[..data.len() / 2], &data[data.len() / 2..]]
+                .into_iter()
+                .enumerate()
+            {
+                cut = volume
+                    .append(
+                        cut,
+                        &Write {
+                            key: FileKey::Task {
+                                task: acyclic_harness::task_volume::Component::new(&owner.id)
+                                    .unwrap(),
+                                file: acyclic_harness::task_volume::TaskFile::Chunk {
+                                    turn: 0,
+                                    sequence: index as u64,
+                                },
+                            },
+                            channel: Some(acyclic_harness::task_volume::Channel::Text),
+                            bytes: bytes.to_vec().into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                client.next_change().await.unwrap();
+            }
+            let replay =
+                acyclic_harness::client::TaskFileClient::observe(volume.as_ref(), &owner, 16, 8192)
+                    .await
+                    .unwrap();
+            assert_eq!(client.views().transcripts, replay.views().transcripts);
+            assert_eq!(
+                client.views().transcripts[&format!("AGGREGATE_KIND_TASK:{}", owner.id)]
+                    .streaming_text,
+                text
+            );
             let plan = FileKey::Plan(acyclic_harness::task_volume::PlanName::new("old").unwrap());
             let mut documents = acyclic_harness::client::DocumentViews::default();
             documents
