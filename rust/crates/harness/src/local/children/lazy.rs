@@ -86,6 +86,15 @@ impl LocalWorkspace {
             )
             .await;
         let (view, _) = io.sdk(io.finish(bound, &accounting))?;
+        acyclic_fs::WorkspaceGraph::new(self.store.clone())
+            .register_existing_child_at_generation(
+                source.workspace(),
+                view.workspace(),
+                cut.authored_generation,
+                original_generation,
+            )
+            .await
+            .map_err(storage)?;
         Ok((report, view))
     }
 }

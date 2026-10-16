@@ -431,6 +431,19 @@ impl LocalHarness {
         ) {
             return Err(Error::Indeterminate(preparation_operation));
         }
+        let child_id = workspace
+            .filesystem
+            .workspace_id(project.storage_name(&mut None)?)
+            .map_err(storage)?;
+        acyclic_fs::GitCompatRepository::new(source.workspace().id(), workspace.store.clone())
+            .register_branch_workspace(
+                format!("agents/{}", reference.as_str()),
+                child_id,
+                None,
+                false,
+            )
+            .await
+            .map_err(storage)?;
         let task = match host.admit_owned(preparation_request.child, fence).await? {
             Admission::Accepted(task) => task,
             Admission::Rejected { reason } => return Err(Error::Conflict(reason)),

@@ -10,6 +10,7 @@ use acyclic_stream::BoxProviderFuture;
 
 mod bash;
 mod capture;
+mod children;
 mod git;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
@@ -100,8 +101,9 @@ impl ToolExecutor for CheckoutTools {
         if !matches!(invocation.name.as_str(), "bash" | "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || !scope.grants().contains(&self.read_grant)
-            || !scope.grants().contains(&self.write_grant)
+            || (!(scope.grants().contains(&self.read_grant)
+                && scope.grants().contains(&self.write_grant))
+                && self.child_project(context)?.is_none())
             || !scope.grants().contains(if invocation.name == "bash" {
                 "tool:call:bash"
             } else {
@@ -137,6 +139,14 @@ impl ToolExecutor for CheckoutTools {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            if let Some(project) = self.child_project(context)? {
+                if invocation.name != "fs" {
+                    return Err(Error::Unsupported(
+                        "child bash requires an isolated native checkout".into(),
+                    ));
+                }
+                return self.child_fs(&command, context, project).await;
+            }
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let result = serialized(&self.state, async |mut state| {
