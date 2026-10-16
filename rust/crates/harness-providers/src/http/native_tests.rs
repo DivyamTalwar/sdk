@@ -1,5 +1,4 @@
 use super::*;
-use futures::StreamExt as _;
 use proptest::prelude::*;
 
 fn work(bytes: u64) -> NativeMaterializationWork {

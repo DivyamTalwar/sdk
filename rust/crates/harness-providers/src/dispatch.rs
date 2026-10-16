@@ -41,10 +41,10 @@ pub(crate) fn generate(
     })
 }
 
-pub(crate) async fn authenticate(
-    provider: &ResolvedModel,
+pub(crate) async fn authenticate<'a>(
+    provider: &'a ResolvedModel,
     #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
-) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
+) -> Result<(Option<Cow<'a, str>>, Option<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(login) = &provider.codex_login {
         let (key, account) = login
