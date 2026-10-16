@@ -100,16 +100,19 @@ proptest! {
         ],
         work in 0..100_001_usize,
         refuse_dfa in any::<bool>(),
+        folded in any::<bool>(),
     ) {
         let (policy, capability) = input(&pattern)?;
         let caller = caller();
         let context = Context { now: 10, approvals: 0 };
+        let mut resource = resource();
+        if folded { resource.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
         let mut remaining = work;
         let mut reserved = 0;
         let mut stages = 0;
         let mut compiled = None;
         let measured = allocation_counter::measure(|| {
-            compiled = Some(PathTrie::compile_with_work(&policy, &caller, resource(), context, &capability,
+            compiled = Some(PathTrie::compile_with_work(&policy, &caller, resource, context, &capability,
                 &mut remaining, |bytes| {
                     stages += 1;
                     if refuse_dfa && stages == 2 { return Err(InvalidPolicy("unfunded DFA")); }
@@ -123,7 +126,7 @@ proptest! {
         if let Some(Ok(trie)) = compiled {
             for path in ["", "a/b", "secrets/key", "Σ/b", "a/x/y/b"] {
                 prop_assert_eq!(trie.decide(Action::Read, path, 10),
-                    decide(&policy, &caller, Action::Read, Resource { path, ..resource() }, context, &capability));
+                    decide(&policy, &caller, Action::Read, Resource { path, ..resource }, context, &capability));
             }
             let hot = allocation_counter::measure(|| {
                 for _ in 0..32 { std::hint::black_box(trie.decide(Action::Read, "secrets/key", 10)); }

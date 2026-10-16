@@ -322,7 +322,11 @@ impl PathTrie {
         let mut available = (*remaining_work).min(MAXIMUM_WORK);
         let before = available;
         let result = (|| {
-            let (bytes, validation_work) = super::compilation::preparation(policy, capability)?;
+            let (bytes, validation_work) = super::compilation::preparation(
+                policy,
+                capability,
+                super::names::folds_unicode(resource.config),
+            )?;
             spend(&mut available, validation_work)?;
             let bindings = resource
                 .volume

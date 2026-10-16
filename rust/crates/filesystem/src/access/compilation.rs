@@ -29,6 +29,7 @@ fn product(left: usize, right: usize) -> Result<usize, InvalidPolicy> {
 pub(super) fn preparation(
     policy: &super::Policy,
     capability: &super::Capability,
+    folded: bool,
 ) -> Result<(usize, usize), InvalidPolicy> {
     let rules = sum(policy.layers.iter().map(Vec::len))?;
     let grants = sum(capability.layers.iter().map(Vec::len))?;
@@ -47,10 +48,40 @@ pub(super) fn preparation(
         ))?;
     let identifiers = sum(policy.layers.iter().flatten().map(|rule| rule.id.len()))?;
     let records = sum([rules, grants])?;
+    let questions = if folded {
+        sum(policy
+            .layers
+            .iter()
+            .flatten()
+            .map(|rule| {
+                rule.resource
+                    .path
+                    .bytes()
+                    .filter(|byte| *byte == b'?')
+                    .count()
+            })
+            .chain(capability.layers.iter().flatten().map(|grant| {
+                grant
+                    .resource
+                    .path
+                    .bytes()
+                    .filter(|byte| *byte == b'?')
+                    .count()
+            })))?
+    } else {
+        0
+    };
+    let nodes = sum([
+        product(patterns, 2)?,
+        product(records, 4)?,
+        product(questions, super::glob::folded_question_states())?,
+    ])?
+    .min(MAXIMUM_NFA_STATES);
     // Per-byte NFA nodes/edges, folding scratch and component vectors; fixed
     // per-record credit covers B-tree nodes, starts, rule/grant maps and ids.
     let bytes = sum([
-        product(patterns, 128)?,
+        product(nodes, 512)?,
+        product(patterns, 32)?,
         product(records, 4096)?,
         product(identifiers, 2)?,
         product(layers, 256)?,
@@ -59,6 +90,7 @@ pub(super) fn preparation(
     let work = sum([
         product(sum([patterns, identifiers])?, 16)?,
         product(sum([records, layers])?, 128)?,
+        product(nodes, 16)?,
     ])?;
     Ok((bytes, work))
 }
