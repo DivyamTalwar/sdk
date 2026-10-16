@@ -29,7 +29,7 @@ test("installed browser entry executes the ordinary registered runtime", async (
     };
     const scope = owner.issueScope("owner", [
       "operation:declare", "operation:observe", "operation:cancel", "operation:wake", "task:spawn:installed.complete@1",
-      "task:spawn:acyclic.stock_turn@1", "model:generate",
+      "task:spawn:acyclic.stock_turn@1", "model:generate", "mail:read",
       owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
     ], agent);
     expect(scope.agent).toBe(agent);
