@@ -75,3 +75,25 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn checked_in_chunk_corpus_matches_full_render() {
+    for data in [
+        include_bytes!("../fuzz/corpus/chunk_splits/escape-pair").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/escaped-image").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/escaped-stars").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/bangs").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/mixed").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/list-indent").as_slice(),
+    ] {
+        let encoded = data
+            .get(..8)
+            .expect("corpus header")
+            .try_into()
+            .expect("eight bytes");
+        let flags = usize::try_from(u64::from_le_bytes(encoded)).expect("corpus length");
+        let source =
+            std::str::from_utf8(data.get(8 + flags..).expect("corpus body")).expect("UTF-8 corpus");
+        replay(source, &(1..source.len()).collect::<Vec<_>>());
+    }
+}

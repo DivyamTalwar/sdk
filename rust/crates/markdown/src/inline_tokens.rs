@@ -1,0 +1,209 @@
+use std::{collections::VecDeque, ops::Range};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Text,
+    Escape(char),
+    Run { byte: u8, before: char, after: char },
+    Open { image: bool },
+    Close,
+    Entity,
+    AngleOpen,
+    AngleClose,
+    ParenOpen,
+    ParenClose,
+    Quote(char),
+    Break,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Token {
+    pub(super) range: Range<usize>,
+    pub(super) kind: Kind,
+}
+
+#[derive(Default)]
+enum Pending {
+    #[default]
+    None,
+    Escape(usize),
+    Bang(usize),
+    Entity(usize),
+    Run {
+        start: usize,
+        byte: u8,
+        before: char,
+    },
+}
+
+#[derive(Default)]
+pub(super) struct Tokens {
+    pub(super) ready: VecDeque<Token>,
+    offset: usize,
+    previous: Option<char>,
+    pending: Pending,
+}
+
+impl Tokens {
+    pub(super) fn push(&mut self, source: &str) {
+        let base = self.offset;
+        for (relative, character) in source
+            .get(base..)
+            .expect("append-only UTF-8 source")
+            .char_indices()
+        {
+            let position = base + relative;
+            #[cfg(test)]
+            crate::work::scan(character.len_utf8());
+            self.character(position, character);
+            self.offset = position + character.len_utf8();
+            self.previous = Some(character);
+        }
+    }
+
+    // EOF is a preview, never a state transition: a following chunk can still
+    // extend this run or supply the escaped character/entity terminator.
+    pub(super) fn preview(&self) -> Option<Token> {
+        let (start, kind) = match self.pending {
+            Pending::None => return None,
+            Pending::Run {
+                start,
+                byte,
+                before,
+            } => (
+                start,
+                Kind::Run {
+                    byte,
+                    before,
+                    after: ' ',
+                },
+            ),
+            Pending::Escape(start) | Pending::Bang(start) | Pending::Entity(start) => {
+                (start, Kind::Text)
+            }
+        };
+        Some(Token {
+            range: start..self.offset,
+            kind,
+        })
+    }
+
+    pub(super) fn neutral(&self) -> bool {
+        matches!(self.pending, Pending::None)
+    }
+
+    fn character(&mut self, position: usize, character: char) {
+        let end = position + character.len_utf8();
+        match std::mem::take(&mut self.pending) {
+            Pending::Escape(start) => {
+                if character.is_ascii_punctuation() || character == '\n' {
+                    self.emit(start..end, Kind::Escape(character));
+                    return;
+                }
+                self.emit(start..position, Kind::Text);
+            }
+            Pending::Bang(start) => {
+                if character == '[' {
+                    self.emit(start..end, Kind::Open { image: true });
+                    return;
+                }
+                self.emit(start..position, Kind::Text);
+            }
+            Pending::Run {
+                start,
+                byte,
+                before,
+            } => {
+                if character == char::from(byte) {
+                    self.pending = Pending::Run {
+                        start,
+                        byte,
+                        before,
+                    };
+                    return;
+                }
+                self.emit(
+                    start..position,
+                    Kind::Run {
+                        byte,
+                        before,
+                        after: character,
+                    },
+                );
+            }
+            Pending::Entity(start) => {
+                if character == ';' {
+                    self.emit(start..end, Kind::Entity);
+                    return;
+                }
+                if character.is_ascii_alphanumeric() || character == '#' {
+                    self.pending = Pending::Entity(start);
+                    return;
+                }
+                self.emit(start..position, Kind::Text);
+            }
+            Pending::None => {}
+        }
+        self.begin(position, character);
+    }
+
+    fn begin(&mut self, position: usize, character: char) {
+        let kind = match character {
+            '\\' => {
+                self.pending = Pending::Escape(position);
+                return;
+            }
+            '!' => {
+                self.pending = Pending::Bang(position);
+                return;
+            }
+            '&' => {
+                self.pending = Pending::Entity(position);
+                return;
+            }
+            '*' | '_' | '~' | '`' => {
+                self.pending = Pending::Run {
+                    start: position,
+                    byte: character as u8,
+                    before: self.previous.unwrap_or(' '),
+                };
+                return;
+            }
+            '[' => Kind::Open { image: false },
+            ']' => Kind::Close,
+            '<' => Kind::AngleOpen,
+            '>' => Kind::AngleClose,
+            '(' => Kind::ParenOpen,
+            ')' => Kind::ParenClose,
+            '\'' | '"' => Kind::Quote(character),
+            '\n' => Kind::Break,
+            _ => Kind::Text,
+        };
+        self.emit(position..position + character.len_utf8(), kind);
+    }
+
+    fn emit(&mut self, range: Range<usize>, kind: Kind) {
+        if kind == Kind::Text
+            && let Some(last) = self.ready.back_mut()
+            && last.kind == Kind::Text
+            && last.range.end == range.start
+        {
+            last.range.end = range.end;
+            return;
+        }
+        #[cfg(test)]
+        crate::work::copy(
+            std::mem::size_of::<Token>()
+                * (1 + if self.ready.len() == self.ready.capacity() {
+                    self.ready.len()
+                } else {
+                    0
+                }),
+        );
+        self.ready.push_back(Token { range, kind });
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/inline_tokens.rs"]
+mod tests;

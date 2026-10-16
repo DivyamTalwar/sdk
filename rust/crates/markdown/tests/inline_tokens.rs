@@ -1,0 +1,41 @@
+use super::*;
+use proptest::prelude::*;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn tokenization_is_independent_of_chunk_splits(
+        characters in prop::collection::vec(prop_oneof![
+            any::<char>(),
+            prop::sample::select("\\!*_~`&;[]<>\"'()\n#abc123".chars().collect::<Vec<_>>()),
+        ], 0..256),
+    ) {
+        let mut prefix = String::new();
+        let mut streamed = Tokens::default();
+        let before = crate::work::current();
+        for character in characters {
+            prefix.push(character);
+            streamed.push(&prefix);
+            if let Some(token) = streamed.preview() {
+                prop_assert!(!streamed.neutral());
+                prop_assert_eq!(token.range.end, prefix.len());
+            } else {
+                prop_assert!(streamed.neutral());
+            }
+        }
+        let used = crate::work::current() - before;
+        let token_bytes = streamed.ready.len() * std::mem::size_of::<Token>();
+        prop_assert!(used <= prefix.len() + 4 * token_bytes);
+        let mut full = Tokens::default();
+        full.push(&prefix);
+        prop_assert_eq!(&streamed.ready, &full.ready);
+        prop_assert_eq!(streamed.preview(), full.preview());
+        let mut next = 0;
+        for token in full.ready.iter().cloned().chain(full.preview()) {
+            prop_assert_eq!(token.range.start, next);
+            prop_assert!(prefix.is_char_boundary(token.range.end));
+            next = token.range.end;
+        }
+        prop_assert_eq!(next, prefix.len());
+    }
+}

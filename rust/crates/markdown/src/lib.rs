@@ -3,9 +3,9 @@
 
 mod code;
 mod context;
-mod delimiters;
 mod events;
 mod inline;
+mod inline_scan;
 mod reference_render;
 mod references;
 mod render;

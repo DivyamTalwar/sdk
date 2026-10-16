@@ -14,24 +14,18 @@ pub(super) struct Checkpoint {
     mark: Mark,
     cost: usize,
     pub(super) valid: Range<usize>,
-    openers: delimiters::State,
 }
 
 #[derive(Default)]
 pub(super) struct Inline {
     pub(super) checkpoint: Checkpoint,
-    provisional: Option<Checkpoint>,
     start: usize,
 }
 
 impl Inline {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.checkpoint.openers.retained()
-            + self
-                .provisional
-                .as_ref()
-                .map_or(0, |checkpoint| checkpoint.openers.retained())
+        0
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         let mark = self.checkpoint.mark;
@@ -49,7 +43,7 @@ impl Inline {
 impl Markdown {
     pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
         let inline = self.inline.as_ref()?;
-        let checkpoint = inline.provisional.as_ref().unwrap_or(&inline.checkpoint);
+        let checkpoint = &inline.checkpoint;
         let cost = checkpoint.cost;
         let base = checkpoint.offset;
         let mark = checkpoint.mark;
@@ -67,7 +61,7 @@ impl Markdown {
         } else {
             left_context(self.source.get(..base).unwrap_or_default())
         };
-        let prefix = checkpoint.openers.prefix(&context);
+        let prefix = context;
         let sentinel = prefix.len();
         let source = format!("{prefix}{tail}");
         #[cfg(test)]
@@ -91,7 +85,7 @@ impl Markdown {
         {
             return None;
         }
-        let (boundary, provisional, openers) = boundary(&source, &events, sentinel);
+        let boundary = boundary(&source, &events, sentinel);
         let (cost, valid) = references::extend_expansion(
             cost,
             &checkpoint.valid,
@@ -110,22 +104,19 @@ impl Markdown {
         }
         let mut renderer = render::Renderer::inline(line);
         let mut committed = mark;
-        let mut previous_mark = mark;
         let mut depth = 0usize;
         for (event, range) in &events {
             match event {
                 Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
                 Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
                     let start = sentinel.saturating_sub(range.start).min(text.len());
-                    if let Some(cut) =
-                        provisional.filter(|cut| *cut >= range.start + start && *cut < range.end)
-                    {
-                        let cut = cut - range.start;
+                    if boundary >= range.start + start && boundary < range.end {
+                        let cut = boundary - range.start;
                         renderer.event_in(
                             &Event::Text(text.get(start..cut).unwrap_or_default().into()),
                             Some(&self.references),
                         );
-                        previous_mark = renderer.inline_mark(mark);
+                        committed = renderer.inline_mark(mark);
                         renderer.event_in(
                             &Event::Text(text.get(cut..).unwrap_or_default().into()),
                             Some(&self.references),
@@ -151,9 +142,6 @@ impl Markdown {
             if depth == 0 && range.end == boundary {
                 committed = renderer.inline_mark(mark);
             }
-            if depth == 0 && Some(range.end) == provisional {
-                previous_mark = renderer.inline_mark(mark);
-            }
         }
         #[cfg(test)]
         {
@@ -172,22 +160,7 @@ impl Markdown {
                 mark: committed,
                 cost,
                 valid,
-                openers: delimiters::State::compile(&openers, boundary),
             },
-            provisional: provisional.map(|end| {
-                let (cost, valid) = references::extend_expansion(
-                    checkpoint.cost,
-                    &checkpoint.valid,
-                    calls.iter().filter(|(position, _)| *position <= end),
-                );
-                Checkpoint {
-                    offset: base + end.saturating_sub(sentinel),
-                    mark: previous_mark,
-                    cost,
-                    valid,
-                    openers: delimiters::State::compile(&openers, end),
-                }
-            }),
             start: inline.start,
         });
         let fallback = if mark.visible == 0 {
@@ -231,9 +204,7 @@ impl Markdown {
                 mark: Mark::default(),
                 cost: 0,
                 valid: 0..usize::MAX,
-                openers: delimiters::State::default(),
             },
-            provisional: None,
             start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
@@ -330,161 +301,39 @@ fn possible_definition(source: &str) -> bool {
             .is_none_or(|(_, rest)| rest.starts_with(':') || rest.chars().all(char::is_whitespace))
 }
 
-fn boundary(
-    source: &str,
-    events: &[(Event<'_>, Range<usize>)],
-    sentinel: usize,
-) -> (usize, Option<usize>, Vec<(usize, delimiters::Opener)>) {
+fn boundary(source: &str, events: &[(Event<'_>, Range<usize>)], sentinel: usize) -> usize {
     let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
-    let mut limit = if block_pending(row) {
-        prefix.len()
-    } else {
-        source.len()
-    };
+    let mut limit = super::inline_scan::frontier(source, events, sentinel);
+    if block_pending(row) {
+        limit = limit.min(prefix.len());
+    }
     if table_candidate(source) {
         limit = limit.min(source.rfind('\n').unwrap_or(source.len()));
     }
-    let mut brackets = Vec::new();
-    let mut labels = Vec::new();
-    let mut opaque_until = 0;
-    let mut closed_until = 0;
-    let (mut cursor, mut escaped) = (0, false);
-    let mut quoted_end = 0;
-    let mut style_until = 0;
-    let mut openers = Vec::new();
-    #[cfg(test)]
-    work::scan(source.len() * 2);
-    for (event, range) in events {
-        if matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph)) {
-            closed_until = closed_until.max(range.end);
-        }
-        match event {
-            Event::Text(text) => {
-                let opaque = range.end <= opaque_until;
-                if source.get(range.clone()).unwrap_or_default() != text.as_ref() {
-                    continue;
-                }
-                for byte in source
-                    .as_bytes()
-                    .get(cursor..range.start)
-                    .unwrap_or_default()
-                {
-                    escaped = *byte == b'\\' && !escaped;
-                }
-                for (index, byte) in source
-                    .get(range.clone())
-                    .unwrap_or_default()
-                    .bytes()
-                    .enumerate()
-                {
-                    let offset = range.start + index;
-                    let quoted = escaped;
-                    escaped = byte == b'\\' && !escaped;
-                    cursor = offset + 1;
-                    if quoted {
-                        quoted_end = offset + 1;
-                        continue;
-                    }
-                    if matches!(byte, b'`' | b'<') {
-                        // These higher-precedence openers can consume a closing
-                        // delimiter or link bracket when a later chunk closes them.
-                        limit = limit.min(offset);
-                    }
-                    if opaque {
-                        continue;
-                    }
-                    match byte {
-                        b'[' => brackets.push(offset),
-                        b']' => {
-                            if let Some(start) = brackets.pop()
-                                && brackets.is_empty()
-                            {
-                                labels.push(start);
-                            }
-                        }
-                        b'*' | b'_' | b'~' if offset >= closed_until && offset >= style_until => {
-                            if let Some((end, opener)) =
-                                delimiters::scan(source, offset, quoted_end)
-                            {
-                                style_until = end;
-                                if let Some(opener) = opener {
-                                    openers.push((end.min(range.end), opener));
-                                }
-                            } else {
-                                limit = limit.min(offset);
-                            }
-                        }
-                        b'`' | b'&' | b'<' | b'\\' => {
-                            if offset >= closed_until {
-                                limit = limit.min(offset);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. }) => {
-                if matches!(event, Event::Start(Tag::Link { .. })) {
-                    // A successful inner link deactivates enclosing link brackets.
-                    // Image brackets remain active: image labels can contain links.
-                    brackets.retain(|start: &usize| {
-                        source.as_bytes().get(start.saturating_sub(1)) == Some(&b'!')
-                    });
-                }
-                if matches!(
-                    link_type,
-                    pulldown_cmark::LinkType::Inline
-                        | pulldown_cmark::LinkType::Autolink
-                        | pulldown_cmark::LinkType::Email
-                ) {
-                    opaque_until = range.end;
-                } else {
-                    labels.push(range.start);
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(start) = brackets.first() {
-        limit = limit.min(*start);
-    }
-    if let Some(start) = labels.get(labels.len().saturating_sub(2)) {
-        limit = limit.min(*start);
-    }
+    limit = limit.min(source.trim_end_matches([' ', '\t']).len());
     let mut depth = 0usize;
     let mut boundary = sentinel;
-    let mut provisional = None;
     for (event, range) in events {
         match event {
-            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) | Event::SoftBreak => {
-                continue;
-            }
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if depth == 0
-            && range.end > sentinel
-            && range.end <= limit
-            && delimiters::safe_boundary(source, range.end)
-        {
-            // Every complete top-level event closes a checkpoint. At the input
-            // edge retain its predecessor too: another byte can change delimiter
-            // flanking or extend the closing run, regardless of the construct.
-            provisional = (range.end == limit).then_some(boundary);
-            if range.end == limit
-                && let Event::Text(text) = event
+        if depth == 0 {
+            if range.end <= limit && range.end > sentinel {
+                boundary = range.end;
+            } else if let Event::Text(text) = event
                 && source.get(range.clone()) == Some(text.as_ref())
+                && range.start <= limit
+                && range.end > limit
+                && limit > sentinel
             {
-                let cut = delimiters::text_frontier(text, range.start).max(sentinel);
-                if cut >= range.start && delimiters::safe_boundary(source, cut) {
-                    provisional = Some(cut);
-                }
+                boundary = limit;
             }
-            boundary = range.end;
         }
     }
-    (boundary, provisional, openers)
+    boundary
 }
 
 impl render::Renderer {
