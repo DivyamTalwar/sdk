@@ -17,6 +17,18 @@ pub(super) fn write(
     length: usize,
     text: &mut [u8; MAX_ENCODED_BYTES],
 ) {
+    write_buffer(workspace, lease, expires_at_millis, length, text);
+}
+
+// The fixed-capacity production entry above retains its type-level bound. This
+// same formatter is instantiated at 116 bytes by the proof's negative control.
+pub(super) fn write_buffer<const N: usize>(
+    workspace: [u8; 16],
+    lease: [u8; 16],
+    expires_at_millis: u64,
+    length: usize,
+    text: &mut [u8; N],
+) {
     text[..PREFIX.len()].copy_from_slice(PREFIX);
     let mut cursor = PREFIX.len();
     hex::encode_to_slice(workspace, &mut text[cursor..cursor + workspace.len() * 2])

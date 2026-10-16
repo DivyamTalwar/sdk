@@ -1,5 +1,8 @@
 use super::*;
-use crate::operation_window::lease_path::{MAX_ENCODED_BYTES, encode};
+use crate::operation_window::lease_path::MAX_ENCODED_BYTES;
+
+#[path = "native_lease_path_legacy.rs"]
+mod legacy;
 use crate::{OperationLeaseId, WorkspaceId};
 
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
@@ -11,14 +14,10 @@ fn legacy_path(
     work: &mut AuthorityWork<'_>,
 ) -> Result<StreamPath, AuthorityStoreError> {
     let mut text = [0; acyclic_stream::MAX_PATH_BYTES];
-    let length = encode(
-        workspace,
-        lease,
-        expiry,
-        text.first_chunk_mut::<MAX_ENCODED_BYTES>().unwrap(),
-        Some(work),
-    )?;
-    work.own_path(std::str::from_utf8(&text[..length]).unwrap())
+    let length = legacy::encode(workspace, lease, expiry, &mut text, Some(work))?;
+    let text = std::str::from_utf8(text.get(..length).ok_or(crate::WorkError::Overflow)?)
+        .map_err(|_| authority_corrupt("lease path is not UTF-8", work))?;
+    work.own_path(text)
 }
 
 #[test]
@@ -37,6 +36,7 @@ fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
         let before = crate::NativeMaterializationWork::new(BUDGET, &cancellation).unwrap();
         let after = crate::NativeMaterializationWork::new(BUDGET, &cancellation).unwrap();
         let baseline = after.live_allocation_bytes();
+        let old_baseline = before.live_allocation_bytes();
         let old = legacy_path(
             workspace,
             lease,
@@ -56,10 +56,35 @@ fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
         assert_eq!(actual, old);
         assert_eq!(after.receipt(), before.receipt());
         assert!(after.live_allocation_bytes() > baseline);
+        assert_eq!(
+            after.live_allocation_bytes() - baseline,
+            before.live_allocation_bytes() - old_baseline
+        );
+        drop(old);
+        assert_eq!(before.live_allocation_bytes(), old_baseline);
         drop(actual);
         assert_eq!(after.live_allocation_bytes(), baseline);
         after.receipt().verify(BUDGET).unwrap();
     }
+}
+
+fn path_budget(length: u64, limit: u8) -> WorkBudget {
+    let prefix = (b"fs/operation-windows-v1/".len() + b"/leases/".len()) as u64;
+    let mut budget = BUDGET;
+    match limit {
+        1 => budget.bytes_encoded = length - 1,
+        2 => budget.bytes_copied = prefix - 1,
+        3 => budget.allocation_operations = 0,
+        4 => budget.peak_allocation_bytes = 0,
+        5 => budget.bytes_copied = prefix + length - 1,
+        6 => {
+            budget.bytes_encoded = length;
+            budget.bytes_copied = prefix + length;
+            budget.peak_allocation_bytes = length;
+        }
+        _ => {}
+    }
+    budget
 }
 
 proptest::proptest! {
@@ -78,20 +103,7 @@ proptest::proptest! {
         let expected = format!("fs/operation-windows-v1/{}/leases/{}/{expiry}", hex::encode(workspace.into_bytes()), hex::encode(lease.into_bytes()));
         let length = expected.len() as u64;
         let prefix = b"fs/operation-windows-v1/".len() as u64 + b"/leases/".len() as u64;
-        let mut budget = BUDGET;
-        match limit {
-            1 => budget.bytes_encoded = length - 1,
-            2 => budget.bytes_copied = prefix - 1,
-            3 => budget.allocation_operations = 0,
-            4 => budget.peak_allocation_bytes = 0,
-            5 => budget.bytes_copied = prefix + length - 1,
-            6 => {
-                budget.bytes_encoded = length;
-                budget.bytes_copied = prefix + length;
-                budget.peak_allocation_bytes = length;
-            }
-            _ => {}
-        }
+        let budget = path_budget(length, limit);
         let cancellation = CancellationToken::new();
         if cancelled { cancellation.cancel(); }
         let mut old = AuthorityWork::new(budget, &cancellation);
@@ -105,7 +117,10 @@ proptest::proptest! {
                 let unmetered = crate::operation_window::stream_lease_path(workspace, lease, expiry).unwrap();
                 proptest::prop_assert_eq!(actual, unmetered);
             }
-            (Err(actual), Err(legacy)) => proptest::prop_assert_eq!(actual.to_string(), legacy.to_string()),
+            (Err(actual), Err(legacy)) => {
+                proptest::prop_assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&legacy));
+                proptest::prop_assert_eq!(actual.to_string(), legacy.to_string());
+            },
             (actual, legacy) => proptest::prop_assert!(false, "actual={actual:?}, legacy={legacy:?}"),
         }
         proptest::prop_assert_eq!(work.spent(), old.spent());
@@ -122,5 +137,51 @@ proptest::proptest! {
             }
         };
         proptest::prop_assert_eq!(work.spent(), expected_work);
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn native_lease_oracle_preserves_errors_receipts_and_live_custody(
+        workspace in proptest::prelude::any::<[u8; 16]>(),
+        lease in proptest::prelude::any::<[u8; 16]>(),
+        expiry in proptest::prelude::any::<u64>(),
+        limit in 0u8..7,
+        cancelled in proptest::prelude::any::<bool>(),
+    ) {
+        crate::initialize_test_native_io();
+        let workspace = WorkspaceId::from_bytes(workspace);
+        let lease = OperationLeaseId::from_bytes(lease);
+        let expected = format!("fs/operation-windows-v1/{}/leases/{}/{expiry}",
+            hex::encode(workspace.into_bytes()), hex::encode(lease.into_bytes()));
+        let mut budget = path_budget(expected.len() as u64, limit);
+        // Fund the two independent original ledgers before applying the same
+        // path-operation limits and cancellation to each implementation.
+        budget.allocation_operations += 1;
+        budget.peak_allocation_bytes += crate::NativeMaterializationWork::accounting_state_bytes();
+        let cancellation = CancellationToken::new();
+        let before = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let after = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let old_baseline = before.live_allocation_bytes();
+        let baseline = after.live_allocation_bytes();
+        if cancelled { cancellation.cancel(); }
+        let old = legacy_path(workspace, lease, expiry, &mut AuthorityWork::native(&before, &cancellation));
+        let actual = AuthorityWork::native(&after, &cancellation).lease_path(workspace, lease, expiry);
+        match (&actual, &old) {
+            (Ok(actual), Ok(old)) => {
+                proptest::prop_assert_eq!(actual.as_str(), old.as_str());
+                proptest::prop_assert_eq!(actual.as_str(), expected.as_str());
+            }
+            (Err(actual), Err(old)) => {
+                proptest::prop_assert_eq!(std::mem::discriminant(actual), std::mem::discriminant(old));
+                proptest::prop_assert_eq!(actual.to_string(), old.to_string());
+            }
+            _ => proptest::prop_assert!(false, "actual={actual:?}, old={old:?}"),
+        }
+        proptest::prop_assert_eq!(after.receipt(), before.receipt());
+        proptest::prop_assert_eq!(after.live_allocation_bytes() - baseline, before.live_allocation_bytes() - old_baseline);
+        drop((actual, old));
+        proptest::prop_assert_eq!(after.live_allocation_bytes(), baseline);
+        proptest::prop_assert_eq!(before.live_allocation_bytes(), old_baseline);
     }
 }

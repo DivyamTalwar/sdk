@@ -11,3 +11,6 @@ hex = "=0.4.3"
 
 [lib]
 path = "lib.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
