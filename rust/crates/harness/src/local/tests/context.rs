@@ -290,6 +290,7 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
             &deleted.discovery.instructions[0],
             reopened.limits.file_bytes,
             None,
+            None,
         )?
         .await?;
     assert_eq!(bytes.as_ref(), b"same instance latest agents");

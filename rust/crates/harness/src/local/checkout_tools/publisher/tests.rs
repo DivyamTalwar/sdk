@@ -425,7 +425,7 @@ proptest::proptest! {
             let fresh = serialized(&publisher.tools.state, async |mut state| {
                 let State { active, watcher, .. } = &mut *state;
                 let view = active.as_ref().unwrap_or_else(|| publisher.tools.workspace.view());
-                publisher.tools.capture(view, watcher, OperationId::new(), 0, PublicationPermit::Unrestricted).await?;
+                publisher.tools.capture((&publisher.tools.workspace, view), watcher, OperationId::new(), 0, PublicationPermit::Unrestricted, None).await?;
                 let host = harness.files.for_workspace(&harness.project, view.workspace().clone())?;
                 let grant = crate::conversation::ContentGrant::verify_directory_read(&harness.verifier, &harness.signed,
                     &harness.project, "", &mut None)?;
