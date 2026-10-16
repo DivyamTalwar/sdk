@@ -9,6 +9,7 @@ mod codex;
 mod refresh;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
+mod call_ids;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;
 mod counting;

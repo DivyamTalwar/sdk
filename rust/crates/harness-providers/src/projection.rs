@@ -105,6 +105,7 @@ pub(crate) fn body_named<'a>(
     target: &acyclic_harness::model::ReasoningOrigin,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
+    let call_ids = crate::call_ids::CallIds::new(request);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini_signature = None;
@@ -119,9 +120,14 @@ pub(crate) fn body_named<'a>(
         {
             system.push(text_content(&message.content)?);
         } else {
-            for mut projected in
-                project_message(adapter, message, names, target, &mut gemini_signature)?
-            {
+            for mut projected in project_message(
+                adapter,
+                message,
+                names,
+                &call_ids,
+                target,
+                &mut gemini_signature,
+            )? {
                 match (messages.last_mut(), &mut projected) {
                     (
                         Some(Message::Item(Item::Json(previous))),
@@ -316,6 +322,7 @@ fn project_message<'a>(
     adapter: Adapter,
     message: &'a ModelMessage,
     names: &crate::tool_names::Names,
+    call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness::model::ReasoningOrigin,
     gemini_signature: &mut Option<Value>,
 ) -> Result<Vec<Message<'a>>> {
@@ -357,6 +364,7 @@ fn project_message<'a>(
                 metadata: _,
             }) => {
                 let name = names.wire(name)?;
+                let call_id = call_ids.wire(call_id)?;
                 let mut call = match adapter {
                     Adapter::Anthropic => {
                         json!({"type":"tool_use","id":call_id,"name":name,"input":arguments})
@@ -433,6 +441,7 @@ fn project_message<'a>(
                 content,
             } => {
                 let name = names.wire(name)?;
+                let call_id = call_ids.wire(call_id)?;
                 let text = result_text(content)?;
                 let result = match adapter {
                     Adapter::Anthropic => {

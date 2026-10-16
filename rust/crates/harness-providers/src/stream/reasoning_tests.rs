@@ -110,8 +110,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn interleavings_round_trip_with_exact_native_bytes(
-        order in prop::collection::vec(any::<bool>(), 1..9), text in "[ a-zλ🦀]{0,20}",
+        order in prop::collection::vec(any::<bool>(), 1..9), chars in prop::collection::vec(any::<char>(), 0..20),
     ) {
+        let text = format!("first\n\"{}\\last", chars.into_iter().collect::<String>());
         for adapter in [Adapter::Responses, Adapter::Anthropic] {
             let (events, raw, provider) = scenario(adapter, &order, &text).unwrap();
             let observed: Vec<bool> = events.iter().filter_map(|event| match event {
@@ -158,4 +159,55 @@ fn first_call_attachment_negative_control_loses_order_and_call_free_reasoning() 
             assert_ne!(Vec::<bool>::new(), order);
         }
     }
+}
+
+#[test]
+fn signed_multiline_fixture_keeps_the_original_native_block_after_durable_replay() {
+    let fixture = include_str!("../fixtures/anthropic-multiline-thinking.sse");
+    let (provider, _) = provider(Adapter::Anthropic, 200);
+    let mut state = State::new(65_536);
+    state
+        .set_origin(Some(
+            provider.reasoning_origin(provider.key.as_deref(), None),
+        ))
+        .unwrap();
+    for frame in fixture.split("\n\n").filter(|frame| !frame.is_empty()) {
+        parse(
+            &mut state,
+            Adapter::Anthropic,
+            frame.strip_prefix("data: ").unwrap(),
+            parser_dispatch(),
+        )
+        .unwrap();
+    }
+    let events = finish(state, Adapter::Anthropic).unwrap();
+    let block = events
+        .iter()
+        .find_map(|event| match event {
+            ModelEvent::ReasoningBlock { block } => Some(block),
+            _ => None,
+        })
+        .expect("signed reasoning block");
+    let native = block.continuity.clone();
+    let seed =
+        include_bytes!("../../fuzz/corpus/provider_stream/anthropic-multiline-reasoning.json");
+    let seeded: ReasoningBlock = serde_json::from_slice(&seed[1..]).unwrap();
+    assert_eq!(seeded.continuity, native);
+    assert!(
+        crate::projection::native_reasoning::validated(Adapter::Anthropic, &seeded.continuity)
+            .is_some()
+    );
+    crate::fuzzing::assert_stream_invariants(seed);
+    assert!(String::from_utf8_lossy(&native).contains(r#"first\n\"quoted\"\\path"#));
+    let replay = serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
+    let body = projection(&provider, replay).unwrap();
+    assert!(body.windows(native.len()).any(|bytes| bytes == native));
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let thinking = &body["messages"][1]["content"][0];
+    assert_eq!(thinking["type"], "thinking");
+    assert_eq!(thinking["thinking"], "first\n\"quoted\"\\path");
+    assert_eq!(thinking["signature"], "signed\n\"opaque\"\\payload==");
+    crate::fuzzing::assert_stream_invariants(include_bytes!(
+        "../../fuzz/corpus/provider_stream/anthropic-multiline-thinking.sse"
+    ));
 }

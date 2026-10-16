@@ -2,6 +2,8 @@ use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "native_stock_probe.rs"]
+mod probe;
 #[path = "native_stock_tests.rs"]
 mod stock;
 
