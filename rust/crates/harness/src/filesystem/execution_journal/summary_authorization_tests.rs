@@ -57,7 +57,7 @@ async fn summary_authentication_binds_the_task_execution_even_in_a_shared_volume
     let turn = OperationId::new();
     let first_owner = fixture.running(80).await?;
     let first = super::super::task_runtime::execution_operation(first_owner.task_id(), turn, None)?;
-    let mut first = fixture
+    let first = fixture
         .execution(first_owner, first)?
         .with_turn(first, turn);
     let second_owner = fixture.running(81).await?;
@@ -109,8 +109,10 @@ async fn summary_authentication_binds_the_task_execution_even_in_a_shared_volume
     assert!(!forged.authenticate_summary(&file, None)?.await?);
     // Arbitrary execution or turn substitutions must be rejected by the real
     // journal before reaching any asynchronous storage boundary.
+    let first = std::cell::RefCell::new(first);
     proptest::test_runner::TestRunner::default()
         .run(&(any::<[u8; 16]>(), any::<[u8; 16]>()), |(bound, nonce)| {
+            let mut first = first.borrow_mut();
             for (bound, turn) in [
                 (OperationId::from_bytes(bound), turn),
                 (operation, OperationId::from_bytes(nonce)),
