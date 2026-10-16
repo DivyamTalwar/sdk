@@ -43,6 +43,6 @@ impl<H: ?Sized> Registry<H> {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(all(test, acyclic_harness_loom))]
 #[path = "registry/models.rs"]
 mod models;

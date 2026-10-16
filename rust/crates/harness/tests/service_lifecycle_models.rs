@@ -1,6 +1,6 @@
-#![cfg(loom)]
+#![cfg(acyclic_harness_loom)]
 //! Compile the actual lifecycle with its instrumented mutex, keeping dependency
-//! implementations out of the model. Run with cargo rustc ... -- --cfg loom.
+//! implementations out of the model. Run with cargo rustc ... -- --cfg acyclic_harness_loom.
 
 use acyclic_harness::{Error, Result};
 
