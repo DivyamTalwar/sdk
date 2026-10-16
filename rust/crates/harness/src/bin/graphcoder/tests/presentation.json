@@ -27,5 +27,51 @@
     "absent": [
       "**Visible answer**"
     ]
+  },
+  {
+    "row": "Header busy indicator",
+    "reasoning": false,
+    "status": "active",
+    "expected": [
+      "● GraphCoder"
+    ],
+    "absent": [
+      "STOPPED"
+    ]
+  },
+  {
+    "row": "Header cancelled indicator",
+    "reasoning": false,
+    "status": "cancelled",
+    "expected": [
+      "○ GraphCoder ■ STOPPED"
+    ],
+    "absent": [
+      "● GraphCoder"
+    ]
+  },
+  {
+    "row": "Per-owner feedback line",
+    "reasoning": false,
+    "status": "waiting",
+    "feedback": "Waiting for a response",
+    "expected": [
+      "Waiting for a response"
+    ],
+    "absent": [
+      "STOPPED"
+    ]
+  },
+  {
+    "row": "Hostile-text sanitizing in feedback",
+    "reasoning": false,
+    "status": "waiting",
+    "feedback": "\u001b[31mnotice",
+    "expected": [
+      "\\u{1b}[31mnotice"
+    ],
+    "absent": [
+      "\u001b"
+    ]
   }
 ]

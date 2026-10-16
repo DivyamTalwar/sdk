@@ -62,6 +62,22 @@ async fn followed_presentation_rows_are_declarative_and_live() {
     let mut renderer = ClientRenderer::default();
     renderer.update(&views, &owner);
     for row in rows {
+        views.tasks.clear();
+        if let Some(status) = row.get("status") {
+            views.tasks.insert(
+                format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id),
+                acyclic_harness::client::TaskView {
+                    status: serde_json::from_value(status.clone()).unwrap(),
+                    lifecycle_operation_id: None,
+                    reason: row
+                        .get("feedback")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    parent: None,
+                },
+            );
+        }
+        renderer.update(&views, &owner);
         files
             .write_state(
                 CommandFileRoot::Config,

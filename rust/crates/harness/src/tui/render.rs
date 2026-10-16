@@ -172,6 +172,13 @@ impl ClientRenderer {
         self.header = Line::from(vec![
             Span::raw(if self.busy { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(
+                if task.is_some_and(|task| task.status == crate::core::LifecycleState::Cancelled) {
+                    " ■ STOPPED"
+                } else {
+                    ""
+                },
+            ),
         ]);
         self.status = Line::raw(
             views
@@ -181,7 +188,7 @@ impl ClientRenderer {
         );
         self.notices = task
             .and_then(|task| task.reason.as_deref())
-            .map(|text| vec![Line::raw(text.to_owned())])
+            .map(|text| vec![Line::raw(text.escape_debug().to_string())])
             .unwrap_or_default();
         self.compose_notices();
     }
