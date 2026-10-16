@@ -416,7 +416,9 @@ impl StreamProvider for BrowserStream {
                     .next(async || {
                         provider
                             .with_provider(async |memory| {
-                                memory.next_follow_record(&path, &mut cursor).await
+                                memory
+                                    .next_checked_record(&path, &mut cursor, &mut None)
+                                    .await
                             })
                             .await
                     })

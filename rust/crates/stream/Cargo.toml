@@ -92,5 +92,9 @@ wasm-bindgen-test = "=0.3.67"
 getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
 web-sys = { workspace = true, features = ["Performance"] }
 
+[target.'cfg(acyclic_loom)'.dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
+tempfile = "3.27.0"
+
 [lints]
 workspace = true
