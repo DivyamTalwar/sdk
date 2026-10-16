@@ -51,7 +51,11 @@ fn transport(fixture: &JsValue) -> std::result::Result<BrowserTransport, JsValue
 fn request() -> HttpRequest {
     HttpRequest {
         url: "https://example.test/v1/responses".into(),
-        headers: BTreeMap::from([("authorization".into(), "Bearer fixture".into())]),
+        headers: BTreeMap::from([
+            ("authorization".into(), "Bearer fixture".into()),
+            ("x-api-key".into(), "anthropic-fixture".into()),
+            ("x-goog-api-key".into(), "gemini-fixture".into()),
+        ]),
         body: Bytes::from_static(b"{}"),
     }
 }
@@ -91,6 +95,17 @@ async fn fetch_streams_bytes_and_preserves_request_security_options()
             .as_deref(),
         Some("Bearer fixture")
     );
+    for (header, expected) in [
+        ("x-api-key", "anthropic-fixture"),
+        ("x-goog-api-key", "gemini-fixture"),
+    ] {
+        assert_eq!(
+            field(&field(&submitted, "headers")?, header)?
+                .as_string()
+                .as_deref(),
+            Some(expected)
+        );
+    }
     assert_eq!(Uint8Array::new(&field(&submitted, "body")?).to_vec(), b"{}");
     Ok(())
 }
