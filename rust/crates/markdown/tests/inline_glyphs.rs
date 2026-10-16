@@ -1,23 +1,43 @@
 use super::*;
 use crate::inline_scan::Scanner;
+use crate::{References, Style};
 use proptest::prelude::*;
 
-fn view(scanner: &mut Scanner, source: &str) -> crate::Line {
+fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(source, crate::options())
         .into_offset_iter()
         .collect();
     scanner.frontier(source, 0, source, &events, 0);
-    let end = crate::inline::glyph_events(source, &events).expect("retained glyph variants");
-    crate::Line {
-        spans: scanner.glyphs(source, 0, end).expect("valid inline forest"),
+    let mut lines = Vec::new();
+    scanner
+        .render_events(
+            crate::inline_scan::Slice {
+                original: source,
+                parsed: source,
+                start: 0,
+                base: 0,
+                sentinel: 0,
+                boundary: 0,
+            },
+            &events,
+            &References::default(),
+            &mut lines,
+            0,
+        )
+        .expect("retained inline events");
+    while lines.last().is_some_and(|line| line.spans.is_empty()) {
+        lines.pop();
     }
+    lines
 }
 
-fn full(source: &str) -> crate::Line {
+fn full(source: &str) -> Vec<crate::Line> {
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(source, crate::options()).collect();
     let mut lines = crate::render::render_styled(&events, Style::default());
-    assert_eq!(lines.len(), 1);
-    lines.pop().unwrap()
+    while lines.last().is_some_and(|line| line.spans.is_empty()) {
+        lines.pop();
+    }
+    lines
 }
 
 proptest! {
@@ -27,6 +47,10 @@ proptest! {
         parts in prop::collection::vec(prop::sample::select(vec![
             "*", "**", "***", "_", "__", "~", "~~", "`", "``", "```",
             "\\*", "\\`", "\\\\", "\\", "!", "x", " ", "¡", "‐", "🦀",
+            "[x](u)", "![x](u)", "[a *b*](<u> \"t\")", "![*x* ![y](v)](u)",
+            "x![](u)y", "![a ![](u)b](u)",
+            "<https://x>", "<a@b.example>", "&amp;", "&#10;", "&#13;", "&#0;",
+            "<b>", "</b>", "<!--\n x\n-->", "\0",
         ]), 0..48),
     ) {
         let mut source = String::from("x ");
@@ -77,6 +101,70 @@ fn rendering_counter_detects_replaying_open_blocks() {
 }
 
 #[test]
+fn rendering_feed_covers_links_entities_html_and_soft_breaks() {
+    for count in [64, 128, 256, 1024] {
+        let mut markdown = crate::Markdown::default();
+        markdown.push("x ");
+        let before = crate::work::rendered_bytes();
+        let mut bytes = 0;
+        for part in [
+            "`code`x",
+            "**bold**x",
+            "~~gone~~x",
+            "[x](u)x",
+            "![x](u)x",
+            "&amp;x",
+            "&#10;x",
+            "<b>x",
+            "</b>x",
+            "<https://x>x",
+            "\\*x",
+            "!x",
+            "word\n",
+        ]
+        .into_iter()
+        .cycle()
+        .take(count)
+        {
+            bytes += part.len();
+            markdown.push(part);
+        }
+        assert_eq!(
+            crate::work::rendered_bytes() - before,
+            bytes,
+            "{count} chunks"
+        );
+    }
+}
+
+fn invisible_tail(count: usize, scan: bool) -> usize {
+    super::events::RESCAN_VISIBLE.set(scan);
+    let mut markdown = crate::Markdown::default();
+    markdown.push("x ");
+    let before = crate::work::visibility_current() + markdown.visible_work.get();
+    for _ in 0..count {
+        markdown.push("&#10;");
+    }
+    let used = crate::work::visibility_current() + markdown.visible_work.get() - before;
+    super::events::RESCAN_VISIBLE.set(false);
+    used
+}
+
+#[test]
+fn row_visibility_does_not_rescan_invisible_tail() {
+    for count in [64, 128, 256, 1024] {
+        assert_eq!(invisible_tail(count, false), 0);
+    }
+}
+
+#[test]
+fn visibility_property_detects_scanning_invisible_rows() {
+    let small = invisible_tail(128, true);
+    let large = invisible_tail(256, true);
+    assert!(large > 2 * small + 4096);
+}
+
+#[test]
 fn code_and_paragraph_boundaries_match_event_rendering() {
     for body in [
         " a ",
@@ -105,6 +193,21 @@ fn code_and_paragraph_boundaries_match_event_rendering() {
                 consumer,
                 crate::tests::full_parse(&source[..at + character.len_utf8()]),
                 "body {body:?}, prefix {at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn retained_prefix_preserves_deferred_row_indentation() {
+    for source in ["¡\n\t&", "x\n\t&", "¡\n\t!", "hello world\tfoo*x*"] {
+        let mut markdown = crate::Markdown::default();
+        for (at, character) in source.char_indices() {
+            markdown.push(&source[at..at + character.len_utf8()]);
+            assert_eq!(
+                markdown.lines(),
+                crate::tests::full_parse(&source[..at + character.len_utf8()]),
+                "source {source:?}, prefix {at}"
             );
         }
     }

@@ -12,6 +12,9 @@ pub(crate) fn copy(bytes: usize) {
 pub(crate) fn visibility(count: usize) {
     VISIBILITY.set(VISIBILITY.get() + count);
 }
+pub(crate) fn visibility_current() -> usize {
+    VISIBILITY.get()
+}
 pub(crate) fn current() -> usize {
     SCAN.get()
         + COPY.get()

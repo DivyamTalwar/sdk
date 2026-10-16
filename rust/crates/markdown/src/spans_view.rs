@@ -154,11 +154,17 @@ impl<'a> SpanRef<'a> {
 }
 
 enum Task<'a> {
-    Sequence(&'a Spans, Style),
-    Prefix(Option<&'a Node>, Option<&'a Node>, Style),
-    Part(&'a Part, Style),
-    Tail(&'a Span, bool, Style),
+    Sequence(&'a Spans, Style, Option<&'a Arc<str>>),
+    Prefix(
+        Option<&'a Node>,
+        Option<&'a Node>,
+        Style,
+        Option<&'a Arc<str>>,
+    ),
+    Part(&'a Part, Style, Option<&'a Arc<str>>),
+    Tail(&'a Span, bool, Style, Option<&'a Arc<str>>),
     Boundary,
+    AfterLink(bool),
 }
 
 /// Iterator over canonical styled runs in a snapshot.
@@ -171,7 +177,7 @@ pub struct Iter<'a> {
 impl<'a> Iter<'a> {
     pub(super) fn new(spans: &'a Spans) -> Self {
         Self {
-            tasks: vec![Task::Sequence(spans, Style::default())],
+            tasks: vec![Task::Sequence(spans, Style::default(), None)],
             buffered: None,
             boundary: false,
         }
@@ -188,37 +194,47 @@ impl<'a> Iter<'a> {
             #[cfg(test)]
             crate::work::scan(1);
             match task {
-                Task::Sequence(spans, style) => {
+                Task::Sequence(spans, style, link) => {
                     if let Some(tail) = &spans.tail {
-                        self.push(Task::Tail(tail, spans.forced, style));
+                        self.push(Task::Tail(tail, spans.forced, style, link));
                     }
                     self.push(Task::Prefix(
                         spans.prefix.as_deref(),
                         spans.stop.as_deref(),
                         style,
+                        link,
                     ));
                 }
-                Task::Prefix(Some(node), stop, style) => {
+                Task::Prefix(Some(node), stop, style, link) => {
                     if stop.is_some_and(|stop| std::ptr::eq(node, stop)) {
                         continue;
                     }
-                    self.push(Task::Part(&node.part, style));
-                    self.push(Task::Prefix(node.previous.as_deref(), stop, style));
+                    self.push(Task::Part(&node.part, style, link));
+                    self.push(Task::Prefix(node.previous.as_deref(), stop, style, link));
                 }
-                Task::Prefix(None, _, _) => {}
-                Task::Part(Part::Span(span, forced), style) => {
-                    self.push(Task::Tail(span, *forced, style))
+                Task::Prefix(None, _, _, _) => {}
+                Task::Part(Part::Span(span, forced), style, link) => {
+                    self.push(Task::Tail(span, *forced, style, link))
                 }
-                Task::Part(Part::Group(child, mask, forced), style) => {
-                    self.push(Task::Sequence(child, overlay(*mask, style)));
+                Task::Part(Part::Group(child, mask, target, forced), style, link) => {
+                    if target.is_some() {
+                        self.push(Task::AfterLink(link.is_some()));
+                    }
+                    self.push(Task::Sequence(
+                        child,
+                        overlay(*mask, style),
+                        target.as_ref().or(link),
+                    ));
                     if *forced {
                         self.push(Task::Boundary);
                     }
                 }
                 Task::Boundary => self.boundary = true,
-                Task::Tail(span, forced, style) => {
+                Task::AfterLink(linked) => self.boundary = linked,
+                Task::Tail(span, forced, style, link) => {
                     let mut span = SpanRef::borrowed(span);
                     span.style = overlay(span.style, style);
+                    span.link = span.link.or_else(|| link.cloned());
                     span.boundary = forced | std::mem::take(&mut self.boundary);
                     let boundary = span.boundary;
                     return Some((span, boundary));

@@ -2,6 +2,7 @@ use super::delimiters::Matched;
 use std::ops::Range;
 #[path = "inline_glyphs.rs"]
 mod glyphs;
+pub(super) use glyphs::Cache;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -20,7 +21,6 @@ struct Node {
     children: usize,
     stop: usize,
     kind: Kind,
-    view: Option<Box<glyphs::View>>,
 }
 
 const PAGE: usize = 8;
@@ -30,7 +30,6 @@ pub(super) struct Forest {
     nodes: Vec<Vec<Node>>,
     length: usize,
     root: usize,
-    input: glyphs::Input,
     #[cfg(test)]
     scan: bool,
     #[cfg(test)]
@@ -94,7 +93,6 @@ impl Forest {
                 children,
                 stop,
                 kind,
-                view: None,
             });
         self.length += 1;
         self.root = self.length;

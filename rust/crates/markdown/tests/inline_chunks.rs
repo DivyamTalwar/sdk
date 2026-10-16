@@ -95,6 +95,7 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/bangs").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/mixed").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/list-indent").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/deferred-row-indent").as_slice(),
     ] {
         let encoded = data
             .get(..8)

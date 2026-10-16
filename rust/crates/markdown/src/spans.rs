@@ -17,12 +17,13 @@ pub struct Spans {
 struct Node {
     previous: Option<Arc<Node>>,
     count: Option<usize>,
+    runs: usize,
     part: Part,
 }
 
 enum Part {
     Span(Box<Span>, bool),
-    Group(Spans, Style, bool),
+    Group(Spans, Style, Option<Arc<str>>, bool),
 }
 
 impl Spans {
@@ -48,13 +49,13 @@ impl Spans {
 
     /// Whether the sequence has no runs.
     pub fn is_empty(&self) -> bool {
-        self.tail.is_none()
-            && (self.prefix.is_none()
-                || self
-                    .prefix
-                    .as_ref()
-                    .zip(self.stop.as_ref())
-                    .is_some_and(|(end, start)| Arc::ptr_eq(end, start)))
+        self.raw_count() == 0
+    }
+
+    fn raw_count(&self) -> usize {
+        self.prefix.as_ref().map_or(0, |node| node.runs)
+            - self.stop.as_ref().map_or(0, |node| node.runs)
+            + usize::from(self.tail.is_some())
     }
 
     /// The first canonical run.
@@ -115,6 +116,7 @@ impl Spans {
             #[cfg(test)]
             crate::work::scan(1);
             self.prefix = Some(Arc::new(Node {
+                runs: self.prefix.as_ref().map_or(0, |node| node.runs) + 1,
                 previous: self.prefix.take(),
                 count,
                 part: Part::Span(span, self.forced),
@@ -129,6 +131,7 @@ impl Spans {
     // Both values are frozen cursors in the same immutable sibling list.
     // The inline forest owns and validates their ancestry before constructing
     // the view; no traversal or copying of the enclosed children is needed.
+    #[cfg(test)]
     pub(crate) fn suffix_after(&self, start: &Self) -> Self {
         debug_assert!(self.tail.is_none() && start.tail.is_none());
         let result = Self {
@@ -200,23 +203,47 @@ impl Spans {
     }
 
     pub(crate) fn append_shared(&mut self, other: Spans) {
-        self.group(other, Style::default(), true);
+        self.group(other, Style::default(), None, true);
     }
 
     /// Apply an enclosing style without copying its child runs.
     pub fn styled(self, style: Style) -> Self {
         let mut spans = Self::default();
-        spans.group(self, style, false);
+        spans.group(self, style, None, false);
         spans
+    }
+
+    pub(crate) fn masked(self, style: Style, link: Option<Arc<str>>) -> Self {
+        if style == Style::default() && link.is_none() {
+            return self;
+        }
+        let mut spans = Self::default();
+        let boundary = link.is_some();
+        spans.group(self, style, link, boundary);
+        spans
+    }
+
+    pub(crate) fn same_snapshot(&self, other: &Self) -> bool {
+        fn same(left: &Option<Arc<Node>>, right: &Option<Arc<Node>>) -> bool {
+            match (left, right) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
+        }
+        self.tail.is_none()
+            && other.tail.is_none()
+            && same(&self.prefix, &other.prefix)
+            && same(&self.stop, &other.stop)
     }
 
     /// Concatenate parsed content, coalescing equal styles at the boundary.
     pub fn concat(&mut self, other: Spans) {
-        self.group(other, Style::default(), false);
+        self.group(other, Style::default(), None, false);
     }
 
-    fn group(&mut self, other: Spans, style: Style, forced: bool) {
-        if other.is_empty() {
+    fn group(&mut self, other: Spans, style: Style, link: Option<Arc<str>>, forced: bool) {
+        if other.prefix.is_none() && other.tail.is_none() && link.is_none() {
             return;
         }
         self.flush_tail();
@@ -230,9 +257,10 @@ impl Spans {
         #[cfg(test)]
         crate::work::scan(1);
         self.prefix = Some(Arc::new(Node {
+            runs: self.prefix.as_ref().map_or(0, |node| node.runs) + other.raw_count(),
             previous: self.prefix.take(),
             count,
-            part: Part::Group(other, style, forced),
+            part: Part::Group(other, style, link, forced),
         }));
     }
 
@@ -263,7 +291,14 @@ impl Spans {
                         payload += bytes;
                         metadata += size;
                     }
-                    Part::Group(child, _, _) => pending.push(child),
+                    Part::Group(child, _, link, _) => {
+                        if let Some(link) = link
+                            && links.insert(Arc::as_ptr(link).cast::<u8>())
+                        {
+                            payload += link.len();
+                        }
+                        pending.push(child);
+                    }
                 }
                 current = node.previous.as_ref();
             }
@@ -316,7 +351,7 @@ impl Drop for Spans {
             #[cfg(test)]
             crate::work::scan(1);
             current = node.previous.take();
-            if let Part::Group(child, _, _) = &mut node.part {
+            if let Part::Group(child, _, _, _) = &mut node.part {
                 pending.extend(child.prefix.take());
                 pending.extend(child.stop.take());
             }

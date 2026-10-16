@@ -163,7 +163,10 @@ impl Template {
             events.truncate(events.len().saturating_sub(2));
         }
         (
-            events.into_iter().map(|(event, _)| event).collect(),
+            events
+                .into_iter()
+                .map(|(event, _)| event.into_static())
+                .collect(),
             cost,
             interval,
         )

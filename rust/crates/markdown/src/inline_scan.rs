@@ -10,11 +10,21 @@ mod tokens;
 use state::State;
 use tokens::{Kind, Tokens};
 
+pub(super) struct Slice<'a> {
+    pub(super) original: &'a str,
+    pub(super) parsed: &'a str,
+    pub(super) start: usize,
+    pub(super) base: usize,
+    pub(super) sentinel: usize,
+    pub(super) boundary: usize,
+}
+
 #[derive(Default)]
 pub(super) struct Scanner {
     tokens: Tokens,
     atomic: Vec<Range<usize>>,
     state: State,
+    render: forest::Cache,
     syntax: Syntax,
     processed: usize,
     fed: usize,
@@ -188,9 +198,15 @@ impl Scanner {
         self.atomic.clear();
     }
 
-    pub(super) fn glyphs(&mut self, source: &str, start: usize, end: usize) -> Option<Spans> {
-        let root = self.state.projection(self.tokens.preview().as_ref());
-        self.state.forest.glyphs(root, source, start, end)
+    pub(super) fn render_events(
+        &mut self,
+        source: Slice<'_>,
+        events: &[(Event<'_>, Range<usize>)],
+        references: &References,
+        lines: &mut Vec<Line>,
+        first: usize,
+    ) -> Option<(usize, usize)> {
+        self.render.render(source, events, references, lines, first)
     }
 
     #[cfg(test)]
@@ -200,7 +216,7 @@ impl Scanner {
         texts: &mut HashSet<usize>,
         links: &mut HashSet<*const u8>,
     ) -> (usize, usize) {
-        self.state.forest.glyph_retained(nodes, texts, links)
+        self.render.retained(nodes, texts, links)
     }
 
     pub(super) fn checkpoint(&self, position: usize) -> usize {

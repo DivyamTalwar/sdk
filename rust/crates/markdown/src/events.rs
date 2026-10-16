@@ -64,12 +64,12 @@ pub(crate) fn parse_with(
 
 // Normalized leaf templates contain no definitions. Charge reference expansion
 // against the document allowance, rather than restarting it for each leaf.
-pub(crate) fn scoped(
-    source: &str,
+pub(crate) fn scoped<'a>(
+    source: &'a str,
     references: &crate::References,
     options: pulldown_cmark::Options,
     mut budget: usize,
-) -> (OwnedEvents, Charges) {
+) -> (Vec<(Event<'a>, Range<usize>)>, Charges) {
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
@@ -97,7 +97,7 @@ pub(crate) fn scoped(
         .map(|(event, range)| {
             #[cfg(test)]
             crate::work::event(&event);
-            (event.into_static(), range)
+            (event, range)
         })
         .collect();
     #[cfg(test)]

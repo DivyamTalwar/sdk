@@ -66,6 +66,7 @@ impl Renderer {
         if self.width == 0 { 80 } else { self.width }
     }
 
+    #[cfg(test)]
     pub(super) fn inline(line: Line) -> Self {
         Self {
             line,
@@ -78,12 +79,7 @@ impl Renderer {
         self.line = line;
     }
 
-    pub(super) fn inline_line(&self) -> &Line {
-        &self.line
-    }
-    pub(super) fn inline_line_mut(&mut self) -> &mut Line {
-        &mut self.line
-    }
+    #[cfg(test)]
     pub(super) fn into_inline(self) -> Line {
         self.line
     }
