@@ -423,7 +423,7 @@ impl StreamProvider for BrowserStream {
 impl BrowserStream {
     async fn follow_published(&self, path: StreamPath, from: u64, anchor: Option<CommitId>) -> Result<RecordStream, StreamError> {
         let wake = self.inner.publications.subscribe();
-        let mut open = {
+        let open = {
             let provider = self.clone();
             move |next, anchor| {
                 let provider = provider.clone();

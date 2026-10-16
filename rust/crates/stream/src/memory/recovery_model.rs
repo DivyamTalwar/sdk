@@ -236,7 +236,7 @@ pub fn cached_follow_publication_has_no_lost_wakeup(omit_wake: bool) {
         let root = MemoryStream::default();
         let (path, anchor) = seed(&root).unwrap();
         let (sender, wake) = crate::query_sync::watch::channel(());
-        let mut open = {
+        let open = {
             let root = root.clone();
             let path = path.clone();
             move |next, anchor| {

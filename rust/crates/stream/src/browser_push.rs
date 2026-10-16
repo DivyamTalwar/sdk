@@ -28,6 +28,8 @@ impl Publications {
             &constructor,
             &Array::of1(&JsValue::from_str(&format!("acyclic.stream.v1:{name}"))),
         )
+        .map_err(|_| StreamError::Unavailable)?
+        .dyn_into::<Object>()
         .map_err(|_| StreamError::Unavailable)?;
         let published = Rc::new(watch::channel(()).0);
         let sender = published.clone();

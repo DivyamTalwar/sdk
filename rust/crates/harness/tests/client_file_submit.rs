@@ -19,6 +19,7 @@ struct Provider {
     offline: AtomicBool,
     commits: AtomicUsize,
     fail_commit: AtomicUsize,
+    durable_through: AtomicUsize,
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -27,6 +28,7 @@ impl Default for Provider {
             offline: AtomicBool::new(false),
             commits: AtomicUsize::new(0),
             fail_commit: AtomicUsize::new(0),
+            durable_through: AtomicUsize::new(usize::MAX),
         }
     }
 }
@@ -49,7 +51,7 @@ impl StreamProvider for Provider {
         let tail = self.inner.tail(path).await?;
         Ok(StreamWatermarks {
             accepted: tail,
-            durable: tail,
+            durable: tail.min(self.durable_through.load(Ordering::SeqCst) as u64),
         })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -189,6 +191,51 @@ async fn checkpoint_failure_retains_an_already_published_request() {
             .pending(),
         0
     );
+}
+
+#[tokio::test]
+async fn durable_admission_retains_intent_at_each_unconfirmed_prefix() {
+    for stage in ["outbox", "target", "checkpoint"] {
+        let local = Arc::new(Provider::default());
+        let remote = Arc::new(Provider::default());
+        let outbox = volume(local.clone(), "client/files").await;
+        let target = volume(remote.clone(), "agent/files").await;
+        let mut client = FileClient::open(outbox.clone(), target.clone(), LIMITS).await.unwrap();
+        client.enqueue(request(1)).await.unwrap();
+        let pending_cut = outbox.cut(&Query::Tasks).await.unwrap().position;
+        match stage {
+            "outbox" => local.durable_through.store((pending_cut - 1) as usize, Ordering::SeqCst),
+            "target" => remote.durable_through.store(0, Ordering::SeqCst),
+            "checkpoint" => local.durable_through.store(pending_cut as usize, Ordering::SeqCst),
+            _ => unreachable!(),
+        }
+        assert!(client.flush().await.is_err(), "{stage}");
+        assert_eq!(client.pending(), 1, "{stage}");
+        let admitted = target.snapshot(&Query::Tasks, 1).await.unwrap();
+        assert_eq!(admitted.files.len(), usize::from(stage != "outbox"), "{stage}");
+        local.durable_through.store(usize::MAX, Ordering::SeqCst);
+        remote.durable_through.store(usize::MAX, Ordering::SeqCst);
+        assert_eq!(client.flush().await.unwrap(), 1, "{stage}");
+        assert_eq!(client.pending(), 0);
+        drop(client);
+        assert_eq!(FileClient::open(outbox, target, LIMITS).await.unwrap().pending(), 0);
+    }
+}
+
+#[tokio::test]
+async fn stale_openers_cannot_regress_the_checkpoint() {
+    let outbox = volume(Arc::new(Provider::default()), "client/files").await;
+    let target = volume(Arc::new(Provider::default()), "agent/files").await;
+    let mut current = FileClient::open(outbox.clone(), target.clone(), LIMITS).await.unwrap();
+    current.enqueue(request(1)).await.unwrap();
+    current.enqueue(request(2)).await.unwrap();
+    let mut stale = FileClient::open(outbox.clone(), target.clone(), LIMITS).await.unwrap();
+    assert_eq!(current.flush().await.unwrap(), 2);
+    let committed = current.cursor().clone();
+    assert!(stale.flush().await.is_err());
+    let reopened = FileClient::open(outbox, target, LIMITS).await.unwrap();
+    assert_eq!(reopened.cursor(), &committed);
+    assert_eq!(reopened.pending(), 0);
 }
 
 #[tokio::test]
