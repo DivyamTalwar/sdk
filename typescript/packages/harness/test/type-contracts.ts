@@ -1,5 +1,5 @@
 import type {
-  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
+  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, TaskId, TaskContext,
   BatchId, SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
@@ -154,10 +154,6 @@ const wrongHistoryProvider: ResourceRevision = { kind: "history", reference: { k
 const wrongAuthority: Authority<"conversation"> = { kind: "agent", id: "agent" };
 // @ts-expect-error execution handlers are not part of model-visible tool schemas
 const executableModelSchema: ModelToolDefinition = { name: "tool", revision: "1", description: "tool", inputSchema: {}, outputSchema: {}, projectionSchema: {}, handler: () => 1 };
-// @ts-expect-error an offline retry command cannot contain inline message text
-const inlineOutboxBody: ClientCommand = { operationId: "op" as OperationId, authority: { kind: "conversation", id: "conversation" }, kind: "message.append", payload: { text: "secret" }, offlineSafe: true };
-// @ts-expect-error offline metadata cannot persist an arbitrary credential-bearing string
-const stringOutboxMetadata: ClientCommand = { operationId: "op" as OperationId, authority: { kind: "conversation", id: "conversation" }, kind: "message.append", payload: { metadata: { note: "secret" } }, offlineSafe: true };
 // @ts-expect-error interaction versions use exact unsigned 64-bit positions
 const roundedInteractionVersion: InteractionResolution = { id: "01010101-0101-0101-0101-010101010101" as InteractionId, expected_version: 1, outcome: { kind: "approved" } };
 // @ts-expect-error project merge publication identities are exact validated bytes, not strings

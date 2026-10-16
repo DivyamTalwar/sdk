@@ -25,6 +25,10 @@ pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+mod browser_push;
+#[cfg(any(acyclic_loom, all(feature = "wasm", target_arch = "wasm32")))]
+mod push_follow;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")

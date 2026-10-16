@@ -1,6 +1,6 @@
 //! The WASM boundary uses these canonical serde types, without a second codec.
 use acyclic_harness::{
-    client::QueryViewLimits,
+    client::{FileClientLimits, QueryViewLimits},
     task_volume::{Component, Cursor, FileKey, Generation, Query},
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -32,6 +32,9 @@ pub fn exercise(bytes: &[u8]) {
         round_trip(value);
     }
     if let Ok(value) = serde_json::from_slice::<QueryViewLimits>(bytes) {
+        round_trip(value);
+    }
+    if let Ok(value) = serde_json::from_slice::<FileClientLimits>(bytes) {
         round_trip(value);
     }
     if let Ok(key) = serde_json::from_slice::<FileKey>(bytes) {

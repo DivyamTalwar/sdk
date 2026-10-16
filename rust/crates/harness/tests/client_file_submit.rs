@@ -11,6 +11,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+#[path = "../../harness-fuzz/support/file_client.rs"]
+mod parser;
+
 struct Provider {
     inner: MemoryStream,
     offline: AtomicBool,
@@ -254,6 +257,11 @@ async fn negative_control_acknowledging_before_target_publication_is_detected() 
 }
 
 proptest::proptest! {
+    #[test]
+    fn checkpoint_codec_and_recovery_preserve_request_identity(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256)) {
+        parser::exercise(&bytes);
+    }
+
     // Each first-seen immutable request is delivered once in enqueue order after
     // reopen; repeated identities neither reorder nor duplicate publication.
     #[test]

@@ -1,4 +1,4 @@
-//! Ordered request files, with the private volume as the sole durable outbox.
+//! Ordered request files, with the private volume as the sole outbox.
 
 use super::query_error;
 use crate::{
@@ -24,7 +24,7 @@ pub enum FileClientDurability {
 }
 
 /// Bounds retained pending requests, independent of already acknowledged history.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
@@ -93,7 +93,10 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         let cursor = if let Some(file) = state.files.first() {
             let state: Checkpoint =
                 serde_json::from_slice(&file.bytes).map_err(|e| Error::Storage(e.to_string()))?;
-            if state.target != target_id || state.target_epoch != target_epoch || state.durability != limits.durability {
+            if state.target != target_id
+                || state.target_epoch != target_epoch
+                || state.durability != limits.durability
+            {
                 return Err(Error::Conflict("outbox target differs".into()));
             }
             state.cursor
@@ -144,7 +147,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         Ok(client)
     }
 
-    /// Number of durable requests still awaiting successful target publication.
+    /// Number of queued requests still awaiting successful target publication.
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
@@ -245,21 +248,36 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         self.catch_up().await?;
         let mut submitted = 0;
         while let Some(pending) = self.pending.front() {
-            let checkpoint = self.outbox.snapshot(&Query::File(self.checkpoint.clone()), 1).await.map_err(query_error)?;
-            let current: Checkpoint = serde_json::from_slice(&checkpoint.files.first()
-                .ok_or_else(|| Error::Conflict("outbox checkpoint disappeared".into()))?.bytes)
-                .map_err(|e| Error::Storage(e.to_string()))?;
-            if current.target != self.target_id || current.target_epoch != self.target_epoch || current.durability != self.limits.durability ||
-                (current.cursor != self.cursor && current.cursor != pending.cursor) {
-                return Err(Error::Conflict("outbox checkpoint changed; reopen before publication".into()));
-            }
-            if self.limits.durability == FileClientDurability::Durable && self
+            let checkpoint = self
                 .outbox
-                .cut(&Query::Tasks)
+                .snapshot(&Query::File(self.checkpoint.clone()), 1)
                 .await
-                .map_err(query_error)?
-                .durable
-                < pending.cursor.position
+                .map_err(query_error)?;
+            let current: Checkpoint = serde_json::from_slice(
+                &checkpoint
+                    .files
+                    .first()
+                    .ok_or_else(|| Error::Conflict("outbox checkpoint disappeared".into()))?
+                    .bytes,
+            )
+            .map_err(|e| Error::Storage(e.to_string()))?;
+            if current.target != self.target_id
+                || current.target_epoch != self.target_epoch
+                || current.durability != self.limits.durability
+                || (current.cursor != self.cursor && current.cursor != pending.cursor)
+            {
+                return Err(Error::Conflict(
+                    "outbox checkpoint changed; reopen before publication".into(),
+                ));
+            }
+            if self.limits.durability == FileClientDurability::Durable
+                && self
+                    .outbox
+                    .cut(&Query::Tasks)
+                    .await
+                    .map_err(query_error)?
+                    .durable
+                    < pending.cursor.position
             {
                 return Err(Error::Conflict(
                     "outbox publication awaits durability".into(),
@@ -274,13 +292,14 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 .append(head, &pending.write)
                 .await
                 .map_err(query_error)?;
-            if self.limits.durability == FileClientDurability::Durable && self
-                .target
-                .cut(&Query::Tasks)
-                .await
-                .map_err(query_error)?
-                .durable
-                < published.position
+            if self.limits.durability == FileClientDurability::Durable
+                && self
+                    .target
+                    .cut(&Query::Tasks)
+                    .await
+                    .map_err(query_error)?
+                    .durable
+                    < published.position
             {
                 return Err(Error::Conflict(
                     "target publication awaits durability".into(),
@@ -293,14 +312,22 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 cursor: pending.cursor.clone(),
             };
             let bytes = serde_json::to_vec(&state).map_err(|e| Error::Storage(e.to_string()))?;
-            let committed = self.outbox.append(checkpoint.generation, &Write::new(self.checkpoint.clone(), bytes)).await.map_err(query_error)?;
-            if self.limits.durability == FileClientDurability::Durable && self
+            let committed = self
                 .outbox
-                .cut(&Query::Tasks)
+                .append(
+                    checkpoint.generation,
+                    &Write::new(self.checkpoint.clone(), bytes),
+                )
                 .await
-                .map_err(query_error)?
-                .durable
-                < committed.position
+                .map_err(query_error)?;
+            if self.limits.durability == FileClientDurability::Durable
+                && self
+                    .outbox
+                    .cut(&Query::Tasks)
+                    .await
+                    .map_err(query_error)?
+                    .durable
+                    < committed.position
             {
                 return Err(Error::Conflict(
                     "outbox checkpoint awaits durability".into(),
