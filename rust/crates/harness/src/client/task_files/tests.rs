@@ -49,8 +49,7 @@ proptest! {
     }
 }
 
-#[tokio::test]
-async fn changing_and_resetting_one_volume_preserves_other_task_views() {
+async fn foreign_requests_and_resets(identity: [u8; 16]) {
     let mut volumes = Vec::new();
     let mut owners = Vec::new();
     for number in 1..=2 {
@@ -62,7 +61,14 @@ async fn changing_and_resetting_one_volume_preserves_other_task_views() {
         .unwrap();
         let owner = wire::Authority {
             kind: wire::AggregateKind::Task as i32,
-            id: crate::TaskId::from_bytes([number; 16]).to_string(),
+            id: crate::TaskId::from_bytes(if number == 1 {
+                identity
+            } else {
+                let mut other = identity;
+                other[0] ^= 1;
+                other
+            })
+            .to_string(),
         };
         let empty = volume.snapshot(&Query::Tasks, 16).await.unwrap();
         volume
@@ -147,4 +153,14 @@ async fn changing_and_resetting_one_volume_preserves_other_task_views() {
         .unwrap();
     assert!(!client.views().transcripts.contains_key(&first));
     assert_eq!(client.views().transcripts[&second], foreign);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    // For arbitrary distinct task identities, caller requests and snapshot
+    // resets cannot replace another followed volume's projected transcript.
+    #[test]
+    fn changing_and_resetting_one_volume_preserves_other_task_views(identity in any::<[u8;16]>()) {
+        futures::executor::block_on(foreign_requests_and_resets(identity));
+    }
 }
