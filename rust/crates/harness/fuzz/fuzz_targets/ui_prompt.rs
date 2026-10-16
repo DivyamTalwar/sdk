@@ -63,6 +63,33 @@ fuzz_target!(|data: &[u8]| {
                 .await
                 .unwrap(),
             );
+            let plan = FileKey::Plan(acyclic_harness::task_volume::PlanName::new("old").unwrap());
+            let mut documents = acyclic_harness::client::DocumentViews::default();
+            documents
+                .apply(&Write::new(FileKey::Goal, b"original".to_vec()))
+                .unwrap();
+            documents
+                .apply(&Write::new(plan.clone(), b"previous".to_vec()))
+                .unwrap();
+            let before = documents.clone();
+            let publication = acyclic_harness::task_volume::Change {
+                file: None,
+                files: vec![Write::new(FileKey::Goal, data.to_vec())],
+                removed: vec![plan],
+                cursor: volume.snapshot(&Query::Root, 64).await.unwrap().cursor,
+            };
+            let result = documents.apply_change(&publication);
+            match std::str::from_utf8(data) {
+                Ok(text) => {
+                    assert!(result.is_ok());
+                    assert_eq!(documents.goal.as_deref(), Some(text));
+                    assert!(documents.plans.is_empty());
+                }
+                Err(_) => {
+                    assert!(result.is_err());
+                    assert_eq!(documents, before);
+                }
+            }
             let session = acyclic_harness::OperationId::from_bytes([9; 16]).to_string();
             let mut writes = vec![
                 (format!(".ui/session-{session}/draft.json"), draft),

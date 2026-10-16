@@ -18,6 +18,41 @@ pub struct DocumentViews {
 }
 
 impl DocumentViews {
+    /// Fold one atomic file publication. Validate every replacement before
+    /// applying removals, so malformed UTF-8 cannot partially erase a panel.
+    pub fn apply_change(&mut self, change: &crate::task_volume::Change) -> Result<()> {
+        let files: Vec<_> = change
+            .file
+            .iter()
+            .chain(&change.files)
+            .filter(|file| matches!(file.key, FileKey::Goal | FileKey::Plan(_)))
+            .map(|file| {
+                std::str::from_utf8(&file.bytes)
+                    .map(|text| (&file.key, text))
+                    .map_err(|error| Error::Invalid(error.to_string()))
+            })
+            .collect::<Result<_>>()?;
+        for key in &change.removed {
+            match key {
+                FileKey::Goal => self.goal = None,
+                FileKey::Plan(name) => {
+                    self.plans.remove(name);
+                }
+                _ => {}
+            }
+        }
+        for (key, text) in files {
+            match key {
+                FileKey::Goal => self.goal = Some(text.into()),
+                FileKey::Plan(name) => {
+                    self.plans.insert(name.clone(), text.into());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Replace only the selected files at an authenticated query's snapshot cut.
     /// Decode every selected document before changing the existing projection.
     pub fn replace(&mut self, query: &Query, snapshot: &Snapshot) -> Result<()> {

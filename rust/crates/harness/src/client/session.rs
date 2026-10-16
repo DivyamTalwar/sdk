@@ -276,6 +276,9 @@ impl<S: ClientStateStore> ClientSession<S> {
     pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
         match update {
             super::ViewUpdate::File(change) => self.query_change(change).map(|_| ()),
+            super::ViewUpdate::DocumentChange { authority, change } => {
+                self.apply_documents(&authority, |documents| documents.apply_change(&change))
+            }
             super::ViewUpdate::Model {
                 authority,
                 turn,

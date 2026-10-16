@@ -15,6 +15,13 @@ use std::collections::BTreeMap;
 /// One decoded record from a platform follow, addressed to its tracked authority.
 /// These are in-process client inputs, not another wire schema.
 pub enum ViewUpdate {
+    /// Atomic replacements/removals from an authorized document query follow.
+    DocumentChange {
+        /// Tracked agent whose private volume owns the publication.
+        authority: wire::Authority,
+        /// Existing file-query publication, including removals and bulk files.
+        change: crate::task_volume::Change,
+    },
     /// Replacement snapshot from a private-volume live query, including resets.
     DocumentSnapshot {
         /// Tracked agent whose private volume is being followed.

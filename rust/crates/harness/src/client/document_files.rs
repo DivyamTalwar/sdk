@@ -37,12 +37,16 @@ pub async fn document_files<P: StreamProvider + ?Sized>(
     let authority = authority.clone();
     let changes = stream::select(goal.changes, plans.changes).filter_map(move |change| {
         future::ready(match change {
-            Ok(change) => change.file.map(|file| {
-                Ok(ViewUpdate::DocumentFile {
-                    authority: authority.clone(),
-                    file,
-                })
-            }),
+            Ok(change) => {
+                if change.file.is_none() && change.files.is_empty() && change.removed.is_empty() {
+                    None
+                } else {
+                    Some(Ok(ViewUpdate::DocumentChange {
+                        authority: authority.clone(),
+                        change,
+                    }))
+                }
+            }
             Err(error) => Some(Err(error.into())),
         })
     });

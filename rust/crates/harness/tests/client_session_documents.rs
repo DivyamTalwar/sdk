@@ -17,6 +17,100 @@ fn write(kind: u8, text: &str) -> Write {
     Write::new(key, text.as_bytes().to_vec())
 }
 
+async fn publication(
+    mut files: Vec<Write>,
+    removed: Vec<FileKey>,
+) -> acyclic_harness::task_volume::Change {
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("document-publication").unwrap(),
+    )
+    .await
+    .unwrap();
+    acyclic_harness::task_volume::Change {
+        file: files.pop(),
+        files,
+        removed,
+        cursor: volume.snapshot(&Query::Root, 8).await.unwrap().cursor,
+    }
+}
+
+#[tokio::test]
+async fn bulk_documents_remain_bound_to_the_tracked_authority() {
+    use acyclic_harness::{client::ViewUpdate, wire};
+    let mut state = super::session();
+    let change = publication(vec![write(0, "goal"), write(1, "plan")], vec![]).await;
+    let before = state.views().clone();
+    assert!(
+        state
+            .apply_update(ViewUpdate::DocumentChange {
+                authority: wire::Authority {
+                    id: "untracked".into(),
+                    ..super::owner()
+                },
+                change,
+            })
+            .is_err()
+    );
+    assert_eq!(state.views(), &before);
+    let change = publication(vec![write(0, "goal"), write(1, "plan")], vec![]).await;
+    state
+        .apply_update(ViewUpdate::DocumentChange {
+            authority: super::owner(),
+            change,
+        })
+        .unwrap();
+    let documents = &state.views().documents["AGGREGATE_KIND_TASK:task"];
+    assert_eq!(documents.goal.as_deref(), Some("goal"));
+    assert_eq!(documents.plans.len(), 1);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: a bulk replacement/removal equals its final file snapshot;
+    // any malformed replacement preserves every previous document atomically.
+    #[test]
+    fn document_publications_are_atomic(
+        operations in proptest::collection::vec((0u8..4, proptest::bool::ANY, ".{0,20}"), 0..12),
+        invalid in proptest::bool::ANY,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let operations: std::collections::BTreeMap<_, _> = operations.into_iter().map(|(kind, remove, text)| (kind, (remove, text))).collect();
+            let mut live = DocumentViews::default();
+            for kind in 0..4 { live.apply(&write(kind, "original")).unwrap(); }
+            let before = live.clone();
+            let mut expected = before.clone();
+            let (mut files, mut removed) = (Vec::new(), Vec::new());
+            for (kind, (remove, text)) in operations {
+                let file = write(kind, &text);
+                if remove {
+                    match &file.key {
+                        FileKey::Goal => expected.goal = None,
+                        FileKey::Plan(name) => { expected.plans.remove(name); }
+                        _ => unreachable!(),
+                    }
+                    removed.push(file.key);
+                } else {
+                    expected.apply(&file).unwrap();
+                    files.push(file);
+                }
+            }
+            let mut change = publication(files, removed).await;
+            if invalid { change.files.push(Write::new(FileKey::Plan(PlanName::new("bad").unwrap()), vec![0xff])); }
+            let result = live.apply_change(&change);
+            if invalid {
+                proptest::prop_assert!(result.is_err());
+                proptest::prop_assert_eq!(live, before);
+            } else {
+                proptest::prop_assert!(result.is_ok());
+                proptest::prop_assert_eq!(live, expected);
+            }
+            Ok(())
+        })?;
+    }
+}
+
 async fn snapshot_plus_follow(events: &[(u8, String)], cut: usize) {
     let volume = TaskVolume::open(
         Arc::new(MemoryStream::default()),
