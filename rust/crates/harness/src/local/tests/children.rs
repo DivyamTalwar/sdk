@@ -39,20 +39,20 @@ async fn child_turn_admission_replays_under_the_parent_lease_and_shared_depth_li
     let scope = crate::task_volume::child_scope(&parent_scope, Some(&["read".into()]))?;
     let operation = OperationId::new();
     let Admission::Accepted(RuntimeTask::Durable { task_id: child, .. }) = harness
-        .submit_turn(operation, "reader", Some((parent, &scope, &fence)))
+        .submit_child_turn(operation, "reader", (parent, &scope, &fence))
         .await?
     else {
         panic!("child admission was not accepted");
     };
     assert!(matches!(
-        harness.submit_turn(operation, "reader", Some((parent, &scope, &fence))).await?,
+        harness.submit_child_turn(operation, "reader", (parent, &scope, &fence)).await?,
         Admission::Accepted(RuntimeTask::Durable { task_id, .. }) if task_id == child
     ));
     let mut stale = fence.clone();
     stale.reservation_id.push_str("-stale");
     assert!(
         harness
-            .submit_turn(operation, "reader", Some((parent, &scope, &stale)))
+            .submit_child_turn(operation, "reader", (parent, &scope, &stale))
             .await
             .is_err()
     );
@@ -75,10 +75,10 @@ async fn child_turn_admission_replays_under_the_parent_lease_and_shared_depth_li
     let fence = LeaseFence::from(&lease.reservation);
     assert!(matches!(
         harness
-            .submit_turn(
+            .submit_child_turn(
                 OperationId::new(),
                 "too deep",
-                Some((child, &scope, &fence))
+                (child, &scope, &fence)
             )
             .await,
         Err(Error::Invalid(reason)) if reason.contains("depth limit exhausted")

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -78,6 +78,10 @@ pub enum ToolFile {
 pub enum TaskFile {
     /// Immutable submitted command, including cancellation and other intents.
     Request(Component),
+    /// Host-owned dispatch claim for an immutable request.
+    RequestStarted(Component),
+    /// Host-owned terminal outcome of an immutable request.
+    RequestResult(Component),
     /// Current task status.
     Status,
     /// Immutable model turn input; turn numbers include retries/attempts.
@@ -136,6 +140,8 @@ impl TaskFile {
     fn path(&self) -> String {
         match self {
             Self::Request(id) => format!("requests/{}.json", id.as_str()),
+            Self::RequestStarted(id) => format!("requests/{}/started.json", id.as_str()),
+            Self::RequestResult(id) => format!("requests/{}/result.json", id.as_str()),
             Self::Status => "status.json".into(),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
@@ -320,6 +326,8 @@ impl FileKey {
         };
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
+            ["requests", request, "started.json"] => TaskFile::RequestStarted(id(request)?),
+            ["requests", request, "result.json"] => TaskFile::RequestResult(id(request)?),
             ["status.json"] => TaskFile::Status,
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),

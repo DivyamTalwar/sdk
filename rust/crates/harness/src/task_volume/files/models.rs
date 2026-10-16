@@ -312,7 +312,10 @@ fn child_completion_race(broken: bool) {
             loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
         loom::future::block_on(Box::pin(files.inner.index.lock()))
             .files
-            .remove(&cancelled.key);
+            .insert(
+                cancelled.key.clone(),
+                FileValue::new(cancelled.key.clone(), Control::Resume.bytes().to_vec()),
+            );
         (
             true,
             loom::future::block_on(Box::pin(
@@ -366,7 +369,10 @@ fn child_terminal_freeze(broken: bool) {
         if broken {
             loom::future::block_on(Box::pin(files.inner.index.lock()))
                 .files
-                .remove(&cancelled.key);
+                .insert(
+                    cancelled.key.clone(),
+                    FileValue::new(cancelled.key.clone(), Control::Resume.bytes().to_vec()),
+                );
         }
         let completion = child_status(ChildStatus {
             settled: true,

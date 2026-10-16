@@ -13,6 +13,8 @@ pub(super) struct Configuration<'a> {
     pub journal: &'a VolumeRef,
     pub task_volume: &'a VolumeRef,
     pub tools: &'a ToolRegistry,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub capabilities: &'a Capabilities,
     pub limits: Limits,
     pub run_limits: TaskRunLimits,
     pub session_limits: SessionLimits,
@@ -64,6 +66,15 @@ pub(super) async fn open(
     for definition in config.tools.definitions(None)? {
         grants.push(format!("tool:call:{}", definition.name));
     }
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    grants.extend(
+        config
+            .capabilities
+            .iter()
+            // Registry definitions above already supply every tool-call grant.
+            .filter(|grant| !grant.starts_with("tool:call:"))
+            .map(str::to_owned),
+    );
     grants.push(
         config
             .journal

@@ -76,7 +76,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
     ) -> super::Result<Generation> {
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
         self.inner
-            .append_if(expected, file, vec![condition], deadline)
+            .append_if(expected, file, vec![condition], deadline, None)
             .await
     }
 
