@@ -1,7 +1,4 @@
-use crate::{
-    Authentication, Credentials, HttpTransport, ProviderSpec, ReqwestTransport, ResolvedModel,
-    invalid,
-};
+use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
 use acyclic_harness::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
@@ -16,10 +13,7 @@ pub struct Registry {
 impl Registry {
     /// Standard endpoints; unknown capacities must be registered explicitly.
     pub fn new(credentials: Credentials) -> Result<Self> {
-        Ok(Self::with_transport(
-            credentials,
-            Arc::new(ReqwestTransport::new()?),
-        ))
+        Ok(Self::with_transport(credentials, crate::http::platform()?))
     }
 
     /// Uses the same adapters with a caller-owned transport.
