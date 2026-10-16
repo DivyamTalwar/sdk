@@ -3,12 +3,13 @@ use super::*;
 pub(in crate::session::client) fn fixture(
     channel: TransportChannel,
 ) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
+    let channel = native::endpoint(channel, Some("Bearer fixture".parse().unwrap()), None);
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
+        connections: crate::session::Connections::new(),
+        executor: std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
-        authorization: Some("Bearer fixture".parse().unwrap()),
-        credential: None,
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
         routes: BTreeMap::new(),

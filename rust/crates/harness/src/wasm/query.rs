@@ -25,6 +25,7 @@ fn busy() -> JsValue {
 #[wasm_bindgen]
 pub struct WasmTaskVolume {
     pub(super) volume: Arc<TaskVolume<dyn StreamProvider>>,
+    pub(super) connections: Option<acyclic_stream::session::Connections>,
 }
 
 #[wasm_bindgen]
@@ -37,6 +38,7 @@ impl WasmTaskVolume {
             .await
             .map_err(error)?;
         Ok(Self {
+            connections: stream.connections(),
             volume: Arc::new(volume),
         })
     }
@@ -49,6 +51,7 @@ impl WasmTaskVolume {
             .await
             .map_err(error)?;
         Ok(Self {
+            connections: stream.connections(),
             volume: Arc::new(volume),
         })
     }

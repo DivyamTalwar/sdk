@@ -1,105 +1,110 @@
-//! The browser owns no recovery or transport state outside the Rust client.
+//! Browser handles for the Rust file client; platform recovery owns draining.
 use super::{
+    file_worker::{Command, State, start},
     json::{from_js, to_js},
     query::WasmTaskVolume,
 };
+use crate::client::mailbox;
 use crate::client::{FileClient, FileClientError, FileClientLimits};
-use acyclic_stream::StreamProvider;
-use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
-type Inner = FileClient<dyn StreamProvider, dyn StreamProvider>;
-fn error(value: impl std::fmt::Display) -> JsValue {
+pub(super) fn error(value: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&value.to_string())
 }
-fn admission_error(value: FileClientError) -> JsValue {
+pub(super) fn admission_error(value: FileClientError) -> JsValue {
     to_js(&value).unwrap_or_else(|error| error)
 }
 
-/// A Rust client with a private volume outbox and a platform task volume.
+/// One ordered Rust owner of private outbox and remote task publication.
 #[wasm_bindgen]
 pub struct WasmFileClient {
-    inner: RefCell<Option<Inner>>,
+    commands: mailbox::Sender<Command>,
+    state: Rc<State>,
 }
 
 #[wasm_bindgen]
 impl WasmFileClient {
+    /// Restores intent, then drains remote targets after enqueue and push recovery.
     #[wasm_bindgen]
     pub async fn open(
         outbox: &WasmTaskVolume,
         target: &WasmTaskVolume,
         #[wasm_bindgen(unchecked_param_type = "FileClientLimits")] limits: JsValue,
     ) -> Result<WasmFileClient, JsValue> {
-        let limits: FileClientLimits = from_js(limits)?;
-        let inner = FileClient::open(outbox.volume.clone(), target.volume.clone(), limits)
-            .await
-            .map_err(admission_error)?;
-        Ok(Self {
-            inner: RefCell::new(Some(inner)),
-        })
+        let inner = FileClient::open(
+            outbox.volume.clone(),
+            target.volume.clone(),
+            from_js::<FileClientLimits>(limits)?,
+        )
+        .await
+        .map_err(admission_error)?;
+        let (commands, state) = start(inner, target).await?;
+        Ok(Self { commands, state })
     }
 
-    /// Queue an immutable task request in the caller's private volume.
+    /// Length admission happens in Rust before this JavaScript handle is copied.
     #[wasm_bindgen]
     pub async fn enqueue(
         &self,
         #[wasm_bindgen(unchecked_param_type = "FileKey")] key: JsValue,
         bytes: js_sys::Uint8Array,
     ) -> Result<(), JsValue> {
-        let key = from_js(key)?;
-        let mut inner = self
-            .inner
-            .try_borrow_mut()
-            .map_err(error)?
-            .take()
-            .ok_or_else(|| error("client publication is already running"))?;
-        let length = u64::from(bytes.length());
-        let result = inner
-            .enqueue_with(key, length, || {
-                let bytes = bytes.to_vec();
-                crate::client::validate_offline_request(&bytes)?;
-                Ok(bytes.into())
+        let (reply, result) = mailbox::channel();
+        self.commands
+            .send(Command::Enqueue {
+                key: from_js(key)?,
+                bytes,
+                reply,
             })
             .await
-            .map_err(admission_error);
-        *self.inner.try_borrow_mut().map_err(error)? = Some(inner);
-        result
+            .map_err(|()| error("client owner stopped"))?;
+        result.await.map_err(|()| error("client owner stopped"))?
     }
 
-    /// Drain requests in durable enqueue order. Reconnects resume the same files.
+    /// Attempts publication now. Indeterminate requests remain durably pending.
     #[wasm_bindgen]
     pub async fn flush(&self) -> Result<usize, JsValue> {
-        let mut inner = self
-            .inner
-            .try_borrow_mut()
-            .map_err(error)?
-            .take()
-            .ok_or_else(|| error("client publication is already running"))?;
-        let result = inner.flush().await.map_err(admission_error);
-        *self.inner.try_borrow_mut().map_err(error)? = Some(inner);
-        result
+        let (reply, result) = mailbox::channel();
+        self.commands
+            .send(Command::Flush(reply))
+            .await
+            .map_err(|()| error("client owner stopped"))?;
+        result.await.map_err(|()| error("client owner stopped"))?
     }
 
+    /// Waits for automatic remote draining, without transport or retry code in JS.
+    #[wasm_bindgen(js_name = whenIdle)]
+    pub async fn when_idle(&self) -> Result<(), JsValue> {
+        let (reply, result) = mailbox::channel();
+        self.commands
+            .send(Command::Idle(reply))
+            .await
+            .map_err(|()| error("client owner stopped"))?;
+        result.await.map_err(|()| error("client owner stopped"))?
+    }
+
+    /// Current pending count derived from the owned Rust client.
     #[wasm_bindgen]
-    pub fn pending(&self) -> Result<usize, JsValue> {
-        Ok(self
-            .inner
-            .try_borrow()
-            .map_err(error)?
-            .as_ref()
-            .ok_or_else(|| error("client publication is already running"))?
-            .pending())
+    pub fn pending(&self) -> usize {
+        self.state.pending.get()
     }
 
+    /// Current acknowledged outbox cursor.
     #[wasm_bindgen(unchecked_return_type = "Cursor")]
     pub fn cursor(&self) -> Result<JsValue, JsValue> {
-        to_js(
-            self.inner
-                .try_borrow()
-                .map_err(error)?
-                .as_ref()
-                .ok_or_else(|| error("client publication is already running"))?
-                .cursor(),
-        )
+        to_js(&*self.state.cursor.borrow())
+    }
+
+    /// Most recent automatic publication error, including a retired rejection.
+    #[wasm_bindgen(js_name = lastError)]
+    pub fn last_error(&self) -> JsValue {
+        self.state.error.borrow().clone()
+    }
+
+    /// Stops waiting and leaves all unacknowledged intent in its volume.
+    #[wasm_bindgen]
+    pub fn close(&self) {
+        self.commands.close();
     }
 }

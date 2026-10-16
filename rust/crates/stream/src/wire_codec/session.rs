@@ -3,6 +3,14 @@
 use crate::{CommitId, RecordStream, StreamError, StreamPath, StreamProvider, wire};
 use prost::Message as _;
 
+/// Decodes a bounded physical session message; protocol validation remains in the pool.
+pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
+    if bytes.len() > crate::MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    wire::SessionFrame::decode(bytes).map_err(|_| StreamError::InvalidArgument)
+}
+
 /// Decodes the optional atomic history guard of a full-fidelity follow.
 pub fn preceding_follow(
     follow: &wire::SessionFollow,

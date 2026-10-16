@@ -3,6 +3,27 @@ import "fake-indexeddb/auto";
 import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
 beforeAll(initializeClientQueries);
+
+test("nested reference owner credentials are rejected before persistence", async () => {
+  const f = await setup();
+  const file = { volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "files", class: "project", owner: { kind: "project", id: "project" } }, path: "prompt.txt", version: "v1", descriptor: { sha256: Array(32).fill(1), byte_length: 1, media_type: "text/plain" }, display_name: "prompt" };
+  const command = JSON.parse(new TextDecoder().decode(encode.encode("pinned")));
+  const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+  await f.client.enqueue(request("pinned.json"), bytes({ ...command, payload: { content: file } }));
+  const before = await f.outbox.head();
+  for (const container of ["content", "artifacts", "references"]) {
+    for (const key of ["token", "Authorization", "credential", "bearer", "unexpected"]) {
+      const reference = structuredClone(file);
+      Object.assign(reference.volume.owner, { [key]: "secret" });
+      const payload = { [container]: container === "content" ? reference : [reference] };
+      await expect(f.client.enqueue(request("owner-token.json"), bytes({ ...command, payload }))).rejects.toMatchObject({ kind: "Harness" });
+      expect(f.client.pending()).toBe(1);
+      expect(await f.outbox.head()).toEqual(before);
+    }
+  }
+  expect(await f.client.flush()).toBe(1);
+  f.free();
+});
 const encode = { encode: (operationId: string) => new TextEncoder().encode(JSON.stringify({ operationId, authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} })) };
 const limits = { commands: 8n, bytes: 4096n, durability: "Accepted" } as const;
 const queryLimits = { files: 32n, segments: 64n, bytes: 8192n };

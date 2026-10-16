@@ -28,8 +28,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(error)) if grpc::retryable(&error) => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&grpc::status(&error)),
+                            Some(Err(StreamError::Unavailable)) => self.reconnect(&node)?,
+                            Some(Err(error)) => self.fail_link(&node,&error),
                             None => self.reconnect(&node)?,
                         }
                     }
@@ -288,9 +288,9 @@ impl Pool {
                         }
                         let records = route.records.clone();
                         self.remove(id)?;
-                        tokio::spawn(async move {
+                        self.executor.spawn(Box::pin(async move {
                             let _ = records.send(Err(error)).await;
-                        });
+                        }));
                         return Ok(());
                     }
                 }
@@ -317,9 +317,9 @@ impl Pool {
                     let _ = ready.send(Ok(id));
                 }
                 let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
-                tokio::spawn(async move {
+                self.executor.spawn(Box::pin(async move {
                     let _ = route.records.send(Err(error)).await;
-                });
+                }));
                 Ok(())
             }
             Some(Body::Moved(moved)) => {
@@ -439,9 +439,9 @@ impl Pool {
                 let _ = ready.send(Err(error.clone()));
             }
             let records = route.records;
-            tokio::spawn(async move {
+            self.executor.spawn(Box::pin(async move {
                 let _ = records.send(Err(error)).await;
-            });
+            }));
         }
     }
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
@@ -458,9 +458,9 @@ impl Pool {
                 }
                 let error = error.clone();
                 let records = route.records;
-                tokio::spawn(async move {
+                self.executor.spawn(Box::pin(async move {
                     let _ = records.send(Err(error)).await;
-                });
+                }));
             }
         }
     }
@@ -472,9 +472,9 @@ impl Pool {
             }
             let error = error.clone();
             let records = route.records;
-            tokio::spawn(async move {
+            self.executor.spawn(Box::pin(async move {
                 let _ = records.send(Err(error)).await;
-            });
+            }));
         }
     }
 }

@@ -1,20 +1,25 @@
 use super::sync::{Arc, AtomicU64, Mutex, Ordering};
 use super::*;
-use crate::{RecordStream, grpc};
-use futures::{future::BoxFuture, stream::FuturesUnordered};
+use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
+use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-use tonic::{
-    Request,
-    metadata::{Ascii, MetadataValue},
-    transport::Channel as TransportChannel,
-};
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native::Connect;
+#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+use tonic::transport::Channel as TransportChannel;
+pub mod transport;
+use transport::Endpoint;
 
 mod admissions;
 use admissions::Admissions;
+#[cfg(not(target_arch = "wasm32"))]
 mod cache;
 mod credit;
 mod deadline;
 mod observation;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::Cache;
 use observation::Observation;
 mod outbound;
@@ -37,23 +42,18 @@ mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]
 pub use progress::verify_latest_progress;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
-type Connect = std::sync::Arc<
-    dyn Fn(wire::SessionNode) -> BoxFuture<'static, Result<TransportChannel, StreamError>>
-        + Send
-        + Sync,
->;
 type Ready = (String, Link, Response);
-type Dial = BoxFuture<'static, (String, u64, Result<Ready, StreamError>)>;
-type Response = tonic::Streaming<wire::SessionFrame>;
-type Read = BoxFuture<
+type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
+type Response = transport::Responses;
+type Read = BoxProviderFuture<
     'static,
     (
         String,
         u64,
         Response,
-        Option<Result<wire::SessionFrame, tonic::Status>>,
+        Option<Result<wire::SessionFrame, StreamError>>,
     ),
 >;
 const QUEUE: usize = 2;
@@ -62,6 +62,8 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 /// Shared pool owning one bidirectional Streams session per authenticated node.
 #[derive(Clone)]
 pub struct Client {
+    connections: super::Connections,
+    executor: std::sync::Arc<dyn super::runtime::Executor>,
     commands: mpsc::Sender<Command>,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
@@ -90,7 +92,7 @@ enum Command {
         progress: Arc<Progress>,
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
-        observation: crate::obs::OperationSpan,
+        observation: super::runtime::OperationSpan,
     },
 }
 struct Route {
@@ -108,30 +110,30 @@ struct Route {
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
     ready: Option<oneshot::Sender<Result<u64, StreamError>>>,
-    observation: crate::obs::OperationSpan,
+    observation: super::runtime::OperationSpan,
 }
 struct Link {
     observation: Option<Observation>,
     epoch: u64,
     credit: wire::SessionWindow,
-    channel: TransportChannel,
+    channel: Endpoint,
     sender: Arc<Outbound<wire::SessionFrame>>,
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
 }
 struct Pool {
+    connections: super::Connections,
+    executor: std::sync::Arc<dyn super::runtime::Executor>,
     identity: Bytes,
-    authorization: Option<MetadataValue<Ascii>>,
-    credential: Option<grpc::CredentialProvider>,
-    connect: Connect,
+    connect: std::sync::Arc<transport::Connect>,
     home: String,
     routes: BTreeMap<u64, Route>,
     links: BTreeMap<String, Link>,
     reads: FuturesUnordered<Read>,
     dials: BTreeMap<String, Dial>,
     pending: VecDeque<(u64, u64)>,
-    home_channel: TransportChannel,
+    home_channel: Endpoint,
     next_link: u64,
     active: Arc<AtomicU64>,
     admissions: Arc<Admissions>,
@@ -157,33 +159,14 @@ impl Drop for Link {
     }
 }
 impl Client {
-    pub(crate) fn open(
-        channel: TransportChannel,
-        authorization: Option<MetadataValue<Ascii>>,
-        credential: Option<grpc::CredentialProvider>,
-        ca: Option<std::sync::Arc<[u8]>>,
-        verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
-    ) -> Self {
-        let connect: Connect = std::sync::Arc::new(move |node| {
-            let ca = ca.clone();
-            let verifier = verifier.clone();
-            Box::pin(async move {
-                match verifier {
-                    Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
-                    None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,
-                }
-                .map_err(|_| StreamError::Unavailable)
-            })
-        });
-        Self::with_connector(channel, authorization, credential, connect)
-    }
-    fn with_connector(
-        channel: TransportChannel,
-        authorization: Option<MetadataValue<Ascii>>,
-        credential: Option<grpc::CredentialProvider>,
-        connect: Connect,
+    /// Shares one protocol pool across platform endpoints and every logical follow.
+    pub fn with_transport(
+        channel: Endpoint,
+        connect: std::sync::Arc<transport::Connect>,
+        executor: std::sync::Arc<dyn super::runtime::Executor>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
+        let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
@@ -192,9 +175,9 @@ impl Client {
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
+            connections: connections.clone(),
+            executor: executor.clone(),
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
-            authorization,
-            credential,
             connect,
             home: String::new(),
             routes: BTreeMap::new(),
@@ -214,12 +197,14 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        tokio::spawn(async move {
+        executor.spawn(Box::pin(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
-        });
+        }));
         Self {
+            connections,
+            executor,
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
@@ -229,7 +214,14 @@ impl Client {
             abandoned,
         }
     }
-    pub(crate) fn abandon_pending(&self) -> Result<(), StreamError> {
+    /// Observes successful handshakes without depending on further task records.
+    #[must_use]
+    pub fn connections(&self) -> super::Connections {
+        self.connections.clone()
+    }
+
+    /// Cancels pending handshakes when their credential scope ends.
+    pub fn abandon_pending(&self) -> Result<(), StreamError> {
         self.attempt_epoch
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
@@ -271,14 +263,13 @@ impl Client {
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
         };
-        Ok(self
+        Ok(super::runtime::boxed(self
             .follow_data_with_ack(follow, from, acknowledge)
             .await?
             .map(|data| match data?.item {
                 Some(Item::Record(record)) => wire_codec::record(record),
                 _ => Err(StreamError::Unavailable),
-            })
-            .boxed())
+            })))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
@@ -286,8 +277,8 @@ impl Client {
         &self,
         follow: wire::SessionFollow,
         from: u64,
-    ) -> Result<BoxStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
-        Ok(self.follow_data_with_ack(follow, from, true).await?.boxed())
+    ) -> Result<BoxProviderStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
+        Ok(super::runtime::boxed(self.follow_data_with_ack(follow, from, true).await?))
     }
     pub(crate) async fn follow_data_with_ack(
         &self,
@@ -295,7 +286,7 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<
-        impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + Send + 'static + use<>,
+        impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + crate::ProviderTask + 'static + use<>,
         StreamError,
     > {
         StreamPath::validate(&follow.path)?;
@@ -323,14 +314,14 @@ impl Client {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         });
-        Ok(self
-            .open_kind(kind, 0, true)
-            .await?
-            .map(|item| match item? {
-                Received::Child(child) => Ok(child),
-                _ => Err(StreamError::Unavailable),
-            })
-            .boxed())
+        Ok(super::runtime::boxed(
+            self.open_kind(kind, 0, true)
+                .await?
+                .map(|item| match item? {
+                    Received::Child(child) => Ok(child),
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
     }
     async fn open_kind(
         &self,
@@ -338,7 +329,7 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<
-        impl futures::Stream<Item = Result<Received, StreamError>> + Send + 'static + use<>,
+        impl futures::Stream<Item = Result<Received, StreamError>> + crate::ProviderTask + 'static + use<>,
         StreamError,
     > {
         let (records, receiver) = mpsc::channel(QUEUE);
@@ -385,10 +376,7 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(deadline::until(
-                registration,
-                tokio::time::sleep(std::time::Duration::from_secs(10)),
-            ))
+            .scope(deadline::until(registration, self.executor.sleep(10_000)))
             .await
             .unwrap_or(Err(StreamError::DeadlineElapsed));
         if let Err(error) = registered {

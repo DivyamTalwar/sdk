@@ -66,6 +66,7 @@ use tool::*;
 mod wire;
 #[cfg(target_arch = "wasm32")]
 mod file_client;
+mod file_worker;
 #[cfg(target_arch = "wasm32")]
 mod query;
 

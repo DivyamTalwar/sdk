@@ -130,3 +130,17 @@ fn offline_oracle_detects_both_missing_policy_and_always_rejection() {
         assert!(std::panic::catch_unwind(|| offline::exercise(b"{}", broken)).is_err());
     }
 }
+
+#[test]
+fn negative_control_ignoring_owner_token_is_detected() {
+    let failure = std::panic::catch_unwind(|| {
+        offline::exercise(b"pinned", offline::broken_discard_owner_token)
+    })
+    .expect_err("owner token bypass was accepted");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("nested owner metadata"), "{message}");
+}
