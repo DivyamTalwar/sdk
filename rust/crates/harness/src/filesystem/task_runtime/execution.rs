@@ -61,6 +61,40 @@ where
         tools: ToolRegistry,
         output: Option<&VolumeRef>,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
+        let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
+        self.stock_execution_with_context(
+            task_context,
+            fence,
+            turn,
+            model,
+            provider,
+            context,
+            tools,
+            output,
+        )
+        .await
+    }
+
+    pub(in crate::filesystem) async fn stock_execution_with_context(
+        &self,
+        task_context: Arc<TaskContext>,
+        fence: LeaseFence,
+        turn: OperationId,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        context: ContextPipeline,
+        tools: ToolRegistry,
+        output: Option<&VolumeRef>,
+    ) -> Result<FilesystemTaskExecution<P, A, O>> {
+        let task = task_context.durable_task_id().ok_or_else(|| {
+            Error::Unauthorized("stock model has no admitted task context".into())
+        })?;
+        if !task_context.original_task_binding_matches(task, &fence) {
+            return Err(Error::Unauthorized(
+                "stock model context differs from its worker lease".into(),
+            ));
+        }
+        task_context.owned_task_binding(None)?;
         let admission = self.host.observe_admission(task).await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
@@ -72,7 +106,6 @@ where
                 "persistent local stock composition has no routed execution provider".into(),
             ));
         }
-        let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
         let task_context = match output {
             Some(volume) => task_context.with_output_volume(volume).await?,
             None => task_context,

@@ -24,7 +24,11 @@ where
         payload: Value,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
-        let context = Arc::clone(context);
+        let context = if io.is_none() && context.owned_mailbox.is_none() {
+            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
+        } else {
+            Arc::clone(context)
+        };
         let turn = workflow.operation_id;
         let stock = admission.task.name == "acyclic.stock_turn"
             || super::super::child_agent::is_child(admission);
@@ -197,8 +201,8 @@ where
         BoundedContentFuture::new(io, || async {
             let execution = self
                 .runtime
-                .stock_execution(
-                    task,
+                .stock_execution_with_context(
+                    Arc::clone(&context),
                     fence.clone(),
                     turn,
                     binding.model.clone(),
@@ -288,13 +292,7 @@ where
             ));
         };
         drop(latest);
-        let ordinary;
-        let reader = if io.is_some() {
-            context
-        } else {
-            ordinary = self.runtime.task_context(task, fence.clone()).await?;
-            &ordinary
-        };
+        let reader = context;
         // The durable reader authenticates the committed receive, cursor and original parcel.
         let bytes = reader
             .read_received_mail(
