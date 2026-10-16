@@ -54,15 +54,17 @@ fn assert_projection(value: &Value) {
         let args = match adapter {
             Adapter::Anthropic => wire["messages"][1]["content"][0]["input"].clone(),
             Adapter::Gemini => wire["contents"][1]["parts"][0]["functionCall"]["args"].clone(),
-            Adapter::Chat => serde_json::from_str(
+            Adapter::Chat => crate::projection::arguments::literal(
                 wire["messages"][2]["tool_calls"][0]["function"]["arguments"]
                     .as_str()
-                    .unwrap(),
+                    .unwrap()
+                    .as_bytes(),
             )
             .unwrap(),
-            Adapter::Responses => {
-                serde_json::from_str(wire["input"][2]["arguments"].as_str().unwrap()).unwrap()
-            }
+            Adapter::Responses => crate::projection::arguments::literal(
+                wire["input"][2]["arguments"].as_str().unwrap().as_bytes(),
+            )
+            .unwrap(),
         };
         assert!(args.is_object(), "{adapter:?}: non-object wire arguments");
         assert_eq!(
@@ -101,9 +103,32 @@ fn raw_marker_names_and_non_object_fixtures_are_preserved() {
     ] {
         assert_projection(&value);
     }
-    // Negative control: sending any original non-object directly violates the
-    // wire invariant; wrapping it twice would violate the idempotence oracle.
+}
+
+#[test]
+#[should_panic(expected = "normalized.is_object()")]
+fn negative_control_unwrapped_arguments_fail_the_same_property() {
     let original = json!([1]);
-    assert!(!original.is_object());
-    assert_ne!(json!({"_raw":{"_raw":original}}), json!({"_raw":original}));
+    let wire = serde_json::to_vec(&original).unwrap();
+    let normalized = serde_json::from_slice(&wire).unwrap();
+    crate::projection::arguments::assert_value(&original, &normalized);
+}
+
+#[test]
+#[should_panic]
+fn negative_control_double_wrapping_changes_the_original_value() {
+    let original = json!([1]);
+    let normalized = json!({"_raw":{"_raw":original}});
+    crate::projection::arguments::assert_value(&original, &normalized);
+}
+
+#[test]
+fn negative_control_default_value_decode_misinterprets_literal_marker_keys() {
+    let original = json!({"$serde_json::private::RawValue":"null","nested":[]});
+    let bytes = serde_json::to_vec(&original).unwrap();
+    assert!(serde_json::from_slice::<Value>(&bytes).is_err());
+    assert_eq!(
+        crate::projection::arguments::literal(&bytes).unwrap(),
+        original
+    );
 }

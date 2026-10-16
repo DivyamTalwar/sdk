@@ -65,7 +65,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
         return;
     }
     if kind == b'P' {
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
+        if let Ok(value) = crate::projection::arguments::literal(input) {
             crate::projection::arguments::assert_normalization(&value);
         }
         return;
