@@ -135,6 +135,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                 &self.volume.storage_name(&mut None)?,
             )?;
             let workspace = self.reader.host.open(&reference, Some(&io)).await?;
+            self.authorize_policy(&workspace, &io).await?;
             let (provider, path) = self
                 .reader
                 .host
@@ -241,6 +242,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         &acyclic_fs::CancellationToken::new(),
                     )?;
                     source.authorize(&query, &io).await?;
+                    source.authorize_policy(&current.workspace(), &io).await?;
                     let next = generation(&current.workspace(), &record, &io).await?;
                     let maximum = u32::try_from(source.budget.items_returned)
                         .map_err(|_| task_volume::Error::LimitExceeded)?;
@@ -296,5 +298,31 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             &mut Some(&mut io.history_io()),
         )?;
         Ok(())
+    }
+
+    async fn authorize_policy(
+        &self,
+        workspace: &acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
+        io: &PreparationIo,
+    ) -> crate::Result<()> {
+        use super::access;
+        use acyclic_fs::access::Action;
+        let label = crate::core::filesystem_scope_label(
+            self.reader.scope.capabilities(),
+            &mut Some(&mut io.history_io()),
+        )?;
+        let view = access::access_view(
+            workspace,
+            &self.reader.scope,
+            None,
+            access::capability_payload(label, crate::conversation::VolumeOperation::Read, io)?,
+            None,
+            io,
+        )
+        .await?;
+        if view.0.generation_sensitive() {
+            return Err(crate::Error::FilesystemAccessConfiguration("file query"));
+        }
+        access::require_unrestricted(&view.0, &[Action::Read, Action::List], "file query")
     }
 }

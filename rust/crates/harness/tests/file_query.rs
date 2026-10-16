@@ -22,6 +22,10 @@ mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
 use objects::CountingObjects;
+#[path = "file_query/access.rs"]
+mod access;
+#[path = "support/access_policy.rs"]
+mod policy_support;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {
     tokio::time::timeout(std::time::Duration::from_secs(5), changes.next())
