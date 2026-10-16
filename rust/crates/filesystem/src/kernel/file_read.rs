@@ -573,7 +573,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                 reconciled?;
             }
             ReadAllocationStep::BeforeCopy(bytes) => {
-                self.accounting.check()?;
                 self.accounting.admit(WorkCounters {
                     bytes_copied: bytes,
                     ..WorkCounters::UNCHARGED
@@ -586,7 +585,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                 })?;
             }
             ReadAllocationStep::BeforeHash(bytes) => {
-                self.accounting.check()?;
                 self.accounting.admit(WorkCounters {
                     bytes_hashed: bytes,
                     ..WorkCounters::UNCHARGED
@@ -597,10 +595,8 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                     bytes_hashed: bytes,
                     ..WorkCounters::UNCHARGED
                 })?;
-                self.accounting.check()?;
             }
             ReadAllocationStep::BeforeItem => {
-                self.accounting.check()?;
                 self.accounting.admit(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
@@ -625,7 +621,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
     }
 
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), FsError> {
-        self.accounting.check()?;
         self.accounting.admit(delta)
     }
 
