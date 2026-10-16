@@ -1,3 +1,4 @@
+//! Composed-screen parity: layout, prompt routing, persistence and resize.
 #![cfg(feature = "tui")]
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, layout::Rect, text::Line};
 use acyclic_harness_tui::{Editor, PromptInput, Screen, Viewport};
@@ -109,4 +110,168 @@ proptest! {
         }
         prop_assert!(areas.prompt.height <= height / 2);
     }
+}
+
+#[test]
+fn mouse_hit_testing_uses_the_composed_prompt_area_and_copies_a_whole_grapheme()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness_tui::ratatui::style::Modifier;
+    use acyclic_harness_tui::{
+        InputEffect, PromptBox,
+        key_event::{
+            KeyCode, KeyEvent, KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind,
+        },
+    };
+    let screen = Screen::default();
+    let mut input = PromptInput::new(Editor::new("abc界d"));
+    let mut viewport = Viewport::default();
+    let mut terminal = Terminal::new(TestBackend::new(24, 10))?;
+    let mut area = Rect::default();
+    terminal.draw(|frame| {
+        area = PromptBox::input_area(screen.render(frame, &input, &mut viewport, 0, 1000).prompt);
+    })?;
+    input.mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 3,
+            row: area.y,
+            modifiers: M::NONE,
+        },
+        area,
+        &mut viewport,
+        1000,
+    );
+    input.key(
+        KeyEvent::new(KeyCode::Right, M::SHIFT),
+        1001,
+        usize::from(area.width),
+    );
+    assert_eq!(
+        input.key(
+            KeyEvent::new(KeyCode::Char('c'), M::CONTROL),
+            1002,
+            usize::from(area.width)
+        ),
+        vec![InputEffect::Copy("界".into())]
+    );
+    terminal.draw(|frame| {
+        screen.render(frame, &input, &mut viewport, 0, 1003);
+    })?;
+    assert_eq!(
+        terminal.backend().buffer()[(area.x + 3, area.y)].symbol(),
+        "界"
+    );
+    assert!(
+        terminal.backend().buffer()[(area.x + 3, area.y)]
+            .modifier
+            .contains(Modifier::REVERSED)
+    );
+    Ok(())
+}
+
+#[test]
+fn multiline_prompt_growth_does_not_capture_transcript_page_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness_tui::{
+        Action, InputEffect,
+        key_event::{KeyCode, KeyEvent, KeyModifiers as M},
+    };
+    let rows: Vec<_> = (0..20)
+        .map(|index| Line::from(format!("message {index}")))
+        .collect();
+    let screen = Screen {
+        transcript: &rows,
+        ..Screen::default()
+    };
+    let text = (0..10)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut input = PromptInput::new(Editor::new(&text));
+    let mut viewport = Viewport::default();
+    let mut terminal = Terminal::new(TestBackend::new(30, 10))?;
+    terminal.draw(|frame| {
+        let areas = screen.render(frame, &input, &mut viewport, 0, 1000);
+        assert_eq!(areas.prompt.height, 5);
+    })?;
+    let input_scroll = viewport.scroll;
+    assert!(input_scroll > 0);
+    assert_eq!(
+        input.key(KeyEvent::new(KeyCode::PageUp, M::NONE), 1001, 28),
+        vec![InputEffect::Host(Action::TranscriptUp)]
+    );
+    terminal.draw(|frame| {
+        screen.render(frame, &input, &mut viewport, 4, 1002);
+    })?;
+    assert_eq!(viewport.scroll, input_scroll);
+    assert_eq!(input.editor.text(), text);
+    assert!(visible(&terminal).contains("message 4"));
+    assert!(!visible(&terminal).contains("message 0"));
+    Ok(())
+}
+
+#[test]
+fn large_paste_is_compact_in_layout_and_expands_in_queued_submission()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness_tui::{
+        InputEffect,
+        key_event::{KeyCode, KeyEvent, KeyModifiers as M},
+    };
+    let pasted = (0..12)
+        .map(|index| format!("pasted line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut input = PromptInput::default();
+    input.busy = true;
+    input.paste(&pasted, 1000);
+    let mut terminal = Terminal::new(TestBackend::new(40, 12))?;
+    let mut viewport = Viewport::default();
+    terminal.draw(|frame| {
+        Screen::default().render(frame, &input, &mut viewport, 0, 1001);
+    })?;
+    assert!(visible(&terminal).contains("[Pasted 12 lines]"));
+    assert_eq!(
+        input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1002, 38),
+        vec![InputEffect::Submit {
+            text: pasted,
+            queued: true,
+            edit: None
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn composed_prompt_restores_each_item_draft_and_shared_history_from_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness_tui::{
+        key_event::{KeyCode, KeyEvent, KeyModifiers as M},
+        load_draft, load_history, save_draft, save_history,
+    };
+    let directory = tempfile::tempdir()?;
+    let first = directory.path().join("first-draft");
+    let second = directory.path().join("second-draft");
+    let history = directory.path().join("history.json");
+    save_draft(&first, &Editor::new("first item draft"))?;
+    save_draft(&second, &Editor::new("second item draft"))?;
+    let mut input = PromptInput::new(Editor::new("earlier prompt"));
+    input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 38);
+    save_history(&history, input.history())?;
+    let mut terminal = Terminal::new(TestBackend::new(40, 12))?;
+    let mut viewport = Viewport::default();
+    for (path, expected) in [(&first, "first item draft"), (&second, "second item draft")] {
+        let input = PromptInput::new(load_draft(path)?);
+        terminal.draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 1000);
+        })?;
+        assert!(visible(&terminal).contains(expected));
+    }
+    let mut restored = PromptInput::default();
+    restored.replace_history(load_history(&history)?);
+    restored.key(KeyEvent::new(KeyCode::Up, M::NONE), 1001, 38);
+    terminal.draw(|frame| {
+        Screen::default().render(frame, &restored, &mut viewport, 0, 1002);
+    })?;
+    assert!(visible(&terminal).contains("earlier prompt"));
+    Ok(())
 }
