@@ -238,8 +238,9 @@ pub(crate) fn body_named(
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
                 map.insert("instructions".into(), Value::String(join(system, "\n\n")));
-                map.insert("tool_choice".into(), json!("auto"));
-                map.insert("parallel_tool_calls".into(), json!(true));
+                map.entry("tool_choice").or_insert_with(|| json!("auto"));
+                map.entry("parallel_tool_calls")
+                    .or_insert_with(|| json!(true));
                 if map.get("reasoning").is_some_and(Value::is_null) {
                     map.remove("reasoning");
                 }

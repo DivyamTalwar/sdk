@@ -50,6 +50,8 @@ impl HttpTransport for Server {
     }
 }
 
+#[path = "codex_control_tests.rs"]
+mod controls;
 #[path = "codex_native_tests.rs"]
 mod native;
 
