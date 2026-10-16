@@ -79,12 +79,17 @@ test("installed browser entry executes the ordinary registered runtime", async (
     const command = crypto.randomUUID();
     const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
     const operation = crypto.randomUUID();
-    const input = { operation_id: command, kind: "acyclic.model.v1", payload };
+    const receiveOperation = crypto.randomUUID();
+    const receivePayload = await runtime.stage(receiveOperation, "stock-receive", new TextEncoder().encode(JSON.stringify({ after: 0 })));
+    const input = {
+      receive: { operation_id: receiveOperation, kind: "acyclic.mail.receive.v1", payload: receivePayload },
+      model: { operation_id: command, kind: "acyclic.model.v1", payload },
+    };
     const stock = await runtime.admit(operation, "acyclic.stock_turn", "1", input);
     expect(stock.kind).toBe("accepted");
     if (stock.kind !== "accepted") throw new Error(`stock admission ${stock.kind}`);
     expect(await runtime.admit(operation, "acyclic.stock_turn", "1", input)).toEqual(stock);
-    await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, operation_id: crypto.randomUUID() })).rejects.toThrow();
+    await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, model: { ...input.model, operation_id: crypto.randomUUID() } })).rejects.toThrow();
     expect((await runtime.runOperation(worker, stock.task_id, 4))?.kind).toBe("completed");
     expect(await runtime.outcome(stock.task_id)).toEqual({ Succeeded: { text: "stock result", metadata: {}, attachments: [], steps: 1n } });
     expect(generations).toBe(1);
