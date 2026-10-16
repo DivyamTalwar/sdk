@@ -224,7 +224,10 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         render_bytes,
         ..Limits::default()
     };
-    let tool = crate::tool::files::read()?;
+    let tool = crate::tools::defaults()?
+        .get("read", None, None)?
+        .ok_or_else(|| Error::NotFound("read tool".into()))?
+        .clone();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "read-1".into(),
@@ -320,7 +323,10 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let tool = crate::tool::files::write()?;
+    let tool = crate::tools::defaults()?
+        .get("write", None, None)?
+        .ok_or_else(|| Error::NotFound("write tool".into()))?
+        .clone();
     run_admitted_file_case(&storage, limits, move |task| {
         let tool = tool.clone();
         async move {
@@ -478,6 +484,11 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         ..Limits::default()
     };
     let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
+        MemoryStream,
+        MemoryAuthorityBackend,
+        MemoryObjectBackend,
+    >(None, limits.file_bytes)?)?;
     tools.register((storage.list_files_tool(limits)?, None), &mut None, None)?;
     let file = storage
         .stage(
@@ -564,7 +575,12 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     );
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].tools.iter().any(|tool| tool.name == "read"));
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "read")
+    );
     assert!(requests[1].messages.iter().any(|message| matches!(
         &message.content,
         crate::model::ModelContent::Part(crate::model::ModelContentPart::ToolResult { .. })

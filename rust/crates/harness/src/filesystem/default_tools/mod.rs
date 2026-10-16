@@ -151,6 +151,7 @@ pub fn recursive_tools<
         tools.register(
             (
                 Tool {
+                    hook_names: &[],
                     definition: definition.clone(),
                     executor: Arc::new(RecursiveExecutor {
                         source,

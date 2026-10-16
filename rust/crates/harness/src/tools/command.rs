@@ -51,20 +51,30 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod properties {
+mod tests {
     use super::*;
     use proptest::prelude::*;
 
     proptest! {
-        // Property: single-quoted arguments round trip without shell expansion.
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // Quoting is a lossless codec for every non-NUL Unicode argument,
+        // including empty strings, metacharacters and whitespace.
         #[test]
-        fn quoted_arguments_round_trip(words in prop::collection::vec("[^\u{0}']{0,24}", 1..8)) {
-            let command = words.iter().map(|word| format!("'{word}'")).collect::<Vec<_>>().join(" ");
-            prop_assert_eq!(parse_command(&command)?, words);
+        fn quoted_arguments_round_trip(
+            arguments in prop::collection::vec(
+                prop::collection::vec(any::<char>().prop_filter("non-NUL", |c| *c != '\0'), 0..32)
+                    .prop_map(|characters| characters.into_iter().collect::<String>()),
+                1..8,
+            ),
+        ) {
+            let command = arguments.iter().map(|argument| {
+                format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\""))
+            }).collect::<Vec<_>>().join(" ");
+            prop_assert_eq!(parse_command(&command).unwrap(), arguments);
         }
 
         #[test]
-        fn nul_is_rejected(prefix in ".{0,32}", suffix in ".{0,32}") {
+        fn nul_is_always_rejected(prefix in ".{0,64}", suffix in ".{0,64}") {
             let command = format!("{prefix}\0{suffix}");
             prop_assert!(parse_command(&command).is_err());
         }

@@ -2,6 +2,8 @@ use super::*;
 
 pub(super) struct Configuration<'a> {
     pub files: Arc<LocalFilesystem>,
+    #[cfg(feature = "native-execution")]
+    pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
@@ -15,8 +17,6 @@ pub(super) struct Configuration<'a> {
     pub session_limits: SessionLimits,
     pub concurrency: usize,
     pub clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    #[cfg(feature = "native-execution")]
-    pub workspace_tools: Arc<dyn crate::tool::ToolExecutor>,
 }
 
 pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
@@ -70,7 +70,6 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(config.journal.capability(operation, &mut None)?);
     }
-    grants.push("lifecycle:manage".to_owned());
     let signed = config.issuer.issue(
         "owner",
         &Capabilities::new(grants),
@@ -102,15 +101,20 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         config.session_limits,
         config.concurrency,
         config.limits.file_bytes,
-        config.clock,
+        config.clock.clone(),
         None,
         &[creation],
         &crate::durable_tool::ResumableToolRegistry::default(),
         None,
     )
     .await?
-    .with_output_volume(config.project, None)?;
+    .with_output_volume(config.scratch, None)?;
     #[cfg(feature = "native-execution")]
-    let runtime = runtime.with_workspace_tools(config.workspace_tools)?;
+    let runtime = match config.workspace {
+        Some(workspace) => runtime.with_workspace_tools(Arc::new(
+            checkout_tools::CheckoutTools::new(workspace, config.project, config.clock)?,
+        ))?,
+        None => runtime,
+    };
     Ok((Arc::new(runtime), signed))
 }

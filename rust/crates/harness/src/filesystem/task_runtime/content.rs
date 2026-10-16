@@ -6,19 +6,20 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Binds workspace command execution before the runtime is shared.
+    /// Binds workspace command execution before sharing the runtime.
     pub fn with_workspace_tools(
         mut self,
         executor: Arc<dyn crate::tool::ToolExecutor>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         if self._native_configuration_custody.is_some() {
-            return Err(Error::Unsupported(
-                "native workspace binding requires its original configuration work".into(),
-            ));
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "workspace tool binding requires ordinary runtime construction",
+            });
         }
         let harness = Arc::get_mut(&mut self.harness).ok_or_else(|| {
-            Error::Conflict("bind workspace tools before sharing the task runtime".into())
+            Error::Conflict("bind workspace tools before sharing the runtime".into())
         })?;
         harness.workspace_tools = Some(executor);
         Ok(self)

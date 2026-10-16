@@ -4,9 +4,13 @@ impl ToolRegistry {
     /// Adds a disjoint registry, retaining every pinned revision and model selection.
     pub fn extend(&mut self, mut other: Self) -> Result<()> {
         if self
-            .selected
+            .versions
             .keys()
-            .any(|name| other.selected.contains_key(name))
+            .any(|key| other.versions.contains_key(key))
+            || self
+                .selected
+                .keys()
+                .any(|name| other.selected.contains_key(name))
         {
             return Err(Error::Conflict(
                 "tool registries contain the same logical name".into(),
