@@ -1,6 +1,6 @@
 //! Native host hook fixtures over the shared external-executor request API.
 use acyclic_harness::external_executor::*;
-#[cfg(feature = "filesystem")]
+#[cfg(any(feature = "filesystem", feature = "hooks"))]
 use acyclic_harness::task_volume;
 use acyclic_harness::{Error, Result};
 use serde::Deserialize;
@@ -17,6 +17,9 @@ mod local;
 
 #[path = "external_hooks/answers.rs"]
 mod answers;
+#[path = "external_hooks/append_model.rs"]
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+mod append_model;
 #[path = "external_hooks/attachment_property.rs"]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod attachment_property;

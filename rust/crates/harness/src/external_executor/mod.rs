@@ -1,6 +1,7 @@
 //! External host hooks normalized into immutable task requests.
 
 mod answer;
+mod append;
 mod catalog;
 mod client;
 #[cfg(feature = "filesystem")]
@@ -26,6 +27,7 @@ mod tool_input;
 pub(crate) mod volume;
 
 pub use answer::hook_answer;
+pub(crate) use append::publish as publish_request;
 pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
 #[cfg(feature = "filesystem")]
 pub use commands::RequestCommands;

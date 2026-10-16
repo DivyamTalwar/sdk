@@ -9,7 +9,7 @@ use serde_json::Value;
 impl ExternalRequest {
     /// Publishes the original request and follows its immutable answer.
     /// Authentication and transport belong to the supplied platform provider.
-    /// A conflicting publication returns to the caller without a retry loop.
+    /// Concurrent writes to other paths retain the original immutable request.
     pub fn send<'a, P: StreamProvider + ?Sized, R: StreamProvider + ?Sized>(
         &'a self,
         requests: &'a TaskVolume<P>,
@@ -18,16 +18,7 @@ impl ExternalRequest {
     ) -> impl Future<Output = Result<Value>> + 'a {
         Box::pin(async move {
             let write = self.to_file(task.clone())?;
-            let snapshot = requests
-                .snapshot(&Query::File(write.key.clone()), 1)
-                .await?;
-            if let Some(existing) = snapshot.files.first() {
-                if existing != &write {
-                    return Err(Error::ImmutableConflict(write.key));
-                }
-            } else {
-                requests.append(snapshot.generation, &write).await?;
-            }
+            super::append::publish(requests, &write).await?;
             self.follow_result(results, task).await
         })
     }
