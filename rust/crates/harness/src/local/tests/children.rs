@@ -123,6 +123,36 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                     .await,
                     Err(crate::Error::Unauthorized(_))
                 ));
+                let (readable, _) = publisher
+                    .stage_once(
+                        OperationId::new(),
+                        "inputs/readable-wake.json",
+                        b"1",
+                        "application/json",
+                        "readable.json",
+                        None,
+                    )?
+                    .await?;
+                host.resume_workflow(
+                    child,
+                    slot.revision,
+                    readable,
+                    crate::IdempotencyKey::new("readable-wake")?,
+                    slot.waiting_command,
+                    &mut None,
+                )
+                .await?;
+                let WorkPull::Claimed(resumed) =
+                    host.pull_work(&worker, Some(operation), &mut None).await?
+                else {
+                    panic!("readable input did not wake the child");
+                };
+                host.start_task(&resumed, &mut None).await?;
+                assert_eq!(
+                    host.workflow_input(child, &LeaseFence::from(&resumed.reservation), None)
+                        .await?,
+                    Some((slot.revision, serde_json::json!(1)))
+                );
             }
             harness.advance(child, &harness.commands()?).await?;
             assert_eq!(provider.requests().len(), index);

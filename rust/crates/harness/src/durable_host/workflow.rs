@@ -330,21 +330,53 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?,
         )?;
         admission.limits.validate_file(&input, quota.work())?;
-        if slot.waiting_command.is_some() {
-            // A command wake carries no user input into the workflow reducer.
-            self.verify_owner(task, fence, false, quota.work()).await?;
-            return Ok(Some((slot.revision, Value::Null)));
-        }
         if !read_granted(&admission.grants, &input)? {
-            return Err(crate::scheduler::diagnostic(
+            require_host_wake(
+                input.descriptor(),
+                slot.waiting_command.is_some(),
                 quota.work(),
-                crate::wire::ErrorCode::Unauthorized,
-                "task cannot read retained workflow input",
-            ));
+            )?;
         }
         let value = self.read_json(&input, io).await?;
         self.verify_owner(task, fence, false, quota.work()).await?;
         drop((admission, input));
         Ok(Some((slot.revision, value)))
+    }
+}
+
+fn require_host_wake(
+    descriptor: &crate::conversation::FileDescriptor,
+    waiting: bool,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
+) -> Result<()> {
+    if !waiting || descriptor.byte_length() != 4 || descriptor.media_type() != "application/json" {
+        return Err(crate::scheduler::diagnostic(
+            work,
+            crate::wire::ErrorCode::Unauthorized,
+            "task cannot read retained workflow input",
+        ));
+    }
+    // Only the fixed public host signal can cross this grant boundary.
+    descriptor.verify(b"null", work)
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // The exception accepts exactly the public null bytes for a command wait.
+        #[test]
+        fn host_wake_grant_exception_is_only_the_exact_null_signal(
+            bytes in prop_oneof![Just(b"null".to_vec()), proptest::collection::vec(any::<u8>(), 0..17)],
+            json in any::<bool>(), waiting in any::<bool>(),
+        ) {
+            let media = if json { "application/json" } else { "text/plain" };
+            let descriptor = crate::conversation::FileDescriptor::from_bytes(&bytes, media, &mut None).unwrap();
+            prop_assert_eq!(require_host_wake(&descriptor, waiting, &mut None).is_ok(),
+                waiting && json && bytes == b"null");
+        }
     }
 }
