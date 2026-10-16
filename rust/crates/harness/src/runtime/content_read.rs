@@ -181,7 +181,7 @@ impl TaskContext {
         };
         #[cfg(feature = "filesystem")]
         let io = io.or(original.as_ref());
-        self.authorize_file_read(file, scope, io)?;
+        self.authorize_file_read(file, scope, scope.grants(), io)?;
         if range
             .offset
             .checked_add(range.length)
