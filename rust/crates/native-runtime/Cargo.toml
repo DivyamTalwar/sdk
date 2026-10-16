@@ -11,8 +11,12 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[features]
+test-support = ["dep:tokio"]
+
 [dependencies]
 bytes.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
