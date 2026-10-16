@@ -15,5 +15,5 @@ pub fn check(bytes: &[u8]) {
     if let Some((original, decoded)) = round_trip::<FileBytes>(bytes) {
         assert_eq!(original.as_bytes(), decoded.as_bytes());
     }
-    round_trip::<Vec<InputFile>>(bytes);
+    let _ = round_trip::<Vec<InputFile>>(bytes);
 }
