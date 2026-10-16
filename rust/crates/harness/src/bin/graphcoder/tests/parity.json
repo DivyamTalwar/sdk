@@ -204,5 +204,45 @@
     "expected": "",
     "visible": [],
     "effects": 1
+  },
+  {
+    "row": "Focus loss ends the current undo group",
+    "text": "abc",
+    "events": [
+      {
+        "text": "X",
+        "at": 1
+      },
+      {
+        "focus": false,
+        "at": 2
+      },
+      {
+        "text": "Y",
+        "at": 3
+      },
+      {
+        "key": "z",
+        "ctrl": true,
+        "at": 4
+      }
+    ],
+    "expected": "abcX",
+    "visible": [
+      "abcX"
+    ]
+  },
+  {
+    "row": "Resize preserves the prompt",
+    "text": "日本語 draft",
+    "events": [
+      {
+        "resize": true
+      }
+    ],
+    "expected": "日本語 draft",
+    "visible": [
+      "日本語 draft"
+    ]
   }
 ]

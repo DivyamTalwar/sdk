@@ -1,7 +1,7 @@
 //! Each row is executable scenario data for the composed shared prompt.
 use acyclic_harness::tui::{
     Editor, InputEffect, PromptInput, Screen, Viewport,
-    key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    key_event::{InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     ratatui::{Terminal, backend::TestBackend},
 };
 
@@ -13,8 +13,22 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
         let mut input = PromptInput::new(Editor::new(row["text"].as_str().unwrap()));
         let mut effects = Vec::new();
         for (index, event) in row["events"].as_array().unwrap().iter().enumerate() {
-            let now = (index as u64 + 1) * 1000;
-            if let Some(text) = event["text"].as_str() {
+            let now = event["at"].as_u64().unwrap_or((index as u64 + 1) * 1000);
+            if let Some(focused) = event["focus"].as_bool() {
+                effects.extend(input.event(
+                    InputEvent::Focus(focused),
+                    acyclic_harness::tui::ratatui::layout::Rect::new(1, 1, 38, 8),
+                    &mut Viewport::default(),
+                    now,
+                ));
+            } else if event.get("resize").is_some() {
+                effects.extend(input.event(
+                    InputEvent::Resize(40, 20),
+                    acyclic_harness::tui::ratatui::layout::Rect::new(1, 1, 38, 8),
+                    &mut Viewport::default(),
+                    now,
+                ));
+            } else if let Some(text) = event["text"].as_str() {
                 effects.extend(input.committed_text(text, now));
             } else if let Some(text) = event["paste"].as_str() {
                 effects.extend(input.paste(text, now));

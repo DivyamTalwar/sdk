@@ -83,20 +83,12 @@ pub async fn run(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let effects = match event {
-            InputEvent::Key(key) => {
-                input.key(key, now, usize::from(areas.prompt.width.saturating_sub(2)))
-            }
-            InputEvent::Paste(text) => input.paste(&text, now),
-            InputEvent::CommittedText(text) => input.committed_text(&text, now),
-            InputEvent::Mouse(mouse) => input.mouse(
-                mouse,
-                PromptBox::input_area(areas.prompt),
-                &mut viewport,
-                now,
-            ),
-            InputEvent::Resize(_, _) | InputEvent::Focus(_) => Vec::new(),
-        };
+        let effects = input.event(
+            event,
+            PromptBox::input_area(areas.prompt),
+            &mut viewport,
+            now,
+        );
         for effect in effects {
             client
                 .tui_input(
