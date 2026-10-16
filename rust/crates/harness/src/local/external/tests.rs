@@ -45,6 +45,20 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
     let started = std::time::Instant::now();
     let directory = tempfile::tempdir().map_err(storage)?;
     let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
+    let dispatch = harness.dispatch_configured_command(
+        OperationId::new(),
+        None,
+        crate::client::CommandResolution::Submit {
+            request: crate::client::CommandRequest::New,
+        },
+        &serde_json::Value::Null,
+    );
+    let size = std::mem::size_of_val(&dispatch);
+    assert!(
+        size < 16 * 1024,
+        "local command dispatch grew to {size} bytes"
+    );
+    drop(dispatch);
     let opened = started.elapsed();
     let host = crate::external_executor::ExternalHost::Pi;
     let attach = crate::external_executor::request(

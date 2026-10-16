@@ -8,7 +8,7 @@ impl CheckoutTools {
         input: crate::tools::BashInput,
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
-        files: output::Output,
+        mut files: output::Output,
     ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>, output::Output)> {
         let workspace = state
             .workspace
@@ -35,7 +35,7 @@ impl CheckoutTools {
             self.clock.now_unix_millis() / 1000,
         )?;
         let check_owner = Arc::clone(&files.owner);
-        let cancellation = files.cancellation.clone();
+        let cancellation = files.cancellation.take();
         let runtime = tokio::runtime::Handle::current();
         let (output, (state, files)) = native_process::capture::capture_with_custody(
             invocation,
