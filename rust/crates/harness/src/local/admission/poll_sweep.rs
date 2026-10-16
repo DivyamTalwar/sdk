@@ -194,7 +194,12 @@ async fn case(cut: Option<usize>) -> Result<Coverage> {
             match harness.runtime.harness().attach(task, &definition).await {
                 Ok(_) => {
                     coverage.admitted = true;
-                    observed = model_prefix(&harness, current).await?;
+                    // Before generate() there cannot be a provider event prefix.
+                    // A claimed-but-unstarted lease also has no journal writer;
+                    // inspecting one would require execution authority too early.
+                    if !original.requests().is_empty() {
+                        observed = model_prefix(&harness, current).await?;
+                    }
                 }
                 Err(Error::NotFound(_)) => {
                     // Negative control: main's former direct attach/outcome paths
