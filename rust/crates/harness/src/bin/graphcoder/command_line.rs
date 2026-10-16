@@ -251,8 +251,13 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             }
         } else {
             let layout = client.state(CommandFileRoot::Session, "layout.json")?;
-            if layout.as_ref().and_then(|layout| layout.get("view_request"))
-                == old_layout.as_ref().and_then(|layout| layout.get("view_request")) {
+            if layout
+                .as_ref()
+                .and_then(|layout| layout.get("view_request"))
+                == old_layout
+                    .as_ref()
+                    .and_then(|layout| layout.get("view_request"))
+            {
                 continue;
             }
             let view = layout
