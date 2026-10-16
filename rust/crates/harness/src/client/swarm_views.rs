@@ -88,16 +88,6 @@ impl SwarmViews {
         Ok(())
     }
 
-    /// A new session acquires explicit replacement snapshots. Platform placement
-    /// moves within the same session leave the cache and checked cursors intact.
-    pub(crate) fn start_session(&mut self, root: &StreamPath) -> Result<()> {
-        if self.layout.root() != root { return Err(Error::Invalid("swarm view root differs".into())); }
-        self.agents.clear();
-        self.overview_values = 0;
-        self.overview_bytes = 0;
-        Ok(())
-    }
-
     /// Validation precedes mutation. Prefetch promotion preserves every segment
     /// and cursor; demotion releases only content while retaining overview status.
     pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
