@@ -18,7 +18,7 @@ impl CheckoutTools {
                 "--volume supports diff, log, show, status, merge and discard".into(),
             ));
         }
-        let now = self.clock.now_unix_millis();
+        let now = self.clock.now_unix_millis() / 1000;
         for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
         {
