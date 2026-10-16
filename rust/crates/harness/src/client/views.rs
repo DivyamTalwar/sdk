@@ -121,7 +121,7 @@ pub struct TaskView {
 }
 
 /// Shared view model for ratatui, browser and WASM consumers.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientViews {
     /// Captured-volume query projections, keyed by tracked agent authority.
     pub diffs: BTreeMap<String, super::DiffView>,
@@ -129,8 +129,8 @@ pub struct ClientViews {
     pub documents: BTreeMap<String, super::DocumentViews>,
     /// Disposable file-query folds, keyed by volume and selection identity.
     /// Recovery observes fresh files rather than persisting a second payload store.
-    #[serde(skip)]
     pub queries: BTreeMap<([u8; 32], [u8; 32]), super::FileQueryView>,
+    pub(super) goal_sources: BTreeMap<([u8; 32], [u8; 32]), ([u8; 32], [u8; 32])>,
     /// Authority-keyed transcripts; keys are `kind:id`.
     pub transcripts: BTreeMap<String, TranscriptView>,
     /// Authority-keyed tool calls, then provider call identity.
@@ -139,8 +139,25 @@ pub struct ClientViews {
     pub tasks: BTreeMap<String, TaskView>,
     /// Provider usage metadata, keyed by conversation. Providers retain their exact units.
     pub usage: BTreeMap<String, serde_json::Value>,
-    #[serde(skip)]
     usage_state: BTreeMap<String, Usage>,
+}
+
+impl Serialize for ClientViews {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut result = serializer.serialize_struct("ClientViews", 7)?;
+        result.serialize_field("diffs", &self.diffs)?;
+        result.serialize_field("documents", &self.documents)?;
+        result.serialize_field("goals", &super::goal_view::Goals(self))?;
+        result.serialize_field("transcripts", &self.transcripts)?;
+        result.serialize_field("tools", &self.tools)?;
+        result.serialize_field("tasks", &self.tasks)?;
+        result.serialize_field("usage", &self.usage)?;
+        result.end()
+    }
 }
 
 pub(crate) fn authority_key(authority: &wire::Authority) -> String {

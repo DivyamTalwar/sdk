@@ -169,6 +169,8 @@ pub enum FileKey {
         /// Bounded canonical file name, such as commands.json or layout.json.
         name: Component,
     },
+    /// Existing host request head, selected from its authorized journal volume.
+    RequestHead,
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
     /// Editable command definitions and workspace files followed by UI queries.
@@ -263,6 +265,7 @@ impl FileKey {
                     name: id(name)?,
                 });
             }
+            ["inputs", "current.json"] => return Ok(Self::RequestHead),
             ["commands" | "workspace" | "config", ..] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
@@ -350,6 +353,7 @@ impl FileKey {
                 format!(".sessions/{}/{}", session.as_str(), file.path())
             }
             Self::Ui { directory, name } => format!(".ui/{}/{}", directory.as_str(), name.as_str()),
+            Self::RequestHead => "inputs/current.json".into(),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
@@ -380,10 +384,11 @@ impl FileKey {
         }
     }
 
-    pub(super) fn mutable(&self) -> bool {
+    pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
             Self::Ui { .. }
+                | Self::RequestHead
                 | Self::Goal
                 | Self::Input(_)
                 | Self::Plan(_)
