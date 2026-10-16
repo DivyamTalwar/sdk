@@ -31,6 +31,10 @@ pub struct Config {
     pub generation: String,
     #[serde(default)]
     pub command_workspace: Option<PathBuf>,
+    #[serde(default)]
+    pub command_roots: Vec<acyclic_harness::client::CommandRoot>,
+    #[serde(default)]
+    pub skill_roots: Vec<acyclic_harness::context::ContextRoot>,
     pub model_invocation_ledger: PathBuf,
     pub limits: Limits,
     pub run_limits: TaskRunLimits,

@@ -51,7 +51,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     let digest = blake3::hash(&identity);
     let mut id = <[u8; 16]>::try_from(&digest.as_bytes()[..16]).map_err(invalid)?;
     id[6] |= 0x40;
-    let session = TaskId::from_bytes(id);
+    let session = uuid::Uuid::from_bytes(id);
     let path = StreamPath::new(format!("graphcoder-files/{}", digest.to_hex())).map_err(invalid)?;
     let volume = Arc::new(TaskVolume::open(provider, path).await.map_err(invalid)?);
     let mut client =
@@ -65,9 +65,32 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         let sdk: Vec<Value> =
             serde_json::from_str(include_str!("commands/sdk.json")).map_err(invalid)?;
         specs.extend(sdk);
-        client
-            .install_catalog(serde_json::to_vec(&specs).map_err(invalid)?)
+        let bytes = serde_json::to_vec(&specs).map_err(invalid)?;
+        #[cfg(feature = "filesystem-local")]
+        let bytes = if let Backend::Native(native) = &backend {
+            let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
+                native.files.clone(),
+                &native.config.owner.verifier()?,
+                &native.config.owner.scope,
+                terminal::MAX_FRAME_BYTES as u64,
+                None,
+            )?;
+            let catalog = acyclic_harness::client::CommandCatalog::from_bytes(
+                &bytes,
+                terminal::MAX_FRAME_BYTES as u64,
+            )?
+            .with_sources(
+                reader.as_ref(),
+                &native.config.command_roots,
+                &native.config.skill_roots,
+                Default::default(),
+            )
             .await?;
+            serde_json::to_vec(&catalog.commands().collect::<Vec<_>>()).map_err(invalid)?
+        } else {
+            bytes
+        };
+        client.install_catalog(bytes).await?;
     }
     let mut layout = client
         .state(CommandFileRoot::Session, "layout.json")?
@@ -108,15 +131,23 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     .map_err(invalid)?;
     loop {
         while let Some(request) = client.take_request() {
-            let settings = client
-                .state(CommandFileRoot::Config, "settings.json")?
-                .unwrap_or(json!({}));
+            if let Some(saved) = client.activity_cursor() {
+                use base64::Engine as _;
+                use prost::Message as _;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(saved)
+                    .map_err(invalid)?;
+                cursor = acyclic_harness::wire::ReplayCursor::decode(bytes.as_slice())
+                    .map_err(invalid)?;
+            }
+            let settings = client.request_settings(&request)?;
             let selected = client.selected_task()?;
-            let mut parent = (selected != session).then_some(selected);
+            let mut parent = selected;
             let result = client
-                .consume(&request, |operation, _, resolution| {
+                .consume(&request, |operation, target, resolution| {
                     dispatch(
                         operation,
+                        target,
                         resolution,
                         &settings,
                         &mut backend,
@@ -137,21 +168,21 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                         writeln!(output, "command-json={value}").map_err(invalid)?;
                     }
                 }
-                Ok(None) => writeln!(
-                    output,
-                    "request already claimed; inspect its result file before reconciliation"
-                )
-                .map_err(invalid)?,
-                Err(error) => {
+                Ok(None) => {}
+                Err(Error::Indeterminate(operation)) => {
+                    writeln!(output, "request outcome uncertain operation={operation}; inspect its files before reconciliation").map_err(invalid)?;
+                }
+                Err(error) if interactive => {
                     writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?
                 }
+                Err(error) => return Err(error),
             }
             #[cfg(feature = "filesystem-local")]
-            if parent != (selected != session).then_some(selected) {
+            if parent != selected {
                 let mut layout = client
                     .state(CommandFileRoot::Session, "layout.json")?
                     .unwrap_or(json!({}));
-                layout["selected_task"] = json!(parent.unwrap_or(session));
+                layout["selected_task"] = json!(parent);
                 client
                     .write_state(CommandFileRoot::Session, "layout.json", &layout)
                     .await?;
@@ -164,10 +195,15 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             write!(output, "graphcoder> ").map_err(invalid)?;
         }
         output.flush().map_err(invalid)?;
+        let previous_output = client.output_sequence();
         #[cfg(feature = "filesystem-local")]
         let line = tokio::select! {
             line = input.recv() => line,
-            changed = client.observe_change() => { changed?; continue; }
+            changed = client.observe_change() => {
+                changed?;
+                if client.output_sequence() != previous_output && let Some(value) = client.output_page(0)? { render_record(&mut output, &value)?; }
+                continue;
+            }
             outcome = workers.join_next(), if !workers.is_empty() => {
                 let rendered = outcome.ok_or_else(|| Error::Conflict("worker handle missing".into()))?.map_err(invalid)??;
                 write!(output, "{}", terminal::text(&rendered)).map_err(invalid)?;
@@ -177,7 +213,11 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         #[cfg(not(feature = "filesystem-local"))]
         let line = tokio::select! {
             line = input.recv() => line,
-            changed = client.observe_change() => { changed?; continue; }
+            changed = client.observe_change() => {
+                changed?;
+                if client.output_sequence() != previous_output && let Some(value) = client.output_page(0)? { render_record(&mut output, &value)?; }
+                continue;
+            }
         };
         let Some(line) = line else {
             break;
@@ -187,6 +227,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         if text.is_empty() {
             continue;
         }
+        let old_layout = client.state(CommandFileRoot::Session, "layout.json")?;
         let reader: Arc<dyn ContentResidencyVerifier> = match backend.as_ref() {
             #[cfg(feature = "filesystem-local")]
             Some(Backend::Native(native)) => {
@@ -201,20 +242,59 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             _ => Arc::new(NoReads),
         };
         if let Err(error) = client.submit(text, reader.as_ref()).await {
-            writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?;
-        } else if client
-            .state(CommandFileRoot::Session, "layout.json")?
-            .and_then(|value| value.get("open_view").cloned())
-            == Some(json!("shortcuts"))
-        {
-            for spec in client.catalog().commands() {
-                writeln!(
-                    output,
-                    "/{} — {}",
-                    spec.name,
-                    terminal::text(&spec.description)
-                )
-                .map_err(invalid)?;
+            if interactive {
+                writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?;
+            } else {
+                return Err(error);
+            }
+        } else {
+            let layout = client.state(CommandFileRoot::Session, "layout.json")?;
+            if layout == old_layout {
+                continue;
+            }
+            let view = layout
+                .as_ref()
+                .and_then(|layout| layout.get("open_view"))
+                .and_then(Value::as_str);
+            if view == Some("history") {
+                let back = layout
+                    .as_ref()
+                    .and_then(|layout| layout.get("history_page"))
+                    .and_then(Value::as_u64)
+                    .and_then(|back| usize::try_from(back).ok())
+                    .filter(|back| *back < terminal::MAX_DISPLAY_PAGES);
+                let value = back
+                    .map(|back| client.output_page(back))
+                    .transpose()?
+                    .flatten();
+                if let Some(value) = value {
+                    if let Some(rendered) = value
+                        .get("ok")
+                        .and_then(|value| value.get("rendered"))
+                        .and_then(Value::as_str)
+                    {
+                        write!(output, "{}", terminal::text(rendered)).map_err(invalid)?;
+                    } else {
+                        writeln!(output, "command-json={value}").map_err(invalid)?;
+                    }
+                } else {
+                    writeln!(
+                        output,
+                        "display page unavailable; request an explicit archival page"
+                    )
+                    .map_err(invalid)?;
+                }
+            }
+            if view == Some("shortcuts") {
+                for spec in client.catalog().commands() {
+                    writeln!(
+                        output,
+                        "/{} — {}",
+                        spec.name,
+                        terminal::text(&spec.description)
+                    )
+                    .map_err(invalid)?;
+                }
             }
         }
     }
@@ -225,8 +305,22 @@ fn invalid(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
+fn render_record(output: &mut impl std::io::Write, value: &Value) -> Result<()> {
+    if let Some(rendered) = value
+        .get("ok")
+        .and_then(|value| value.get("rendered"))
+        .and_then(Value::as_str)
+    {
+        write!(output, "{}", terminal::text(rendered)).map_err(invalid)?;
+    } else {
+        writeln!(output, "command-json={value}").map_err(invalid)?;
+    }
+    Ok(())
+}
+
 async fn dispatch(
     operation: OperationId,
+    target: Option<TaskId>,
     resolution: CommandResolution,
     settings: &Value,
     backend: &mut Option<Backend>,
@@ -236,7 +330,8 @@ async fn dispatch(
     output: &mut impl std::io::Write,
 ) -> Result<Value> {
     if let CommandResolution::Sdk { command, arguments } = resolution {
-        return commands::execute_sdk(
+        let before = cursor.clone();
+        let rendered = commands::execute_sdk(
             &command,
             &arguments,
             backend,
@@ -247,8 +342,15 @@ async fn dispatch(
             workers,
             output,
         )
-        .await
-        .map(|rendered| json!({"rendered":rendered}));
+        .await?;
+        let mut value = json!({"rendered":rendered});
+        if *cursor != before {
+            use base64::Engine as _;
+            use prost::Message as _;
+            value["activity_cursor"] =
+                json!(base64::engine::general_purpose::STANDARD.encode(cursor.encode_to_vec()));
+        }
+        return Ok(value);
     }
     #[cfg(feature = "filesystem-local")]
     {
@@ -266,7 +368,7 @@ async fn dispatch(
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::Invalid("delegate requires a task".into()))?;
                 let command = native.prompt_command(text, operation).await?;
-                return admission(native.queue(operation, command, *parent).await?);
+                return admission(native.queue(operation, command, target).await?, operation);
             }
             CommandResolution::Tool { tool, input } => {
                 return acyclic_harness::client::execute_host_command(
@@ -279,7 +381,7 @@ async fn dispatch(
             }
             CommandResolution::Prompt { text, .. } => {
                 let command = native.prompt_command(&text, operation).await?;
-                return admission(native.queue(operation, command, *parent).await?);
+                return admission(native.queue(operation, command, target).await?, operation);
             }
             CommandResolution::Submit {
                 request: CommandRequest::New,
@@ -290,7 +392,7 @@ async fn dispatch(
             _ => {}
         }
     }
-    let _ = (operation, settings);
+    let _ = (operation, target, settings);
     Err(Error::Unsupported(
         "command requires a composed task-control provider".into(),
     ))
@@ -301,11 +403,12 @@ fn admission(
     admission: acyclic_harness::Admission<
         acyclic_harness::runtime::RuntimeTask<acyclic_harness::executor::TurnOutput>,
     >,
+    operation: OperationId,
 ) -> Result<Value> {
     match admission {
-        acyclic_harness::Admission::Accepted(task) => {
-            Ok(json!({"rendered":format!("queued task={}\n", task.identity())}))
-        }
+        acyclic_harness::Admission::Accepted(task) => Ok(
+            json!({"rendered":format!("queued task={} admission-operation={operation}\n", task.identity())}),
+        ),
         acyclic_harness::Admission::Rejected { reason } => Err(Error::Conflict(reason)),
         acyclic_harness::Admission::Indeterminate { operation_id } => {
             Err(Error::Indeterminate(operation_id))

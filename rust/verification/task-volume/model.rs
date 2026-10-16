@@ -11,7 +11,7 @@ use loom::thread;
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-fn create_claim_control(broken: bool) {
+fn create_claim_control(broken: bool, session: bool) {
     model(move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
@@ -22,13 +22,19 @@ fn create_claim_control(broken: bool) {
                           dispatches: Arc<loom::sync::atomic::AtomicUsize>|
               -> Result {
             let cut = block_on(volume.snapshot(&Query::Root, 1))?;
-            let file = Write::new(
+            let body = TaskFile::ExecutionClaim(Component::new("claim")?);
+            let key = if session {
+                FileKey::Session {
+                    session: Component::new("session")?,
+                    file: body,
+                }
+            } else {
                 FileKey::Task {
                     task: Component::new("task")?,
-                    file: TaskFile::Request(Component::new("claim")?),
-                },
-                OwnedBytes::from_static(b"same request"),
-            );
+                    file: body,
+                }
+            };
+            let file = Write::new(key, OwnedBytes::from_static(b"same request"));
             // Broken: idempotent append reports success for an existing identical
             // claim. Correct: create-only publication can authorize just one effect.
             let accepted = if broken {
@@ -60,13 +66,15 @@ fn create_claim_control(broken: bool) {
 
 #[test]
 fn command_claim_create_authorizes_one_dispatch() {
-    create_claim_control(false);
+    for session in [false, true] {
+        create_claim_control(false, session);
+    }
 }
 
 #[test]
 #[should_panic(expected = "duplicate request dispatch")]
 fn negative_control_detects_idempotent_command_claim() {
-    create_claim_control(true);
+    create_claim_control(true, true);
 }
 
 // Control property: one locked increment preserves both updates. Splitting the

@@ -15,8 +15,11 @@ pub struct CommandSession<P: ?Sized> {
     generation: files::Generation,
     files: BTreeMap<files::FileKey, files::FileValue>,
     pending: VecDeque<files::FileValue>,
+    outputs: BTreeMap<u64, files::FileKey>,
+    activity_cursor: Option<(u64, String)>,
+    global_output_sequence: u64,
     catalog: CommandCatalog,
-    session: TaskId,
+    session: uuid::Uuid,
     maximum_bytes: u64,
     maximum_files: usize,
 }
@@ -42,7 +45,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// unconsumed requests and never reruns a claimed external effect.
     pub async fn open(
         volume: Arc<files::TaskVolume<P>>,
-        session: TaskId,
+        session: uuid::Uuid,
         maximum_bytes: u64,
         maximum_files: usize,
     ) -> Result<Self> {
@@ -63,6 +66,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             generation: snapshot.generation,
             files: BTreeMap::new(),
             pending: VecDeque::new(),
+            outputs: BTreeMap::new(),
+            activity_cursor: None,
+            global_output_sequence: 0,
             catalog: CommandCatalog::builtins()?,
             session,
             maximum_bytes,
@@ -85,7 +91,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             ),
             (
                 client.state_key(CommandFileRoot::Session, "layout.json")?,
-                serde_json::to_vec(&json!({"selected_task":session})).map_err(codec)?,
+                serde_json::to_vec(&json!({"selected_task":null})).map_err(codec)?,
             ),
             (
                 client.state_key(CommandFileRoot::Task, "settings.json")?,
@@ -115,6 +121,33 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         self.pending.pop_front()
     }
 
+    /// One archive page from immutable outcome files, newest first. Selection
+    /// lives in layout.json; the index is reconstructed from file-query snapshots.
+    pub fn output_page(&self, back: usize) -> Result<Option<Value>> {
+        if back >= self.outputs.len() {
+            return Ok(None);
+        }
+        self.outputs
+            .values()
+            .rev()
+            .nth(back)
+            .and_then(|key| self.files.get(key))
+            .map(|file| serde_json::from_slice(&file.bytes).map_err(codec))
+            .transpose()
+    }
+
+    /// Latest immutable outcome ordinal at the observed query cut.
+    pub fn output_sequence(&self) -> u64 {
+        self.outputs.keys().next_back().copied().unwrap_or(0)
+    }
+
+    /// SDK activity selection derived from its immutable outcome files.
+    pub fn activity_cursor(&self) -> Option<&str> {
+        self.activity_cursor
+            .as_ref()
+            .map(|(_, cursor)| cursor.as_str())
+    }
+
     /// Read one ordinary UI/config file from the latest query cut.
     pub fn state(&self, root: CommandFileRoot, name: &str) -> Result<Option<Value>> {
         let value: Option<Value> = self
@@ -128,6 +161,31 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         ) && value.as_ref().is_some_and(|value| !value.is_object())
         {
             return Err(Error::Invalid(format!("{name} must be a JSON object")));
+        }
+        Ok(value)
+    }
+
+    /// Settings bound to the request's immutable target, independently of any
+    /// subsequent navigation in the consuming UI.
+    pub fn request_settings(&self, request: &files::FileValue) -> Result<Value> {
+        let key = match &request.key {
+            files::FileKey::Task { task, .. } => {
+                ui(&format!("task-{}", task.as_str()), "settings.json")?
+            }
+            files::FileKey::Session { .. } => ui("config", "settings.json")?,
+            _ => return Err(Error::Invalid("not a command request".into())),
+        };
+        let value: Value = self
+            .files
+            .get(&key)
+            .map(|file| serde_json::from_slice(&file.bytes))
+            .transpose()
+            .map_err(codec)?
+            .unwrap_or_else(|| json!({}));
+        if !value.is_object() {
+            return Err(Error::Invalid(
+                "request settings must be a JSON object".into(),
+            ));
         }
         Ok(value)
     }
@@ -155,53 +213,45 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
-    pub fn selected_task(&self) -> Result<TaskId> {
-        let key = ui(&format!("session-{}", self.session), "layout.json")?;
-        let value: Value = self
-            .files
-            .get(&key)
-            .map(|file| serde_json::from_slice(&file.bytes))
-            .transpose()
-            .map_err(codec)?
+    pub fn selected_task(&self) -> Result<Option<TaskId>> {
+        let value = self
+            .state(CommandFileRoot::Session, "layout.json")?
             .unwrap_or(Value::Null);
         match value.get("selected_task") {
-            None => Ok(self.session),
-            Some(Value::String(task)) => TaskId::parse(task),
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(task)) => TaskId::parse(task).map(Some),
             _ => Err(Error::Invalid("selected_task must be a task ID".into())),
         }
     }
 
     fn state_key(&self, root: CommandFileRoot, name: &str) -> Result<files::FileKey> {
+        if root == CommandFileRoot::Task && self.selected_task()?.is_none() {
+            return ui(
+                &format!("session-{}", self.session),
+                &format!("task-{name}"),
+            );
+        }
         let directory = match root {
             CommandFileRoot::Config => "config".into(),
             CommandFileRoot::Session => format!("session-{}", self.session),
-            CommandFileRoot::Task => format!("task-{}", self.selected_task()?),
+            CommandFileRoot::Task => format!(
+                "task-{}",
+                self.selected_task()?
+                    .ok_or_else(|| Error::Invalid("no selected task".into()))?
+            ),
         };
         ui(&directory, name)
     }
 
-    fn snapshot(&self) -> Result<CommandFileSnapshot> {
+    fn snapshot(&self, resolution: &CommandResolution) -> Result<CommandFileSnapshot> {
         let mut snapshot = BTreeMap::new();
-        for root in [
-            CommandFileRoot::Config,
-            CommandFileRoot::Session,
-            CommandFileRoot::Task,
-        ] {
-            let mut values = BTreeMap::new();
-            for name in [
-                "settings.json",
-                "layout.json",
-                "theme.json",
-                "attention.json",
-            ] {
-                if let Some(file) = self.files.get(&self.state_key(root, name)?) {
-                    values.insert(
-                        name.into(),
-                        serde_json::from_slice(&file.bytes).map_err(codec)?,
-                    );
-                }
+        for &(root, name) in resolution.file_inputs() {
+            if let Some(file) = self.files.get(&self.state_key(root, name)?) {
+                snapshot.entry(root).or_insert_with(BTreeMap::new).insert(
+                    name.into(),
+                    serde_json::from_slice(&file.bytes).map_err(codec)?,
+                );
             }
-            snapshot.insert(root, values);
         }
         Ok(snapshot)
     }
@@ -218,16 +268,23 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .resolve(input, reader, self.maximum_bytes)
             .await?;
         let operation = OperationId::new();
-        for change in resolution.file_changes(&self.snapshot()?, operation)? {
+        for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
                 let task = if change.root == CommandFileRoot::Session {
-                    self.session
+                    None
                 } else {
                     self.selected_task()?
                 };
-                files::FileKey::Task {
-                    task: component(task.to_string())?,
-                    file: files::TaskFile::Request(component(operation.to_string())?),
+                let file = files::TaskFile::Request(component(operation.to_string())?);
+                match task {
+                    Some(task) => files::FileKey::Task {
+                        task: component(task.to_string())?,
+                        file,
+                    },
+                    None => files::FileKey::Session {
+                        session: component(self.session.to_string())?,
+                        file,
+                    },
                 }
             } else {
                 self.state_key(change.root, &change.path)?
@@ -243,6 +300,30 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     fn fold(&mut self, file: files::FileValue) -> Result<()> {
+        if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
+        {
+            if matches!(
+                file.key,
+                files::FileKey::Session {
+                    file: files::TaskFile::ExecutionResult(_),
+                    ..
+                }
+            ) {
+                #[derive(Deserialize)]
+                struct Sequence {
+                    sequence: u64,
+                }
+                if file.bytes.len() as u64 > self.maximum_bytes {
+                    return Err(Error::Invalid("command file exceeds byte bound".into()));
+                }
+                let value: Sequence = serde_json::from_slice(&file.bytes).map_err(codec)?;
+                if value.sequence == 0 {
+                    return Err(Error::Invalid("zero command output sequence".into()));
+                }
+                self.global_output_sequence = self.global_output_sequence.max(value.sequence);
+            }
+            return Ok(());
+        }
         if file.bytes.len() as u64 > self.maximum_bytes {
             return Err(Error::Invalid("command file exceeds byte bound".into()));
         }
@@ -250,11 +331,94 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Err(Error::Invalid("command query exceeds file bound".into()));
         }
         if file.key == ui("config", "commands.json")? {
-            self.catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
+            let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
+            catalog.set_themes(self.catalog.themes.clone())?;
+            self.catalog = catalog;
+        }
+        if file.key == ui("config", "settings.json")? {
+            let settings: Value = serde_json::from_slice(&file.bytes).map_err(codec)?;
+            let themes: Vec<String> = settings
+                .get("themes")
+                .map(|value| serde_json::from_value(value.clone()))
+                .transpose()
+                .map_err(codec)?
+                .unwrap_or_default();
+            self.catalog.set_themes(themes)?;
         }
         if matches!(
             file.key,
             files::FileKey::Task {
+                file: files::TaskFile::ExecutionResult(_),
+                ..
+            } | files::FileKey::Session {
+                file: files::TaskFile::ExecutionResult(_),
+                ..
+            }
+        ) {
+            #[derive(Deserialize)]
+            struct Order<'a> {
+                sequence: u64,
+                #[serde(borrow)]
+                ok: Option<&'a serde_json::value::RawValue>,
+            }
+            let order: Order<'_> = serde_json::from_slice(&file.bytes).map_err(codec)?;
+            if order.sequence == 0 {
+                return Err(Error::Invalid("zero command output sequence".into()));
+            }
+            if self
+                .outputs
+                .get(&order.sequence)
+                .is_some_and(|key| key != &file.key)
+            {
+                return Err(Error::Conflict("duplicate command output sequence".into()));
+            }
+            self.outputs.insert(order.sequence, file.key.clone());
+            self.global_output_sequence = self.global_output_sequence.max(order.sequence);
+            if let files::FileKey::Session {
+                session,
+                file: files::TaskFile::ExecutionResult(id),
+            } = &file.key
+            {
+                #[derive(Deserialize)]
+                struct Operation {
+                    kind: String,
+                    command: String,
+                }
+                #[derive(Deserialize)]
+                struct Cursor {
+                    activity_cursor: Option<String>,
+                }
+                let request = files::FileKey::Session {
+                    session: session.clone(),
+                    file: files::TaskFile::Request(id.clone()),
+                };
+                let operation = self
+                    .files
+                    .get(&request)
+                    .and_then(|file| serde_json::from_slice::<Operation>(&file.bytes).ok());
+                if operation.is_some_and(|op| {
+                    op.kind == "sdk" && matches!(op.command.as_str(), "next" | "cursor" | "reset")
+                }) && self
+                    .activity_cursor
+                    .as_ref()
+                    .is_none_or(|(sequence, _)| *sequence < order.sequence)
+                {
+                    if let Some(cursor) = order
+                        .ok
+                        .and_then(|raw| serde_json::from_str::<Cursor>(raw.get()).ok())
+                        .and_then(|value| value.activity_cursor)
+                    {
+                        self.activity_cursor = Some((order.sequence, cursor));
+                    }
+                }
+            }
+        }
+        if matches!(
+            file.key,
+            files::FileKey::Task {
+                file: files::TaskFile::Request(_),
+                ..
+            } | files::FileKey::Session {
                 file: files::TaskFile::Request(_),
                 ..
             }
@@ -354,29 +518,54 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         execute: F,
     ) -> Result<Option<Value>>
     where
-        F: FnOnce(OperationId, TaskId, CommandResolution) -> Fut,
+        F: FnOnce(OperationId, Option<TaskId>, CommandResolution) -> Fut,
         Fut: std::future::Future<Output = Result<Value>>,
     {
-        let files::FileKey::Task {
-            task,
-            file: files::TaskFile::Request(id),
-        } = &request.key
-        else {
-            return Err(Error::Invalid("expected a command request file".into()));
+        if self.files.get(&request.key) != Some(request) {
+            return Err(Error::Unauthorized(
+                "command request differs from its observed immutable file".into(),
+            ));
+        }
+        let (task_id, id) = match &request.key {
+            files::FileKey::Task {
+                task,
+                file: files::TaskFile::Request(id),
+            } => (Some(TaskId::parse(task.as_str())?), id),
+            files::FileKey::Session {
+                session,
+                file: files::TaskFile::Request(id),
+            } if session.as_str() == self.session.to_string() => (None, id),
+            _ => {
+                return Err(Error::Invalid(
+                    "expected this session's command request file".into(),
+                ));
+            }
         };
         let operation = OperationId::parse(id.as_str())?;
-        let task_id = TaskId::parse(task.as_str())?;
-        let key = |file| files::FileKey::Task {
-            task: task.clone(),
-            file: files::TaskFile::Tool {
-                turn: 0,
-                call: id.clone(),
+        self.global_output_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("command output sequence overflow".into()))?;
+        let key = |file| match &request.key {
+            files::FileKey::Task { task, .. } => files::FileKey::Task {
+                task: task.clone(),
                 file,
             },
+            files::FileKey::Session { session, .. } => files::FileKey::Session {
+                session: session.clone(),
+                file,
+            },
+            _ => unreachable!(),
         };
-        let claim = key(files::ToolFile::Request);
+        let claim = key(files::TaskFile::ExecutionClaim(id.clone()));
         if self.files.contains_key(&claim) {
-            return Ok(None);
+            return if self
+                .files
+                .contains_key(&key(files::TaskFile::ExecutionResult(id.clone())))
+            {
+                Ok(None)
+            } else {
+                Err(Error::Indeterminate(operation))
+            };
         }
         let resolution: CommandResolution = serde_json::from_slice(&request.bytes)
             .or_else(|_| {
@@ -384,8 +573,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .map(|request| CommandResolution::Submit { request })
             })
             .map_err(codec)?;
-        let bytes = serde_json::to_vec(&json!({"request":resolution,"attempt":OperationId::new()}))
-            .map_err(codec)?;
+        let bytes = request.bytes.to_vec();
         if let Err(error) = self.publish(claim, bytes, true).await {
             if matches!(error, Error::Conflict(_)) {
                 self.pending.push_front(request.clone());
@@ -393,16 +581,33 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Err(error);
         }
         let result = execute(operation, task_id, resolution).await;
-        let value = match &result {
-            Ok(value) => json!({"ok":value}),
-            Err(error) => json!({"error":error.to_string()}),
-        };
-        self.publish(
-            key(files::ToolFile::Result),
-            serde_json::to_vec(&value).map_err(codec)?,
-            true,
-        )
-        .await?;
+        loop {
+            let previous = self.generation;
+            let sequence = self
+                .global_output_sequence
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("command output sequence overflow".into()))?;
+            let bytes = output_bytes(sequence, &result)?;
+            match self
+                .publish(
+                    key(files::TaskFile::ExecutionResult(id.clone())),
+                    bytes,
+                    true,
+                )
+                .await
+            {
+                Ok(()) => break,
+                // The effect has already finished. Only retry its outcome file,
+                // after following the competing publication; never run it again.
+                Err(Error::Conflict(_))
+                    if self.generation.position > previous.position
+                        && self.next_change.is_none() =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         result.map(Some)
     }
 
@@ -421,4 +626,20 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .and_then(Value::as_bool)
             .unwrap_or(false))
     }
+}
+
+fn output_bytes(sequence: u64, result: &Result<Value>) -> Result<Vec<u8>> {
+    use serde::{Serializer as _, ser::SerializeMap as _};
+    let mut bytes = Vec::new();
+    let mut serializer = serde_json::Serializer::new(&mut bytes);
+    let mut map = serializer.serialize_map(Some(2)).map_err(codec)?;
+    map.serialize_entry("sequence", &sequence).map_err(codec)?;
+    match result {
+        Ok(value) => map.serialize_entry("ok", value).map_err(codec)?,
+        Err(error) => map
+            .serialize_entry("error", &error.to_string())
+            .map_err(codec)?,
+    }
+    map.end().map_err(codec)?;
+    Ok(bytes)
 }

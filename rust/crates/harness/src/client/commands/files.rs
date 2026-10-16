@@ -119,6 +119,31 @@ pub struct CommandFileChange {
 }
 
 impl CommandResolution {
+    pub(super) fn file_inputs(&self) -> &'static [(CommandFileRoot, &'static str)] {
+        use CommandFileRoot::{Config, Session, Task};
+        match self {
+            Self::Submit {
+                request: CommandRequest::Model { .. } | CommandRequest::CycleMode,
+            } => &[(Task, "settings.json")],
+            Self::Submit {
+                request: CommandRequest::Theme { .. },
+            } => &[(Config, "theme.json")],
+            Self::Select {
+                query: CommandQuery::Reasoning | CommandQuery::Details | CommandQuery::Diff,
+            } => &[(Config, "settings.json")],
+            Self::Select {
+                query: CommandQuery::Attention,
+            } => &[(Session, "layout.json"), (Session, "attention.json")],
+            Self::Submit {
+                request: CommandRequest::Quit,
+            }
+            | Self::Confirm { .. }
+            | Self::Select { .. } => &[(Session, "layout.json")],
+            Self::Sdk { command, .. } if command == "back" => &[(Session, "layout.json")],
+            _ => &[],
+        }
+    }
+
     /// Produce file changes from the current config-volume query snapshot.
     /// Callers publish with that cut's generation, then render the resulting
     /// query. No UI selection or setting is committed in an in-memory store.
@@ -206,7 +231,28 @@ impl CommandResolution {
                     serde_json::to_value(request).map_err(codec)?,
                 ));
             }
-            Self::Tool { .. } | Self::Prompt { .. } | Self::Sdk { .. } => {
+            Self::Sdk { command, arguments } if command == "back" => {
+                let back = arguments.parse::<u64>().map_err(|_| {
+                    Error::Invalid(
+                        "display page unavailable; request an explicit archival page".into(),
+                    )
+                })?;
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                layout.insert("history_page".into(), json!(back));
+                layout.insert("open_view".into(), json!("history"));
+                return Ok(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
+                ));
+            }
+            Self::Sdk { .. } => {
+                return Ok(publish_request(
+                    CommandFileRoot::Session,
+                    serde_json::to_value(self).map_err(codec)?,
+                ));
+            }
+            Self::Tool { .. } | Self::Prompt { .. } => {
                 return Ok(publish_request(
                     CommandFileRoot::Task,
                     serde_json::to_value(self).map_err(codec)?,

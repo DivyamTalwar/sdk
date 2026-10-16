@@ -531,6 +531,11 @@ impl CommandCatalog {
 
     /// Install the owning renderer's theme data once; no duplicated preset table.
     pub fn with_themes(mut self, themes: impl IntoIterator<Item = String>) -> Result<Self> {
+        self.set_themes(themes)?;
+        Ok(self)
+    }
+
+    fn set_themes(&mut self, themes: impl IntoIterator<Item = String>) -> Result<()> {
         let mut names = BTreeSet::new();
         let mut validated = Vec::new();
         for theme in themes {
@@ -544,7 +549,7 @@ impl CommandCatalog {
             validated.push(theme);
         }
         self.themes = validated;
-        Ok(self)
+        Ok(())
     }
 
     /// Resolves syntax, validates arguments and loads only the selected pinned body.

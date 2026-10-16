@@ -51,6 +51,13 @@ fuzz_target!(|input: &[u8]| {
             );
         }
     }
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness::client::CommandRequest>(input) {
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::client::CommandRequest>(&encoded).unwrap(),
+            request
+        );
+    }
     let Ok(input) = std::str::from_utf8(input) else {
         return;
     };

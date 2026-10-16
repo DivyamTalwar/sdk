@@ -8,8 +8,8 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use futures::FutureExt as _;
 use proptest::prelude::*;
 
-fn session_id() -> TaskId {
-    TaskId::from_bytes([7; 16])
+fn session_id() -> uuid::Uuid {
+    uuid::Uuid::from_bytes([7; 16])
 }
 
 async fn volume() -> Result<Arc<TaskVolume<MemoryStream>>> {
@@ -170,6 +170,27 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         None,
     )?;
     host.create_volume(&volume).await?;
+    let writer = ContentGrant::verify(
+        &issuer.verifier(&mut None)?,
+        &scope,
+        &volume,
+        VolumeOperation::Write,
+        32_768,
+        &mut None,
+    )?;
+    host.put_content(
+        &volume,
+        &writer,
+        ".claude/commands/greet.md",
+        b"Hello $ARGUMENTS",
+        "text/markdown",
+        "greet",
+        32_768,
+        &IdempotencyKey::new("custom-command")?,
+        None,
+        None,
+    )
+    .await?;
     drop(host);
     let mut config = data["config"].clone();
     let fields = json!({
@@ -179,6 +200,7 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         "generation":"commands-test","model_invocation_ledger":directory.path().join("model.jsonl"),
         "session_limits":{"active_tasks":6,"depth":3,"model_steps":7,"total_tasks":12},
         "tools":{"content_budget":data["publication"]["budget"]},"command_workspace":directory.path(),
+        "command_roots":[{"scope":"user","root":{"volume":volume,"directory":""}}],
         "deterministic_delay_ms":0
     });
     for (name, value) in fields.as_object().unwrap() {
@@ -187,7 +209,7 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
     let config_path = directory.path().join("config.json");
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     let mut input = tempfile::NamedTempFile::new_in(directory.path())?;
-    input.write_all(b"/SH printf hi > cli-effect.txt; printf hi\n/KEYS\n/does-not-exist\n/q\n")?;
+    input.write_all(b"/SH printf hi > cli-effect.txt; printf hi\n/KEYS\n/back 0\n/q\n")?;
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
         .args(["--session", config_path.to_str().unwrap(), "--headless"])
@@ -212,18 +234,38 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         String::from_utf8_lossy(&result.stderr)
     );
     let rendered = String::from_utf8(result.stdout)?;
+    assert!(rendered.contains("command-json="), "{rendered}");
     assert!(
-        rendered.contains("command-json=") && rendered.contains("Unknown command: /does-not-exist"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("/shell") && rendered.contains("/shortcuts"),
+        rendered.contains("/shell")
+            && rendered.contains("/shortcuts")
+            && rendered.contains("/greet"),
         "catalog help: {rendered}"
     );
     assert_eq!(
         std::fs::read(directory.path().join("cli-effect.txt"))?,
         b"hi"
     );
+    assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
+    std::fs::write(input.path(), b"/does-not-exist\n")?;
+    let mut unknown = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    unknown
+        .args(["--session", config_path.to_str().unwrap(), "--headless"])
+        .stdin(Stdio::from(std::fs::File::open(input.path())?))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let rejected = acyclic_native_runtime::ProcessTree::spawn(&mut unknown)?
+        .wait_with_output(
+            Duration::from_secs(4),
+            65_536,
+            None,
+            || Ok(()),
+            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+            None,
+            None,
+        )
+        .map_err(|failure| failure.error)?;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8(rejected.stderr)?.contains("Unknown command: /does-not-exist"));
     assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
     Ok(())
 }
@@ -255,6 +297,24 @@ async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() 
         client.catalog().complete("EXTERNAL").next().unwrap().name,
         "shell"
     );
+    publish(
+        &volume,
+        ".ui/config/settings.json",
+        br#"{"themes":["Solarized","Light"]}"#.to_vec(),
+    )
+    .await?;
+    client.observe_change().await?;
+    assert_eq!(
+        client.catalog().complete_input("/THEME Sol")[0].replacement,
+        "/theme Solarized"
+    );
+    client.submit("/THEME Solarized", &DeniedReader).await?;
+    assert_eq!(
+        client
+            .state(CommandFileRoot::Config, "theme.json")?
+            .unwrap()["name"],
+        "Solarized"
+    );
     let operation = OperationId::new();
     let resolution = CommandResolution::Tool {
         tool: CommandTool::Bash,
@@ -270,7 +330,7 @@ async fn catalog_and_external_requests_are_observed_through_the_cursor_follow() 
     let result = client
         .consume(&request, |actual, task, intent| async move {
             assert_eq!(actual, operation);
-            assert_eq!(task, session_id());
+            assert_eq!(task, Some(TaskId::from_bytes(session_id().into_bytes())));
             assert_eq!(intent, resolution);
             Ok(json!({"called":true}))
         })
@@ -302,14 +362,14 @@ async fn cancelling_a_claimed_dispatch_keeps_it_uncertain_without_resending() ->
     drop(client);
     let mut reopened = CommandSession::open(volume, session_id(), 32_768, 128).await?;
     let request = reopened.next_request().await?;
-    assert!(
+    assert!(matches!(
         reopened
             .consume(&request, |_, _, _| async {
                 panic!("uncertain dispatch was resent")
             })
-            .await?
-            .is_none()
-    );
+            .await,
+        Err(Error::Indeterminate(_))
+    ));
     Ok(())
 }
 
@@ -343,8 +403,237 @@ async fn a_stale_publisher_never_uses_old_catalog_or_settings() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn archive_selection_and_recovery_fold_the_outcome_files() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    let mut definitions: Vec<Value> =
+        serde_json::from_slice(acyclic_harness::client::DEFAULT_COMMANDS_JSON).unwrap();
+    definitions.push(json!({"name":"back","description":"Archive","arguments":"text","action":{"kind":"sdk","command":"back"}}));
+    client
+        .install_catalog(serde_json::to_vec(&definitions).unwrap())
+        .await?;
+    for index in 0..2 {
+        client.submit("/shell echo hi", &DeniedReader).await?;
+        let request = client.next_request().await?;
+        client
+            .consume(&request, |_, _, _| async move {
+                Ok(json!({"rendered":format!("page {index}")}))
+            })
+            .await?;
+    }
+    client.submit("/back 1", &DeniedReader).await?;
+    assert_eq!(
+        client
+            .state(CommandFileRoot::Session, "layout.json")?
+            .unwrap()["history_page"],
+        1
+    );
+    assert_eq!(client.output_page(1)?.unwrap()["ok"]["rendered"], "page 0");
+    assert!(client.output_page(usize::MAX)?.is_none());
+    drop(client);
+    let reopened = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    assert_eq!(
+        reopened.output_page(0)?.unwrap()["ok"]["rendered"],
+        "page 1"
+    );
+    let query = Query::folder(&format!(".sessions/{}", session_id())).unwrap();
+    let executions = volume.snapshot(&query, 128).await.unwrap();
+    assert_eq!(executions.files.len(), 6);
+    assert!(executions.files.iter().all(|file| query.matches(&file.key)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_catalog_publication_is_retained_until_explicit_snapshot_recovery() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    publish(&volume, ".ui/config/commands.json", b"not JSON".to_vec()).await?;
+    publish(
+        &volume,
+        ".ui/config/commands.json",
+        acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+    )
+    .await?;
+    assert!(client.observe_change().await.is_err());
+    assert!(
+        client.observe_change().await.is_err(),
+        "a later publication cannot hide a rejected query cut"
+    );
+    drop(client);
+    let mut reopened = CommandSession::open(volume, session_id(), 32_768, 128).await?;
+    reopened.submit("/shell echo hi", &DeniedReader).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unrelated_malformed_ui_file_does_not_block_a_direct_request() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    publish(&volume, ".ui/config/theme.json", b"not JSON".to_vec()).await?;
+    client.observe_change().await?;
+    client.submit("/shell echo hi", &DeniedReader).await?;
+    assert!(client.take_request().is_some());
+    assert!(
+        client.submit("/theme light", &DeniedReader).await.is_ok(),
+        "unknown theme only opens the picker"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_target_and_settings_survive_later_navigation() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume, session_id(), 32_768, 128).await?;
+    let original = TaskId::from_bytes([3; 16]);
+    let other = TaskId::from_bytes([4; 16]);
+    client
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":original}),
+        )
+        .await?;
+    client
+        .write_state(
+            CommandFileRoot::Task,
+            "settings.json",
+            &json!({"workspace":"original workspace"}),
+        )
+        .await?;
+    client.submit("/shell echo hi", &DeniedReader).await?;
+    let request = client.next_request().await?;
+    client
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":other}),
+        )
+        .await?;
+    client
+        .write_state(
+            CommandFileRoot::Task,
+            "settings.json",
+            &json!({"workspace":"other workspace"}),
+        )
+        .await?;
+    assert_eq!(
+        client.request_settings(&request)?["workspace"],
+        "original workspace"
+    );
+    client
+        .consume(&request, |_, target, _| async move {
+            assert_eq!(target, Some(original));
+            Ok(Value::Null)
+        })
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_and_task_requests_cannot_alias_even_with_equal_identifiers() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume, session_id(), 32_768, 128).await?;
+    client.submit("/shell echo root", &DeniedReader).await?;
+    let root = client.next_request().await?;
+    assert!(matches!(root.key, FileKey::Session { .. }));
+    client
+        .consume(&root, |_, target, _| async move {
+            assert_eq!(target, None);
+            Ok(Value::Null)
+        })
+        .await?;
+    let task = TaskId::from_bytes(session_id().into_bytes());
+    client
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":task}),
+        )
+        .await?;
+    client.submit("/shell echo task", &DeniedReader).await?;
+    let selected = client.next_request().await?;
+    assert!(matches!(selected.key, FileKey::Task { .. }));
+    client
+        .consume(&selected, |_, target, _| async move {
+            assert_eq!(target, Some(task));
+            Ok(Value::Null)
+        })
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn activity_selection_recovers_from_sdk_files_and_ignores_tool_output_fields() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    let mut definitions: Vec<Value> =
+        serde_json::from_slice(acyclic_harness::client::DEFAULT_COMMANDS_JSON).unwrap();
+    definitions.push(json!({"name":"activity","description":"Activity","arguments":"text","action":{"kind":"sdk","command":"next"}}));
+    client
+        .install_catalog(serde_json::to_vec(&definitions).unwrap())
+        .await?;
+    client.submit("/activity", &DeniedReader).await?;
+    let request = client.next_request().await?;
+    client
+        .consume(&request, |_, _, _| async {
+            Ok(json!({"activity_cursor":"retained SDK cursor"}))
+        })
+        .await?;
+    client.submit("/shell echo hi", &DeniedReader).await?;
+    let request = client.next_request().await?;
+    client
+        .consume(&request, |_, _, _| async {
+            Ok(json!({"activity_cursor":"tool-controlled text"}))
+        })
+        .await?;
+    assert_eq!(client.activity_cursor(), Some("retained SDK cursor"));
+    drop(client);
+    let reopened = CommandSession::open(volume, session_id(), 32_768, 128).await?;
+    assert_eq!(reopened.activity_cursor(), Some("retained SDK cursor"));
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+
+    // Every intervening publication may force an outcome retry, but the actual
+    // effect is FnOnce and its immutable claim is never executed a second time.
+    #[test]
+    fn competing_publications_only_retry_the_outcome(count in 0_usize..8) {
+        futures::executor::block_on(async {
+            let volume = volume().await.unwrap();
+            let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await.unwrap();
+            client.submit("/shell echo hi", &DeniedReader).await.unwrap();
+            let request = client.next_request().await.unwrap();
+            let dispatches = std::cell::Cell::new(0);
+            let result = client.consume(&request, |_, _, _| async {
+                dispatches.set(dispatches.get()+1);
+                for index in 0..count { publish(&volume, ".ui/config/other.json", serde_json::to_vec(&index).unwrap()).await?; }
+                Ok(json!({"value":count}))
+            }).await.unwrap().unwrap();
+            prop_assert_eq!(dispatches.get(), 1);
+            prop_assert_eq!(&client.output_page(0).unwrap().unwrap()["ok"], &result);
+            prop_assert_eq!(client.output_page(0).unwrap().unwrap()["sequence"].as_u64(), Some(1));
+            Ok(())
+        })?;
+    }
+
+    // Dispatch authority is the exact observed immutable file, including its
+    // bytes and metadata. A caller cannot replace it with a fabricated request.
+    #[test]
+    fn fabricated_request_cannot_reach_dispatch(text in "[a-zA-Z0-9]{1,40}") {
+        futures::executor::block_on(async {
+            let volume = volume().await.unwrap();
+            let mut client = CommandSession::open(volume, session_id(), 32_768, 128).await.unwrap();
+            client.submit("/shell echo original", &DeniedReader).await.unwrap();
+            let mut fabricated = client.next_request().await.unwrap();
+            fabricated.bytes = serde_json::to_vec(&json!({"kind":"tool","tool":"bash","input":{"command":text}})).unwrap().into();
+            let result = client.consume(&fabricated, |_, _, _| async { panic!("fabricated input reached dispatch") }).await;
+            prop_assert!(matches!(result, Err(Error::Unauthorized(_))));
+            Ok(())
+        })?;
+    }
     // The new ordinary UI file namespace has one canonical spelling, retains
     // its caller owner through JSON, and rejects path aliases/traversal.
     #[test]
@@ -353,6 +642,13 @@ proptest! {
         prop_assert_eq!(FileKey::parse(&key.path()).unwrap(), key.clone());
         prop_assert_eq!(serde_json::from_slice::<FileKey>(&serde_json::to_vec(&key).unwrap()).unwrap(), key.clone());
         prop_assert_eq!(key.owner(), acyclic_harness::task_volume::Owner::Caller);
+        for file in [acyclic_harness::task_volume::TaskFile::ExecutionClaim(Component::new(&name).unwrap()), acyclic_harness::task_volume::TaskFile::ExecutionResult(Component::new(&name).unwrap())] {
+            let key = FileKey::Task { task:Component::new(&directory).unwrap(),file };
+            prop_assert_eq!(FileKey::parse(&key.path()).unwrap(), key.clone());
+            prop_assert_eq!(serde_json::from_slice::<FileKey>(&serde_json::to_vec(&key).unwrap()).unwrap(), key.clone());
+            prop_assert_eq!(key.owner(), acyclic_harness::task_volume::Owner::Harness);
+            prop_assert!(Query::folder(&format!(".tasks/{directory}/executions")).unwrap().matches(&key));
+        }
         for bad in [format!(".ui/../{name}"), format!(".ui/{directory}//{name}"), format!(".ui/{directory}/{name}/.."), format!(".ui/{directory}/.")] {
             prop_assert!(FileKey::parse(&bad).is_err());
         }
