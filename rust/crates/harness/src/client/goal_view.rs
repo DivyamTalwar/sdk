@@ -36,7 +36,8 @@ pub struct GoalQueryView<'a> {
     pub request_cursor: Option<&'a Cursor>,
     /// File-driven status, reason and body.
     pub goal: &'a GoalFileView,
-    /// Retained counter; absent for a missing or invalid request head.
+    /// Retained counter; pending for blocked goals because GOAL.md carries no
+    /// causal request-head generation, or absent for a missing/invalid head.
     pub progress: Option<&'a GoalProgress>,
     #[serde(skip)]
     pub(super) line_starts: &'a [usize],
@@ -108,7 +109,16 @@ impl ClientViews {
             cursor: file.cursor(),
             request_cursor: request.map(|view| view.cursor()),
             goal: file.goal(),
-            progress: request.and_then(|view| view.progress()),
+            // Independent volume cursors cannot prove that the retained count
+            // has caught up to the head against which a blocked reason was written.
+            progress: match file.goal() {
+                GoalFileView::Present { goal }
+                    if goal.status == crate::goal::GoalStatus::Blocked =>
+                {
+                    None
+                }
+                _ => request.and_then(|view| view.progress()),
+            },
             line_starts: file.goal_line_starts(),
         })
     }

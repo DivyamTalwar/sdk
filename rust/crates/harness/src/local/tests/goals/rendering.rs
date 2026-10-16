@@ -103,17 +103,28 @@ async fn render_case(case: Case) -> Result<()> {
         head_final.commit
     );
     let view = client.views().goal_view(goal_id.0, goal_id.1).unwrap();
+    let observed_count = |views: &crate::client::ClientViews| {
+        views.queries[&head_id]
+            .files()
+            .get(&FileKey::RequestHead)
+            .and_then(|file| crate::goal::request_head::decode(&file.bytes).ok())
+            .map(|turn| turn.automatic_turns)
+    };
     assert_eq!(
-        view.progress.unwrap().continuations as usize,
-        case.tasks - 1,
+        observed_count(client.views()),
+        Some((case.tasks - 1) as u32),
         "{}",
         case.name
     );
     assert_eq!(rows(view), case.panel, "{}", case.name);
-    // Negative control: ignoring the real head follow leaves its count unknown.
+    // Negative control: ignoring the real head follow loses the retained count,
+    // including when the combined blocked rendering correctly keeps it pending.
     assert_ne!(
-        rows(omitted_head.goal_view(goal_id.0, goal_id.1).unwrap()),
-        case.panel,
+        (
+            rows(omitted_head.goal_view(goal_id.0, goal_id.1).unwrap()),
+            observed_count(&omitted_head)
+        ),
+        (case.panel.clone(), Some((case.tasks - 1) as u32)),
         "{}",
         case.name
     );

@@ -26,7 +26,7 @@
     "calls": 3,
     "final_goal": "---\nstatus: blocked\nreason: waiting for input\n---\nFinish the objective",
     "panel": [
-      "Status: blocked | Continuations: 1",
+      "Status: blocked | Continuations: pending",
       "Reason: waiting for input",
       "Finish the objective"
     ]
@@ -44,7 +44,7 @@
     "calls": 3,
     "final_goal": "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 2).\"\n---\nFinish the objective",
     "panel": [
-      "Status: blocked | Continuations: 2",
+      "Status: blocked | Continuations: pending",
       "Reason: Maximum goal continuations reached (limit 2).",
       "Finish the objective"
     ],

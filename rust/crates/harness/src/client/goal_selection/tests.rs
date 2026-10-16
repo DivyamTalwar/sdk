@@ -143,7 +143,8 @@ proptest! {
             let _follow = views.select_goal_view(&goal, &head, 4096).await.unwrap();
             let identity = views.queries.iter().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
             let selected = views.goal_view(identity.0, identity.1).unwrap();
-            assert_eq!(selected.progress.unwrap().continuations, count);
+            assert_eq!(selected.progress.map(|progress| progress.continuations),
+                (statuses[status].1 != GoalStatus::Blocked).then_some(count));
             assert!(matches!(selected.goal, super::super::GoalFileView::Present { goal }
                 if goal.status == statuses[status].1 && goal.reason.as_deref() == Some("waiting")));
             let before = views.clone();
@@ -158,6 +159,9 @@ proptest! {
         });
     }
 }
+
+#[cfg(feature = "tui")]
+mod interleavings;
 
 #[test]
 fn cancellation_before_both_cuts_are_ready_keeps_the_previous_view() {
