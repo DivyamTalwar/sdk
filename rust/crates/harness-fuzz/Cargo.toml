@@ -36,3 +36,10 @@ path = "fuzz_targets/client_mentions.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "client_interests"
+path = "fuzz_targets/client_interests.rs"
+test = false
+doc = false
+bench = false
