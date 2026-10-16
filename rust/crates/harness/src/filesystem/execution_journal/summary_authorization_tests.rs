@@ -303,9 +303,14 @@ fn complete_summary_output_identity_is_required_even_at_a_valid_provenance_key()
     Ok(())
 }
 
-#[tokio::test]
-async fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
-    let fixture = fixture().await?;
+#[test]
+fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
+    use proptest::prelude::*;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let fixture = runtime.block_on(fixture())?;
     let journal = FilesystemExecutionJournal::new(
         fixture.stream.clone(),
         fixture.files.clone(),
@@ -318,22 +323,30 @@ async fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
             io: None,
         },
     )?;
-    let file = output(&journal, OperationId::new(), "summary:0:output").await?;
+    let file = runtime.block_on(output(&journal, OperationId::new(), "summary:0:output"))?;
     let content = ModelContent::Part(crate::model::ModelContentPart::File {
         file: file.clone(),
         policy: crate::model::FileProjectionPolicy::BoundedFull,
     });
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
-        &cancellation,
-    )?;
-    for _ in 0..16 {
-        let before = io.owned_bytes()?;
-        journal
-            .verify_model_content_with_io(&content, Some(&io), None, &[&file])
-            .await?;
-        assert_eq!(io.owned_bytes()?, before, "freed summary retained custody");
-    }
+    proptest::test_runner::TestRunner::default()
+        .run(&(1usize..17), |repetitions| {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let io = PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
+                &cancellation,
+            )?;
+            for _ in 0..repetitions {
+                let before = io.owned_bytes()?;
+                runtime.block_on(journal.verify_model_content_with_io(
+                    &content,
+                    Some(&io),
+                    None,
+                    &[&file],
+                ))?;
+                prop_assert_eq!(io.owned_bytes()?, before, "freed summary retained custody");
+            }
+            Ok(())
+        })
+        .unwrap();
     Ok(())
 }
