@@ -100,7 +100,7 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
                 Ok(())
             };
             let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
-            let maximum_output = invocation.maximum_output_bytes as usize;
+            let maximum_output = invocation.maximum_output_bytes;
             let exchange = invocation
                 .mcp_stdio
                 .as_ref()

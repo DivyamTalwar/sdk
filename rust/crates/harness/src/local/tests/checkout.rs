@@ -400,7 +400,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
 fn input_call(arguments: Value) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall {
-            call_id: "bash/input:1".into(),
+            call_id: "bash_input_1".into(),
             name: "bash".into(),
             arguments,
         }),

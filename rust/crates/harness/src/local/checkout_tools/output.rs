@@ -29,7 +29,7 @@ impl Output {
         let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
         let task = Component::new(owner.task_id().to_string())?;
         // Runtime operation IDs are canonical and unique across model turns.
-        // The request retains the provider's unrestricted call_id unchanged.
+        // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
         let generation = volume
             .snapshot(

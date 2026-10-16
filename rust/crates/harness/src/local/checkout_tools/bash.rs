@@ -19,8 +19,7 @@ impl CheckoutTools {
             timeout_ms: 300_000,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             cancellation_poll_ms: 25,
-            maximum_output_bytes: u32::try_from(maximum_output)
-                .map_err(|cause| Error::Invalid(cause.to_string()))?,
+            maximum_output_bytes: maximum_output,
             standard_input: None,
             mcp_stdio: None,
         };
