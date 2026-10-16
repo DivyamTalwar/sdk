@@ -40,6 +40,8 @@ pub enum ViewUpdate {
 pub struct TranscriptView {
     /// Immutable content references in conversation order.
     pub messages: Vec<ConversationMessage>,
+    /// Verified text files keyed by canonical message identity; rebuilt on replay.
+    pub text: BTreeMap<uuid::Uuid, String>,
     /// Admitted turn owning the current streaming tail.
     pub streaming_turn: Option<crate::OperationId>,
     /// Text received for the current assistant message.
@@ -137,6 +139,12 @@ impl ClientViews {
             }
             EventPayload::ConversationMessageAppended { message } => {
                 let transcript = self.transcripts.entry(key.clone()).or_default();
+                let mut content = content;
+                if let Some(MessageContent::Transcript { text, .. }) = &mut content {
+                    if let Some(text) = text.take() {
+                        transcript.text.insert(message.id, text);
+                    }
+                }
                 if message.kind == crate::conversation::MessageKind::Assistant
                     && transcript.streaming_turn.is_some_and(|turn| {
                         crate::conversation::assistant_message_id(turn) == message.id
@@ -201,6 +209,7 @@ impl ClientViews {
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }
         ) {
             let transcript = self.transcripts.entry(key.clone()).or_default();
+
             if transcript.streaming_turn != Some(turn) {
                 let message_id = crate::conversation::assistant_message_id(turn);
                 if transcript.messages.iter().rev().any(|message| {
@@ -293,7 +302,10 @@ impl ClientViews {
         for (payload, content) in messages {
             if let (
                 EventPayload::ConversationMessageAppended { message },
-                Some(MessageContent::Usage(metadata)),
+                Some(MessageContent::Transcript {
+                    metadata: Some(metadata),
+                    ..
+                }),
             ) = (payload, content)
             {
                 let usage = next
