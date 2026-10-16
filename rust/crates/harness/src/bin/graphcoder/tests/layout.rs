@@ -17,6 +17,8 @@ struct Scenario {
     notices: Vec<String>,
     #[serde(default)]
     tail: bool,
+    #[serde(default)]
+    overlay: Vec<String>,
     expected: Vec<String>,
     absent: Vec<String>,
 }
@@ -37,9 +39,16 @@ fn layout_rows_compose_the_public_widgets_at_each_size() {
             .iter()
             .map(|s| Line::from(s.as_str()))
             .collect();
+        let overlay: Vec<_> = scenario
+            .overlay
+            .iter()
+            .map(|text| Line::from(text.as_str()))
+            .collect();
         let screen = Screen {
             header: Line::from("● GraphCoder"),
             transcript: &transcript,
+            overlay: &overlay,
+            overlay_title: "Shortcuts",
             terminal: if scenario.terminal {
                 &terminal_rows
             } else {

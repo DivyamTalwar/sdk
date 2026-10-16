@@ -320,86 +320,8 @@ fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
     assert!(viewport.cursor.is_some());
 }
 
-#[test]
-fn composed_message_edit_recording_and_attachment_indicators_survive_layout() {
-    use acyclic_harness::tui::{
-        Editor, Screen,
-        key_event::{KeyCode, KeyEvent, KeyModifiers},
-    };
-    let mut input = PromptInput::new(Editor::new("live draft"));
-    input.images = 2;
-    input.recording = true;
-    input.edit_message("earlier".into(), "message being edited");
-    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-    let mut viewport = Viewport::default();
-    terminal
-        .draw(|frame| {
-            Screen::default().render(frame, &input, &mut viewport, 0, 0);
-        })
-        .unwrap();
-    let visible: String = screen_text(&terminal);
-    assert!(visible.contains("Editing message"));
-    assert!(visible.contains("message being edited"));
-    input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 1, 78);
-    terminal
-        .draw(|frame| {
-            Screen::default().render(frame, &input, &mut viewport, 0, 1);
-        })
-        .unwrap();
-    let visible: String = screen_text(&terminal);
-    assert!(visible.contains("live draft"));
-    assert!(visible.contains("2 images attached"));
-    assert!(visible.contains("REC"));
-}
-
-#[test]
-fn captured_diff_model_renders_text_binary_and_empty_file_changes() {
-    use acyclic_harness::{
-        client::FileDiff,
-        tui::{Screen, diff_lines},
-    };
-    let mut files = std::collections::BTreeMap::new();
-    for (path, base, current) in [
-        ("src/main.rs", Some(&b"before\n"[..]), Some(&b"after\n"[..])),
-        ("image.bin", Some(&b"\0old"[..]), Some(&b"\0new"[..])),
-        ("empty.txt", None, Some(&b""[..])),
-    ] {
-        files.insert(
-            path.to_owned(),
-            FileDiff::between(base, current, 4096, 4096)
-                .unwrap()
-                .unwrap(),
-        );
-    }
-    let rows = diff_lines(&files);
-    let screen = Screen {
-        diff: &rows,
-        ..Screen::default()
-    };
-    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-    terminal
-        .draw(|frame| {
-            screen.render(
-                frame,
-                &PromptInput::default(),
-                &mut Viewport::default(),
-                0,
-                0,
-            );
-        })
-        .unwrap();
-    let visible = screen_text(&terminal);
-    for expected in [
-        "Diff",
-        "src/main.rs (modified) +1 -1",
-        "-before",
-        "+after",
-        "Binary file changed",
-        "empty.txt (added)",
-    ] {
-        assert!(visible.contains(expected), "missing {expected}: {visible}");
-    }
-}
+#[path = "tests/diff.rs"]
+mod diff;
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]

@@ -419,5 +419,92 @@
     "row": "Clipboard paste into a question requests paste in comment mode",
     "text": "", "question": true, "events": [{"key":"v","ctrl":true}],
     "expected": "", "visible": [], "comment": true, "clipboard_paste": true, "effects": 1
+  },
+  {
+    "row": "Message-select editing indicator",
+    "text": "live draft",
+    "edit": "message being edited",
+    "events": [],
+    "expected": "message being edited",
+    "visible": [
+      "Editing message",
+      "message being edited"
+    ]
+  },
+  {
+    "row": "Escape from message editing restores the live draft",
+    "text": "live draft",
+    "edit": "message being edited",
+    "events": [
+      {
+        "key": "Escape"
+      }
+    ],
+    "expected": "live draft",
+    "visible": [
+      "live draft"
+    ]
+  },
+  {
+    "row": "Editing submission carries the selected message identity",
+    "text": "live draft",
+    "edit": "replacement text",
+    "events": [
+      {
+        "key": "Enter"
+      }
+    ],
+    "submitted": "replacement text",
+    "edit_id": "earlier",
+    "expected": "live draft",
+    "visible": [
+      "live draft"
+    ],
+    "effects": 1
+  },
+  {
+    "row": "Recording and image attachment indicators",
+    "text": "draft",
+    "recording": true,
+    "images": 2,
+    "events": [],
+    "expected": "draft",
+    "visible": [
+      "REC",
+      "2 images attached",
+      "draft"
+    ]
+  },
+  {
+    "row": "Submitting during an active turn requests queuing",
+    "text": "next prompt",
+    "busy": true,
+    "events": [
+      {
+        "key": "Enter"
+      }
+    ],
+    "submitted": "next prompt",
+    "queued": true,
+    "expected": "",
+    "visible": [],
+    "effects": 1
+  },
+  {
+    "row": "Ctrl+C interrupts an active turn and preserves the draft",
+    "text": "live draft",
+    "busy": true,
+    "events": [
+      {
+        "key": "c",
+        "ctrl": true
+      }
+    ],
+    "expected": "live draft",
+    "visible": [
+      "live draft"
+    ],
+    "interrupt": true,
+    "effects": 1
   }
 ]

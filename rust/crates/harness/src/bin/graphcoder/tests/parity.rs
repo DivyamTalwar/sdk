@@ -12,6 +12,12 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
         let name = row["row"].as_str().unwrap();
         let mut input = PromptInput::new(Editor::new(row["text"].as_str().unwrap()));
         input.question = row["question"].as_bool().unwrap_or(false);
+        input.busy = row["busy"].as_bool().unwrap_or(false);
+        input.recording = row["recording"].as_bool().unwrap_or(false);
+        input.images = row["images"].as_u64().unwrap_or(0) as usize;
+        if let Some(text) = row["edit"].as_str() {
+            assert!(input.edit_message("earlier".into(), text).is_empty());
+        }
         input.transcript_selection = row["transcript_selection"].as_str().map(str::to_owned);
         if let Some(entries) = row["history"].as_array() {
             let mut history = acyclic_harness::tui::PromptHistory::default();
@@ -97,11 +103,17 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
         }
         if let Some(submitted) = row["submitted"].as_str() {
             assert!(
-                effects.iter().any(
-                    |effect| matches!(effect, InputEffect::Submit { text, .. } if text == submitted)
-                ),
+                effects.iter().any(|effect| matches!(effect,
+                    InputEffect::Submit { text, queued, edit }
+                    if text == submitted
+                        && *queued == row["queued"].as_bool().unwrap_or(false)
+                        && edit.as_deref() == row["edit_id"].as_str()
+                )),
                 "{name}"
             );
+        }
+        if row["interrupt"].as_bool() == Some(true) {
+            assert_eq!(effects, vec![InputEffect::Interrupt], "{name}");
         }
         if let Some(copied) = row["copied"].as_str() {
             assert!(

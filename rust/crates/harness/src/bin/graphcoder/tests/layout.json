@@ -42,5 +42,87 @@
     "notices": ["Turn completed"],
     "expected": ["message 39", "shell output", "Turn completed", "draft"],
     "absent": ["message 00"]
+  },
+  {
+    "row": "Help overlay preserves prompt, status and side panels",
+    "width": 100,
+    "height": 30,
+    "documents": true,
+    "overlay": [
+      "Ctrl+R  History search",
+      "Ctrl+/  Shortcuts"
+    ],
+    "expected": [
+      "Shortcuts",
+      "History search",
+      "draft",
+      "model · tokens",
+      "GOAL.md",
+      "Goal contents",
+      "+added code"
+    ],
+    "absent": [
+      "message 00"
+    ]
+  },
+  {
+    "row": "Help overlay tail scroll uses its bordered interior",
+    "width": 40,
+    "height": 12,
+    "tail": true,
+    "overlay": [
+      "shortcut 00",
+      "shortcut 01",
+      "shortcut 02",
+      "shortcut 03",
+      "shortcut 04",
+      "shortcut 05",
+      "shortcut 06",
+      "shortcut 07",
+      "shortcut 08",
+      "shortcut 09",
+      "shortcut 10",
+      "shortcut 11",
+      "shortcut 12",
+      "shortcut 13",
+      "shortcut 14",
+      "shortcut 15",
+      "shortcut 16",
+      "shortcut 17",
+      "shortcut 18",
+      "shortcut 19"
+    ],
+    "expected": [
+      "Shortcuts",
+      "shortcut 19",
+      "draft",
+      "model · tokens"
+    ],
+    "absent": [
+      "shortcut 00",
+      "message 39"
+    ]
+  },
+  {
+    "row": "Help overlay composes with terminal and attention",
+    "width": 80,
+    "height": 20,
+    "terminal": true,
+    "notices": [
+      "Turn completed"
+    ],
+    "overlay": [
+      "Ctrl+R  History search"
+    ],
+    "expected": [
+      "Shortcuts",
+      "History search",
+      "shell output",
+      "Turn completed",
+      "draft"
+    ],
+    "absent": [
+      "message 00"
+    ]
   }
 ]
