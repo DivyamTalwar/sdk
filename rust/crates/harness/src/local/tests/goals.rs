@@ -23,6 +23,7 @@ struct Case {
     path: String,
     #[serde(default)]
     unreachable: bool,
+    private_mount: Option<bool>,
 }
 
 #[cfg(feature = "tui")]
@@ -188,7 +189,7 @@ fn goal_config(
     let config = volume_config(directory, project, provider)?.goal_continuations(policy);
     // Without bash the local host binds the stock project writer without a
     // scratch mount. Keep that real unreachable route covered after #503.
-    Ok(if case.unreachable {
+    Ok(if case.private_mount == Some(false) {
         config
             .without_default_tools()
             .tool(crate::tool::files::write()?)

@@ -51,7 +51,7 @@
     "path": "GOAL.md"
   },
   {
-    "name": "disabled-negative-control",
+    "name": "unmounted-stock-writer-disabled-admission-negative-control",
     "initial_goal": "Finish the objective",
     "enabled": false,
     "writes": [
@@ -64,7 +64,9 @@
       "Status: active | Continuations: 0",
       "Finish the objective"
     ],
-    "path": "GOAL.md"
+    "path": "GOAL.md",
+    "cap": 2,
+    "private_mount": false
   },
   {
     "name": "zero-cap",
@@ -142,6 +144,7 @@
       "Status: blocked | Continuations: 0",
       "Reason: GOAL.md is not reachable through the task view.",
       "Finish the objective"
-    ]
+    ],
+    "private_mount": false
   }
 ]
