@@ -115,7 +115,7 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
                     &workspace,
                     None,
                     &mutations,
-                    &IdempotencyKey::new("goal-seed".into())?,
+                    &IdempotencyKey::new("goal-seed")?,
                 )
                 .await?,
         )
