@@ -1,5 +1,6 @@
 //! External host hooks normalized into immutable task requests.
 
+mod answer;
 mod catalog;
 mod client;
 mod failure;
@@ -11,6 +12,7 @@ mod normalize;
 mod request;
 mod volume;
 
+pub use answer::hook_answer;
 pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
 pub use failure::hook_failure;
 pub use handler::handle;

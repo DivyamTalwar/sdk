@@ -4,7 +4,26 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
-    reason = "integration-test helpers outside #[test]
+    reason = "integration-test helpers outside #[test] functions also unwrap fixtures"
+)]
+
+mod support;
+
+use serde_json::Value;
+use std::fs;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+use std::path::Path;
+use std::time::Duration;
+use support::{
+    BoundedOutput, PackagedPlugin, RequestFingerprint, ScriptedProvider, ServiceGuard, command,
+    installed_host_binary, isolated_state, output_after_provider_admission, output_with_timeout,
+    package_production_plugin, test_tempdir, write_qualification_receipt,
+};
+
+const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
+
+#[test]
 #[ignore = "requires the exact Codex binary selected by the qualification workflow"]
 fn actual_codex_binary_executes_the_scripted_scenario() {
     let Some(codex) = installed_host_binary("codex", "ACYCLIC_E2E_CODEX") else {

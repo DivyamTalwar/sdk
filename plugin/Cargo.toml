@@ -47,6 +47,7 @@ windows-sys = { version = "0.61.2", features = [
 
 
 [dev-dependencies]
+hex.workspace = true
 acyclic-fs = { path = "../rust/crates/filesystem", features = ["local", "native-mount"] }
 acyclic-harness = { path = "../rust/crates/harness", features = ["service", "test-support"] }
 async-trait.workspace = true

@@ -2,7 +2,7 @@
 //! Native hooks normalize into the same bounded request files as actor clients.
 
 use acyclic_harness::{
-    external_executor::{ExternalHost, ExternalRequest, HookBinding, request},
+    external_executor::{ExternalHost, ExternalRequest, HookBinding, hook_answer, request},
     task_volume::{Component, FileKey, FileValue, TaskFile},
 };
 use libfuzzer_sys::fuzz_target;
@@ -34,6 +34,22 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let task = Component::new("task")?;
+    for host in [
+        ExternalHost::Codex,
+        ExternalHost::ClaudeCode,
+        ExternalHost::Pi,
+    ] {
+        let event = if host == ExternalHost::Pi {
+            "tool_call"
+        } else {
+            "PreToolUse"
+        };
+        if let Ok(answer) = hook_answer(host, event, input) {
+            let encoded = serde_json::to_vec(&answer)?;
+            assert_eq!(hook_answer(host, event, &encoded)?, answer);
+            assert!(answer.is_object());
+        }
+    }
     if let Ok(binding) = HookBinding::from_bytes(input) {
         let encoded = serde_json::to_vec(&binding)?;
         let decoded = HookBinding::from_bytes(&encoded)?;

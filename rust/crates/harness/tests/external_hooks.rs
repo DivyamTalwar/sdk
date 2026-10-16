@@ -5,6 +5,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+#[path = "external_hooks/answers.rs"]
+mod answers;
+
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 #[path = "external_hooks/client.rs"]
 mod client;

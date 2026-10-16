@@ -95,10 +95,11 @@ pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     let results = TaskVolume::open(provider, binding.results)
         .await
         .map_err(storage)?;
-    request
+    let answer = request
         .send(&requests, &results, binding.task)
         .await
-        .map_err(storage)
+        .map_err(storage)?;
+    super::answer::validate(host, event, answer)
 }
 
 fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
