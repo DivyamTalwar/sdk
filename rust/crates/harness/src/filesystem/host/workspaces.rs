@@ -304,171 +304,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &owned
                 }
             };
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut native_before = {
-                let preparation = preparation.cloned();
-                move |work: &acyclic_fs::NativeMaterializationWork| {
-                    let preparation = preparation.clone();
-                    let work = work.clone();
-                    async move {
-                        if let Some(task) = preparation {
-                            let io = PreparationIo::from_native_work(&work)?;
-                            task.verify(false, Some(&io))?.await?;
-                        }
-                        Ok::<(), Error>(())
-                    }
-                }
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                native_before(work).await?;
-            }
             let workspace = crate::conversation::BoundedContentFuture::new(Some(io), || {
                 self.open(reference, Some(io))
             })?
             .await?;
-            let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            loop {
-                let pinned = match expected {
-                    Some(reference) => {
-                        crate::conversation::BoundedContentFuture::new(Some(io), || {
-                            self.generation(&workspace, reference, Some(io))
-                        })?
-                        .await?
-                    }
-                    None => {
-                        crate::conversation::BoundedContentFuture::new(Some(io), || {
-                            workspace
-                                .head(io, io.cancellation())
-                                .map(|result| io.sdk(result))
-                        })?
-                        .await?
-                    }
-                };
-                let mut transaction =
-                    crate::conversation::BoundedContentFuture::new(Some(io), || {
-                        workspace
-                            .begin_transaction_at(&pinned, operation, io, io.cancellation())
-                            .map(|result| io.sdk(result))
-                    })?
-                    .await?;
-                crate::conversation::BoundedContentFuture::new(Some(io), || async {
-                    for mutation in mutations {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(work) = io.original_native_work() {
-                            native_before(work).await?;
-                        }
-                        match mutation {
-                            WorkspaceMutation::CreateDirectory { path } => {
-                                crate::conversation::BoundedContentFuture::new(Some(io), || {
-                                    transaction
-                                        .create_dir_all(path, io, io.cancellation())
-                                        .map(|result| io.sdk(result))
-                                })?
-                                .await?
-                            }
-                            WorkspaceMutation::PutFile { path, bytes } => {
-                                crate::conversation::BoundedContentFuture::new(Some(io), || {
-                                    transaction
-                                        .write(path, bytes.clone(), io, io.cancellation())
-                                        .map(|result| io.sdk(result))
-                                })?
-                                .await?
-                            }
-                            WorkspaceMutation::Remove { path } if unmeasured => {
-                                crate::conversation::BoundedContentFuture::new(Some(io), || {
-                                    transaction
-                                        .remove(path, io, io.cancellation())
-                                        .map(|result| io.sdk(result))
-                                })?
-                                .await?
-                            }
-                            WorkspaceMutation::Remove { .. } => {
-                                return Err(stock_boundary(
-                                    Some(io),
-                                    crate::wire::ErrorCode::Unsupported,
-                                    "bounded publication does not remove content",
-                                ));
-                            }
-                        }
-                    }
-                    Ok(())
-                })?
-                .await?;
-                #[cfg(acyclic_harness_loom)]
-                publication_model::before_commit().await;
-                let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
-                    let commit = 'commit: {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(work) = io.original_native_work() {
-                            break 'commit transaction
-                                .commit_with_native_work(
-                                    None,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    work,
-                                    io.cancellation(),
-                                    &mut native_before,
-                                )
-                                .await?;
-                        }
-                        io.receive(
-                            transaction
-                                .commit(
-                                    None,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io.remaining()?,
-                                    io.cancellation(),
-                                    &mut |_| async move {
-                                        if let Some(task) = preparation {
-                                            task.verify(false, Some(io))
-                                                .map_err(acyclic_fs::OperationFailure::before_work)?
-                                                .await
-                                                .map_err(
-                                                    acyclic_fs::OperationFailure::before_work,
-                                                )?;
-                                        }
-                                        Ok(acyclic_fs::OperationReceipt {
-                                            value: (),
-                                            work: acyclic_fs::WorkCounters::default(),
-                                        })
-                                    },
-                                )
-                                .await,
-                        )?
-                    };
-                    Ok(commit)
-                })?
-                .await?;
-                // Reevaluate unconditional mutations on the newly accepted head.
-                // A definite failed CAS published nothing. Pinned comparisons,
-                // lost fencing, reused identities and uncertain errors never retry.
-                let retry =
-                    expected.is_none() && matches!(commit, TransactionCommit::Conflict { .. });
-                #[cfg(acyclic_harness_loom)]
-                let retry = retry && !publication_model::skip_retry();
-                if retry {
-                    continue;
-                }
-                return match commit {
-                    TransactionCommit::Committed(generation)
-                    | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                    TransactionCommit::Conflict { .. } => Err(stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Conflict,
-                        "workspace publication observed changed dependencies",
-                    )),
-                    TransactionCommit::Fenced => Err(stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Conflict,
-                        "workspace publication was fenced",
-                    )),
-                    TransactionCommit::IdempotencyConflict => Err(stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Conflict,
-                        "workspace publication retry identity changed",
-                    )),
-                };
-            }
+            let mut publication = publication::Update {
+                host: self,
+                workspace: &workspace,
+                expected,
+                mutations,
+                operation: fork_preparer_io::operation_key(&key, Some(io))?,
+                io,
+                preparation,
+                unmeasured,
+            };
+            publication::finish(&mut publication, publication::attempt).await
         })
     }
     pub(in crate::filesystem) async fn operation_generation(
@@ -496,5 +346,4 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod bytes_tests;
-#[cfg(acyclic_harness_loom)]
-mod publication_model;
+mod publication;
