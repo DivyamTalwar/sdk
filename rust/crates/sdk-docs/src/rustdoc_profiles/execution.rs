@@ -58,19 +58,24 @@ impl CargoExecutionContext<'_> {
         Ok(vec!["--config".into(), value])
     }
     pub fn configure(self, command: &mut Command) -> Result<(), ProfileError> {
+        crate::child::configure(command);
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-        if let Some(home) = crate::cargo_home::current() {
-            command.env("CARGO_HOME", home);
-        }
         command.args(self.config_options()?);
         Ok(())
     }
 
     pub fn configure_metadata(self, command: &mut MetadataCommand) -> Result<(), ProfileError> {
-        command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-        if let Some(home) = crate::cargo_home::current() {
-            command.env("CARGO_HOME", home);
+        for (key, value) in crate::child::overrides() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
         }
+        command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
         if let Some(cargo) = self.cargo_path {
             command.cargo_path(cargo);
         }
@@ -122,7 +127,7 @@ pub(super) fn rustup_lookup_count() -> usize {
 fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
     #[cfg(test)]
     LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Command::new("rustup")
+    crate::command("rustup")
         .args(args)
         .output()
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
@@ -134,7 +139,7 @@ fn compiler_probe(cargo: &Path, args: &[&str]) -> Result<String, ProfileError> {
     let bin = cargo
         .parent()
         .ok_or_else(|| ProfileError::InvalidRustdoc("pinned Cargo has no directory".into()))?;
-    let output = Command::new(bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }))
+    let output = crate::command(bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }))
         .args(args)
         .output()
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
@@ -245,7 +250,7 @@ fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
         let bin = producer.cargo.parent().ok_or_else(|| {
             ProfileError::InvalidRustdoc("pinned Cargo has no toolchain directory".into())
         })?;
-        let mut command = Command::new(&producer.cargo);
+        let mut command = crate::command(&producer.cargo);
         command
             .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
             .env(

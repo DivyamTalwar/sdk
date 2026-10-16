@@ -188,6 +188,8 @@ pub fn materialize_generated_sources(
     root: &Path,
     rustdoc_files: &[PathBuf],
 ) -> Result<Vec<GeneratedSource>, CliError> {
+    let root = root.canonicalize().map_err(io_error)?;
+    let root = root.as_path();
     let mut filenames = BTreeSet::new();
     for receipt in rustdoc_files {
         let value: serde_json::Value = serde_json::from_slice(
@@ -753,7 +755,7 @@ pub(super) fn collect_source_files_inner(
 }
 
 pub(super) fn git_revision(root: &Path) -> Result<String, CliError> {
-    let output = Command::new("git")
+    let output = sdk_docs::command("git")
         .current_dir(root)
         .args(["rev-parse", "HEAD"])
         .output()
@@ -769,7 +771,7 @@ pub(super) fn git_revision(root: &Path) -> Result<String, CliError> {
 }
 
 pub(super) fn git_dirty(root: &Path) -> Result<bool, CliError> {
-    let output = Command::new("git")
+    let output = sdk_docs::command("git")
         .current_dir(root)
         .args(["status", "--porcelain"])
         .output()

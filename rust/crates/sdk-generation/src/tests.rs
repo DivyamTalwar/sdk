@@ -1,3 +1,6 @@
+#[cfg(windows)]
+use std::process::Command;
+
 #[test]
 fn registry_frontier_cli_requires_paired_authority_inputs() {
     let base: Vec<String> = [
@@ -564,4 +567,47 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
         check(&bytes).unwrap();
     }
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn regular_sources_ignore_root_alias_spelling() {
+    use proptest::prelude::*;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let source = root.join("src/lib.rs");
+    fs::write(&source, b"pub struct Regular;\n").unwrap();
+    let physical = source.canonicalize().unwrap();
+    let receipt = root.join("receipt.json");
+    fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({"span":{"filename":physical}})).unwrap(),
+    )
+    .unwrap();
+    sdk_docs::with_rustdoc_cache(|| {
+        proptest::test_runner::TestRunner::default()
+            .run(
+                &(any::<bool>(), prop::collection::vec(any::<bool>(), 0..8)),
+                |(canonical, aliases)| {
+                    let mut alias = if canonical {
+                        root.canonicalize().unwrap()
+                    } else {
+                        root.to_owned()
+                    };
+                    for dot in aliases {
+                        alias.push(if dot { "." } else { "src/.." });
+                    }
+                    prop_assert!(materialize_generated_sources(
+                        &alias,
+                        std::slice::from_ref(&receipt)
+                    )
+                    .unwrap()
+                    .is_empty());
+                    Ok(())
+                },
+            )
+            .unwrap();
+    });
+    // The old raw-prefix comparison misclassifies this in-root source on every host.
+    assert!(!physical.starts_with(root.join("src/..")));
 }

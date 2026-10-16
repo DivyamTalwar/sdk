@@ -131,7 +131,7 @@ pub fn execute_examples(
         {
             return Err("historical example source changed before execution".into());
         }
-        let mut command = Command::new(cargo);
+        let mut command = sdk_docs::command(cargo);
         let manifest = if let Some(owners) = owner_metadata {
             let metadata = owners
                 .get(&example.package)

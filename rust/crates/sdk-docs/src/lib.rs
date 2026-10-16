@@ -13,14 +13,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-mod cargo_home;
+mod child;
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
 mod path_identity;
 mod public_api;
 mod render_cache;
 mod sync;
-pub use cargo_home::with_cargo_home;
+pub use child::{command, command_environment, with_command_environment};
 pub use render_cache::{read_rustdoc, with_rustdoc_cache};
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;

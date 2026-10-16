@@ -29,7 +29,7 @@ pub(super) fn frontier_revisions(
     }
     let git = frontier_git()?;
     let shallow = command_output(
-        Command::new(&git)
+        sdk_docs::command(&git)
             .arg("--no-replace-objects")
             .current_dir(repository)
             .args(["rev-parse", "--is-shallow-repository"]),
@@ -41,7 +41,7 @@ pub(super) fn frontier_revisions(
     {
         return Err("source frontier requires complete original Git ancestry".into());
     }
-    let graft = command_output(Command::new(&git).current_dir(repository).args([
+    let graft = command_output(sdk_docs::command(&git).current_dir(repository).args([
         "rev-parse",
         "--git-path",
         "info/grafts",
@@ -52,11 +52,11 @@ pub(super) fn frontier_revisions(
             .trim(),
     );
     if graft.try_exists().map_err(|e| e.to_string())?
-        || std::env::var_os("GIT_GRAFT_FILE").is_some()
+        || crate::command_var_os("GIT_GRAFT_FILE").is_some()
     {
         return Err("source frontier does not accept substituted Git ancestry".into());
     }
-    let mut command = Command::new(git);
+    let mut command = sdk_docs::command(git);
     command.arg("--no-replace-objects");
     command
         .current_dir(repository)
@@ -96,14 +96,14 @@ pub(super) fn original_frontier_authority(
     let mut authority = BTreeSet::new();
     for revision in revisions {
         let present = command_output(
-            Command::new(frontier_git()?)
+            sdk_docs::command(frontier_git()?)
                 .arg("--no-replace-objects")
                 .current_dir(repository)
                 .args(["ls-tree", "-z", revision, "--", "release/cargo-crates.json"]),
         )?;
         if !present.is_empty() {
             let bytes = command_output(
-                Command::new(frontier_git()?)
+                sdk_docs::command(frontier_git()?)
                     .arg("--no-replace-objects")
                     .current_dir(repository)
                     .args(["show", &format!("{revision}:release/cargo-crates.json")]),

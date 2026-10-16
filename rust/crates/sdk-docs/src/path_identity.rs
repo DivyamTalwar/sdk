@@ -77,7 +77,8 @@ pub fn stable_filename(filename: &str, root: &str) -> String {
         return format!(
             "<root>/{}",
             rebased
-                .trim_start_matches("/<root>")
+                .strip_prefix("/<root>")
+                .unwrap()
                 .trim_start_matches('/')
         );
     }

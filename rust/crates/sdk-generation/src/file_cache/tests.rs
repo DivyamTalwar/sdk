@@ -98,7 +98,7 @@ fn each_command_discards_all_cached_values_and_resolved_selections() {
     fs::write(&path, "channel").unwrap();
     get(&path, "cargo-vV", || Ok("old version".into())).unwrap();
     resolved_cargo(&path);
-    crate::run(["help".into()]).unwrap();
+    crate::run(["help".into()], &mut Vec::new()).unwrap();
     assert!(!is_resolved_cargo(&path));
     assert_eq!(
         get(&path, "cargo-vV", || Ok("fresh version".into())).unwrap(),

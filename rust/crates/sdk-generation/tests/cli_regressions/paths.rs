@@ -11,6 +11,7 @@ proptest::proptest! {
     fn receipt_paths_rebase_components_across_windows_spellings(
         directory in "[a-z]{1,12}", leaf in "[a-z]{1,12}", drive in b'A'..=b'Z',
     ) {
+        crate::runtime::time_control();
         let drive = char::from(drive);
         for (old, variants, new) in [
             (format!("{drive}:\\old\\{directory}"), vec![

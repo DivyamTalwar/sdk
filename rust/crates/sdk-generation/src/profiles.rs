@@ -66,11 +66,7 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
 
 pub(super) fn documentation_cargo(root: &Path, historical: bool) -> Result<PathBuf, CliError> {
     if historical {
-        let generator_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .ok_or_else(|| CliError("generator has no source toolchain root".into()))?;
-        pinned_cargo(generator_root)
+        maintained_cargo(root)
     } else {
         pinned_cargo(root)
     }

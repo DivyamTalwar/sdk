@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
+    runtime::time_control();
     std::thread::scope(|scope| {
         for published in [true, false] {
             scope.spawn(move || {
@@ -44,6 +45,7 @@ fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
 
 #[test]
 fn archive_locks_override_foreign_automatic_cargo_configuration() {
+    runtime::time_control();
     std::thread::scope(|scope| {
         for published in [true, false] {
             scope.spawn(move || {
@@ -75,7 +77,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     );
                     fs::write(config_directory.join("config.toml"), &config).unwrap();
                     // Negative control: maintained Cargo really discovers this automatic config.
-                    let mut control = Command::new(env!("CARGO"));
+                    let mut control = Command::new(&*runtime::cargo());
                     control.env("CARGO_HOME", fixture_cargo_home(&fixture));
                     control
                         .args([
@@ -158,6 +160,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
 
 #[test]
 fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
+    runtime::time_control();
     fn add_input_during_profile(package: &Path) {
         let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
         fs::write(
@@ -221,6 +224,7 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
 
 #[test]
 fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failures_fatal() {
+    runtime::time_control();
     fn setup(package: &Path) {
         let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
         fs::write(
@@ -330,6 +334,7 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
 
 #[test]
 fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
+    runtime::time_control();
     // One immutable initial history prevents incidental wall-clock differences
     // from creating redundant source frontiers. Each owner still packages and
     // compiles its own source and complete four-profile historical matrix.
@@ -353,6 +358,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         jobs.map(|job| job.join().unwrap())
     });
     let (fixture, support) = &fixtures[0];
+    runtime::phase("fixtures");
     let mut anchors = vec![git_revision(&fixture.root)];
     for (index, (other_fixture, other)) in fixtures.iter().enumerate().skip(1) {
         let name = ["demo-a", "demo-b", "demo-c"][index];
@@ -383,7 +389,9 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     )
     .unwrap();
     write_registry_transport(support);
+    runtime::phase("anchors");
     let generated = run_historical_generate_mode(fixture, support, Some("registry-archives"));
+    runtime::phase("generated");
     assert!(generated.status.success(), "{}", output_message(&generated));
     let output = fixture.output.join("releases/1.0.0");
     let data: Value =
@@ -422,16 +430,19 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         support,
     );
     assert!(drift.status.success(), "{}", output_message(&drift));
+    runtime::phase("drifted");
     fs::remove_dir_all(&template.0.root).unwrap();
     fs::remove_dir_all(&template.0.output).unwrap();
     for (fixture, _) in fixtures {
         let _ = fs::remove_dir_all(fixture.root);
         let _ = fs::remove_dir_all(fixture.output);
     }
+    runtime::phase("cleaned");
 }
 
 #[test]
 fn registry_archive_native_source_is_not_a_publisher_git_retag() {
+    runtime::time_control();
     std::thread::scope(|scope| {
         for (dirty, published_lock, publisher_vcs) in [
             (true, true, true),
@@ -517,6 +528,7 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
 
 #[test]
 fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
+    runtime::time_control();
     let (fixture, support) = registry_archive_fixture(true, true, None, true);
     let publisher = git_revision(&fixture.root);
     git(
@@ -577,13 +589,18 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
 
 #[test]
 fn historical_source_help_and_flag_contract_are_explicit() {
-    let binary = env!("CARGO_BIN_EXE_sdk-generation");
-    let help = Command::new(binary).arg("help").output().unwrap();
+    runtime::time_control();
+    let binary = runtime::binary("sdk-generation");
+    let help = Command::new(&binary).arg("help").output().unwrap();
     assert!(help.status.success());
+    let direct = invoke(Command::new(&binary).arg("help"));
+    assert_eq!(direct.status.code(), help.status.code());
+    assert_eq!(direct.stdout, help.stdout);
+    assert_eq!(direct.stderr, help.stderr);
     let text = output_message(&help);
     assert!(text.contains("--historical-archives DIR"));
     assert!(text.contains("--historical-source git|registry-archives"));
-    let missing_frontier = Command::new(binary)
+    let missing_frontier = Command::new(&binary)
         .args([
             "generate",
             "--root",
@@ -608,7 +625,7 @@ fn historical_source_help_and_flag_contract_are_explicit() {
         ("registry-archives", "requires --historical-archives"),
         ("unverified", "unknown historical source"),
     ] {
-        let rejected = Command::new(binary)
+        let rejected = Command::new(&binary)
             .args([
                 "generate",
                 "--root",
@@ -632,6 +649,7 @@ fn historical_source_help_and_flag_contract_are_explicit() {
 
 #[test]
 fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
+    runtime::time_control();
     let (fixture, support) = registry_archive_fixture(true, true, Some("input.json"), true);
     let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
     assert!(!result.status.success());
@@ -656,6 +674,7 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
 
 #[test]
 fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() {
+    runtime::time_control();
     let (fixture, support) = historical_fixture(None);
     let result = run_historical_generate(&fixture, &support);
     assert!(result.status.success(), "{}", output_message(&result));
@@ -717,6 +736,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
 
 #[test]
 fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog() {
+    runtime::time_control();
     std::thread::scope(|scope| {
         for mutation in ["descriptor.bin", "input.json", "schema.proto"] {
             scope.spawn(move || {
@@ -761,6 +781,7 @@ fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog()
 
 #[test]
 fn excluded_published_path_owners_have_executed_api_and_drift() {
+    runtime::time_control();
     let fixture = feature_profile_fixture();
     let manifest = fixture.root.join("rust/vendor/macros/Cargo.toml");
     fs::create_dir_all(manifest.parent().unwrap().join("src")).unwrap();

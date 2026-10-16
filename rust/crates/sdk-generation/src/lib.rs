@@ -15,7 +15,6 @@ use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 mod generation;
 pub mod historical;
@@ -123,30 +122,43 @@ struct ExecutedProfile {
 }
 
 /// Runs the generator command with explicit arguments.
-pub fn run(values: impl IntoIterator<Item = String>) -> Result<(), CliError> {
+pub fn run(
+    values: impl IntoIterator<Item = String>,
+    stdout: &mut dyn Write,
+) -> Result<(), CliError> {
     file_cache::begin_run();
-    sdk_docs::with_rustdoc_cache(|| run_inner(values))
+    sdk_docs::with_rustdoc_cache(|| run_inner(values, stdout))
 }
 
-fn run_inner(values: impl IntoIterator<Item = String>) -> Result<(), CliError> {
+fn run_inner(
+    values: impl IntoIterator<Item = String>,
+    stdout: &mut dyn Write,
+) -> Result<(), CliError> {
     let mut args = values.into_iter();
     match args.next().as_deref() {
-        Some("generate") => generate(parse_generate(args.collect())?),
-        Some("drift") => drift(parse_path_flags(args.collect())?),
-        Some("help") | None => {
-            print_help();
-            Ok(())
-        }
+        Some("generate") => generate(parse_generate(args.collect())?, stdout),
+        Some("drift") => drift(parse_path_flags(args.collect())?, stdout),
+        Some("help") | None => print_help(stdout),
         Some(command) => Err(CliError(format!(
             "unknown command `{command}` (try `help`)"
         ))),
     }
 }
 
-fn print_help() {
-    println!(
+fn print_help(stdout: &mut dyn Write) -> Result<(), CliError> {
+    writeln!(stdout,
         "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios] [--historical-archives DIR] [--historical-source git|registry-archives] [--registry-frontier-repository REPO --registry-frontier-revisions SHA,...]\nHistorical archives require --channel release --execute-profiles.\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
-    );
+    ).map_err(io_error)
+}
+
+fn command_var_os(name: &str) -> Option<std::ffi::OsString> {
+    sdk_docs::command_environment()
+        .into_iter()
+        .find(|(key, _)| {
+            key == name
+                || cfg!(windows) && key.as_encoded_bytes().eq_ignore_ascii_case(name.as_bytes())
+        })
+        .map(|(_, value)| value)
 }
 
 fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {

@@ -1,6 +1,40 @@
 use super::*;
 use sdk_docs::rustdoc_profiles::{self as profiles, ProfileSpec};
 
+pub(super) fn assert_catalog_matches(fixture: &Fixture, data: &sdk_docs::DocsData) {
+    fn equal(actual: &Value, expected: &Value, path: String) {
+        match (actual, expected) {
+            (Value::Object(a), Value::Object(b)) => {
+                assert_eq!(a.len(), b.len(), "catalog {path} keys");
+                for (key, value) in a {
+                    equal(value, &b[key], format!("{path}/{key}"));
+                }
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                assert_eq!(a.len(), b.len(), "catalog {path} length");
+                for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                    equal(a, b, format!("{path}/{index}"));
+                }
+            }
+            _ => assert_eq!(actual, expected, "catalog {path}"),
+        }
+    }
+    let previous: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .output
+                .join("preview/feature-profile-catalog/sdk-docs-data.v1.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    equal(
+        &serde_json::to_value(data).unwrap(),
+        &previous,
+        String::new(),
+    );
+}
+
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
@@ -136,7 +170,7 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
 pub(super) fn metadata(fixture: &Fixture) -> cargo_metadata::Metadata {
     let mut command = cargo_metadata::MetadataCommand::new();
     command
-        .cargo_path(env!("CARGO"))
+        .cargo_path(&*runtime::cargo())
         .env("CARGO_HOME", fixture_cargo_home(fixture))
         .env_remove("CARGO_RESOLVER_LOCKFILE_PATH")
         .no_deps()

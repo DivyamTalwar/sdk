@@ -21,3 +21,16 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #[test]
+    fn root_marker_components_are_never_stripped_from_source_identity(depth in 1usize..5, leaf in "[a-z]{1,10}") {
+        let root = Path::new("/checkout");
+        let digest = |path: &str| normalized_rustdoc_digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({"filename": path})).unwrap(), root).unwrap();
+        let marked = format!("/checkout/{}{leaf}", "<root>/".repeat(depth));
+        prop_assert_ne!(digest(&marked), digest(&format!("/checkout/{leaf}")));
+        let nested = format!("/checkout/<root>/{}", "<root>/".repeat(depth));
+        prop_assert_ne!(digest(&format!("{nested}{leaf}")), digest(&marked));
+    }
+}

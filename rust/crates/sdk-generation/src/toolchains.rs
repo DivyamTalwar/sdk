@@ -6,8 +6,23 @@ pub(super) fn rustc_host() -> Result<String, CliError> {
 
 pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
     let declaration = root.join("rust-toolchain.toml");
-    let toolchain = fs::read_to_string(&declaration)
-        .map_err(io_error)?
+    select_cargo(
+        root,
+        &declaration,
+        &fs::read_to_string(&declaration).map_err(io_error)?,
+    )
+}
+
+pub(super) fn maintained_cargo(root: &Path) -> Result<PathBuf, CliError> {
+    select_cargo(
+        root,
+        &std::env::current_exe().map_err(io_error)?,
+        include_str!("../../../../rust-toolchain.toml"),
+    )
+}
+
+fn select_cargo(root: &Path, declaration: &Path, source: &str) -> Result<PathBuf, CliError> {
+    let toolchain = source
         .lines()
         .find_map(|line| {
             let (key, value) = line.split_once('=')?;
@@ -16,10 +31,14 @@ pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
         .ok_or_else(|| CliError("rust-toolchain.toml has no pinned channel".into()))?;
     let context = format!(
         "rustup-which:{}",
-        cargo_context(root, &toolchain, std::env::vars_os())
+        cargo_context(
+            root,
+            &toolchain,
+            sdk_docs::command_environment().into_iter()
+        )
     );
     let path = crate::file_cache::get(&declaration, &context, || {
-        let output = Command::new("rustup")
+        let output = sdk_docs::command("rustup")
             .args(["which", "cargo", "--toolchain", &toolchain])
             .output()
             .map_err(io_error)?;
@@ -53,7 +72,7 @@ pub(super) fn toolchain_identity(cargo: &Path) -> Result<String, CliError> {
 
 pub(super) fn cargo_version(cargo: &Path, root: &Path) -> Result<String, CliError> {
     let probe = || {
-        let output = Command::new(cargo)
+        let output = sdk_docs::command(cargo)
             .current_dir(root)
             .arg("-vV")
             .output()

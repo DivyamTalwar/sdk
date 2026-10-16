@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn drift(
     (root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf),
+    stdout: &mut dyn Write,
 ) -> Result<(), CliError> {
     let mut root = canonical(&root)?;
     let output = canonical(&output)?;
@@ -250,6 +251,6 @@ pub(super) fn drift(
         )
         .map_err(|error| CliError(format!("release manifest drift: {error}")))?;
     }
-    println!("drift check passed for {}", output.display());
+    writeln!(stdout, "drift check passed for {}", output.display()).map_err(io_error)?;
     Ok(())
 }

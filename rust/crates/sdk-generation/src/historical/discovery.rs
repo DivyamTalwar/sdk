@@ -26,7 +26,7 @@ pub struct CargoDiscoveryInputs {
 }
 
 pub(super) fn frontier_git() -> Result<std::path::PathBuf, String> {
-    std::env::var_os("PATH")
+    crate::command_var_os("PATH")
         .and_then(|paths| {
             std::env::split_paths(&paths)
                 .map(|path| path.join(if cfg!(windows) { "git.exe" } else { "git" }))
@@ -42,7 +42,7 @@ pub(super) fn git_source_blobs(
     listing: &[u8],
     consume: impl FnMut(&str, &[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut child = Command::new(frontier_git()?)
+    let mut child = sdk_docs::command(frontier_git()?)
         .arg("--no-replace-objects")
         .current_dir(repository)
         .args(["cat-file", "--batch"])
@@ -157,10 +157,10 @@ pub(super) fn cargo_discovery_inputs(
     cargo: &Path,
 ) -> Result<CargoDiscoveryInputs, String> {
     let mut config_sha256 = BTreeMap::new();
-    let home = std::env::var_os("CARGO_HOME")
+    let home = crate::command_var_os("CARGO_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            crate::command_var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                 .map(|home| std::path::PathBuf::from(home).join(".cargo"))
         })
         .ok_or("Cargo discovery home is absent")?;
@@ -185,7 +185,8 @@ pub(super) fn cargo_discovery_inputs(
             config_sha256.insert(crate::path_string(&path), digest);
         }
     }
-    let environment_sha256 = discovery_environment_inputs(std::env::vars_os(), cfg!(windows))?;
+    let environment_sha256 =
+        discovery_environment_inputs(sdk_docs::command_environment().into_iter(), cfg!(windows))?;
     let git_sha256 =
         crate::file_cache::tool_identity(&frontier_git()?).map_err(|e| e.to_string())?;
     let cargo_sha256 = crate::file_cache::tool_identity(cargo).map_err(|e| e.to_string())?;
@@ -213,7 +214,7 @@ pub(super) fn registry_owner_source_inner(
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let repository = repository.canonicalize().map_err(|e| e.to_string())?;
     let top = command_output(
-        Command::new(frontier_git()?)
+        sdk_docs::command(frontier_git()?)
             .arg("--no-replace-objects")
             .current_dir(&repository)
             .args(["rev-parse", "--show-toplevel"]),
@@ -226,7 +227,7 @@ pub(super) fn registry_owner_source_inner(
         return Err("registry owner discovery requires the complete source root".into());
     }
     let listing = command_output(
-        Command::new(frontier_git()?)
+        sdk_docs::command(frontier_git()?)
             .arg("--no-replace-objects")
             .current_dir(&repository)
             .args(["ls-tree", "-r", "-z", revision]),
@@ -290,7 +291,14 @@ pub(super) fn registry_owner_source_inner(
     // Cargo's no-deps branch serializes validated workspace members without
     // build_resolve_graph. Reuse the maintained context, not a workspace glob parser.
     validate_archive_inventory(&root, &source.input_sha256.keys().cloned().collect())?;
-    let metadata = cargo_metadata::MetadataCommand::new()
+    let mut discovery = cargo_metadata::MetadataCommand::new();
+    sdk_docs::rustdoc_profiles::CargoExecutionContext {
+        cargo_path: Some(cargo),
+        lock_selection: None,
+    }
+    .configure_metadata(&mut discovery)
+    .map_err(|e| e.to_string())?;
+    let metadata = discovery
         .cargo_path(cargo)
         .current_dir(&root)
         .manifest_path(root.join("Cargo.toml"))
