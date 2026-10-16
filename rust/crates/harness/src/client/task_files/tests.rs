@@ -178,6 +178,11 @@ proptest! {
             let task = crate::TaskId::new();
             let owner = crate::wire::Authority { kind: crate::wire::AggregateKind::Task as i32, id: task.to_string() };
             let key = format!("AGGREGATE_KIND_TASK:{task}");
+            let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
+            volume.append(cut.generation, &FileValue {
+                key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: 0 } },
+                channel: Some(Channel::Reasoning), bytes: b"reasoning".to_vec().into(),
+            }).await.unwrap();
             let mut followed = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
             let mut expected = String::new();
             for (index, message) in messages.iter().enumerate() {
@@ -191,6 +196,7 @@ proptest! {
                 if !expected.is_empty() { expected.push_str("\n\n"); }
                 expected.push_str(message);
                 assert_eq!(followed.views().transcripts[&key].streaming_text, expected);
+                assert_eq!(followed.views().transcripts[&key].reasoning, "reasoning");
                 let reopened = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
                 assert_eq!(reopened.views(), followed.views());
             }

@@ -10,12 +10,12 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
     let mut text = BTreeMap::<(String, u64, bool), Vec<u8>>::new();
     let streamed: BTreeSet<_> = files
         .files()
-        .keys()
-        .filter_map(|key| match key {
+        .values()
+        .filter_map(|file| match &file.key {
             FileKey::Task {
                 task,
                 file: TaskFile::Chunk { .. },
-            } => Some(task.clone()),
+            } if file.channel == Some(Channel::Text) => Some(task.clone()),
             _ => None,
         })
         .collect();
