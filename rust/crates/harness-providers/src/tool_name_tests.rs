@@ -259,3 +259,28 @@ fn checked_in_tool_name_seed_exercises_the_fuzzer_oracle() {
     Names::assert_round_trip(&request);
     crate::fuzzing::assert_stream_invariants(seed);
 }
+
+#[tokio::test]
+async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Result<()> {
+    const BODY: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"first\",\"function\":{\"name\":\"harness_tool_0\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"second\",\"function\":{\"name\":\"harness_tool_99\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+    let (mut provider, _) = provider(Adapter::Chat, 200);
+    provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(BODY)));
+    let (prepared, _) = request(&provider)?;
+    let mut request = prepared.request().clone();
+    request.tools.push(definition("acyclic.read_file".into()));
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+    let dispatch = ModelDispatch {
+        request_digest: prepared.request_digest(),
+        ..parser_dispatch()
+    };
+    let mut ordinary = provider.generate(prepared.clone(), dispatch);
+    assert!(ordinary.next().await.unwrap().is_err());
+    assert!(ordinary.next().await.is_none());
+    let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
+    let mut native = provider
+        .generate_with_native_work(&prepared, dispatch, &work)?
+        .await?;
+    assert!(native.next().await.unwrap().is_err());
+    assert!(native.next().await.is_none());
+    Ok(())
+}

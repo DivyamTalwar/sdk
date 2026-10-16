@@ -39,16 +39,29 @@ pub(crate) fn events<'a>(
     maximum: usize,
     dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    events_named(adapter, body, maximum, dispatch, None)
+}
+
+pub(crate) fn events_named<'a>(
+    adapter: Adapter,
+    body: BoxProviderStream<'a, Result<Bytes>>,
+    maximum: usize,
+    dispatch: ModelDispatch,
+    names: Option<&'a crate::tool_names::Names<'_>>,
+) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
         let mut state = State::new(maximum);
         while let Some(data) = input.next().await {
             let data = data?;
-            let deltas = parse(&mut state, adapter, &data, dispatch)?;
+            let mut deltas = parse(&mut state, adapter, &data, dispatch)?;
+            if let Some(names) = names { for event in &mut deltas { names.restore(event)?; } }
             for event in deltas { yield event; }
             if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
-        for event in finish(state, adapter)? { yield event; }
+        let mut events = finish(state, adapter)?;
+        if let Some(names) = names { for event in &mut events { names.restore(event)?; } }
+        for event in events { yield event; }
     })
 }
 

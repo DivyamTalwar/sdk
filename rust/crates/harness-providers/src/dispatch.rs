@@ -24,10 +24,9 @@ pub(crate) fn generate(
         if !(200..300).contains(&response.status) {
             Err(crate::http_error(response.status))?;
         }
-        let mut events = crate::stream::events(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch);
+        let mut events = crate::stream::events_named(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch, Some(&names));
         while let Some(event) = events.next().await {
-            let mut event = event?;
-            names.restore(&mut event)?;
+            let event = event?;
             if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }
             yield event;
         }
