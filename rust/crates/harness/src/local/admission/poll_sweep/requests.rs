@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     core::SchemaRegistry,
-    executor::{ExecutionEvent, ExecutionJournal, ModelPurpose},
+    executor::ExecutionJournal,
     filesystem::{FilesystemExecutionJournal, FilesystemJournalBinding},
     model::{ModelRequest, ModelRole, PreparedModelRequest},
 };
@@ -32,30 +32,26 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
         },
     )?
     .with_turn(operation, turn);
-    let records = journal.replay(operation, 0, 128, None)?.await?;
     let mut checked = 0;
-    for record in records {
-        if let ExecutionEvent::ModelStarted {
-            step,
-            purpose: ModelPurpose::Response,
-            request_digest,
-            request,
-        } = record.event
-        {
-            let bytes = journal.load(&request, None)?.await?;
-            let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
-            check_prompt(prepared.request())?;
-            assert_eq!(prepared.request_digest(), request_digest);
-            assert!(
-                dispatches
-                    .iter()
-                    .any(|dispatch| dispatch.operation_id == operation
-                        && dispatch.step == step
-                        && dispatch.request_digest == request_digest),
-                "retained prompt differs from the actual generated/reconciled reservation"
-            );
-            checked += 1;
-        }
+    for dispatch in dispatches
+        .iter()
+        .filter(|dispatch| dispatch.operation_id == operation)
+    {
+        let key = format!(
+            "model:{}:request:{}",
+            dispatch.step,
+            blake3::Hash::from(dispatch.request_digest).to_hex(),
+        );
+        let request = journal.staged_ref_with_io(operation, &key, None).await?;
+        let bytes = journal.load(&request, None)?.await?;
+        let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
+        check_prompt(prepared.request())?;
+        assert_eq!(
+            prepared.request_digest(),
+            dispatch.request_digest,
+            "retained prompt differs from the actual generated/reconciled reservation"
+        );
+        checked += 1;
     }
     assert_eq!(
         checked,
