@@ -23,11 +23,11 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
         &crate::CancellationToken::new(),
     )?;
     let projection = crate::native_mount::fuse::FuseProjection { core };
-    let mut stream =
-        projection
-            .core
-            .state()?
-            .directory_stream(source.as_ref(), ROOT_INODE, 0, &work)?;
+    let mut stream = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .directory_stream(source.as_ref(), ROOT_INODE, 0, &work)?;
     assert_eq!(
         projection.open_directory(ROOT_INODE, &work)?,
         fuser::FopenFlags::empty()
