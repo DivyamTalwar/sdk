@@ -74,6 +74,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             accounting.check()?;
+            if self.mode.mutations == MutationMode::None {
+                return Err(FsError::MutationNotAllowed);
+            }
             if bytes.len() as u64
                 > MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes)
             {

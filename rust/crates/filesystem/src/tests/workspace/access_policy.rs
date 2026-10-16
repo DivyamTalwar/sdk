@@ -59,11 +59,26 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
     let mut previous = None;
     let mut head_sequence = 1;
     for (index, revision) in revisions.iter().enumerate() {
-        snapshots.push((
-            current(&workspace, false).await?,
-            previous.clone(),
-            head_sequence,
-        ));
+        let mut reader = current(&workspace, false).await?;
+        let rejected = reader
+            .write_access_policy(
+                revision,
+                NamedAttributeWriteMode::Upsert,
+                WorkBudget {
+                    backend_read_operations: 0,
+                    backend_write_operations: 0,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .err()
+            .ok_or("read-only view staged policy")?;
+        assert!(matches!(rejected.error, FsError::MutationNotAllowed));
+        assert_eq!(rejected.work.backend_read_operations, 0);
+        assert_eq!(rejected.work.backend_write_operations, 0);
+        assert_eq!(recorded(&mut reader).await?, previous);
+        snapshots.push((reader, previous.clone(), head_sequence));
         unbounded!(
             writer,
             write_access_policy(
