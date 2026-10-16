@@ -164,3 +164,36 @@ proptest! {
         futures::executor::block_on(foreign_requests_and_resets(identity));
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    // Command outcomes fold in committed order, independent of request UUID
+    // ordering, and snapshot/follow/reopen preserve the same visible text.
+    #[test]
+    fn completed_command_text_round_trips_through_task_views(
+        messages in prop::collection::vec(".{0,48}", 1..5),
+    ) {
+        futures::executor::block_on(async {
+            let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("completed-commands").unwrap()).await.unwrap();
+            let task = crate::TaskId::new();
+            let owner = crate::wire::Authority { kind: crate::wire::AggregateKind::Task as i32, id: task.to_string() };
+            let key = format!("AGGREGATE_KIND_TASK:{task}");
+            let mut followed = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
+            let mut expected = String::new();
+            for (index, message) in messages.iter().enumerate() {
+                let file = FileValue::new(FileKey::Task {
+                    task: Component::new(task.to_string()).unwrap(),
+                    file: TaskFile::ExecutionResult(Component::new(OperationId::from_bytes((u128::MAX - index as u128).to_be_bytes()).to_string()).unwrap()),
+                }, serde_json::to_vec(&serde_json::json!({"sequence":index + 1,"ok":{"text":message}})).unwrap());
+                let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
+                volume.append(cut.generation, &file).await.unwrap();
+                followed.next_change().await.unwrap();
+                if !expected.is_empty() { expected.push_str("\n\n"); }
+                expected.push_str(message);
+                assert_eq!(followed.views().transcripts[&key].streaming_text, expected);
+                let reopened = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
+                assert_eq!(reopened.views(), followed.views());
+            }
+        });
+    }
+}

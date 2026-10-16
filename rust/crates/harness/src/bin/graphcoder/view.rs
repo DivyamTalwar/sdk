@@ -21,6 +21,7 @@ pub async fn run(
         client::TaskFileClient::observe(local.task_files(), &authority, 4096, 65_536).await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
+    let mut host = Box::pin(client::run_local_commands(local.clone(), operation));
     let mut tty = Tty::open()?;
     tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
@@ -76,6 +77,7 @@ pub async fn run(
         })?;
         let Some(event) = client::next_file_tui_event(
             &mut client,
+            &mut host,
             &mut events,
             &mut completions,
             &mut input,

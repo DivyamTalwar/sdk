@@ -1,11 +1,7 @@
 use super::*;
 use acyclic_harness::{
-    AgentId, Capabilities, IdempotencyKey, OperationId, TaskId,
+    OperationId, TaskId,
     client::{CommandFileRoot, CommandSession, CommandTool},
-    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::FilesystemHost,
-    resources::ProviderRef,
     task_volume::{Component, FileKey, FileValue, Query, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
@@ -135,189 +131,113 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem-local", unix))]
+#[cfg(all(feature = "filesystem-local", feature = "tui"))]
 #[tokio::test]
-async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
--> std::result::Result<(), Box<dyn std::error::Error>> {
-    use std::{io::Write as _, process::Stdio, time::Duration};
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let directory = tempfile::tempdir()?;
-    let data: Value = serde_json::from_str(include_str!(
-        "../src/bin/graphcoder/native_scenario/data.json"
-    ))?;
-    let fs_provider = ProviderRef::new(
-        "command-client".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let stream_provider = ProviderRef::new(
-        "command-client".into(),
-        "stream".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let agent = AgentId::new();
-    let volume = VolumeRef::new(
-        fs_provider.clone(),
-        "private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    let authority = Authority {
-        kind: AggregateKind::Conversation,
-        id: "command-client".into(),
+async fn file_session_shell_help_archive_and_quit_share_the_published_catalog() -> Result<()> {
+    use acyclic_harness::tui::{
+        ClientRenderer, PromptInput, Viewport,
+        ratatui::{Terminal, backend::TestBackend},
     };
-    let issuer = AuthorityIssuer::new("command-client", [9; 32], authority.clone());
-    let mut grants: Vec<String> = serde_json::from_value(data["grants"].clone())?;
-    grants.extend([
-        volume.capability(VolumeOperation::Read, &mut None)?,
-        volume.capability(VolumeOperation::Write, &mut None)?,
-        volume.directory_read_capability("", &mut None)?,
-    ]);
-    let scope = issuer.issue(
-        "terminal user",
-        &Capabilities::new(grants),
-        Some(agent),
-        None,
-        &mut None,
-    )?;
-    let fs_root = directory.path().join("filesystem");
-    let host = FilesystemHost::new(
-        acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&fs_root)).await?,
-        &fs_provider,
-        None,
-    )?;
-    host.create_volume(&volume).await?;
-    let writer = ContentGrant::verify(
-        &issuer.verifier(&mut None)?,
-        &scope,
-        &volume,
-        VolumeOperation::Write,
-        32_768,
-        &mut None,
-    )?;
-    host.put_content(
-        &volume,
-        &writer,
-        ".claude/commands/greet.md",
-        b"Hello $ARGUMENTS",
-        "text/markdown",
-        "greet",
-        32_768,
-        &IdempotencyKey::new("custom-command")?,
-        None,
-        None,
-    )
-    .await?;
-    drop(host);
-    let mut config = data["config"].clone();
-    let fields = json!({
-        "filesystem_root":fs_root,"stream_root":directory.path().join("stream"),
-        "filesystem_provider":fs_provider,"stream_provider":stream_provider,"private_volume":volume,
-        "owner":{"authority":authority,"issuer":"command-client","key":vec![9_u8;32],"scope":scope},
-        "generation":"commands-test","model_invocation_ledger":directory.path().join("model.jsonl"),
-        "session_limits":{"active_tasks":6,"depth":3,"model_steps":7,"total_tasks":12},
-        "tools":{"content_budget":data["publication"]["budget"]},"command_workspace":directory.path(),
-        "command_roots":[{"scope":"user","root":{"volume":volume,"directory":""}}],
-        "deterministic_delay_ms":0
-    });
-    for (name, value) in fields.as_object().unwrap() {
-        config[name] = value.clone();
-    }
-    let config_path = directory.path().join("config.json");
-    std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
-    let mut input = tempfile::NamedTempFile::new_in(directory.path())?;
-    input.write_all(
-        b"/SH printf hi > cli-effect.txt; printf hi\n/KEYS\n/KEYS\n/back 0\n/back 0\n/q\n",
-    )?;
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
-    command
-        .args(["--session", config_path.to_str().unwrap(), "--headless"])
-        .stdin(Stdio::from(std::fs::File::open(input.path())?))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let result = acyclic_native_runtime::ProcessTree::spawn(&mut command)?
-        .wait_with_output(
-            Duration::from_secs(5),
-            65_536,
-            None,
-            || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-            None,
-            None,
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let fixture = Fixture::new(&[("home/.claude/commands/greet.md", "Hello $ARGUMENTS")]).await?;
+    let catalog = fixture
+        .catalog(&[("home", CommandScope::User)], &[])
+        .await?;
+    let definitions: Vec<_> = catalog.commands().cloned().collect();
+    let volume = volume().await?;
+    let mut files = CommandSession::open(volume.clone(), session_id(), 65_536, 128).await?;
+    files
+        .install_catalog(serde_json::to_vec(&definitions).unwrap())
+        .await?;
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    files
+        .write_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &json!({"workspace":directory.path()}),
         )
-        .map_err(|failure| failure.error)?;
-    assert!(
-        result.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let rendered = String::from_utf8(result.stdout)?;
-    assert!(rendered.contains("command-json="), "{rendered}");
-    assert!(
-        rendered.contains("/shell")
-            && rendered.contains("/shortcuts")
-            && rendered.contains("/greet"),
-        "catalog help: {rendered}"
-    );
+        .await?;
+    let script = if cfg!(windows) {
+        "Add-Content -NoNewline cli-effect.txt 'hi'; Write-Output hi"
+    } else {
+        "printf hi >> cli-effect.txt; printf hi"
+    };
+    files
+        .submit(&format!("/SH {script}"), fixture.reader.as_ref())
+        .await?;
+    let request = files.next_request().await?;
+    let settings = files.request_settings(&request).await?;
+    let result = files
+        .consume(&request, |_, _, resolution| async move {
+            let CommandResolution::Tool { tool, input } = resolution else {
+                return Err(Error::Invalid("expected direct shell request".into()));
+            };
+            acyclic_harness::client::execute_host_command(tool, &input, &settings, 32_768).await
+        })
+        .await?
+        .unwrap();
+    assert_eq!(result["stdout"].as_str().unwrap().trim(), "hi");
     assert_eq!(
-        rendered.matches("/greet —").count(),
-        2,
-        "repeated help renders: {rendered}"
-    );
-    assert_eq!(
-        rendered.matches("command-json=").count(),
-        3,
-        "repeated archive renders: {rendered}"
-    );
-    assert_eq!(
-        std::fs::read(directory.path().join("cli-effect.txt"))?,
+        std::fs::read(directory.path().join("cli-effect.txt")).unwrap(),
         b"hi"
     );
-    assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
-    std::fs::write(input.path(), b"/does-not-exist\n")?;
-    let mut unknown = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
-    unknown
-        .args(["--session", config_path.to_str().unwrap(), "--headless"])
-        .stdin(Stdio::from(std::fs::File::open(input.path())?))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let rejected = acyclic_native_runtime::ProcessTree::spawn(&mut unknown)?
-        .wait_with_output(
-            Duration::from_secs(4),
-            65_536,
-            None,
-            || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-            None,
-            None,
-        )
-        .map_err(|failure| failure.error)?;
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8(rejected.stderr)?.contains("Unknown command: /does-not-exist"));
-    assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
-    let stream = Arc::new(
-        acyclic_stream::LocalStream::open(directory.path().join("stream"), Default::default())
-            .await?,
+    let mut renderer = ClientRenderer::default();
+    let mut previous = None;
+    for _ in 0..2 {
+        files.submit("/KEYS", fixture.reader.as_ref()).await?;
+        let screen = renderer.screen_for(&files)?;
+        let mut terminal = Terminal::new(TestBackend::new(100, 100)).unwrap();
+        terminal
+            .draw(|frame| {
+                screen.render(
+                    frame,
+                    &PromptInput::default(),
+                    &mut Viewport::default(),
+                    0,
+                    0,
+                );
+            })
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        for name in ["/shell", "/shortcuts", "/greet"] {
+            assert!(rendered.contains(name), "{name}: {rendered}");
+        }
+        let buffer = terminal.backend().buffer().clone();
+        if let Some(previous) = previous {
+            assert_eq!(buffer, previous);
+        }
+        previous = Some(buffer);
+    }
+    for _ in 0..2 {
+        assert_eq!(files.output_page(0)?.unwrap()["ok"], result);
+    }
+    let sequence = files.output_sequence();
+    assert!(
+        files
+            .submit("/does-not-exist", fixture.reader.as_ref())
+            .await
+            .is_err()
     );
-    let digest = blake3::hash(&serde_json::to_vec(&volume)?);
-    let files = TaskVolume::open(
-        stream,
-        StreamPath::new(format!("graphcoder-files/{}", digest.to_hex()))?,
-    )
-    .await?;
-    let snapshot = files.snapshot(&Query::Root, 64).await?;
-    let exits: Vec<_> = snapshot.files.iter().filter(|file| matches!(&file.key, FileKey::Ui { directory, name } if directory.as_str().starts_with("session-") && name.as_str() == "layout.json"))
-        .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["exit_requested"].as_bool().unwrap()).collect();
+    assert_eq!(files.output_sequence(), sequence);
     assert_eq!(
-        exits.len(),
-        2,
-        "terminals must have distinct persisted UI sessions"
+        std::fs::read(directory.path().join("cli-effect.txt")).unwrap(),
+        b"hi"
     );
-    assert!(exits.contains(&true) && exits.contains(&false));
+    files.submit("/q", fixture.reader.as_ref()).await?;
+    assert!(files.exit_requested()?);
+    let other = CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 65_536, 128).await?;
+    assert!(!other.exit_requested()?);
+    drop(files);
+    let reopened = CommandSession::open(volume, session_id(), 65_536, 128).await?;
+    assert!(reopened.exit_requested()?);
+    assert_eq!(reopened.output_page(0)?.unwrap()["ok"], result);
     Ok(())
 }
 

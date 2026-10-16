@@ -751,3 +751,6 @@ mod mcp;
 
 #[cfg(feature = "tui")]
 mod documents;
+
+#[cfg(feature = "tui")]
+mod command_files;

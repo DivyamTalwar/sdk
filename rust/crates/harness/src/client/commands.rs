@@ -18,6 +18,10 @@ pub use presentation::*;
 mod files;
 mod name_index;
 mod session;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{consume_local_command, run_local_commands};
 mod syntax;
 pub use session::CommandSession;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

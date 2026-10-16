@@ -8,6 +8,17 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
         return;
     }
     let mut text = BTreeMap::<(String, u64, bool), Vec<u8>>::new();
+    let streamed: BTreeSet<_> = files
+        .files()
+        .keys()
+        .filter_map(|key| match key {
+            FileKey::Task {
+                task,
+                file: TaskFile::Chunk { .. },
+            } => Some(task.clone()),
+            _ => None,
+        })
+        .collect();
     let mut output = BTreeMap::<(crate::task_volume::Component, String), Vec<u8>>::new();
     for file in files.files().values() {
         let FileKey::Task { task, file: kind } = &file.key else {
@@ -32,6 +43,11 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
                     .or_default()
                     .extend_from_slice(&file.bytes);
             }
+            TaskFile::ExecutionResult(_) if !streamed.contains(task) => {
+                if let Some((sequence, completed)) = super::command_output::text(file) {
+                    text.insert((owner, sequence, false), completed.into_bytes());
+                }
+            }
             // TODO(#645): fold host-published request/status/completion schemas
             // when task-file execution admission publishes these records.
             _ => {}
@@ -42,8 +58,8 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
         .get(&(files.cursor().volume, files.cursor().query))
         .into_iter()
         .chain(std::iter::once(files))
-        .flat_map(|query| query.files().keys())
-        .filter_map(|key| match key {
+        .flat_map(|query| query.files().values())
+        .filter_map(|file| match &file.key {
             FileKey::Task {
                 task,
                 file:
@@ -53,6 +69,12 @@ pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
                         ..
                     },
             } => Some(format!("AGGREGATE_KIND_TASK:{}", task.as_str())),
+            FileKey::Task {
+                task,
+                file: TaskFile::ExecutionResult(_),
+            } if super::command_output::text(file).is_some() => {
+                Some(format!("AGGREGATE_KIND_TASK:{}", task.as_str()))
+            }
             _ => None,
         })
         .collect();

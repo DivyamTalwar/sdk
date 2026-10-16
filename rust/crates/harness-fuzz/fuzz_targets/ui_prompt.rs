@@ -91,6 +91,46 @@ fuzz_target!(|data: &[u8]| {
         .build()
         .unwrap()
         .block_on(async {
+            // Untrusted command outcome bytes use the production file fold.
+            // Only positive-sequence successful text outcomes enter a transcript.
+            let outcomes = TaskVolume::open(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("command-outcome-fuzz").unwrap(),
+            )
+            .await
+            .unwrap();
+            let outcome_owner = acyclic_harness::wire::Authority {
+                kind: acyclic_harness::wire::AggregateKind::Task as i32,
+                id: acyclic_harness::TaskId::from_bytes([8; 16]).to_string(),
+            };
+            let outcome = Write::new(
+                FileKey::Task {
+                    task: acyclic_harness::task_volume::Component::new(&outcome_owner.id).unwrap(),
+                    file: acyclic_harness::task_volume::TaskFile::ExecutionResult(
+                        acyclic_harness::task_volume::Component::new("outcome").unwrap(),
+                    ),
+                },
+                data.to_vec(),
+            );
+            let cut = outcomes.snapshot(&Query::Tasks, 8).await.unwrap();
+            outcomes.append(cut.generation, &outcome).await.unwrap();
+            let folded = acyclic_harness::client::TaskFileClient::observe(
+                &outcomes,
+                &outcome_owner,
+                8,
+                8192,
+            )
+            .await
+            .unwrap();
+            let reopened = acyclic_harness::client::TaskFileClient::observe(
+                &outcomes,
+                &outcome_owner,
+                8,
+                8192,
+            )
+            .await
+            .unwrap();
+            assert_eq!(folded.views(), reopened.views());
             let volume = Arc::new(
                 TaskVolume::open(
                     Arc::new(MemoryStream::default()),

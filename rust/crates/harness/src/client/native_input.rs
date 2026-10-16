@@ -48,6 +48,7 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
 pub async fn next_file_tui_event(
     client: &mut super::TaskFileClient,
+    host: &mut (impl std::future::Future<Output = Result<()>> + Unpin),
     input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
@@ -55,6 +56,7 @@ pub async fn next_file_tui_event(
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
+        result = host => { result?; Err(Error::Conflict("local command owner stopped".into())) },
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {

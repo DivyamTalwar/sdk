@@ -57,6 +57,7 @@ mod task_files;
 pub use task_files::TaskFileClient;
 mod file_query;
 mod task_projection;
+mod command_output;
 pub use file_query::{FileQueryView, GoalFileView};
 mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
