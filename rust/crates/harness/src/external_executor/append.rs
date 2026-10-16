@@ -1,10 +1,12 @@
 use crate::task_volume::{Error, FileValue, Query, Result, TaskVolume};
-use acyclic_stream::StreamProvider;
+use acyclic_stream::{CommitCondition, StreamProvider};
 
-/// Publishes one immutable request, rebasing only on accepted concurrent writes.
+/// Publishes an immutable file without changing its original ownership fence.
 pub(crate) async fn publish<P: StreamProvider + ?Sized>(
     requests: &TaskVolume<P>,
     file: &FileValue,
+    condition: Option<CommitCondition>,
+    deadline: Option<u64>,
 ) -> Result<()> {
     loop {
         let snapshot = requests.snapshot(&Query::File(file.key.clone()), 1).await?;
@@ -15,7 +17,12 @@ pub(crate) async fn publish<P: StreamProvider + ?Sized>(
                 Err(Error::ImmutableConflict(file.key.clone()))
             };
         }
-        match requests.append(snapshot.generation, file).await {
+        let mut conditions = Vec::with_capacity(1 + usize::from(condition.is_some()));
+        conditions.extend(condition.iter().cloned());
+        match requests
+            .append_if(snapshot.generation, file, conditions, deadline, None)
+            .await
+        {
             Ok(_) => return Ok(()),
             // Every retry requires actual accepted progress, never a timer or
             // a repeated check of unchanged task state.

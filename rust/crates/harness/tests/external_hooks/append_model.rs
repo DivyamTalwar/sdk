@@ -1,10 +1,7 @@
-use super::{boundary_stream::BoundaryStream, *};
+use super::{append, boundary_stream::BoundaryStream, *};
 use acyclic_harness::task_volume::{Component, Query, TaskVolume};
 use acyclic_stream::{MemoryStream, StreamPath};
 use std::sync::Arc;
-
-#[path = "../../src/external_executor/append.rs"]
-mod append;
 
 #[test]
 fn concurrent_request_files_both_publish_without_losing_immutable_identity() {
@@ -59,7 +56,7 @@ fn model(broken: bool) {
                                 .unwrap();
                             requests.append(cut.generation, &file).await.map(|_| ())
                         } else {
-                            append::publish(&requests, &file).await
+                            append::publish(&requests, &file, None, None).await
                         };
                         assert!(
                             result.is_ok(),
@@ -76,7 +73,7 @@ fn model(broken: bool) {
                         .await
                         .unwrap();
                     assert_eq!(cut.files, vec![file.clone()]);
-                    append::publish(&requests, &file).await.unwrap();
+                    append::publish(&requests, &file, None, None).await.unwrap();
                     let after = requests
                         .snapshot(&Query::File(file.key.clone()), 1)
                         .await
@@ -84,7 +81,11 @@ fn model(broken: bool) {
                     assert_eq!(cut.generation, after.generation);
                     let mut changed = file.clone();
                     changed.bytes = b"changed".to_vec().into();
-                    assert!(append::publish(&requests, &changed).await.is_err());
+                    assert!(
+                        append::publish(&requests, &changed, None, None)
+                            .await
+                            .is_err()
+                    );
                 }
             });
         },

@@ -17,6 +17,12 @@ mod local;
 
 #[path = "external_hooks/answers.rs"]
 mod answers;
+#[path = "../src/external_executor/append.rs"]
+#[cfg(all(
+    any(feature = "filesystem", feature = "hooks"),
+    not(target_arch = "wasm32")
+))]
+mod append;
 #[path = "external_hooks/append_model.rs"]
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 mod append_model;

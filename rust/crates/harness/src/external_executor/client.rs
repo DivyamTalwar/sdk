@@ -18,7 +18,7 @@ impl ExternalRequest {
     ) -> impl Future<Output = Result<Value>> + 'a {
         Box::pin(async move {
             let write = self.to_file(task.clone())?;
-            super::append::publish(requests, &write).await?;
+            super::append::publish(requests, &write, None, None).await?;
             self.follow_result(results, task).await
         })
     }

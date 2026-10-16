@@ -1,4 +1,4 @@
-use super::{boundary_stream::BoundaryStream, *};
+use super::{append, boundary_stream::BoundaryStream, *};
 use acyclic_harness::task_volume::{Component, FileKey, FileValue, TaskFile, TaskVolume};
 use acyclic_stream::{AppendRequest, CommitCondition, MemoryStream, StreamPath, StreamProvider};
 use proptest::prelude::*;
@@ -43,16 +43,21 @@ proptest! {
 
 #[test]
 fn result_publication_is_atomic_with_task_ownership_loss() {
-    model(false);
+    model(false, true);
 }
 
 #[test]
 #[should_panic(expected = "stale task owner published a result")]
 fn negative_control_detects_dropping_the_owner_commit_condition() {
-    model(true);
+    model(true, true);
 }
 
-fn model(broken: bool) {
+#[test]
+fn concurrent_sessions_publish_both_results_under_their_original_fences() {
+    model(false, false);
+}
+
+fn model(broken: bool, invalidate_owner: bool) {
     shuttle::check_dfs(
         move || {
             let result: std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> =
@@ -74,7 +79,19 @@ fn model(broken: bool) {
                         broken_fence: broken,
                         lose_result_ack: false,
                     });
-                    let volume = TaskVolume::open(provider, StreamPath::new("results")?).await?;
+                    let volume =
+                        Arc::new(TaskVolume::open(provider, StreamPath::new("results")?).await?);
+                    let sibling = TaskVolume::open(
+                        Arc::new(BoundaryStream {
+                            inner: inner.clone(),
+                            broken_follow: false,
+                            owner: None,
+                            broken_fence: false,
+                            lose_result_ack: false,
+                        }),
+                        StreamPath::new("results")?,
+                    )
+                    .await?;
                     let file = FileValue::new(
                         FileKey::Task {
                             task: Component::new("task")?,
@@ -86,19 +103,43 @@ fn model(broken: bool) {
                         path: owner.clone(),
                         expected: 1,
                     };
+                    let primary = volume.clone();
+                    let first = file.clone();
                     let publisher = shuttle::future::spawn(async move {
-                        publication::publish(&volume, &file, condition, None).await
+                        publication::publish(&primary, &first, condition, None).await
+                    });
+                    let other_file = FileValue::new(
+                        FileKey::Task {
+                            task: Component::new("other")?,
+                            file: TaskFile::RequestResult(Component::new("request")?),
+                        },
+                        b"other result".to_vec(),
+                    );
+                    let other = other_file.clone();
+                    let sibling = shuttle::future::spawn(async move {
+                        publication::publish(
+                            &sibling,
+                            &other,
+                            CommitCondition::Absent {
+                                path: StreamPath::new("other-owner").unwrap(),
+                            },
+                            None,
+                        )
+                        .await
                     });
                     let invalidate = shuttle::future::spawn(async move {
                         shuttle::future::yield_now().await;
-                        inner
-                            .append(AppendRequest {
-                                path: owner,
-                                records: vec![b"replacement".to_vec().into()],
-                                if_tail: None,
-                                idempotency_key: None,
-                            })
-                            .await
+                        if invalidate_owner {
+                            inner
+                                .append(AppendRequest {
+                                    path: owner,
+                                    records: vec![b"replacement".to_vec().into()],
+                                    if_tail: None,
+                                    idempotency_key: None,
+                                })
+                                .await?;
+                        }
+                        Ok::<_, acyclic_stream::StreamError>(())
                     });
                     let published = publisher
                         .await
@@ -106,6 +147,36 @@ fn model(broken: bool) {
                     invalidate
                         .await
                         .map_err(|error| format!("invalidation: {error}"))??;
+                    let other = sibling
+                        .await
+                        .map_err(|error| format!("other session: {error}"))?;
+                    assert!(
+                        other.is_ok(),
+                        "independent result publication failed: {other:?}"
+                    );
+                    if !invalidate_owner {
+                        assert!(
+                            published.is_ok(),
+                            "independent result publication failed: {published:?}"
+                        );
+                    }
+                    use acyclic_harness::task_volume::Query;
+                    assert_eq!(
+                        volume
+                            .snapshot(&Query::File(other_file.key.clone()), 1)
+                            .await?
+                            .files,
+                        vec![other_file]
+                    );
+                    if published.is_ok() {
+                        assert_eq!(
+                            volume
+                                .snapshot(&Query::File(file.key.clone()), 1)
+                                .await?
+                                .files,
+                            vec![file]
+                        );
+                    }
                     // Either publication wins atomically or the stale fence rejects it.
                     assert!(published.is_ok() || matches!(published, Err(Error::Storage(_))));
                     Ok(())

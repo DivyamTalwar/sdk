@@ -67,7 +67,7 @@ impl LocalHarness {
             let task_id = request.task_id();
             let task = Component::new(task_id.to_string()).map_err(storage)?;
             let file = request.to_file(task.clone()).map_err(storage)?;
-            crate::external_executor::publish_request(&requests, &file)
+            crate::external_executor::publish_request(&requests, &file, None, None)
                 .await
                 .map_err(storage)?;
             let key = request.result_key(task.clone()).map_err(storage)?;
