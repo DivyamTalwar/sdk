@@ -96,27 +96,31 @@ async fn fetch_streams_bytes_and_preserves_request_security_options()
 }
 
 #[wasm_bindgen_test]
-async fn dropping_response_body_aborts_fetch_without_waiting_for_eof()
+async fn dropping_response_body_aborts_fetch_between_reads_and_during_a_pending_read()
 -> std::result::Result<(), JsValue> {
-    let fixture = http_fixture("pending_body");
-    let transport = transport(&fixture)?;
-    let mut response = transport.send(request()).await.map_err(js_error)?;
-    assert!(
-        response
-            .body
-            .next()
-            .await
-            .transpose()
-            .map_err(js_error)?
-            .is_some()
-    );
-    assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
-    let mut pending = response.body.next();
-    assert!(futures::poll!(&mut pending).is_pending());
-    drop(pending);
-    assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
-    drop(response);
-    assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
+    for pending_read in [false, true] {
+        let fixture = http_fixture("pending_body");
+        let transport = transport(&fixture)?;
+        let mut response = transport.send(request()).await.map_err(js_error)?;
+        assert!(
+            response
+                .body
+                .next()
+                .await
+                .transpose()
+                .map_err(js_error)?
+                .is_some()
+        );
+        assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
+        if pending_read {
+            let mut pending = response.body.next();
+            assert!(futures::poll!(&mut pending).is_pending());
+            drop(pending);
+            assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
+        }
+        drop(response);
+        assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
+    }
     Ok(())
 }
 
