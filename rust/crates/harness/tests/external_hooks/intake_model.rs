@@ -41,7 +41,17 @@ impl SchedulerPayloadStore for Payloads {
         bytes: &'a [u8],
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, FileRef>> {
-        let staged = self.inner.stage(operation, key, bytes, io)?;
+        self.inner.stage(operation, key, bytes, io)
+    }
+
+    fn stage_input<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        let staged = self.inner.stage_input(operation, key, bytes, io)?;
         BoundedContentFuture::new(io, || async move {
             if key.starts_with("external-resume:") {
                 shuttle::future::yield_now().await;

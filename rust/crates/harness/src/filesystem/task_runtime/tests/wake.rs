@@ -134,7 +134,21 @@ async fn wake_case(deadline: u64, native: bool) -> Result<()> {
     drop(runtime);
     fixture.clock.0.store(deadline, Ordering::SeqCst);
     let reopened = Box::pin(fixture.runtime(native.then_some(&io))).await?;
-    assert!(Box::pin(reopened.poll_task_wake(task, native.then_some(&io))).await?);
+    if native {
+        // This ordinary timer has no native resource-preparation journal.
+        // Exercise the actual native wake write/resume boundary directly,
+        // rather than inventing protected readiness provenance for it.
+        let mut history = crate::store::HistoryWork::new(PreparationIo::from_native_work(&work)?);
+        Box::pin(
+            reopened
+                .task_host()
+                .wake_command(task, 1, command, &mut Some(&mut history)),
+        )
+        .await?;
+        drop(history.into_custody()?);
+    } else {
+        assert!(Box::pin(reopened.poll_task_wake(task, None)).await?);
+    }
     // A duplicate notification is harmless and cannot create another upload.
     let workspace = crate::filesystem::workspace_ref(
         fixture.volume.provider().clone(),
@@ -145,7 +159,7 @@ async fn wake_case(deadline: u64, native: bool) -> Result<()> {
         .resolve(&workspace, None)
         .await?
         .generation;
-    assert!(!Box::pin(reopened.poll_task_wake(task, native.then_some(&io))).await?);
+    assert!(!Box::pin(reopened.poll_task_wake(task, None)).await?);
     assert_eq!(
         fixture
             .filesystem
