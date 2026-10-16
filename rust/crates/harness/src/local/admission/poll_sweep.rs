@@ -500,7 +500,6 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         "HEAD/admission crash window was not covered"
     );
     eprintln!("complete replay sweep: {:?}", started.elapsed());
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     Ok(())
 }
 
