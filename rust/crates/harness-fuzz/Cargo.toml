@@ -182,6 +182,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_queries"
+path = "fuzz_targets/client_queries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recorded_invocation"
 path = "fuzz_targets/recorded_invocation.rs"
 test = false
