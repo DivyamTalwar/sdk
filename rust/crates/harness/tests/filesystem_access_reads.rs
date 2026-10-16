@@ -671,6 +671,7 @@ proptest! {
         for legacy in [
             include_bytes!("../src/filesystem/access/legacy-read.json").as_slice(),
             include_bytes!("../src/filesystem/access/legacy-write.json").as_slice(),
+            include_bytes!("../src/filesystem/access/legacy-native.json").as_slice(),
         ] {
             acyclic_harness::filesystem::check_access_record(legacy)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;

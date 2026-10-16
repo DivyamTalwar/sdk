@@ -37,10 +37,17 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if bytes.len() > 4096 {
         return Ok(());
     }
-    let io = PreparationIo::from_budget(
+    let cancel = acyclic_fs::CancellationToken::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::BOUNDARY_BUDGET,
-        &acyclic_fs::CancellationToken::new(),
-    )?;
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let io = PreparationIo::from_native_work(&work)?;
+    #[cfg(target_arch = "wasm32")]
+    let io = PreparationIo::from_budget(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)?;
     roundtrip::<Policy>(&io, bytes)?;
     roundtrip::<Capability>(&io, bytes)?;
     roundtrip::<FileRef>(&io, bytes)?;
@@ -85,5 +92,11 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
         }
     }
     assert_eq!(io.owned_bytes()?, 0);
+    drop(io);
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(
+        work.live_allocation_bytes(),
+        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+    );
     Ok(())
 }
