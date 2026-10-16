@@ -131,7 +131,7 @@ try {
   const client = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
   const key = { Task: { task: "task", file: { Request: "offline.json" } } } as const;
   if (previous === null) {
-    await client.enqueue(key, new TextEncoder().encode("queued across document reload"));
+    await client.enqueue(key, new TextEncoder().encode(JSON.stringify({ operationId: "offline", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} })));
     assert(client.pending() === 1, "request did not reach the volume outbox");
     sessionStorage.setItem(restartKey, databaseName);
     client.free(); outbox.free(); target.free(); streams.free();
@@ -149,7 +149,7 @@ try {
   assert(await client.flush() === 1, "request was not admitted exactly once");
   await follow;
   assert(received === 1 && client.pending() === 0, "live publication or acknowledgement lost");
-  assert(new TextDecoder().decode(views.segments(key)![0]) === "queued across document reload", "live view differs from persisted request");
+  assert(JSON.parse(new TextDecoder().decode(views.segments(key)![0])).operationId === "offline", "live view differs from persisted request");
   const cursor = client.cursor();
   views.free(); query.free(); readerVolume.free(); readerStreams.free(); client.free();
   const restored = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });

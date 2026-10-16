@@ -228,32 +228,58 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
     /// Publishes one immutable request before attempting any target operation.
     /// Resubmitting the same key/content is idempotent, including after reconnect.
     pub async fn enqueue(&mut self, write: Write) -> Result<()> {
+        if write.channel.is_some() {
+            return Err(Error::Invalid("request cannot have a streaming channel".into()).into());
+        }
+        let length = write.bytes.len() as u64;
+        self.enqueue_with(write.key, length, || Ok(write.bytes))
+            .await
+    }
+
+    /// Reconciles and admits capacity before the caller copies a platform buffer.
+    /// The synchronous producer runs once, with exclusive client ownership and
+    /// no intervening await before the immutable publication is fenced.
+    pub async fn enqueue_with(
+        &mut self,
+        key: FileKey,
+        length: u64,
+        produce: impl FnOnce() -> crate::Result<acyclic_stream::OwnedBytes>,
+    ) -> Result<()> {
         self.catch_up().await?;
         if !matches!(
-            write.key,
+            key,
             FileKey::Task {
                 file: TaskFile::Request(_),
                 ..
             }
-        ) || write.channel.is_some()
-        {
+        ) {
             return Err(
                 Error::Invalid("submit requires an immutable task request file".into()).into(),
             );
         }
         let existing = self
             .outbox
-            .snapshot(&Query::File(write.key.clone()), 1)
+            .snapshot(&Query::File(key.clone()), 1)
             .await
             .map_err(query_error)?;
         if let Some(file) = existing.files.first() {
-            return if file == &write {
+            if file.bytes.len() as u64 != length {
+                return Err(Error::Conflict("outbox request identity conflict".into()).into());
+            }
+            return if file.bytes.as_ref() == produce()?.as_ref() {
                 Ok(())
             } else {
                 Err(Error::Conflict("outbox request identity conflict".into()).into())
             };
         }
-        self.capacity(write.bytes.len() as u64)?;
+        self.capacity(length)?;
+        let bytes = produce()?;
+        if bytes.len() as u64 != length {
+            return Err(
+                Error::Invalid("request buffer length changed during admission".into()).into(),
+            );
+        }
+        let write = Write::new(key, bytes);
         // Admission is fenced at the exact reconciled cut. An earlier cancelled
         // append that lands after catch-up must conflict, never bypass quotas.
         let head = Generation {
@@ -273,6 +299,8 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
     /// Sends in enqueue order and stops at the first indeterminate publication.
     /// A checkpoint failure retains the request; retrying its immutable file write
     /// is safe even when the target already accepted it.
+    /// A definite rejection returns `Rejected` after retiring that entry. The next
+    /// flush continues with the following request; uncertain failures retain it.
     pub async fn flush(&mut self) -> Result<usize> {
         self.catch_up().await?;
         let mut submitted = 0;
@@ -313,11 +341,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             if head.volume != self.target_id || head.epoch != self.target_epoch {
                 return Err(Error::Conflict("outbox target history differs".into()).into());
             }
-            self.target
-                .append(head, &pending.write)
-                .await
-                .map_err(query_error)?;
-            if self.limits.durability == FileClientDurability::Durable
+            let rejected = match self.target.append(head, &pending.write).await {
+                Ok(_) => None,
+                Err(error) if terminal_rejection(&error) => Some(error.to_string()),
+                Err(error) => return Err(query_error(error).into()),
+            };
+            if rejected.is_none()
+                && self.limits.durability == FileClientDurability::Durable
                 && !self
                     .target
                     .file_is_durable(&pending.write)
@@ -354,8 +384,32 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             self.bytes -= done.write.bytes.len() as u64;
             self.keys.remove(&done.write.key);
             self.cursor = done.cursor;
+            if let Some(reason) = rejected {
+                return Err(FileClientError::Rejected {
+                    request: done.write.key,
+                    reason,
+                });
+            }
             submitted += 1;
         }
         Ok(submitted)
     }
+}
+
+fn terminal_rejection(error: &crate::task_volume::Error) -> bool {
+    use crate::task_volume::Error as E;
+    matches!(
+        error,
+        E::Unauthorized
+            | E::InvalidPath
+            | E::InvalidSegment
+            | E::LimitExceeded
+            | E::ImmutableConflict(_)
+            | E::SequenceConflict(_)
+            | E::Storage(
+                acyclic_stream::StreamError::AccessDenied
+                    | acyclic_stream::StreamError::InvalidArgument
+                    | acyclic_stream::StreamError::IdempotencyMismatch
+            )
+    )
 }

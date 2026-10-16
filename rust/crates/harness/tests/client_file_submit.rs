@@ -15,6 +15,8 @@ use std::{
     task::Poll,
 };
 
+#[path = "client_file_admission.rs"]
+mod admission;
 #[path = "../../harness-fuzz/support/file_client.rs"]
 mod parser;
 

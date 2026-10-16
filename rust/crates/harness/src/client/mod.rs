@@ -75,6 +75,8 @@ mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod file_error;
 pub use file_error::FileClientError;
+mod offline;
+pub use offline::validate_offline_request;
 mod query_subscription;
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{PublishError, QuerySubscription, query_error};

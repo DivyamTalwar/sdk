@@ -6,6 +6,14 @@ use crate::Error;
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum FileClientError {
+    /// A definite target rejection was checkpointed and retired from the outbox.
+    #[error("request {request:?} rejected: {reason}")]
+    Rejected {
+        /// Immutable request identity.
+        request: crate::task_volume::FileKey,
+        /// Target diagnostic, without persisted credentials or command bodies.
+        reason: String,
+    },
     /// The pending command count has reached its configured bound.
     #[error("outbox command quota reached ({limit})")]
     CommandQuota {

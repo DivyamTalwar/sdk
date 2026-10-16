@@ -3,10 +3,7 @@ use super::{
     json::{from_js, to_js},
     query::WasmTaskVolume,
 };
-use crate::{
-    client::{FileClient, FileClientError, FileClientLimits},
-    task_volume::Write,
-};
+use crate::client::{FileClient, FileClientError, FileClientLimits};
 use acyclic_stream::StreamProvider;
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
@@ -47,7 +44,7 @@ impl WasmFileClient {
     pub async fn enqueue(
         &self,
         #[wasm_bindgen(unchecked_param_type = "FileKey")] key: JsValue,
-        bytes: Vec<u8>,
+        bytes: js_sys::Uint8Array,
     ) -> Result<(), JsValue> {
         let key = from_js(key)?;
         let mut inner = self
@@ -56,8 +53,13 @@ impl WasmFileClient {
             .map_err(error)?
             .take()
             .ok_or_else(|| error("client publication is already running"))?;
+        let length = u64::from(bytes.length());
         let result = inner
-            .enqueue(Write::new(key, bytes))
+            .enqueue_with(key, length, || {
+                let bytes = bytes.to_vec();
+                crate::client::validate_offline_request(&bytes)?;
+                Ok(bytes.into())
+            })
             .await
             .map_err(admission_error);
         *self.inner.try_borrow_mut().map_err(error)? = Some(inner);
