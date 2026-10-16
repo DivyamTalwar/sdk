@@ -46,11 +46,11 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
     let model = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: "read".into(),
-                    name: "acyclic.read_file".into(),
-                    arguments: json!({"file":file}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    "read".into(),
+                    "acyclic.read_file".into(),
+                    json!({"file":file}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: first_metadata.clone(),
                 }),

@@ -21,22 +21,27 @@ struct Server {
     requests: Mutex<Vec<HttpRequest>>,
 }
 
+impl Server {
+    fn reply(&self, request: HttpRequest) -> Result<(u16, String)> {
+        self.requests
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?
+            .push(request);
+        self.replies
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?
+            .pop_front()
+            .ok_or_else(|| invalid("unexpected HTTP request"))
+    }
+}
+
 impl HttpTransport for Server {
     fn send(
         &self,
         request: HttpRequest,
     ) -> BoxProviderFuture<'_, acyclic_harness::Result<HttpResponse>> {
         Box::pin(async move {
-            self.requests
-                .lock()
-                .map_err(|_| invalid("fixture poisoned"))?
-                .push(request);
-            let (status, body) = self
-                .replies
-                .lock()
-                .map_err(|_| invalid("fixture poisoned"))?
-                .pop_front()
-                .ok_or_else(|| invalid("unexpected HTTP request"))?;
+            let (status, body) = self.reply(request)?;
             Ok(HttpResponse {
                 status,
                 body: Box::pin(futures::stream::once(async { Ok(Bytes::from(body)) })),
@@ -44,6 +49,9 @@ impl HttpTransport for Server {
         })
     }
 }
+
+#[path = "codex_native_tests.rs"]
+mod native;
 
 fn fixture(
     replies: Vec<(u16, String)>,

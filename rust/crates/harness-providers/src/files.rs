@@ -7,7 +7,7 @@ use acyclic_harness::{
         ToolResultContent,
     },
 };
-use std::{fmt::Write as _, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct Files {
@@ -146,22 +146,12 @@ pub(crate) async fn resolve(
 }
 
 fn reference(file: &FileRef) -> Result<String> {
-    let descriptor = file.descriptor();
-    let mut text =
-        String::with_capacity(file.display_name().len() + descriptor.media_type().len() + 120);
-    write!(
-        text,
-        "[file: {}; {}; sha256=",
-        file.display_name(),
-        descriptor.media_type()
-    )
-    .map_err(|_| invalid("file marker formatting failed"))?;
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in descriptor.sha256() {
-        text.push(HEX[usize::from(byte >> 4)] as char);
-        text.push(HEX[usize::from(byte & 15)] as char);
-    }
-    write!(text, "; bytes={}]", descriptor.byte_length())
-        .map_err(|_| invalid("file marker formatting failed"))?;
-    Ok(text)
+    let capacity = crate::projection::encoded_len(file)?
+        .checked_add(8)
+        .ok_or_else(|| invalid("file marker size overflows"))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    bytes.extend_from_slice(b"[file: ");
+    serde_json::to_writer(&mut bytes, file).map_err(|_| invalid("file marker encoding failed"))?;
+    bytes.push(b']');
+    String::from_utf8(bytes).map_err(|_| invalid("file marker is not UTF-8"))
 }

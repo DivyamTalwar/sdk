@@ -21,13 +21,19 @@ mod api_key_tests;
 #[path = "files_tests.rs"]
 mod files_tests;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "chat_batch_tests.rs"]
+mod chat_batch_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 mod native_tests;
+#[path = "tool_name_tests.rs"]
+mod tool_name_tests;
 
 use crate::fixtures::{CHAT, fixtures};
 

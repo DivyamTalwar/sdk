@@ -31,8 +31,7 @@ dependencies = [
  "diffy",
  "futures",
  "hex",
- "icu_properties",
- "icu_properties_data",
+ "icu_casemap",
  "indexed_db_futures",
  "js-sys",
  "libc",
@@ -53,6 +52,7 @@ dependencies = [
  "unicode-normalization",
  "uuid",
  "windows",
+ "writeable",
 ]
 
 [[package]]
@@ -74,6 +74,7 @@ dependencies = [
  "jsonschema",
  "prost",
  "prost-build",
+ "prost-reflect",
  "protoc-bin-vendored",
  "rmcp",
  "schemars",
@@ -100,16 +101,22 @@ dependencies = [
  "acyclic-stream",
  "async-stream",
  "base64 0.22.1",
+ "blake3",
  "bytes",
  "futures",
+ "js-sys",
  "keyring",
  "reqwest",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "tempfile",
  "time",
  "tokio",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -168,6 +175,7 @@ dependencies = [
  "bytes",
  "futures",
  "js-sys",
+ "loom",
  "pin-project-lite",
  "prost",
  "protoc-bin-vendored",
@@ -175,6 +183,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror",
  "tokio",
  "tonic-prost-build",
@@ -1628,6 +1637,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "icu_casemap"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2edfd120d8445de853cf53a1abec916f638f933a70a6f4bf8f7e2d7b7f884e9"
+dependencies = [
+ "icu_casemap_data",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_properties",
+ "icu_provider",
+ "potential_utf",
+ "writeable",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_casemap_data"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "059fcda0fc8d33effc6633a8cf0d8a3c17caf7d7c91918fba9918744f501e4e8"
+
+[[package]]
 name = "icu_collections"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1635,6 +1666,7 @@ checksum = "fa68d21081c4a05d5a901a1c62add574c77048b6a1c67be3b50ce0b60d4ca513"
 dependencies = [
  "displaydoc",
  "potential_utf",
+ "serde",
  "utf8_iter",
  "yoke",
  "zerofrom",
@@ -1649,6 +1681,7 @@ checksum = "d56e28588da92eee5c3201a6eff33fabdd49b62269c8938d4ff050ce4d900deb"
 dependencies = [
  "displaydoc",
  "litemap",
+ "serde",
  "tinystr",
  "writeable",
  "zerovec",
@@ -1703,6 +1736,8 @@ checksum = "d27bbb9d3abbefac45d55f647c9de1d44aafcd1186eb91879afef17c396c3e73"
 dependencies = [
  "displaydoc",
  "icu_locale_core",
+ "serde",
+ "stable_deref_trait",
  "writeable",
  "yoke",
  "zerofrom",
@@ -2377,6 +2412,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-float"
+version = "2.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2513,6 +2557,8 @@ version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
 dependencies = [
+ "serde_core",
+ "writeable",
  "zerovec",
 ]
 
@@ -2601,6 +2647,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "base64 0.22.1",
+ "prost",
+ "prost-types",
+ "serde",
+ "serde-value",
 ]
 
 [[package]]
@@ -3242,6 +3301,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-value"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
+dependencies = [
+ "ordered-float",
+ "serde",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3598,6 +3678,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643"
 dependencies = [
  "displaydoc",
+ "serde_core",
  "zerovec",
 ]
 
@@ -4613,6 +4694,7 @@ dependencies = [
  "displaydoc",
  "yoke",
  "zerofrom",
+ "zerovec",
 ]
 
 [[package]]
@@ -4621,6 +4703,7 @@ version = "0.11.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8"
 dependencies = [
+ "serde",
  "yoke",
  "zerofrom",
  "zerovec-derive",

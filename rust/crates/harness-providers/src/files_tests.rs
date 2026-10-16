@@ -7,6 +7,8 @@ use acyclic_harness::{
 };
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "reference_tests.rs"]
+mod reference_tests;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
@@ -151,7 +153,13 @@ async fn bounded_text_and_reference_files_project_in_order_without_io_during_cou
         )?;
         let count = provider.count_tokens(&prepared)?;
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-        let wire = crate::dispatch::encode(&provider, &prepared, None).await?;
+        let wire = crate::dispatch::encode(
+            &provider,
+            &prepared,
+            &crate::tool_names::Names::new(prepared.request()),
+            None,
+        )
+        .await?;
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         assert!(
             (u64::from(count.fixed_tokens)
@@ -176,8 +184,13 @@ async fn bounded_text_and_reference_files_project_in_order_without_io_during_cou
             std::str::from_utf8(data).expect("fixture UTF-8")
         );
         let marker = parts[2]["text"].as_str().expect("reference marker");
-        assert!(marker.starts_with("[file: file.txt; text/plain; sha256="));
-        assert!(marker.ends_with(&format!("; bytes={}]", data.len())));
+        assert_eq!(
+            marker,
+            format!(
+                "[file: {}]",
+                serde_json::to_string(&file).expect("fixture FileRef")
+            )
+        );
         assert_eq!(parts[3]["text"], "last");
     }
     Ok(())
@@ -229,9 +242,14 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
             ],
         )?;
         assert!(
-            crate::dispatch::encode(&provider, &prepared, None)
-                .await
-                .is_err()
+            crate::dispatch::encode(
+                &provider,
+                &prepared,
+                &crate::tool_names::Names::new(prepared.request()),
+                None
+            )
+            .await
+            .is_err()
         );
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
     }

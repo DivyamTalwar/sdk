@@ -1,7 +1,7 @@
 //! Provenance-preserving projection of canonical history into model context.
 
 mod artifacts;
-pub(crate) use artifacts::{read_invocation, read_value};
+pub(crate) use artifacts::{read_tool_call, read_value};
 mod attachments;
 mod selection;
 #[cfg(test)]

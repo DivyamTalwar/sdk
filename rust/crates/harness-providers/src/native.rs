@@ -9,25 +9,19 @@ use acyclic_harness::{
 };
 use futures::StreamExt as _;
 
-struct Parser {
-    state: stream::State,
+#[cfg(test)]
+#[path = "native_accounting_tests.rs"]
+mod accounting_tests;
+
+struct Parser<'work> {
+    state: stream::State<'work>,
     allocation: NativeAllocation,
-}
-
-struct RequestBody {
-    bytes: Vec<u8>,
-    _custody: NativeAllocation,
-}
-
-impl AsRef<[u8]> for RequestBody {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
 }
 
 async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<bytes::Bytes> {
     let (bytes, nodes) = shape(request.bytes());
@@ -42,17 +36,11 @@ async fn encode(
     let mut allocation = reserve(work, expanded, nodes, 0)?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
     let body = diagnostic(
-        dispatch::encode(provider, request, Some(&io)).await,
+        dispatch::encode(provider, request, names, Some(&io)).await,
         &mut allocation,
     )?;
-    retain(
-        &mut allocation,
-        (std::mem::size_of::<RequestBody>() + body.capacity()) as u64,
-    )?;
-    Ok(bytes::Bytes::from_owner(RequestBody {
-        bytes: body,
-        _custody: allocation,
-    }))
+    retain(&mut allocation, body.capacity() as u64)?;
+    crate::http::owned_bytes::owned(body, allocation)
 }
 
 async fn send(
@@ -98,7 +86,7 @@ fn invalid(reason: &'static str) -> Error {
     }
 }
 
-fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
+pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
         let (code, message) = match error {
             Error::Invalid(message) => (ErrorCode::Invalid, message),
@@ -122,7 +110,7 @@ fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result
 
 // Count structural tokens without constructing a second JSON graph. Quoted
 // punctuation and escaped quotes are payload, not allocation-bearing nodes.
-fn shape(bytes: &[u8]) -> (u64, u64) {
+pub(crate) fn shape(bytes: &[u8]) -> (u64, u64) {
     let mut nodes = 1;
     let mut quoted = false;
     let mut escape = false;
@@ -143,7 +131,7 @@ fn shape(bytes: &[u8]) -> (u64, u64) {
 // Admission includes the temporary decoded graph, copies retained by the
 // protocol state, geometric buffer growth and SDK event slots. It precedes the
 // producer; only surviving capacity is transferred to the executor afterwards.
-fn reserve(
+pub(crate) fn reserve(
     work: &NativeMaterializationWork,
     bytes: u64,
     nodes: u64,
@@ -167,9 +155,7 @@ fn reserve(
         capacity,
         operations,
         WorkCounters {
-            bytes_copied: bytes
-                .saturating_mul(8)
-                .saturating_add(prior.saturating_mul(2)),
+            bytes_copied: bytes.saturating_mul(8),
             items_examined: nodes,
             ..Default::default()
         },
@@ -218,9 +204,11 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
-            let body = encode(provider, request, work).await?;
+            let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
+            let body = encode(provider, request, &names, work).await?;
             let input_bytes = body.len();
-            let auth = dispatch::authenticate(provider).await?;
+            let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+            let auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
             work.remaining()?;
             let response = send(
                 provider,
@@ -235,7 +223,11 @@ pub(crate) fn generate<'a>(
                 if let Some(login) = &provider.codex_login {
                     drop(response);
                     let (key, account) = login
-                        .bearer(provider.transport.as_ref(), auth.0.as_deref())
+                        .bearer(
+                            provider.transport.as_ref(),
+                            auth.0.as_deref(),
+                            Some(&mut auth_custody),
+                        )
                         .await?;
                     work.remaining()?;
                     send(
@@ -254,6 +246,7 @@ pub(crate) fn generate<'a>(
                 response
             };
             drop(auth);
+            drop(auth_custody);
             if !(200..300).contains(&response.status) {
                 let mut allocation = work.claim(64, 1, WorkCounters::UNCHARGED)?;
                 return diagnostic(Err(crate::http_error(response.status)), &mut allocation);
@@ -262,7 +255,8 @@ pub(crate) fn generate<'a>(
             let adapter = provider.config.adapter;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
-                    let mut parser = Parser { state: stream::State::new(maximum), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
+                    let _name_custody = name_custody;
+                    let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
                     futures::pin_mut!(frames, cancelled);
@@ -277,7 +271,6 @@ pub(crate) fn generate<'a>(
                         let (bytes, nodes) = shape(frame.data.as_bytes());
                         let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                         parser.allocation.absorb(&mut admission)?;
-                        work.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::UNCHARGED })?;
                         let events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data, dispatch_id), &mut parser.allocation)?;
                         let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                         drop(frame);
@@ -298,6 +291,12 @@ pub(crate) fn generate<'a>(
                     })?;
                     let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
+                    let restored = parser.state.restore_names(&names, |length| {
+                        let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;
+                        parser.allocation.absorb(&mut custody)?;
+                        Ok(())
+                    });
+                    diagnostic(restored, &mut parser.allocation)?;
                     let Parser { state, mut allocation } = parser;
                     let events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;

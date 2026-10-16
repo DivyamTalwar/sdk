@@ -2,9 +2,9 @@
 
 mod accounting;
 mod adapter;
-mod catalog;
 #[cfg(target_arch = "wasm32")]
 mod cancellation;
+mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,10 +16,10 @@ mod codex_dispatch_tests;
 mod credentials;
 mod dispatch;
 mod files;
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub mod fuzzing;
 #[cfg(test)]
 mod fixtures;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub mod fuzzing;
 mod http;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -31,6 +31,7 @@ mod sse;
 mod stream;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+mod tool_names;
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
 mod wasm;
 

@@ -30,7 +30,7 @@ export class TerminalModelTurnError extends Error {
   }
 }
 export type RunReceipt =
-  | { readonly kind: "tool"; readonly step: number; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
+  | { readonly kind: "tool"; readonly step: number; readonly operationId: string; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly metadata: unknown; readonly value: unknown; readonly projection: unknown }
   | { readonly kind: "model-completed"; readonly metadata: unknown };
 export interface RunOutput { readonly text: string; readonly attachments?: readonly Attachment[]; readonly taskId: TaskId; readonly receipts: readonly RunReceipt[] }
 export type SelectedAgentInput =
@@ -638,6 +638,7 @@ export class AgentHarness {
         if (!admission.completed) throw new Error("model attempt ended without completion");
         previousAdmission = admission;
         if (calls.length === 0) return { text };
+        messages.push({ role: "assistant", content: calls });
         for (const call of calls) {
           const toolOperationId = this.contracts.idFromDigest(this.contracts.digestCanonicalJson({
             domain: "harness:tool-call:v2", task_id: context.taskId, step,
@@ -653,8 +654,9 @@ export class AgentHarness {
           this.contracts.validateToolProjection(registered.definition, projection, this.components.limits);
           const result = { kind: "tool_result" as const, callId: call.callId, name: call.name, content: projection };
           validateModelContent(result, this.components.limits);
-          receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
-          messages.push({ role: "assistant", content: call }, { role: "tool", content: result });
+          receipts.push({ kind: "tool", step, operationId: invocation.operationId, callId: call.callId,
+            name: call.name, arguments: call.arguments, metadata: call.metadata ?? null, value, projection });
+          messages.push({ role: "tool", content: result });
         }
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);

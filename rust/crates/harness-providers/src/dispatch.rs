@@ -17,16 +17,17 @@ pub(crate) fn generate(
         if request.request_digest() != dispatch.request_digest {
             Err(invalid("model dispatch digest differs from prepared request"))?;
         }
-        let body = encode(provider, &request, None).await?;
+        let names = crate::tool_names::Names::new(request.request());
+        let body = encode(provider, &request, &names, None).await?;
         let body = bytes::Bytes::from(body);
         let input_bytes = body.len();
-        let auth = authenticate(provider).await?;
+        let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let response = send(provider, dispatch, body.clone(), auth.0.as_deref(), auth.1.as_deref()).await?;
         #[cfg(not(target_arch = "wasm32"))]
         let response = if response.status == 401 {
             if let Some(login) = &provider.codex_login {
                 drop(response);
-                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref()).await?;
+                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
                 send(provider, dispatch, body, Some(&key), account.as_deref()).await?
             } else { response }
         } else { response };
@@ -34,7 +35,7 @@ pub(crate) fn generate(
         if !(200..300).contains(&response.status) {
             Err(crate::http_error(response.status))?;
         }
-        let mut events = crate::stream::events(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch);
+        let mut events = crate::stream::events_named(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch, Some(&names));
         while let Some(event) = events.next().await {
             let event = event?;
             if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }
@@ -43,12 +44,15 @@ pub(crate) fn generate(
     })
 }
 
-pub(crate) async fn authenticate(
-    provider: &ResolvedModel,
-) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
+pub(crate) async fn authenticate<'a>(
+    provider: &'a ResolvedModel,
+    #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
+) -> Result<(Option<Cow<'a, str>>, Option<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(login) = &provider.codex_login {
-        let (key, account) = login.bearer(provider.transport.as_ref(), None).await?;
+        let (key, account) = login
+            .bearer(provider.transport.as_ref(), None, custody)
+            .await?;
         return Ok((Some(Cow::Owned(key)), account));
     }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
@@ -57,10 +61,11 @@ pub(crate) async fn authenticate(
 pub(crate) async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     io: Option<&acyclic_harness::conversation::ContentIo>,
 ) -> Result<Vec<u8>> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
-    let body = projection::body(provider, request.request(), &mut files)?;
+    let body = projection::body_named(provider, request.request(), names, &mut files)?;
     serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
 }
 

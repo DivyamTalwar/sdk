@@ -51,7 +51,11 @@ fn transport(fixture: &JsValue) -> std::result::Result<BrowserTransport, JsValue
 fn request() -> HttpRequest {
     HttpRequest {
         url: "https://example.test/v1/responses".into(),
-        headers: BTreeMap::from([("authorization".into(), "Bearer fixture".into())]),
+        headers: BTreeMap::from([
+            ("authorization".into(), "Bearer fixture".into()),
+            ("x-api-key".into(), "anthropic-fixture".into()),
+            ("x-goog-api-key".into(), "gemini-fixture".into()),
+        ]),
         body: Bytes::from_static(b"{}"),
     }
 }
@@ -91,28 +95,47 @@ async fn fetch_streams_bytes_and_preserves_request_security_options()
             .as_deref(),
         Some("Bearer fixture")
     );
+    for (header, expected) in [
+        ("x-api-key", "anthropic-fixture"),
+        ("x-goog-api-key", "gemini-fixture"),
+    ] {
+        assert_eq!(
+            field(&field(&submitted, "headers")?, header)?
+                .as_string()
+                .as_deref(),
+            Some(expected)
+        );
+    }
     assert_eq!(Uint8Array::new(&field(&submitted, "body")?).to_vec(), b"{}");
     Ok(())
 }
 
 #[wasm_bindgen_test]
-async fn dropping_response_body_aborts_fetch_without_waiting_for_eof()
+async fn dropping_response_body_aborts_fetch_between_reads_and_during_a_pending_read()
 -> std::result::Result<(), JsValue> {
-    let fixture = http_fixture("pending_body");
-    let transport = transport(&fixture)?;
-    let mut response = transport.send(request()).await.map_err(js_error)?;
-    assert!(
-        response
-            .body
-            .next()
-            .await
-            .transpose()
-            .map_err(js_error)?
-            .is_some()
-    );
-    assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
-    drop(response);
-    assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
+    for pending_read in [false, true] {
+        let fixture = http_fixture("pending_body");
+        let transport = transport(&fixture)?;
+        let mut response = transport.send(request()).await.map_err(js_error)?;
+        assert!(
+            response
+                .body
+                .next()
+                .await
+                .transpose()
+                .map_err(js_error)?
+                .is_some()
+        );
+        assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
+        if pending_read {
+            let mut pending = response.body.next();
+            assert!(futures::poll!(&mut pending).is_pending());
+            drop(pending);
+            assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
+        }
+        drop(response);
+        assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
+    }
     Ok(())
 }
 

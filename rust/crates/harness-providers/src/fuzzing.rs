@@ -32,10 +32,45 @@ pub fn assert_stream_invariants(input: &[u8]) {
         catalog_round_trip(input);
         return;
     }
+    if kind == b'N' {
+        if let Ok(request) = serde_json::from_slice::<acyclic_harness::model::ModelRequest>(input) {
+            crate::tool_names::Names::assert_round_trip(&request);
+            let encoded = serde_json::to_vec(&request).unwrap();
+            let replay = serde_json::from_slice(&encoded).unwrap();
+            crate::tool_names::Names::assert_round_trip(&replay);
+        }
+        return;
+    }
     if kind == b'A' {
         if let Ok(auth) = crate::codex::decode_auth(input) {
+            let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
             let canonical = serde_json::to_vec(&auth).unwrap();
-            assert_eq!(crate::codex::decode_auth(&canonical).unwrap(), auth);
+            let restored = crate::codex::decode_auth(&canonical).unwrap();
+            assert_eq!(
+                crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
+                refresh
+            );
+            assert_eq!(restored, auth);
+        }
+        return;
+    }
+    if kind == b'F' {
+        if let Ok(file) = serde_json::from_slice::<acyclic_harness::conversation::FileRef>(input) {
+            let marker = crate::files::FileText::Estimate
+                .project(
+                    &file,
+                    &acyclic_harness::model::FileProjectionPolicy::Reference,
+                )
+                .unwrap();
+            let restored: acyclic_harness::conversation::FileRef = serde_json::from_str(
+                marker
+                    .strip_prefix("[file: ")
+                    .unwrap()
+                    .strip_suffix(']')
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(restored, file);
         }
         return;
     }

@@ -6,19 +6,36 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn append_tool_history(
+    pub(super) async fn append_turn_history(
         &self,
         aggregate: &mut StreamAggregate<P>,
         operation_id: OperationId,
         user_id: Uuid,
         limits: Limits,
-    ) -> Result<()> {
+    ) -> Result<Value> {
+        let mut usage = Value::Null;
         let mut calls = BTreeMap::new();
         let mut results = Vec::new();
         let mut current_step = None;
         let mut replay = crate::executor::ExecutionReplay::new(operation_id);
-        while let Some(page) = replay.next_page(self, None).await? {
-            for record in page {
+        loop {
+            let page = self
+                .replay_page(
+                    operation_id,
+                    replay.tail(),
+                    crate::executor::EXECUTION_REPLAY_PAGE_RECORDS,
+                    true,
+                    None,
+                )
+                .await?;
+            replay.observe_page(page.iter().map(|(record, _)| record), None)?;
+            if page.is_empty() {
+                break;
+            }
+            for (record, model) in page {
+                if let Some(ModelEvent::Completed { metadata }) = model {
+                    crate::model::accumulate_usage(&mut usage, metadata)?;
+                }
                 if let ExecutionEvent::ToolStarted { step, .. } = &record.event {
                     if current_step != Some(*step) {
                         for result in results.drain(..) {
@@ -55,7 +72,7 @@ where
             self.append_tool_record(aggregate, operation_id, user_id, limits, &mut calls, result)
                 .await?;
         }
-        Ok(())
+        Ok(usage)
     }
 
     async fn append_tool_record(

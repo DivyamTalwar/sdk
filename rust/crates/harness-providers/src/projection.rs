@@ -36,7 +36,8 @@ pub(crate) fn count(
     prepared: &PreparedModelRequest,
 ) -> Result<ModelTokenCount> {
     let request = prepared.request();
-    let mut fixed = body(provider, request, &mut FileText::Estimate)?;
+    let names = crate::tool_names::Names::new(request);
+    let mut fixed = body_named(provider, request, &names, &mut FileText::Estimate)?;
     let body_bytes = encoded_len(&fixed)?;
     let field = match provider.config.adapter {
         Adapter::Responses => "input",
@@ -67,6 +68,7 @@ pub(crate) fn count(
             encoded_len(&Value::Array(project_message(
                 provider.config.adapter,
                 message,
+                &names,
                 &mut FileText::Estimate,
             )?))?
             .checked_add(crate::files::extra_bytes(
@@ -94,7 +96,7 @@ pub(crate) fn count(
     })
 }
 
-pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
+pub(crate) fn encoded_len(value: &impl serde::Serialize) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -113,9 +115,24 @@ pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
     Ok(count.0)
 }
 
+#[cfg(test)]
 pub(crate) fn body(
     provider: &ResolvedModel,
     request: &ModelRequest,
+    files: &mut FileText,
+) -> Result<Value> {
+    body_named(
+        provider,
+        request,
+        &crate::tool_names::Names::new(request),
+        files,
+    )
+}
+
+pub(crate) fn body_named(
+    provider: &ResolvedModel,
+    request: &ModelRequest,
+    names: &crate::tool_names::Names,
     files: &mut FileText,
 ) -> Result<Value> {
     let adapter = provider.config.adapter;
@@ -132,7 +149,7 @@ pub(crate) fn body(
         {
             system.push(text_content(&message.content, files)?);
         } else {
-            for mut projected in project_message(adapter, message, files)? {
+            for mut projected in project_message(adapter, message, names, files)? {
                 // A tool batch is one model turn, followed by one result turn.
                 if adapter == Adapter::Gemini
                     && messages
@@ -147,20 +164,39 @@ pub(crate) fn body(
                             .ok_or_else(|| invalid("invalid projected Gemini parts"))?
                             .append(parts);
                     }
+                } else if adapter == Adapter::Chat
+                    && projected["role"] == "assistant"
+                    && projected["tool_calls"].is_array()
+                    && messages.last().is_some_and(|last| {
+                        last["role"] == "assistant" && last["tool_calls"].is_array()
+                    })
+                {
+                    let previous = messages
+                        .last_mut()
+                        .ok_or_else(|| invalid("missing tool batch"))?;
+                    previous["tool_calls"]
+                        .as_array_mut()
+                        .ok_or_else(|| invalid("invalid Chat calls"))?
+                        .append(
+                            projected["tool_calls"]
+                                .as_array_mut()
+                                .ok_or_else(|| invalid("invalid Chat calls"))?,
+                        );
+                    merge_chat_text(&mut previous["content"], projected["content"].take())?;
                 } else {
                     messages.push(projected);
                 }
             }
         }
     }
-    let tools: Vec<Value> = request.tools.iter().map(|tool| match adapter {
-        Adapter::Anthropic => json!({"name":tool.name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":tool.name,"description":tool.description,
+    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
             "parameters":tool.input_schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":tool.name,
+        Adapter::Chat => json!({"type":"function","function":{"name":name,
             "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":tool.name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }).collect();
+        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+    }) }).collect::<Result<_>>()?;
     let max = request
         .max_output_tokens
         .unwrap_or(provider.context_output());
@@ -168,6 +204,7 @@ pub(crate) fn body(
         return Err(invalid("requested output exceeds selected model capacity"));
     }
     let mut body = request.model.options.clone();
+    names.controls(adapter, &mut body)?;
     let map = body
         .as_object_mut()
         .ok_or_else(|| invalid("model options must be an object"))?;
@@ -250,9 +287,32 @@ pub(crate) fn body(
     Ok(body)
 }
 
+fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
+    match (previous, next) {
+        (_, Value::Null) => {}
+        (previous @ Value::Null, next) => *previous = next,
+        (Value::String(previous), Value::String(next)) => {
+            previous.push('\n');
+            previous.push_str(&next);
+        }
+        (Value::Array(previous), Value::Array(mut next)) => previous.append(&mut next),
+        (Value::Array(previous), Value::String(next)) => {
+            previous.push(json!({"type":"text", "text":next}));
+        }
+        (previous @ Value::String(_), Value::Array(mut next)) => {
+            let text = previous.take();
+            next.insert(0, json!({"type":"text", "text":text}));
+            *previous = Value::Array(next);
+        }
+        _ => return Err(invalid("invalid Chat tool batch content")),
+    }
+    Ok(())
+}
+
 fn project_message(
     adapter: Adapter,
     message: &ModelMessage,
+    names: &crate::tool_names::Names,
     files: &mut FileText,
 ) -> Result<Vec<Value>> {
     let role = match message.role {
@@ -277,6 +337,7 @@ fn project_message(
                 arguments,
                 metadata,
             }) => {
+                let name = names.wire(name)?;
                 let key = match adapter {
                     Adapter::Anthropic => "anthropic_thinking",
                     Adapter::Responses => "openai_reasoning",
@@ -332,6 +393,7 @@ fn project_message(
                 name,
                 content,
             } => {
+                let name = names.wire(name)?;
                 let content = result_content(adapter, content, files)?;
                 results.push(match adapter {
                     Adapter::Anthropic => object([
