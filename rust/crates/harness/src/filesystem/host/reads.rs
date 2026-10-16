@@ -9,18 +9,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        reference.validate(&mut None)?;
         grant.require_file_read(reference, io)?;
-        let bytes = self.read_pinned_io(reference, maximum_bytes, io).await?;
-        if io.is_none() {
-            let generation = self.file_generation(reference, None)?;
-            let workspace = workspace_ref(
-                self.provider.clone(),
-                &reference.volume().storage_name(&mut None)?,
-            )?;
-            self.retain_generation(&workspace, &generation).await?;
-        }
-        Ok(bytes)
+        let temporary = PreparationIo::temporary(io)?;
+        let io = temporary.as_ref().or(io);
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        self.read_file_with_access(grant.policy_scope(), reference, maximum_bytes, true, io)
+            .await
     }
 
     /// Discovers a granted private directory at the owner's current head, or continues at the immutable generation returned by a prior page.

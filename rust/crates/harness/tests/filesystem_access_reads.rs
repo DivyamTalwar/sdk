@@ -240,6 +240,58 @@ async fn legacy_task_volume_grant_cannot_bypass_persisted_denial() -> Result<(),
 }
 
 #[tokio::test]
+async fn public_host_grants_keep_their_scope_and_observe_current_policy()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let verifier = fixture.issuer.verifier(&mut None)?;
+    let volume = ContentGrant::verify_read(&verifier, &fixture.scope, &fixture.file)?;
+    let exact_scope = fixture.issuer.issue(
+        "exact",
+        &Capabilities::new([fixture.file.read_capability(&mut None)?]),
+        fixture.scope.agent(),
+        None,
+        &mut None,
+    )?;
+    let exact = ContentGrant::verify_file_read(&verifier, &exact_scope, &fixture.file)?;
+    let directory = ContentGrant::verify_directory_read(
+        &verifier,
+        &fixture.scope,
+        &fixture.volume,
+        "secrets",
+        &mut None,
+    )?;
+    for denied in [false, true, false] {
+        fixture.policy(denied, if denied { 3 } else { 4 }).await?;
+        for grant in [&volume, &exact, &directory] {
+            assert_eq!(
+                fixture
+                    .host
+                    .read_content(&fixture.file, grant, 4096, None)
+                    .await
+                    .is_ok(),
+                !denied,
+            );
+        }
+    }
+    let write = ContentGrant::verify(
+        &verifier,
+        &fixture.scope,
+        &fixture.volume,
+        VolumeOperation::Write,
+        4096,
+        &mut None,
+    )?;
+    assert!(
+        fixture
+            .host
+            .read_content(&fixture.file, &write, 4096, None)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_label_cannot_bypass_capability_path_or_expiry() -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new().await?;
     for (grants_path, expired, allowed) in [
@@ -340,6 +392,11 @@ proptest! {
             fixture.policy(deny, 2).await?;
             let scope = fixture.narrowed(grants_path, expired)?;
             let allowed = fixture.reader(&scope)?.read(&fixture.file, 4096, None)?.await.is_ok();
+            assert_eq!(allowed, !deny && grants_path && !expired);
+            let grant = ContentGrant::verify_read(
+                &fixture.issuer.verifier(&mut None)?, &scope, &fixture.file,
+            )?;
+            let allowed = fixture.host.read_content(&fixture.file, &grant, 4096, None).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             Ok::<_, Box<dyn Error>>(())
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;

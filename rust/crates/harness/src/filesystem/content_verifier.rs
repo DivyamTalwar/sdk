@@ -382,7 +382,6 @@ where
         };
         self.host
             .read_file_with_access(
-                &self.verifier,
                 &self.scope,
                 reference,
                 maximum_bytes.min(self.maximum_bytes),

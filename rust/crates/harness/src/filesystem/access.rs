@@ -35,7 +35,6 @@ pub use verification::check_access_record;
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) async fn read_file_with_access(
         &self,
-        verifier: &AuthorityVerifier,
         scope: &Scope,
         reference: &FileRef,
         maximum_bytes: u64,
@@ -49,7 +48,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         {
             return Err(io.invalid("content provider or size limit mismatch"));
         }
-        verifier.verify(scope, &mut Some(&mut io.history_io()))?;
         let label = crate::core::filesystem_scope_label(scope, &mut Some(&mut io.history_io()))?;
         // A legacy grant is authority for this exact request only. A structured
         // payload is always its ceiling, even when legacy labels are also present.
