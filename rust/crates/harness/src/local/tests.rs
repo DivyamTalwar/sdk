@@ -744,3 +744,6 @@ mod reconciliation_interruptions;
 
 #[cfg(feature = "mcp-http")]
 mod mcp;
+
+#[cfg(feature = "tui")]
+mod documents;

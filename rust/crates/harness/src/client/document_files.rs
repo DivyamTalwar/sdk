@@ -2,16 +2,16 @@
 use super::ViewUpdate;
 use crate::{
     Error, Result,
-    task_volume::{FileKey, FileQuerySource, Query, TaskFiles},
+    task_volume::{FileKey, FileQuerySource, Query},
     wire,
 };
-use acyclic_stream::{BoxProviderStream, StreamProvider};
+use acyclic_stream::BoxProviderStream;
 use futures::{StreamExt, future, stream};
 
 /// Follow only document files; no task transcript or completed history is loaded.
 /// Each query retains its atomic snapshot cut and the provider's push follow.
-pub async fn document_files<P: StreamProvider + ?Sized>(
-    files: &TaskFiles<P>,
+pub async fn document_files(
+    files: &(impl FileQuerySource + ?Sized),
     authority: &wire::Authority,
     maximum_plans: usize,
     maximum_bytes: usize,

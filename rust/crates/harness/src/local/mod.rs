@@ -29,6 +29,7 @@ mod admission;
 mod checkout_tools;
 mod compaction;
 mod config;
+mod files;
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;
 mod owner;
