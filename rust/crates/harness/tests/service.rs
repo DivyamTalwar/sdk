@@ -2,7 +2,7 @@
 use acyclic_harness as harness;
 use futures::StreamExt as _;
 use harness::{
-    Admission, Error, LocalHarness, OperationId, Result,
+    Admission, Error, OperationId, Result,
     core::{Action, LifecycleState},
     runtime::RuntimeTask,
     service::{HarnessService, LocalHarnessClient, ServiceEndpoint},
@@ -13,6 +13,8 @@ use prost::Message as _;
 use std::sync::Arc;
 #[path = "service/control.rs"]
 mod control;
+#[path = "service/history.rs"]
+mod history;
 #[path = "service/lifecycle.rs"]
 mod lifecycle;
 #[path = "service/paused.rs"]
@@ -31,12 +33,12 @@ fn handshake() -> wire::HandshakeRequest {
 }
 
 fn command(
-    harness: &LocalHarness,
+    owner: (&harness::core::Authority, &harness::core::Scope),
     revision: u64,
     to: LifecycleState,
     reason: Option<String>,
 ) -> Result<wire::CommandEnvelope> {
-    let (owner, scope) = harness.owner();
+    let (owner, scope) = owner;
     harness::wire_codec::encode_command_envelope(
         owner,
         &harness::core::Command {
@@ -71,7 +73,7 @@ async fn real_socket_routes_wire_calls_and_preserves_service_after_client_exit()
         HarnessService::bind(endpoint.clone()),
         Err(Error::Conflict(_))
     ));
-    let host = support::open(&directory.path().join("one")).await?;
+    let host = history::HistoryHost::new()?;
     service.register("one".into(), host.clone())?;
     assert!(matches!(
         service.register("one".into(), host.clone()),
@@ -96,7 +98,7 @@ async fn real_socket_routes_wire_calls_and_preserves_service_after_client_exit()
             Some(current_protocol())
         );
     }
-    let first = command(&host, 0, LifecycleState::Active, None)?;
+    let first = command(host.owner(), 0, LifecycleState::Active, None)?;
     assert_eq!(
         client.submit(first.clone()).await?.state,
         wire::AdmissionState::Accepted as i32
@@ -118,7 +120,7 @@ async fn real_socket_routes_wire_calls_and_preserves_service_after_client_exit()
     );
     assert_eq!(historical.events.len(), 1);
     assert!(!historical.live);
-    let second = command(&host, 1, LifecycleState::Waiting, None)?;
+    let second = command(host.owner(), 1, LifecycleState::Waiting, None)?;
     assert_eq!(
         client.submit(second).await?.state,
         wire::AdmissionState::Accepted as i32
@@ -259,8 +261,8 @@ async fn real_socket_observes_scripted_task_and_authenticates_cancellation() -> 
 async fn real_socket_replays_an_authenticated_maximum_size_record() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let endpoint = ServiceEndpoint::in_directory(directory.path().join("service"))?;
-    let host = support::open(&directory.path().join("workspace")).await?;
-    let first = command(&host, 0, LifecycleState::Active, None)?;
+    let host = history::HistoryHost::new()?;
+    let first = command(host.owner(), 0, LifecycleState::Active, None)?;
     assert_eq!(
         HarnessWireApi::submit(host.as_ref(), first).await?.state,
         wire::AdmissionState::Accepted as i32
@@ -296,7 +298,12 @@ async fn real_socket_replays_an_authenticated_maximum_size_record() -> Result<()
             .ok_or_else(|| Error::Invalid("record padding underflows".into()))?;
     }
     assert_eq!(expected.encoded_len(), acyclic_stream::MAX_RECORD_BYTES);
-    let maximum = command(&host, 1, LifecycleState::Waiting, Some("x".repeat(padding)))?;
+    let maximum = command(
+        host.owner(),
+        1,
+        LifecycleState::Waiting,
+        Some("x".repeat(padding)),
+    )?;
     assert_eq!(
         HarnessWireApi::submit(host.as_ref(), maximum).await?.state,
         wire::AdmissionState::Accepted as i32
@@ -380,5 +387,17 @@ async fn real_socket_requests_cancellation_of_running_work_without_settling_its_
     let _ = worker.await;
     service.shutdown().await?;
     server.await.map_err(storage)??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_socket_adapter_does_not_broaden_local_task_authority() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let host = support::open(&directory.path().join("local")).await?;
+    assert!(!host.owner().1.capabilities().contains("lifecycle:manage"));
+    let command = command(host.owner(), 0, LifecycleState::Active, None)?;
+    let admission = HarnessWireApi::submit(host.as_ref(), command).await?;
+    assert_eq!(admission.state, wire::AdmissionState::Rejected as i32);
+    assert!(admission.error.is_some());
     Ok(())
 }

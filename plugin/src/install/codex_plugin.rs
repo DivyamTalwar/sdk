@@ -220,3 +220,20 @@ pub(crate) fn installed_plugin_root() -> Result<PathBuf, String> {
         Ok(data.join("acyclic/plugin"))
     }
 }
+
+pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new("codex").args(arguments),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Codex plugin manager exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(display)
+}

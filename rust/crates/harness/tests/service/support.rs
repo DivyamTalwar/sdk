@@ -2,7 +2,6 @@ use super::harness::{
     Error, LocalHarness, LocalHarnessConfig, Result,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
-    local::LocalProject,
     model::{Model, ModelProvider},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
@@ -52,10 +51,9 @@ pub(super) fn open_with_provider(
             serde_json::Value::Null,
         )?;
         Ok(Arc::new(
-            LocalHarness::open(LocalHarnessConfig::new(
-                LocalProject::Volume { directory, volume },
-                (model, model_provider),
-            ))
+            LocalHarness::open(
+                LocalHarnessConfig::new(directory, (model, model_provider)).volume(volume),
+            )
             .await?,
         ))
     })

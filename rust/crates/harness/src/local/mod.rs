@@ -52,7 +52,6 @@ pub(crate) type LocalTaskRuntime =
 /// A checkout or volume, durable authority, journals and stock executor.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
-    stream: Arc<LocalStream>,
     runtime: Arc<LocalTaskRuntime>,
     project: VolumeRef,
     scratch: VolumeRef,
@@ -178,7 +177,7 @@ impl LocalHarness {
                 files: files.clone(),
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
-                stream: stream.clone(),
+                stream,
                 issuer: &issuer,
                 verifier: &verifier,
                 agent: owner.agent,
@@ -195,7 +194,6 @@ impl LocalHarness {
             .await?;
             Ok(Self {
                 files,
-                stream,
                 runtime,
                 project: owner.project.clone(),
                 scratch,

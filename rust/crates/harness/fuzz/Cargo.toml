@@ -16,13 +16,16 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 [dependencies]
 libfuzzer-sys = "0.4"
 bytes.workspace = true
+futures.workspace = true
+prost.workspace = true
+acyclic-stream = { path = "../../stream" }
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
 which = "=8.0.6"
-acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "test-support"] }
+acyclic-harness = { path = "..", default-features = false, features = ["service", "test-support"] }
 
 [[bin]]
 name = "command"
@@ -63,6 +66,21 @@ bench = false
 name = "notification_scenario"
 path = "fuzz_targets/notification_scenario.rs"
 required-features = ["notifications"]
+test = false
+doc = false
+bench = false
+
+
+[[bin]]
+name = "harness-service"
+path = "fuzz_targets/harness_service.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "external-hooks"
+path = "fuzz_targets/external_hooks.rs"
 test = false
 doc = false
 bench = false

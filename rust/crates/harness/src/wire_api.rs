@@ -1,5 +1,8 @@
 //! Transport-neutral server port implemented identically by every wire adapter.
 
+mod history;
+pub use history::replay_history;
+
 use crate::contract::capability;
 pub use crate::wire_validation::{
     current_protocol, negotiate, validate_admission, validate_cancel_response,

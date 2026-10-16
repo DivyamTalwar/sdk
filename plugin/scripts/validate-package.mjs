@@ -64,7 +64,6 @@ for (const relativePath of ["pi/index.ts", "pi/README.md"]) {
 }
 for (const path of [
   ...hostManifests,
-  join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
@@ -76,34 +75,14 @@ for (const path of hostManifests) {
   }
 }
 
-// Codex delivers hooks to the plugin's one MCP server, which exposes no tool
-// to the model; the shell-capable package exposes no other MCP server.
-const HOOK_SERVER = "acyclic-hooks";
-const expectedMcp = {
-  mcpServers: {
-    [HOOK_SERVER]: {
-      type: "stdio",
-      command: "./bin/acyclic",
-      args: ["__mcp"],
-      cwd: ".",
-      env_vars: ["XDG_STATE_HOME"],
-      required: true,
-    },
-  },
-};
-if (JSON.stringify(assets[join(plugin, ".mcp.json")]) !== JSON.stringify(expectedMcp)) {
-  fail("the plugin MCP declaration must be exactly the Codex hook server");
-}
-if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.json") {
-  fail("the Codex plugin manifest must declare ./.mcp.json");
+// Every native event calls the common harness client; no endpoint is installed.
+if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== undefined) {
+  fail("the Codex shim must not install a separate MCP host");
 }
 const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
-  .flat()
-  .flatMap(group => group.hooks ?? []);
-if (!hookHandlers.some(hook => hook.type === "mcp_tool")
-  || hookHandlers.some(hook => hook.type === "mcp_tool"
-    && (hook.server !== HOOK_SERVER || hook.tool !== "hook"))) {
-  fail("Codex MCP hooks must call the plugin's hook server");
+  .flat().flatMap(group => group.hooks ?? []);
+if (hookHandlers.length !== 6 || hookHandlers.some(hook => hook.type !== "command")) {
+  fail("Codex must route all lifecycle and tool events through command shims");
 }
 
 // The `acyclic-plugin` command must link to an interpreter-less placeholder that the

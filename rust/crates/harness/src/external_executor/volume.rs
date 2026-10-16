@@ -11,14 +11,31 @@ const BOUNDS: JsonBounds = JsonBounds {
     maximum_depth: 256,
 };
 
+pub(super) fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+    crate::json_bytes_bounded(value, BOUNDS, None, &mut |_| Ok(()))
+        .map_err(|_| Error::LimitExceeded)
+}
+
+pub(super) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    crate::json_from_slice_bounded(
+        std::marker::PhantomData::<T>,
+        bytes,
+        BOUNDS,
+        bytes.len() as u64,
+        None,
+        None,
+        &mut |_| Ok(()),
+    )
+    .map_err(|_| Error::InvalidSegment)
+}
+
 impl ExternalRequest {
     /// Encodes the immutable request file for ordinary volume publication.
     pub fn to_file(&self, task: Component) -> Result<FileValue> {
         if !self.valid() {
             return Err(Error::InvalidSegment);
         }
-        let bytes = crate::json_bytes_bounded(self, BOUNDS, None, &mut |_| Ok(()))
-            .map_err(|_| Error::LimitExceeded)?;
+        let bytes = encode(self)?;
         let mut name = [0; 36];
         let operation = uuid::Uuid::from_bytes(self.operation_id.into_bytes());
         let request = Component::new(operation.hyphenated().encode_lower(&mut name))?;
@@ -43,16 +60,7 @@ impl ExternalRequest {
         if task != expected_task || file.channel.is_some() {
             return Err(Error::InvalidSegment);
         }
-        let decoded: Self = crate::json_from_slice_bounded(
-            std::marker::PhantomData::<Self>,
-            &file.bytes,
-            BOUNDS,
-            file.bytes.len() as u64,
-            None,
-            None,
-            &mut |_| Ok(()),
-        )
-        .map_err(|_| Error::InvalidSegment)?;
+        let decoded: Self = decode(&file.bytes)?;
         let mut name = [0; 36];
         let operation = uuid::Uuid::from_bytes(decoded.operation_id.into_bytes());
         if request.as_str() != operation.hyphenated().encode_lower(&mut name) || !decoded.valid() {

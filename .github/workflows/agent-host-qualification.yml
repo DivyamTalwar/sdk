@@ -162,7 +162,7 @@ jobs:
       - name: Build host scenario
         shell: bash
         run: |
-          cargo test -p acyclic-plugin --test e2e --no-run --locked
+          cargo test -p acyclic-plugin --test qualification --no-run --locked
 
       - name: Run Pi installed diagnostics and native context qualification
         shell: bash
@@ -194,7 +194,7 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.codex.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.codex.outputs.lock_sha256 }}
         run: |
-          cargo test -p acyclic-plugin --test e2e \
+          cargo test -p acyclic-plugin --test qualification \
             actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
 
       - name: Run claude scenario
@@ -210,7 +210,7 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.claude.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.claude.outputs.lock_sha256 }}
         run: |
-          cargo test -p acyclic-plugin --test e2e \
+          cargo test -p acyclic-plugin --test qualification \
             actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
 
       - name: Retain qualification receipts

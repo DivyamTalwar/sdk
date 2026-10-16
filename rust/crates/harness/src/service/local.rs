@@ -1,12 +1,11 @@
 use super::*;
 use crate::{
-    store::{HistoryReader, StreamAggregate},
+    store::StreamAggregate,
     wire,
     wire_api::{self, HarnessWireApi},
-    wire_codec::{decode_command_envelope, encode_authority, encode_event_envelope},
+    wire_codec::{decode_command_envelope, encode_authority},
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream, StreamProvider as _};
-use futures::StreamExt as _;
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 
 impl LocalHarness {
     /// The authenticated workspace owner and this local user's bearer grant.
@@ -56,8 +55,9 @@ impl HarnessWireApi for LocalHarness {
                 self.limits.file_bytes,
                 None,
             )?;
+            let provider = self.runtime.task_host().workflow_stream();
             let mut aggregate = StreamAggregate::open(
-                &self.stream,
+                &provider,
                 (
                     authority,
                     self.verifier.clone(),
@@ -97,76 +97,14 @@ impl HarnessWireApi for LocalHarness {
         request: wire::ResumeRequest,
     ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         Box::pin(async move {
-            wire_api::validate_resume_protocol(&request)?;
-            if request.cursors.is_empty() {
-                return Err(Error::Invalid("replay requires an explicit cursor".into()));
-            }
-            let mut streams = Vec::with_capacity(request.cursors.len());
-            for cursor in request.cursors {
-                if cursor.authority.as_ref() != self.start_cursor().authority.as_ref() {
-                    return Err(Error::Unauthorized(
-                        "replay authority belongs to another workspace".into(),
-                    ));
-                }
-                if cursor.generation != self.verifier.audience().id {
-                    return Err(Error::Conflict("local replay generation changed".into()));
-                }
-                let reader = HistoryReader::new(
-                    &self.stream,
-                    self.verifier.audience(),
-                    &self.verifier,
-                    &mut None,
-                )?;
-                // Pin validates the resume offset before opening a live, gapless producer.
-                let pinned = reader.pin(cursor.revision, None).await?;
-                let records = self
-                    .stream
-                    .follow(
-                        acyclic_stream::StreamPath::new(
-                            self.verifier.audience().stream_path(&mut None)?,
-                        )
-                        .map_err(storage)?,
-                        cursor.revision,
-                    )
-                    .await
-                    .map_err(storage)?;
-                let verifier = self.verifier.clone();
-                let stream = futures::stream::try_unfold(
-                    (records, cursor, verifier, pinned.through_revision),
-                    |(mut records, mut cursor, verifier, tail)| async move {
-                        let Some(record) = records.next().await else {
-                            return Ok(None);
-                        };
-                        let record = record.map_err(storage)?;
-                        let (event, _) =
-                            crate::store::history::verify_history_record_with_retained_quota(
-                                &verifier,
-                                verifier.audience(),
-                                cursor.revision,
-                                &record,
-                                &mut None,
-                            )?;
-                        let delivery = wire::Delivery {
-                            authority: cursor.authority.clone(),
-                            generation: cursor.generation.clone(),
-                            from_revision: cursor.revision,
-                            through_revision: event.revision,
-                            events: vec![encode_event_envelope(
-                                verifier.audience(),
-                                &event,
-                                &mut None,
-                            )?],
-                            live: event.revision > tail,
-                        };
-                        cursor.revision = event.revision;
-                        Ok(Some((delivery, (records, cursor, verifier, tail))))
-                    },
-                );
-                streams
-                    .push(Box::pin(stream) as BoxProviderStream<'static, Result<wire::Delivery>>);
-            }
-            Ok(Box::pin(futures::stream::select_all(streams))
-                as BoxProviderStream<'static, Result<wire::Delivery>>)
+            let provider = self.runtime.task_host().workflow_stream();
+            wire_api::replay_history(
+                &provider,
+                &self.verifier,
+                &self.verifier.audience().id,
+                request,
+            )
+            .await
         })
     }
     fn observe<'a>(
