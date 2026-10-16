@@ -346,10 +346,27 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self,
         expected: Generation,
         write: &Write,
-        mut conditions: Vec<CommitCondition>,
+        conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
+        let Some((request, files)) = self
+            .prepare_append(expected, write, conditions, work)
+            .await?
+        else {
+            return Ok(expected);
+        };
+        self.commit_append(expected, request, files, deadline_unix_millis)
+            .await
+    }
+
+    async fn prepare_append(
+        &self,
+        expected: Generation,
+        write: &Write,
+        mut conditions: Vec<CommitCondition>,
+        work: NativeWork<'_>,
+    ) -> Result<Option<(CommitRequest, FileValue)>> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
         if expected != self.generation(&index) {
@@ -357,7 +374,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         validate_file(&index, write)?;
         if index.files.get(&write.key) == Some(write) {
-            return Ok(self.generation(&index));
+            return Ok(None);
         }
         let (segment, files) = segment::encode(write, work)?;
         conditions.push(CommitCondition::Head {
@@ -376,6 +393,16 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
+        Ok(Some((request, files)))
+    }
+
+    async fn commit_append(
+        &self,
+        expected: Generation,
+        request: CommitRequest,
+        files: FileValue,
+        deadline_unix_millis: Option<u64>,
+    ) -> Result<Generation> {
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {

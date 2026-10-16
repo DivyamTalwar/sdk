@@ -188,6 +188,97 @@ fn a_request_accepted_after_registration_wakes_and_reaches_its_follower() {
     check(wake, "accepted request did not wake its follower");
 }
 
+// Partition at the provider's accepted head: either both preparations see the
+// original cut (the concurrent model), or one sees the other's accepted append
+// (the ordered suffixes). No scheduler or preemption bound is imposed.
+fn competing_appends(
+    first: &TaskFiles<MemoryStream>,
+    second: &Arc<TaskFiles<MemoryStream>>,
+    cut: super::super::Generation,
+    left: &FileValue,
+    right: &FileValue,
+    broken: bool,
+) -> (bool, bool) {
+    let (left_request, left_file) = loom::future::block_on(Box::pin(first.inner.prepare_append(
+        cut,
+        left,
+        Vec::new(),
+        None,
+    )))
+    .unwrap()
+    .unwrap();
+    let (mut right_request, right_file) = loom::future::block_on(Box::pin(
+        second.inner.prepare_append(cut, right, Vec::new(), None),
+    ))
+    .unwrap()
+    .unwrap();
+    let writer = second.clone();
+    let other = loom::thread::spawn(move || {
+        if broken {
+            // Negative control: replace the caller's head fence with a fresh
+            // tail. This is a valid provider request but loses the observed cut.
+            let tail = loom::future::block_on(Box::pin(
+                writer.inner.provider.watermarks(writer.inner.path.clone()),
+            ))
+            .unwrap()
+            .accepted;
+            right_request.conditions = vec![acyclic_stream::CommitCondition::Tail {
+                path: writer.inner.path.clone(),
+                expected: tail,
+            }];
+        }
+        loom::future::block_on(Box::pin(writer.inner.commit_append(
+            cut,
+            right_request,
+            right_file,
+            None,
+        )))
+        .is_ok()
+    });
+    let left_ok = loom::future::block_on(Box::pin(first.inner.commit_append(
+        cut,
+        left_request,
+        left_file,
+        None,
+    )))
+    .is_ok();
+    (left_ok, other.join().unwrap())
+}
+
+fn ordered_preparations() {
+    use crate::task_volume::{ChildFile, ChildStatus, Control};
+    for completion in [false, true] {
+        for reverse in [false, true] {
+            let (files, cut, running) = running_child(false);
+            let other = reopen(&files);
+            let left = if completion {
+                child_status(ChildStatus {
+                    settled: true,
+                    ..running
+                })
+            } else {
+                child_file(ChildFile::Control, Control::Pause.bytes().to_vec())
+            };
+            let right = child_file(ChildFile::Control, Control::Cancel.bytes().to_vec());
+            let (left, right) = if reverse {
+                (right, left)
+            } else {
+                (left, right)
+            };
+            loom::future::block_on(Box::pin(files.inner.append(cut, &left))).unwrap();
+            assert!(matches!(
+                loom::future::block_on(Box::pin(other.inner.append(cut, &right))),
+                Err(Error::Conflict(_))
+            ));
+        }
+    }
+}
+
+#[test]
+fn preparations_after_a_competing_accept_reject_the_old_cut() {
+    loom::model(ordered_preparations);
+}
+
 fn child_control_race(broken: bool) {
     use crate::task_volume::{ChildFile, Control};
     let files = files();
@@ -209,32 +300,10 @@ fn child_control_race(broken: bool) {
     );
     let cut = loom::future::block_on(Box::pin(files.write(snapshot.generation, &request))).unwrap();
     let writer = reopen(&files);
-    let key = control_key.clone();
-    let cancel = loom::thread::spawn(move || {
-        let expected = if broken {
-            // Negative control: substitute a fresh cut for the caller's stale
-            // observation. A pause and a conflicting cancel can then both win.
-            loom::future::block_on(Box::pin(writer.observe(Query::Children, None, 8)))
-                .unwrap()
-                .snapshot
-                .unwrap()
-                .generation
-        } else {
-            cut
-        };
-        loom::future::block_on(Box::pin(writer.write(
-            expected,
-            &FileValue::new(key, Control::Cancel.bytes().to_vec()),
-        )))
-    });
-    // The model thread is the second actor: a third thread that only joins
-    // adds scheduler states without adding a publication interleaving.
-    let paused = loom::future::block_on(Box::pin(files.write(
-        cut,
-        &FileValue::new(control_key.clone(), Control::Pause.bytes().to_vec()),
-    )))
-    .is_ok();
-    let cancelled = cancel.join().unwrap().is_ok();
+    let pause = FileValue::new(control_key.clone(), Control::Pause.bytes().to_vec());
+    let cancel_write = FileValue::new(control_key.clone(), Control::Cancel.bytes().to_vec());
+    let paused = competing_appends(&files, &writer, cut, &pause, &cancel_write, broken);
+    let (paused, cancelled) = paused;
     assert_ne!(
         cancelled, paused,
         "conflicting child controls both committed"
@@ -310,38 +379,12 @@ fn child_completion_race(broken: bool) {
     let (files, cut, running) = running_child(false);
     let cancelled = child_file(ChildFile::Control, Control::Cancel.bytes().to_vec());
     let writer = reopen(&files);
-    let write = cancelled.clone();
-    let controller = loom::thread::spawn(move || {
-        loom::future::block_on(Box::pin(writer.write(cut, &write))).is_ok()
-    });
     let completion = child_status(ChildStatus {
         settled: true,
         ..running
     });
-    let (cancelled, completed) = if broken {
-        // Negative control: lose a terminal control from a cache while using
-        // its fresh cut. The actual validation, locks and provider still run.
-        assert!(controller.join().unwrap());
-        let snapshot =
-            loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
-        loom::future::block_on(Box::pin(files.inner.index.lock()))
-            .files
-            .insert(
-                cancelled.key.clone(),
-                FileValue::new(cancelled.key.clone(), Control::Resume.bytes().to_vec()),
-            );
-        (
-            true,
-            loom::future::block_on(Box::pin(
-                files.inner.append(snapshot.generation, &completion),
-            ))
-            .is_ok(),
-        )
-    } else {
-        let completed =
-            loom::future::block_on(Box::pin(files.inner.append(cut, &completion))).is_ok();
-        (controller.join().unwrap(), completed)
-    };
+    let (completed, cancelled) =
+        competing_appends(&files, &writer, cut, &completion, &cancelled, broken);
     assert_ne!(
         cancelled, completed,
         "conflicting child completion and control both committed"
