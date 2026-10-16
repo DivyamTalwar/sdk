@@ -77,9 +77,13 @@ impl Registry {
             .get(provider)
             .ok_or_else(|| invalid("unknown model provider"))?
             .clone();
-        let capacity = config.models.get(name).copied().ok_or_else(|| {
-            invalid("register the exact selected model context and output capacities")
-        })?;
+        let capacity = config
+            .models
+            .get(name)
+            .map(|entry| entry.capacity)
+            .ok_or_else(|| {
+                invalid("register the exact selected model context and output capacities")
+            })?;
         if config.token_counter.is_none() {
             return Err(acyclic_harness::Error::Unsupported(
                 "configure a verified input token counter for this endpoint".into(),
@@ -131,8 +135,8 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
         }
         crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
     }
-    for capacity in config.models.values() {
-        capacity.validate()?;
+    for model in config.models.values() {
+        model.capacity.validate()?;
     }
     Ok(())
 }

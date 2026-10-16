@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, OperationId,
-    context::{CompactionPolicy, ContextPipeline},
+    context::{CompactionPolicy, ContextManifest},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{SchedulerPayloadStore, WorkPull, Worker},
@@ -226,6 +226,14 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             None,
         )?;
         let command = ModelTaskCommand {
+            context_manifest: ContextManifest::default()
+                .publish(
+                    payloads.as_ref(),
+                    OperationId::from_bytes([10; 16]),
+                    "manifest.json",
+                    Limits::default(),
+                )
+                .await?,
             input: ModelContent::Text("question".into()),
             selected_context: None,
             max_steps: 1,
@@ -321,12 +329,10 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             panic!("native lease")
         };
         let recovery = history.into_custody()?;
-        let context = ContextPipeline::default();
         let policy = CompactionPolicy::Disabled;
-        let commands =
-            runtime
-                .commands()
-                .with_model(&model, provider, &context, &policy, Some(&io))?;
+        let commands = runtime
+            .commands()
+            .with_model(&model, provider, &policy, Some(&io))?;
         let leased = work.receipt().items_examined;
         let result = runtime
             .resume_task_with_native_work(lease, recovery, &commands, 2, &work)

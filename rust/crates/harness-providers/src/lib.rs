@@ -2,14 +2,17 @@
 
 mod accounting;
 mod adapter;
-mod catalog;
+mod alloy;
+mod alloy_spec;
 mod call_ids;
+mod catalog;
 mod counting;
 mod credentials;
 mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
+mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
@@ -24,6 +27,8 @@ mod tests;
 mod tool_names;
 
 pub use adapter::Adapter;
+pub use alloy::ResolvedAlloy;
+pub use alloy_spec::{AlloySelection, AlloySpec, AlloyTurn};
 pub use catalog::default_catalog;
 pub use counting::wire::{TokenCountField, TokenCounterSpec};
 pub use credentials::Credentials;
@@ -32,6 +37,7 @@ pub use http::BrowserTransport;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
+pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
