@@ -1,5 +1,4 @@
 use super::*;
-use proptest::prelude::*;
 
 fn marker(file: &FileRef) -> String {
     crate::files::FileText::Estimate
