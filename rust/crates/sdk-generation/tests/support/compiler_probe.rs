@@ -7,8 +7,7 @@ use std::{
 };
 #[path = "probe_codec.rs"]
 pub mod codec;
-#[path = "../../src/shared_cache.rs"]
-mod shared_cache;
+mod probe_fence;
 
 pub fn cached<S: serde::Serialize + Eq>(
     directory: &Path,
@@ -38,11 +37,6 @@ pub fn cached<S: serde::Serialize + Eq>(
             Err(io::Error::other("concrete compiler changed during probe"))
         }
     };
-    let compute = || {
-        let output = query()?;
-        unchanged()?;
-        Ok(output)
-    };
     let lock = match fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -51,20 +45,24 @@ pub fn cached<S: serde::Serialize + Eq>(
         .open(directory.join(format!("{key}.lock")))
     {
         Ok(lock) => lock,
-        Err(_) => return compute(),
+        Err(_) => {
+            let output = query()?;
+            unchanged()?;
+            return Ok(output);
+        }
     };
     // Leaf: one cache lock, then file I/O or the concrete compiler. It cannot
     // dispatch back into this wrapper. The production lock primitive is modeled.
-    shared_cache::get_or_compute(
+    probe_fence::query::<_, _, true>(
         &lock,
+        &before,
+        &observe,
         || {
-            unchanged()?;
             let value = fs::File::open(&path).ok().and_then(|file| {
                 let mut bytes = Vec::new();
                 file.take(65537).read_to_end(&mut bytes).ok()?;
                 codec::decode(&bytes, &key)
             });
-            unchanged()?;
             Ok(value.map(|value| {
                 #[cfg(unix)]
                 use std::os::unix::process::ExitStatusExt;
@@ -77,9 +75,8 @@ pub fn cached<S: serde::Serialize + Eq>(
                 }
             }))
         },
-        compute,
+        query,
         |output| {
-            unchanged()?;
             if output.status.success() && output.stderr.is_empty() && output.stdout.len() < 8192 {
                 if let Ok(value) = std::str::from_utf8(&output.stdout) {
                     let mut file = tempfile::NamedTempFile::new_in(directory)?;

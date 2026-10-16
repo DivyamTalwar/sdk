@@ -144,8 +144,6 @@ pub(super) fn configure(command: &mut Command) {
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
-        let cargo = cargo();
-        let sysroot = cargo.parent().unwrap().parent().unwrap();
         let linkers = fs::read_dir(sysroot.join("lib/rustlib"))
             .unwrap()
             .map(|entry| entry.unwrap().path().join("bin/rust-lld.exe"))
