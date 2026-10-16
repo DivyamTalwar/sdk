@@ -30,6 +30,8 @@ mod properties;
 mod recovery;
 #[path = "task_volume/schema.rs"]
 mod schema;
+#[path = "task_volume/session.rs"]
+mod session;
 #[path = "task_volume/source.rs"]
 mod source;
 #[path = "task_volume/work.rs"]
