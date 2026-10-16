@@ -65,7 +65,7 @@ where
                 ));
             }
             let provider = self.runtime.task_host().workflow_stream();
-            if !self.requests.uses_provider(&provider) || !self.results.uses_provider(&provider) {
+            if !self.requests.shares_provider(&provider) || !self.results.shares_provider(&provider) {
                 return Err(Error::Unauthorized(
                     "request volumes use another task provider".into(),
                 ));
