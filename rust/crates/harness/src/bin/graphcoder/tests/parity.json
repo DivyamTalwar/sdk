@@ -331,7 +331,7 @@
   {
     "row": "Prompt history Down restores the current draft",
     "text": "", "history": ["first 日本語", "second prompt"],
-    "events": [{"key":"Up"},{"key":"Down"}],
+    "events": [{"key":"Up"},{"key":"End","ctrl":true},{"key":"Down"}],
     "expected": "", "visible": []
   },
   {
