@@ -169,6 +169,11 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    /// Authenticated provider path bound to this volume's history identity.
+    pub fn path(&self) -> &StreamPath {
+        &self.path
+    }
+
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {

@@ -1,6 +1,6 @@
 use super::{
-    Cursor, Error, FileKey, FileValue, Generation, Index, Query, Result, Snapshot, TaskFile, TaskVolume,
-    apply, segment, validate_file,
+    Cursor, Error, FileKey, FileValue, Generation, Index, Query, Result, Snapshot, TaskFile,
+    TaskVolume, apply, segment, validate_file,
 };
 use acyclic_stream::{OwnedBytes, ReadRequest, StreamProvider};
 use futures::StreamExt as _;
@@ -33,8 +33,20 @@ impl FileValue {
     pub(crate) fn head_key(&self) -> Result<(FileKey, Option<u64>)> {
         self.validate()?;
         Ok(match (&self.key, self.channel) {
-            (FileKey::Task { task, file: TaskFile::Chunk { turn, sequence } }, Some(channel)) => (
-                FileKey::Task { task: task.clone(), file: TaskFile::TextHead { turn: *turn, channel } },
+            (
+                FileKey::Task {
+                    task,
+                    file: TaskFile::Chunk { turn, sequence },
+                },
+                Some(channel),
+            ) => (
+                FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::TextHead {
+                        turn: *turn,
+                        channel,
+                    },
+                },
                 Some(*sequence),
             ),
             _ => (self.key.clone(), None),

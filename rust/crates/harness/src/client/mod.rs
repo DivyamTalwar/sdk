@@ -53,6 +53,15 @@ mod interest_files;
 pub use interest_files::InterestDocument;
 mod swarm;
 pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
+mod file_views;
+pub use file_views::QueryViewLimits;
+mod query;
+pub use query::ClientQuery;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod query_verification {
+    pub use super::file_views::FileViews;
+}
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 

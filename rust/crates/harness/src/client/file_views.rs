@@ -1,27 +1,40 @@
 //! Disposable file views at a query cursor. Bytes retain segment ownership.
 
-use crate::task_volume::{Change, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result};
-use std::collections::BTreeMap;
+use crate::task_volume::{
+    Change, Channel, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result, TaskFile,
+};
+use std::collections::{BTreeMap, btree_map::Entry};
 
-/// Bounds for the retained selected-agent query, including every segment.
-#[derive(Clone, Copy)]
-pub(super) struct FileViewLimits {
+/// Bounds for one selected file query, including every retained segment.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryViewLimits {
+    /// Maximum materialized logical files.
     pub files: usize,
+    /// Maximum retained immutable segments.
     pub segments: usize,
+    /// Maximum retained logical payload bytes.
     pub bytes: u64,
 }
 
-/// One agent's materialized query. Neither snapshots nor deltas concatenate text.
-pub(super) struct FileViews {
+/// One query's materialized files; snapshots and deltas never concatenate text.
+pub struct FileViews {
     cursor: Cursor,
     files: BTreeMap<FileKey, HeadFile>,
-    limits: FileViewLimits,
+    limits: QueryViewLimits,
     segments: usize,
     bytes: u64,
 }
 
+fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> Result<()> {
+    if files > limits.files || segments > limits.segments || bytes > limits.bytes {
+        return Err(Error::LimitExceeded);
+    }
+    Ok(())
+}
+
 impl FileViews {
-    pub fn snapshot(snapshot: HeadSnapshot, limits: FileViewLimits) -> Result<Self> {
+    /// Builds a complete replacement without mutating an existing fold.
+    pub fn snapshot(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
         if snapshot.cursor.schema != crate::task_volume::SCHEMA
             || snapshot.cursor.position == 0
             || snapshot.cursor.volume != snapshot.generation.volume
@@ -41,88 +54,200 @@ impl FileViews {
             bytes: 0,
         };
         for file in snapshot.files {
-            let bytes = file.segments.iter().try_fold(0u64, |total, segment| {
-                total.checked_add(segment.len() as u64).ok_or(Error::LimitExceeded)
-            })?;
-            if bytes != file.length || file.segments.is_empty() {
+            let text = matches!(
+                file.key,
+                FileKey::Task {
+                    file: TaskFile::TextHead { .. },
+                    ..
+                }
+            );
+            if matches!(
+                file.key,
+                FileKey::Task {
+                    file: TaskFile::Chunk { .. },
+                    ..
+                }
+            ) || text != file.through_sequence.is_some()
+                || file.segments.is_empty()
+            {
                 return Err(Error::InvalidSegment);
             }
-            let segments = view.segments.checked_add(file.segments.len()).ok_or(Error::LimitExceeded)?;
-            let bytes = view.bytes.checked_add(bytes).ok_or(Error::LimitExceeded)?;
-            view.admit(view.files.len().checked_add(1).ok_or(Error::LimitExceeded)?, segments, bytes)?;
-            if view.files.contains_key(&file.key) {
-                return Err(Error::ImmutableConflict(file.key));
+            let length = file.segments.iter().try_fold(0u64, |total, segment| {
+                total
+                    .checked_add(segment.len() as u64)
+                    .ok_or(Error::LimitExceeded)
+            })?;
+            if length != file.length {
+                return Err(Error::InvalidSegment);
             }
-            view.files.insert(file.key.clone(), file);
+            let segments = view
+                .segments
+                .checked_add(file.segments.len())
+                .ok_or(Error::LimitExceeded)?;
+            let bytes = view.bytes.checked_add(length).ok_or(Error::LimitExceeded)?;
+            admit(
+                limits,
+                view.files
+                    .len()
+                    .checked_add(1)
+                    .ok_or(Error::LimitExceeded)?,
+                segments,
+                bytes,
+            )?;
+            if view.files.insert(file.key.clone(), file).is_some() {
+                return Err(Error::InvalidSegment);
+            }
             view.segments = segments;
             view.bytes = bytes;
         }
         Ok(view)
     }
 
-    pub fn cursor(&self) -> &Cursor { &self.cursor }
-
-    pub fn file(&self, key: &FileKey) -> Option<&HeadFile> { self.files.get(key) }
-
-    pub fn files(&self) -> impl Iterator<Item = &HeadFile> { self.files.values() }
-
-    fn admit(&self, files: usize, segments: usize, bytes: u64) -> Result<()> {
-        if files > self.limits.files || segments > self.limits.segments || bytes > self.limits.bytes {
-            return Err(Error::LimitExceeded);
-        }
-        Ok(())
+    /// Last applied query cut.
+    pub fn cursor(&self) -> &Cursor {
+        &self.cursor
+    }
+    /// One materialized file.
+    pub fn file(&self, key: &FileKey) -> Option<&HeadFile> {
+        self.files.get(key)
+    }
+    /// Materialized files in canonical key order.
+    pub fn files(&self) -> impl Iterator<Item = &HeadFile> {
+        self.files.values()
     }
 
-    /// Checks the entire change before changing either files or the applied cut.
-    pub fn apply(&mut self, change: Change) -> Result<()> {
-        let cursor = change.cursor;
-        if cursor.volume != self.cursor.volume
-            || cursor.epoch != self.cursor.epoch
-            || cursor.schema != self.cursor.schema
-            || cursor.query != self.cursor.query
-            || self.cursor.position.checked_add(1) != Some(cursor.position)
-            || cursor.accepted < self.cursor.accepted.max(cursor.position)
-            || cursor.durable < self.cursor.durable
-            || cursor.durable > cursor.accepted
+    /// Prepares one change without altering the fold. The returned plain function
+    /// holds the map entry until publication succeeds, avoiding another lookup or
+    /// a cloned transcript. Rust ownership prevents intervening view mutations.
+    pub fn prepare<'a>(&'a mut self, change: &'a Change) -> Result<impl FnOnce() + 'a> {
+        let next = &change.cursor;
+        if next.volume != self.cursor.volume
+            || next.epoch != self.cursor.epoch
+            || next.schema != self.cursor.schema
+            || next.query != self.cursor.query
+            || self.cursor.position.checked_add(1) != Some(next.position)
+            || next.accepted < self.cursor.accepted.max(next.position)
+            || next.durable < self.cursor.durable
+            || next.durable > next.accepted
         {
             return Err(Error::ResetRequired);
         }
-        if let Some(file) = change.file {
-            let (key, sequence) = file.head_key()?;
-            let before = self.files.get(&key);
+        let logical = change
+            .file
+            .as_ref()
+            .map(|file| file.head_key())
+            .transpose()?;
+        let Self {
+            files,
+            cursor,
+            bytes: current_bytes,
+            segments: current_segments,
+            limits,
+        } = self;
+        let other_sequence = match logical.as_ref() {
+            Some((
+                FileKey::Task {
+                    task,
+                    file: TaskFile::TextHead { turn, channel },
+                },
+                _,
+            )) => {
+                let channel = match channel {
+                    Channel::Text => Channel::Reasoning,
+                    Channel::Reasoning => Channel::Text,
+                };
+                files
+                    .get(&FileKey::Task {
+                        task: task.clone(),
+                        file: TaskFile::TextHead {
+                            turn: *turn,
+                            channel,
+                        },
+                    })
+                    .and_then(|head| head.through_sequence)
+            }
+            _ => None,
+        };
+        let count = files.len();
+        let entry = logical.as_ref().map(|(key, _)| files.entry(key.clone()));
+        let before = match entry.as_ref() {
+            Some(Entry::Occupied(entry)) => Some(entry.get()),
+            _ => None,
+        };
+        let mut bytes = *current_bytes;
+        let mut segments = *current_segments;
+        let mut length = 0;
+        if let Some(file) = change.file.as_ref() {
+            let sequence = logical.as_ref().and_then(|(_, sequence)| *sequence);
             if let Some(sequence) = sequence {
-                if before.and_then(|head| head.through_sequence).is_some_and(|last| sequence <= last) {
-                    return Err(Error::SequenceConflict(file.key));
+                let last = before
+                    .and_then(|head| head.through_sequence)
+                    .into_iter()
+                    .chain(other_sequence)
+                    .max();
+                if last.is_some_and(|last| sequence <= last) {
+                    return Err(Error::SequenceConflict(file.key.clone()));
                 }
             } else if let Some(before) = before {
-                if !file.key.mutable() && (before.segments.len() != 1 || before.segments[0] != file.bytes) {
-                    return Err(Error::ImmutableConflict(file.key));
+                if !file.key.mutable()
+                    && (before.segments.len() != 1 || before.segments[0] != file.bytes)
+                {
+                    return Err(Error::ImmutableConflict(file.key.clone()));
                 }
             }
-            let replaced_bytes = before.filter(|_| sequence.is_none()).map_or(0, |head| head.length);
-            let replaced_segments = before.filter(|_| sequence.is_none()).map_or(0, |head| head.segments.len());
-            let bytes = self.bytes.checked_sub(replaced_bytes)
-                .and_then(|total| total.checked_add(file.bytes.len() as u64)).ok_or(Error::LimitExceeded)?;
-            let segments = self.segments.checked_sub(replaced_segments)
-                .and_then(|total| total.checked_add(1)).ok_or(Error::LimitExceeded)?;
-            let count = self.files.len().checked_add(usize::from(before.is_none())).ok_or(Error::LimitExceeded)?;
-            self.admit(count, segments, bytes)?;
-            if let Some(sequence) = sequence {
-                let head = self.files.entry(key.clone()).or_insert_with(|| HeadFile {
-                    key, segments: Vec::new(), length: 0, through_sequence: None,
-                });
-                head.length = head.length.checked_add(file.bytes.len() as u64).ok_or(Error::LimitExceeded)?;
-                head.segments.push(file.bytes);
-                head.through_sequence = Some(sequence);
-            } else {
-                self.files.insert(key.clone(), HeadFile {
-                    key, length: file.bytes.len() as u64, segments: vec![file.bytes], through_sequence: None,
-                });
-            }
-            self.segments = segments;
-            self.bytes = bytes;
+            let replaced = before.filter(|_| sequence.is_none());
+            bytes = bytes
+                .checked_sub(replaced.map_or(0, |head| head.length))
+                .and_then(|total| total.checked_add(file.bytes.len() as u64))
+                .ok_or(Error::LimitExceeded)?;
+            segments = segments
+                .checked_sub(replaced.map_or(0, |head| head.segments.len()))
+                .and_then(|total| total.checked_add(1))
+                .ok_or(Error::LimitExceeded)?;
+            length = before
+                .filter(|_| sequence.is_some())
+                .map_or(0, |head| head.length)
+                .checked_add(file.bytes.len() as u64)
+                .ok_or(Error::LimitExceeded)?;
+            admit(
+                *limits,
+                count
+                    .checked_add(usize::from(before.is_none()))
+                    .ok_or(Error::LimitExceeded)?,
+                segments,
+                bytes,
+            )?;
         }
-        self.cursor = cursor;
-        Ok(())
+        Ok(move || {
+            if let (Some(file), Some((key, sequence)), Some(entry)) = (&change.file, logical, entry)
+            {
+                match entry {
+                    Entry::Occupied(mut entry) if sequence.is_some() => {
+                        let head = entry.get_mut();
+                        head.segments.push(file.bytes.clone());
+                        head.length = length;
+                        head.through_sequence = sequence;
+                    }
+                    Entry::Occupied(mut entry) => {
+                        let head = entry.get_mut();
+                        if head.segments.len() != 1 || head.segments[0] != file.bytes {
+                            head.segments = vec![file.bytes.clone()];
+                        }
+                        head.length = length;
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(HeadFile {
+                            key,
+                            segments: vec![file.bytes.clone()],
+                            length,
+                            through_sequence: sequence,
+                        });
+                    }
+                }
+            }
+            *current_bytes = bytes;
+            *current_segments = segments;
+            *cursor = next.clone();
+        })
     }
 }
