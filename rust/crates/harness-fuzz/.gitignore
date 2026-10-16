@@ -1,7 +1,4 @@
+/target/
 /artifacts/
 /coverage/
-<<<<<<<< HEAD:rust/crates/harness-providers/fuzz/.gitignore
-/target/
-========
 /Cargo.lock
->>>>>>>> origin/hf/gc-tools-toolset:rust/crates/harness-fuzz/.gitignore

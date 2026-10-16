@@ -106,7 +106,7 @@ impl LocalFileClient {
         )
         .await?;
         Ok(Self {
-            host: Box::pin(super::commands::local::run_local_command_files(
+            host: Box::pin(super::commands::run_local_command_files(
                 local.clone(),
                 operation,
                 true,
@@ -289,6 +289,7 @@ impl LocalFileClient {
                     self.drain_through = self
                         .local
                         .task_files()
+                        .inner
                         .snapshot(&selection(operation)?, MAXIMUM_FILES)
                         .await?
                         .cursor

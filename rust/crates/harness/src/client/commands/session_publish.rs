@@ -73,7 +73,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                         || (MATCH_KEY && self.files.get(&file.key) != before.as_ref())
                     {
                         return Err(Error::Conflict(
-                            "command file changed; retry from the new cut".into(),
+                            "command query advanced; retry from the new cut".into(),
                         ));
                     }
                 }

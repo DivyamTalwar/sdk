@@ -7,7 +7,11 @@ mod follow;
 mod heads;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+mod page;
 mod plan_name;
+mod publication;
+mod recent;
+pub(crate) use publication::publish;
 mod refresh;
 mod schema;
 mod segment;
@@ -199,7 +203,10 @@ struct Index {
     commit: CommitId,
     files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
-    pending_commands: BTreeSet<FileKey>,
+    pending_commands: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
+    view_order: BTreeMap<(Component, u8, u64), FileKey>,
+    view_revisions: BTreeMap<FileKey, (u8, u64)>,
+    overviews: BTreeMap<Component, FileKey>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -212,6 +219,10 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    pub(crate) async fn reopen(&self) -> Result<Self> {
+        Self::open_existing(self.provider.clone(), self.path.clone()).await
+    }
+
     /// Authenticated provider path bound to this volume's history identity.
     pub fn path(&self) -> &StreamPath {
         &self.path
@@ -353,8 +364,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             write,
             conditions,
             deadline_unix_millis,
-            work,
             false,
+            work,
         )
         .await
     }
@@ -362,7 +373,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.publish(expected, write, Vec::new(), None, None, true)
+        self.publish(expected, write, Vec::new(), None, true, None)
             .await
     }
 
@@ -372,8 +383,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
-        work: NativeWork<'_>,
         create_only: bool,
+        work: NativeWork<'_>,
     ) -> Result<Generation> {
         self.refresh().await?;
         let index = self.index.lock().await;
@@ -495,23 +506,40 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    recent::record(index, &file, position);
+    let owner = command_query::owner(&file.key);
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
-        let owner = match &file.key {
-            FileKey::Session { session, .. } => Some(session.clone()),
-            _ => None,
-        };
         index
             .executions
-            .insert((owner, position), file.key.clone());
-        for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
-            if let Some(key) = command_query::related(&file.key, make) {
-                index.pending_commands.remove(&key);
+            .insert((owner.clone(), position), file.key.clone());
+        if let Some(pending) = index.pending_commands.get_mut(&owner) {
+            for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
+                if let Some(key) = command_query::related(&file.key, make) {
+                    pending.remove(&key);
+                }
+            }
+            if pending.is_empty() {
+                index.pending_commands.remove(&owner);
             }
         }
     } else if let Some(result) = command_query::related(&file.key, TaskFile::ExecutionResult) {
         if !index.files.contains_key(&result) {
-            index.pending_commands.insert(file.key.clone());
+            index
+                .pending_commands
+                .entry(owner)
+                .or_default()
+                .insert(file.key.clone());
         }
     }
-    index.files.insert(file.key.clone(), StoredFile { file, position });
+    index
+        .files
+        .insert(file.key.clone(), StoredFile { file, position });
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl<P: StreamProvider + 'static> TaskVolume<P> {
+    pub(crate) async fn reopen_erased(&self) -> Result<TaskVolume<dyn StreamProvider>> {
+        let provider: Arc<dyn StreamProvider> = self.provider.clone();
+        TaskVolume::open(provider, self.path.clone()).await
+    }
 }

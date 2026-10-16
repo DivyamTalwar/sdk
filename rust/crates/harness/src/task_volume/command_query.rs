@@ -1,6 +1,17 @@
 use super::{Component, Error, FileKey, FileValue, Index, Query, Result, TaskFile};
 use std::collections::BTreeMap;
 
+pub(crate) fn identity(id: &Component) -> Option<(Option<uuid::Uuid>, crate::OperationId)> {
+    let text = id.as_str();
+    let (session, operation) = if let Some(owned) = text.strip_prefix("command-") {
+        let (session, operation) = owned.split_once('.')?;
+        (Some(uuid::Uuid::parse_str(session).ok()?), operation)
+    } else {
+        (None, text)
+    };
+    Some((session, crate::OperationId::parse(operation).ok()?))
+}
+
 pub(crate) fn related(key: &FileKey, make: fn(Component) -> TaskFile) -> Option<FileKey> {
     let (FileKey::Session { file, .. } | FileKey::Task { file, .. }) = key else {
         return None;
@@ -10,6 +21,7 @@ pub(crate) fn related(key: &FileKey, make: fn(Component) -> TaskFile) -> Option<
     else {
         return None;
     };
+    identity(id)?;
     let file = make(id.clone());
     Some(match key {
         FileKey::Session { session, .. } => FileKey::Session {
@@ -34,13 +46,35 @@ pub(crate) fn is_result(key: &FileKey) -> bool {
             file: TaskFile::ExecutionResult(_),
             ..
         }
-    )
+    ) && related(key, TaskFile::Request).is_some()
+}
+
+pub(super) fn owner(key: &FileKey) -> Option<Component> {
+    match key {
+        FileKey::Session { session, .. } => Some(session.clone()),
+        FileKey::Task {
+            file:
+                TaskFile::Request(id) | TaskFile::ExecutionClaim(id) | TaskFile::ExecutionResult(id),
+            ..
+        } => identity(id)
+            .and_then(|(session, _)| session)
+            .map(|session| {
+                Component::new(session.to_string()).expect("UUID is a namespace component")
+            }),
+        _ => None,
+    }
 }
 
 pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
     match key {
         FileKey::Session { session: owner, .. } => owner == session,
-        FileKey::Task { .. } => related(key, TaskFile::Request).is_some(),
+        FileKey::Task {
+            file:
+                TaskFile::Request(id) | TaskFile::ExecutionClaim(id) | TaskFile::ExecutionResult(id),
+            ..
+        } => identity(id).is_some_and(|(owner, _)| {
+            owner.is_none_or(|owner| owner.to_string() == session.as_str())
+        }),
         FileKey::Ui { directory, .. } => {
             directory.as_str() == "config"
                 || directory.as_str().strip_prefix("session-") == Some(session.as_str())
@@ -84,8 +118,11 @@ pub(super) fn snapshot(
     }
     for key in index
         .pending_commands
-        .iter()
-        .filter(|key| matches(session, key))
+        .get(&None)
+        .into_iter()
+        .chain(index.pending_commands.get(&Some(session.clone())))
+        .flat_map(|keys| keys.iter())
+        .inspect(|_| super::item_examined())
     {
         insert(key)?;
     }
@@ -93,11 +130,13 @@ pub(super) fn snapshot(
         .executions
         .range((None, 0)..=(None, u64::MAX))
         .rev()
+        .inspect(|_| super::item_examined())
         .peekable();
     let mut own = index
         .executions
         .range((Some(session.clone()), 0)..=(Some(session.clone()), u64::MAX))
         .rev()
+        .inspect(|_| super::item_examined())
         .peekable();
     for _ in 0..recent {
         let next = match (tasks.peek(), own.peek()) {

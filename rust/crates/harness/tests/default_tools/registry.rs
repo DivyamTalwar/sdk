@@ -85,6 +85,7 @@ proptest! {
         let expected = registry.definitions(None).unwrap();
         let mut builder = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
+            .tool(example_tool())
             .replace_tools(registry)
             .tool(example_tool());
         if volume { builder = builder.content(content()); }
@@ -218,7 +219,7 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
 
 struct Reader;
 impl conversation::ContentResidencyVerifier for Reader {}
-fn content() -> runtime::ContentBindings {
+pub(super) fn content() -> runtime::ContentBindings {
     runtime::ContentBindings {
         reader: Arc::new(Reader),
         writer: None,

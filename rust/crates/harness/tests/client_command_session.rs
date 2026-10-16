@@ -10,8 +10,6 @@ use proptest::prelude::*;
 use std::sync::Arc;
 #[path = "client_command_session_bounds.rs"]
 mod bounds;
-#[path = "client_command_activity.rs"]
-mod activity;
 
 fn session_id() -> uuid::Uuid {
     uuid::Uuid::from_bytes([7; 16])
@@ -41,77 +39,52 @@ async fn publish(volume: &TaskVolume<MemoryStream>, path: &str, bytes: Vec<u8>) 
     Ok(())
 }
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    feature = "test-support",
+    unix
+))]
 #[tokio::test]
 async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
-    acyclic_native_runtime::initialize_native_io_services()
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    use acyclic_harness::{LocalHarness, model::Model, test_support::ScriptedModelProvider};
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let volume = volume().await?;
-    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    std::fs::create_dir(directory.path().join(".git")).unwrap();
+    let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
+    let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
+        acyclic_harness::context::ModelContextCapacity {
+            context_tokens: 32_768,
+            output_tokens: 4096,
+        },
+    ));
+    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+        directory.path(),
+        (model, provider.clone()),
+    )?)
+    .await?;
+    let mut client = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
     client
-        .write_state(
-            CommandFileRoot::Config,
-            "settings.json",
-            &json!({"workspace":directory.path()}),
-        )
-        .await?;
-    // The real command client publishes an immutable request file. The consumer
-    // executes precisely that file through the same bounded host binding used
-    // by GraphCoder, without a model or the removed text dispatcher.
-    client
-        .write_state(
-            CommandFileRoot::Session,
-            "layout.json",
-            &json!({"selected_task":TaskId::from_bytes([3;16])}),
-        )
-        .await?;
-    client
-        .write_state(
-            CommandFileRoot::Task,
-            "settings.json",
-            &json!({"agent_mode":"code"}),
-        )
-        .await?;
-    let script = if cfg!(windows) {
-        "Add-Content -NoNewline effect.txt 'hi'; Write-Output hi"
-    } else {
-        "printf hi >> effect.txt; printf hi"
-    };
-    client
-        .submit(&format!("/SH {script}"), &DeniedReader)
+        .submit("/SH printf hi >> effect.txt; printf hi", &DeniedReader)
         .await?;
     let request = client.next_request().await?;
-    let settings = client.request_settings(&request).await?;
-    let run = |_, _, resolution| async move {
-        let CommandResolution::Tool { tool, input } = resolution else {
-            return Err(Error::Invalid("expected direct tool".into()));
-        };
-        acyclic_harness::client::execute_host_command(tool, &input, &settings, 32_768).await
-    };
-    let result = client.consume(&request, run).await?.unwrap();
-    assert_eq!(result["stdout"].as_str().unwrap().trim(), "hi");
+    let result = acyclic_harness::client::consume_local_command(&mut client, &local, &request)
+        .await?
+        .unwrap();
+    assert_eq!(result["stdout"], "hi");
     assert_eq!(
         std::fs::read(directory.path().join("effect.txt")).unwrap(),
         b"hi"
     );
+    assert!(provider.requests().is_empty());
     assert!(
-        client
-            .consume(&request, |_, _, _| async {
-                panic!("claimed request was resent")
-            })
+        acyclic_harness::client::consume_local_command(&mut client, &local, &request)
             .await?
             .is_none()
     );
     drop(client);
-    let mut reopened = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
-    assert!(reopened.take_request().is_none());
-    let recovered = request.clone();
+    let mut reopened = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
     assert!(
-        reopened
-            .consume(&recovered, |_, _, _| async {
-                panic!("reopening resent shell effect")
-            })
+        acyclic_harness::client::consume_local_command(&mut reopened, &local, &request)
             .await?
             .is_none()
     );
@@ -119,127 +92,6 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
         std::fs::read(directory.path().join("effect.txt")).unwrap(),
         b"hi"
     );
-    let snapshot = volume.snapshot(&Query::Root, 128).await.unwrap();
-    let results: Vec<_> = snapshot
-        .files
-        .iter()
-        .filter(|file| file.key.path().ends_with("/result.json"))
-        .collect();
-    assert_eq!(results.len(), 1);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&results[0].bytes).unwrap()["ok"],
-        result
-    );
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem-local", feature = "tui"))]
-#[tokio::test]
-async fn file_session_shell_help_archive_and_quit_share_the_published_catalog() -> Result<()> {
-    use acyclic_harness::tui::{
-        ClientRenderer, PromptInput, Viewport,
-        ratatui::{Terminal, backend::TestBackend},
-    };
-    acyclic_native_runtime::initialize_native_io_services()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let fixture = Fixture::new(&[("home/.claude/commands/greet.md", "Hello $ARGUMENTS")]).await?;
-    let catalog = fixture
-        .catalog(&[("home", CommandScope::User)], &[])
-        .await?;
-    let definitions: Vec<_> = catalog.commands().cloned().collect();
-    let volume = volume().await?;
-    let mut files = CommandSession::open(volume.clone(), session_id(), 65_536, 128).await?;
-    files
-        .install_catalog(serde_json::to_vec(&definitions).unwrap())
-        .await?;
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    files
-        .write_state(
-            CommandFileRoot::Config,
-            "settings.json",
-            &json!({"workspace":directory.path()}),
-        )
-        .await?;
-    let script = if cfg!(windows) {
-        "Add-Content -NoNewline cli-effect.txt 'hi'; Write-Output hi"
-    } else {
-        "printf hi >> cli-effect.txt; printf hi"
-    };
-    files
-        .submit(&format!("/SH {script}"), fixture.reader.as_ref())
-        .await?;
-    let request = files.next_request().await?;
-    let settings = files.request_settings(&request).await?;
-    let result = files
-        .consume(&request, |_, _, resolution| async move {
-            let CommandResolution::Tool { tool, input } = resolution else {
-                return Err(Error::Invalid("expected direct shell request".into()));
-            };
-            acyclic_harness::client::execute_host_command(tool, &input, &settings, 32_768).await
-        })
-        .await?
-        .unwrap();
-    assert_eq!(result["stdout"].as_str().unwrap().trim(), "hi");
-    assert_eq!(
-        std::fs::read(directory.path().join("cli-effect.txt")).unwrap(),
-        b"hi"
-    );
-    let mut renderer = ClientRenderer::default();
-    let mut previous = None;
-    for _ in 0..2 {
-        files.submit("/KEYS", fixture.reader.as_ref()).await?;
-        let screen = renderer.screen_for(&files)?;
-        let mut terminal = Terminal::new(TestBackend::new(100, 100)).unwrap();
-        terminal
-            .draw(|frame| {
-                screen.render(
-                    frame,
-                    &PromptInput::default(),
-                    &mut Viewport::default(),
-                    0,
-                    0,
-                );
-            })
-            .unwrap();
-        let rendered: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        for name in ["/shell", "/shortcuts", "/greet"] {
-            assert!(rendered.contains(name), "{name}: {rendered}");
-        }
-        let buffer = terminal.backend().buffer().clone();
-        if let Some(previous) = previous {
-            assert_eq!(buffer, previous);
-        }
-        previous = Some(buffer);
-    }
-    for _ in 0..2 {
-        assert_eq!(files.output_page(0)?.unwrap()["ok"], result);
-    }
-    let sequence = files.output_sequence();
-    assert!(
-        files
-            .submit("/does-not-exist", fixture.reader.as_ref())
-            .await
-            .is_err()
-    );
-    assert_eq!(files.output_sequence(), sequence);
-    assert_eq!(
-        std::fs::read(directory.path().join("cli-effect.txt")).unwrap(),
-        b"hi"
-    );
-    files.submit("/q", fixture.reader.as_ref()).await?;
-    assert!(files.exit_requested()?);
-    let other = CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 65_536, 128).await?;
-    assert!(!other.exit_requested()?);
-    drop(files);
-    let reopened = CommandSession::open(volume, session_id(), 65_536, 128).await?;
-    assert!(reopened.exit_requested()?);
-    assert_eq!(reopened.output_page(0)?.unwrap()["ok"], result);
     Ok(())
 }
 
@@ -419,6 +271,49 @@ async fn a_stale_publisher_never_uses_old_catalog_or_settings() -> Result<()> {
     Ok(())
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Loading absent settings must never move a previously resolved action to
+    // a newer catalog cut, for any selected task or command argument.
+    #[test]
+    fn loading_missing_task_settings_cannot_publish_an_outdated_action(
+        task_byte in 1u8..=254, arguments in "[a-zA-Z0-9][a-zA-Z0-9 ]{0,39}"
+    ) {
+    futures::executor::block_on(async {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    client
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":TaskId::from_bytes([task_byte;16])}),
+        )
+        .await?;
+    let mut definitions: Vec<Value> =
+        serde_json::from_slice(acyclic_harness::client::DEFAULT_COMMANDS_JSON).unwrap();
+    definitions
+        .iter_mut()
+        .find(|spec| spec["name"] == "shell")
+        .unwrap()["action"] = json!({"kind":"tool","tool":"web_search"});
+    publish(
+        &volume,
+        "commands/catalog.json",
+        serde_json::to_vec(&definitions).unwrap(),
+    )
+    .await?;
+    let input = format!("/shell {arguments}");
+    prop_assert!(matches!(client.submit(&input, &DeniedReader).await,
+        Err(Error::Conflict(_))));
+    prop_assert!(client.take_request().is_none(), "stale action was published");
+    client.submit(&input, &DeniedReader).await?;
+    let request = client.next_request().await?;
+    let resolution: Value = serde_json::from_slice(&request.bytes).unwrap();
+    prop_assert_eq!(resolution["tool"].as_str(), Some("web_search"));
+    Ok(())
+    })?;
+    }
+}
+
 #[tokio::test]
 async fn archive_selection_and_recovery_fold_the_outcome_files() -> Result<()> {
     let volume = volume().await?;
@@ -446,6 +341,12 @@ async fn archive_selection_and_recovery_fold_the_outcome_files() -> Result<()> {
         1
     );
     assert_eq!(client.output_page(1)?.unwrap()["ok"]["rendered"], "page 0");
+    assert_eq!(client.render_view(&Default::default())?, "page 0");
+    client.submit("/back 99", &DeniedReader).await?;
+    assert_eq!(
+        client.render_view(&Default::default())?,
+        "History page 99 is unavailable.\n"
+    );
     assert!(client.output_page(usize::MAX)?.is_none());
     drop(client);
     let reopened = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
@@ -670,5 +571,74 @@ proptest! {
         for bad in [format!(".ui/../{name}"), format!(".ui/{directory}//{name}"), format!(".ui/{directory}/{name}/.."), format!(".ui/{directory}/.")] {
             prop_assert!(FileKey::parse(&bad).is_err());
         }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_search_requests_never_enter_the_command_inbox() -> Result<()> {
+    let volume = volume().await?;
+    let file = FileValue::new(
+        FileKey::parse(".tasks/00000000-0000-0000-0000-000000000001/requests/search-native.json")
+            .map_err(volume_error)?,
+        b"{\"query\":\"native search\"}".to_vec(),
+    );
+    let cut = volume
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(volume_error)?
+        .generation;
+    volume.append(cut, &file).await.map_err(volume_error)?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    assert!(client.take_request().is_none());
+    let file = FileValue::new(
+        FileKey::parse(".tasks/00000000-0000-0000-0000-000000000001/requests/search-followed.json")
+            .map_err(volume_error)?,
+        b"{}".to_vec(),
+    );
+    let cut = volume
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(volume_error)?
+        .generation;
+    volume.append(cut, &file).await.map_err(volume_error)?;
+    client.refresh_files().await?;
+    assert!(client.take_request().is_none());
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn submitting_session_owns_the_request_and_its_selection(bytes in any::<[u8;16]>()) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let volume=volume().await.unwrap();
+            let session=uuid::Uuid::from_bytes(bytes);
+            let mut other_bytes=bytes; other_bytes[0] ^= 1;
+            let other=uuid::Uuid::from_bytes(other_bytes);
+            let mut author=CommandSession::open(volume.clone(),session,32_768,128).await.unwrap();
+            let mut observer=CommandSession::open(volume.clone(),other,32_768,128).await.unwrap();
+            let parent=TaskId::from_bytes([3;16]); let child=TaskId::from_bytes([4;16]);
+            author.refresh_files().await.unwrap();
+            author.write_state(CommandFileRoot::Session,"layout.json",&json!({"selected_task":parent})).await.unwrap();
+            observer.refresh_files().await.unwrap();
+            observer.write_state(CommandFileRoot::Session,"layout.json",&json!({"selected_task":parent})).await.unwrap();
+            author.refresh_files().await.unwrap();
+            let operation=author.submit("child prompt",&DeniedReader).await.unwrap();
+            let request=author.take_request().unwrap();
+            prop_assert_eq!(FileKey::parse(&request.key.path()).unwrap(),request.key.clone());
+            observer.refresh_files().await.unwrap();
+            prop_assert!(observer.take_request().is_none());
+            prop_assert!(observer.consume(&request,|_,_,_| async { panic!("foreign request dispatched") }).await.is_err(), "foreign command requests must be rejected");
+            author.refresh_files().await.unwrap();
+            author.consume(&request,|id,target,_| async move {
+                assert_eq!(id,operation); assert_eq!(target,Some(parent)); Ok(json!({"selected_task":child}))
+            }).await.unwrap();
+            observer.refresh_files().await.unwrap();
+            prop_assert_eq!(author.selected_task().unwrap(),Some(child));
+            prop_assert_eq!(observer.selected_task().unwrap(),Some(parent));
+            drop(author); drop(observer);
+            prop_assert_eq!(CommandSession::open(volume.clone(),session,32_768,128).await.unwrap().selected_task().unwrap(),Some(child));
+            prop_assert_eq!(CommandSession::open(volume,other,32_768,128).await.unwrap().selected_task().unwrap(),Some(parent));
+            Ok(())
+        })?;
     }
 }

@@ -10,12 +10,17 @@ impl CheckoutTools {
         state: OwnedMutexGuard<State>,
         files: output::Output,
     ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>, output::Output)> {
-        let workspace = Arc::clone(&self.workspace);
+        let workspace = state
+            .workspace
+            .as_ref()
+            .map(|(_, workspace)| workspace.clone())
+            .unwrap_or_else(|| Arc::clone(&self.workspace));
         let invocation = Invocation {
             executable: which::which("bash").map_err(|cause| Error::Invalid(cause.to_string()))?,
             argv: Vec::new(),
             cwd: workspace.path.clone(),
             environment: Default::default(),
+            inherit_environment: false,
             timeout_ms: 300_000,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             cancellation_poll_ms: 25,

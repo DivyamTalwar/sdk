@@ -262,14 +262,17 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            ["inputs", "current.json"] => return Ok(Self::RequestHead),
             [".ui", directory, name] => {
                 return Ok(Self::Ui {
                     directory: id(directory)?,
                     name: id(name)?,
                 });
             }
-            ["inputs", "current.json"] => return Ok(Self::RequestHead),
-            ["commands" | "workspace" | "config", ..] => {
+            [
+                "commands" | "workspace" | "config" | ".claude" | ".codex" | "skills",
+                ..,
+            ] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),

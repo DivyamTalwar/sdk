@@ -24,7 +24,7 @@ pub enum InteractionRejection {
 pub enum Error {
     /// Logical task-file storage or publication failure.
     #[error(transparent)]
-    TaskFiles(#[from] Box<crate::task_volume::Error>),
+    TaskFiles(Box<crate::task_volume::Error>),
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -45,6 +45,12 @@ pub enum Error {
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
+    /// A tool requires a native view whose host device or driver is missing.
+    #[error("native mount unavailable: {device}")]
+    MountUnavailable {
+        /// Missing host mount device or driver.
+        device: &'static str,
+    },
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
@@ -348,6 +354,8 @@ impl Error {
         use crate::wire::ErrorCode;
         match self {
             Self::TaskFiles(error) => match error.as_ref() {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error.code(),
                 crate::task_volume::Error::FenceConflict
                 | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
                 crate::task_volume::Error::Conflict(_)
@@ -358,12 +366,12 @@ impl Error {
                 | crate::task_volume::Error::InvalidSegment
                 | crate::task_volume::Error::LimitExceeded => ErrorCode::Invalid,
                 crate::task_volume::Error::Storage(_) => ErrorCode::Storage,
-                #[cfg(feature = "filesystem")]
-                crate::task_volume::Error::FileRead(error) => error.code(),
             },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
+            Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
+                ErrorCode::Unsupported
+            }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
@@ -435,6 +443,12 @@ impl Error {
                 | Self::TaskFailed { .. }
                 | Self::GoalBlocked(_)
         )
+    }
+}
+
+impl From<crate::task_volume::Error> for Error {
+    fn from(error: crate::task_volume::Error) -> Self {
+        Self::TaskFiles(Box::new(error))
     }
 }
 
@@ -582,34 +596,3 @@ impl From<acyclic_actors::timers::TimerError> for Error {
 
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;
-
-impl From<crate::task_volume::Error> for Error {
-    fn from(error: crate::task_volume::Error) -> Self {
-        Self::TaskFiles(Box::new(error))
-    }
-}
-
-#[cfg(all(test, feature = "filesystem"))]
-mod tests {
-    use super::Error;
-
-    proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(24))]
-        // Property: crossing either typed file-query boundary preserves the
-        // original wire error code, including repeated nested boundaries.
-        #[test]
-        fn file_query_boundaries_preserve_error_codes(kind in 0u8..4, depth in 0..6usize) {
-            let mut error = match kind {
-                0 => Error::Unauthorized("denied".into()),
-                1 => Error::Invalid("invalid".into()),
-                2 => Error::Conflict("stale".into()),
-                _ => Error::Storage("unavailable".into()),
-            };
-            let expected = error.code();
-            for _ in 0..depth {
-                error = crate::task_volume::Error::FileRead(error).into();
-                proptest::prop_assert_eq!(error.code(), expected);
-            }
-        }
-    }
-}

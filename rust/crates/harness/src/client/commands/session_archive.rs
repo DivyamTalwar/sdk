@@ -1,6 +1,71 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(in crate::client::commands) fn view_bounds(&self) -> (usize, usize) {
+        (self.maximum_files, self.maximum_bytes as usize)
+    }
+
+    pub(super) async fn apply_outcome(&mut self, result: &Value) -> Result<()> {
+        if let Some(task) = result.get("selected_task") {
+            loop {
+                let mut layout = self
+                    .state(CommandFileRoot::Session, "layout.json")?
+                    .unwrap_or_else(|| serde_json::json!({}));
+                layout["selected_task"] = task.clone();
+                if result["cleared"] == true {
+                    layout["history_after"] = serde_json::json!(self.output_sequence());
+                }
+                match self
+                    .write_state(CommandFileRoot::Session, "layout.json", &layout)
+                    .await
+                {
+                    Ok(()) => break,
+                    Err(Error::Conflict(message))
+                        if message == "command query advanced; retry from the new cut" =>
+                    {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Last successfully rendered result, independent of the query cursor.
+    pub fn rendered_sequence(&self) -> Result<u64> {
+        Ok(self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|layout| layout["rendered_output"].as_u64())
+            .unwrap_or(0))
+    }
+
+    /// Acknowledge output only after the renderer accepts it. A competing layout
+    /// write is followed and merged again; navigation cannot be overwritten.
+    pub async fn acknowledge_output(&mut self, sequence: u64) -> Result<()> {
+        loop {
+            let mut layout = self
+                .state(CommandFileRoot::Session, "layout.json")?
+                .unwrap_or(json!({}));
+            if layout["rendered_output"].as_u64().unwrap_or(0) >= sequence {
+                return Ok(());
+            }
+            layout["rendered_output"] = json!(sequence);
+            match self
+                .write_state(CommandFileRoot::Session, "layout.json", &layout)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(Error::Conflict(message))
+                    if message == "command query advanced; retry from the new cut" =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(super) async fn read_file(
         &mut self,
         key: &files::FileKey,
@@ -89,14 +154,26 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     pub(super) async fn persist_activity(&mut self) -> Result<()> {
-        if let Some(value) = &self.activity_cursor {
+        while let Some(value) = &self.activity_cursor {
+            let previous = self.generation;
             let bytes = serde_json::to_vec(value).map_err(codec)?;
-            self.publish(
-                self.state_key(CommandFileRoot::Session, "activity.json")?,
-                bytes,
-                false,
-            )
-            .await?;
+            match self
+                .publish(
+                    self.state_key(CommandFileRoot::Session, "activity.json")?,
+                    bytes,
+                    false,
+                )
+                .await
+            {
+                Ok(()) => break,
+                Err(Error::Conflict(_))
+                    if self.generation.position > previous.position
+                        && self.next_change.is_none() =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }

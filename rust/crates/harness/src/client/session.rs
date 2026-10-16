@@ -413,6 +413,14 @@ impl<S: ClientStateStore> ClientSession<S> {
         &self.views
     }
 
+    pub(super) fn project_commands<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        files: &super::CommandSession<P>,
+        owner: &wire::Authority,
+    ) -> Result<()> {
+        super::command_output::project(&mut self.views, files, owner)
+    }
+
     /// Returns storage after transport shutdown, for reopening or explicit disposal.
     pub fn into_store(self) -> S {
         self.store

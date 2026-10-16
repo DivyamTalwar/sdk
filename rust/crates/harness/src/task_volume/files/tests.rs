@@ -1,5 +1,6 @@
 use super::*;
 use crate::AgentId;
+use crate::task_volume::FileQuerySource;
 use acyclic_stream::{MemoryStream, StreamError};
 use proptest::prelude::*;
 
@@ -280,6 +281,7 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
     )
     .await
     .unwrap();
+    let files = Arc::new(files);
     let identity = uuid::Uuid::from_bytes([5; 16]);
     let mut commands = CommandSession::open_authorized(files.clone(), identity, 65_536, 64)
         .await

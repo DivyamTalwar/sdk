@@ -40,6 +40,7 @@ impl CommandCatalog {
                 CommandAction::Theme
                 | CommandAction::Sdk { .. }
                 | CommandAction::Prompt { .. }
+                | CommandAction::Template { .. }
                 | CommandAction::Skill { .. } => CommandArguments::Text,
             };
             if spec.arguments != expected {
@@ -62,6 +63,12 @@ impl CommandCatalog {
             }
             match &spec.action {
                 CommandAction::Sdk { command } => validate_name(command)?,
+                CommandAction::Template { file, body, .. } => {
+                    if !matches!(file, crate::task_volume::FileKey::Input(_)) || body.contains('\0')
+                    {
+                        return Err(Error::Invalid("invalid file template".into()));
+                    }
+                }
                 CommandAction::Prompt { source, .. } => source.validate(&mut None)?,
                 CommandAction::Skill { skill } => skill.validate(&mut None)?,
                 _ => {}
@@ -133,7 +140,11 @@ impl CommandResolution {
             } => &[(Config, "settings.json")],
             Self::Select {
                 query: CommandQuery::Attention,
-            } => &[(Session, "layout.json"), (Session, "attention.json")],
+            } => &[
+                (Session, "layout.json"),
+                (Config, "attention.json"),
+                (Session, "attention.json"),
+            ],
             Self::Submit {
                 request: CommandRequest::Quit,
             }
@@ -329,11 +340,17 @@ impl CommandResolution {
                 query: CommandQuery::Attention,
             } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                let attention = document(snapshot, CommandFileRoot::Session, "attention.json")?;
-                let candidates = attention
-                    .get("tasks")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| Error::Invalid("attention query requires tasks".into()))?;
+                let shared = document(snapshot, CommandFileRoot::Config, "attention.json")?;
+                let attention = if shared.contains_key("tasks") {
+                    shared
+                } else {
+                    document(snapshot, CommandFileRoot::Session, "attention.json")?
+                };
+                let candidates = match attention.get("tasks") {
+                    None => &[][..],
+                    Some(Value::Array(tasks)) => tasks.as_slice(),
+                    _ => return Err(Error::Invalid("attention query requires tasks".into())),
+                };
                 if candidates.is_empty() {
                     return Ok(Vec::new());
                 }
@@ -356,6 +373,17 @@ impl CommandResolution {
             }
             Self::Select { query } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                layout.insert(
+                    "view_input".into(),
+                    if matches!(
+                        query,
+                        CommandQuery::Find | CommandQuery::Theme | CommandQuery::Feedback
+                    ) {
+                        serde_json::to_value(query).map_err(codec)?
+                    } else {
+                        Value::Null
+                    },
+                );
                 layout.insert("view_request".into(), json!(operation));
                 layout.insert(
                     "open_view".into(),

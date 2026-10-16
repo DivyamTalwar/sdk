@@ -1,52 +1,92 @@
-//! Local execution owner for the existing immutable command request files.
-use super::{CommandResolution, CommandSession};
-use crate::{Admission, Error, OperationId, Result, local::LocalHarness, runtime::RuntimeTask};
-use acyclic_stream::LocalStream;
-use serde_json::Value;
+//! Request-file dispatch belongs to the harness owner, never to a renderer.
+use super::*;
+use crate::{OperationId, local::LocalHarness, task_volume::FileValue};
 use std::sync::Arc;
 
-/// Consume one observed request through the same claim/outcome publication as
-/// hosted commands. Retrying its operation uses the stock durable admission.
-pub async fn consume_local_command(
-    session: &mut CommandSession<LocalStream>,
+/// Consume an immutable request through the local owner. Both TUI and headless
+/// clients use the same claim/result files and request-bound task selection.
+pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
+    session: &mut CommandSession<P>,
     local: &LocalHarness,
-    request: &crate::task_volume::FileValue,
-) -> Result<Option<Value>> {
+    request: &FileValue,
+) -> Result<Option<serde_json::Value>> {
+    let settings = session.request_settings(request).await?;
+    let result = session
+        .consume(request, |operation, target, resolution| {
+            local.dispatch_configured_command(operation, target, resolution, &settings)
+        })
+        .await?;
+    Ok(result)
+}
+
+impl CommandSession<dyn acyclic_stream::StreamProvider> {
+    /// Observe command files in the local owner's already-authorized private volume.
+    pub async fn open_local(
+        local: &LocalHarness,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.min(local.task_files().maximum_bytes());
+        let volume = local
+            .task_files()
+            .inner
+            .reopen_erased()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        Self::open(
+            std::sync::Arc::new(volume),
+            session,
+            maximum_bytes,
+            maximum_files,
+        )
+        .await
+    }
+}
+
+/// Execute an admitted command through the merged owner dispatch and stock runner.
+/// Admission-only clients can continue to use `consume_local_command`.
+pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
+    session: &mut CommandSession<P>,
+    local: &LocalHarness,
+    request: &FileValue,
+) -> Result<Option<serde_json::Value>> {
+    let settings = session.request_settings(request).await?;
     session
-        .consume(request, |operation, target, resolution| async move {
-            if target.is_some_and(|task| task.to_string() != local.client_owner().id) {
-                return Err(Error::Unauthorized(
-                    "command selects another local owner".into(),
-                ));
-            }
-            match resolution {
-                CommandResolution::Prompt { text, mentions, .. } => {
-                    if !mentions.is_empty() {
-                        return Err(Error::Unsupported(
-                            "TODO #617: pinned prompt context binding".into(),
-                        ));
+        .consume(request, |operation, target, resolution| {
+            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> =
+                Box::pin(async move {
+                    let target = target.filter(|task| task.to_string() != local.client_owner().id);
+                    let mut result = local
+                        .dispatch_configured_command(operation, target, resolution, &settings)
+                        .await?;
+                    if result.get("admission_operation").is_some() {
+                        let task = result
+                            .get("task")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| {
+                                Error::Invalid("command admission has no task".into())
+                            })?;
+                        let output = local.resume(crate::TaskId::parse(task)?).await?;
+                        let output = serde_json::to_value(output)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                        result
+                            .as_object_mut()
+                            .ok_or_else(|| {
+                                Error::Invalid("command result must be an object".into())
+                            })?
+                            .extend(
+                                output
+                                    .as_object()
+                                    .ok_or_else(|| {
+                                        Error::Invalid("turn output must be an object".into())
+                                    })?
+                                    .clone(),
+                            );
                     }
-                    let task = match local.submit(operation, &text).await? {
-                        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
-                        Admission::Accepted(RuntimeTask::Live(_)) => {
-                            return Err(Error::Conflict(
-                                "local command requires durable admission".into(),
-                            ));
-                        }
-                        Admission::Indeterminate { .. } => {
-                            return Err(Error::Indeterminate(operation));
-                        }
-                        Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
-                    };
-                    let output = local.resume(task).await?;
-                    serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))
-                }
-                // TODO(#617): replace this prompt-only dispatch with the merged
-                // LocalHarness::dispatch_configured_command binding.
-                _ => Err(Error::Unsupported(
-                    "TODO #617: local command dispatch".into(),
-                )),
-            }
+                    Ok(result)
+                });
+            future
         })
         .await
 }
@@ -54,7 +94,7 @@ pub async fn consume_local_command(
 /// Follows ordinary command files and drives their durable local owner.
 /// Poll this future alongside input/follows; dropping it never resends a claim.
 pub async fn run_local_commands(local: Arc<LocalHarness>, session: OperationId) -> Result<()> {
-    run_local_command_files(local, session, false).await
+    Box::pin(run_local_command_files(local, session, false)).await
 }
 
 pub(crate) async fn run_local_command_files(
@@ -63,7 +103,14 @@ pub(crate) async fn run_local_command_files(
     only_session: bool,
 ) -> Result<()> {
     let mut commands = CommandSession::open(
-        Arc::clone(&local.task_files().inner),
+        Arc::new(
+            local
+                .task_files()
+                .inner
+                .reopen()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ),
         uuid::Uuid::from_bytes(session.into_bytes()),
         65_536,
         4096,
@@ -74,7 +121,7 @@ pub(crate) async fn run_local_command_files(
         if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
             continue;
         }
-        match consume_local_command(&mut commands, &local, &request).await {
+        match run_local_command(&mut commands, &local, &request).await {
             // Claim CAS contention has already followed the winning cut and
             // requeued the request. Completed outcomes are never dispatched again.
             Err(Error::Conflict(_)) => continue,

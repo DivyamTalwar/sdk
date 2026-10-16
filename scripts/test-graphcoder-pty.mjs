@@ -26,7 +26,7 @@ const timeout = setTimeout(() => child.kill("SIGKILL"), 8000);
 child.stdout.on("data", bytes => {
   output += bytes.toString("utf8");
   const visible = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-  if (!submitted && visible.includes("GraphCoder")) { submitted = true; child.stdin.write("say hello\r"); }
+  if (!submitted && visible.includes("GraphCoder")) { submitted = true; child.stdin.write("/delegate say hello\r"); }
   if (!completed && visible.includes("test answer")) { completed = true; child.stdin.write("\x04"); }
 });
 child.stderr.on("data", bytes => { output += bytes.toString("utf8"); });
@@ -35,7 +35,8 @@ try {
   const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`PTY terminated by ${signal}: ${output}`)) : resolve(code)); });
   assert.equal(code, 0, output);
   assert.ok(submitted, "composed prompt never appeared");
-  assert.ok(completed, "Markdown answer never reached the real PTY");
+  assert.ok(completed, "Merged slash dispatch never produced a Markdown answer in the real PTY");
+  assert.equal(host.calls(), 1, "slash dispatch must execute exactly one stock model turn");
   assert.ok(output.includes("\x1b["), "no terminal frames emitted");
 } catch (error) { failure = error; }
 finally {

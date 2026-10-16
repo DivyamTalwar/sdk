@@ -86,6 +86,7 @@ fn invocation(root: &Path) -> Invocation {
         argv: Vec::new(),
         cwd: root.into(),
         environment: BTreeMap::new(),
+        inherit_environment: false,
         timeout_ms: 300_000,
         control_timeout_ms: 1000,
         cancellation_poll_ms: 25,
@@ -93,6 +94,146 @@ fn invocation(root: &Path) -> Invocation {
         mcp_stdio: None,
         standard_input: None,
     }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // A declared native binding may leave the primary root, but resolving a
+    // symlink within it must never leave that binding's own authorized root.
+    #[test]
+    fn bound_volume_cwd_keeps_its_authority(component in "[a-z]{1,12}", escape in proptest::bool::ANY) {
+        use proptest::prelude::*;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("view");
+        let native = temp.path().join("native");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(native.join(&component)).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, native.join(".escape")).unwrap();
+        let native = native.canonicalize().unwrap();
+        let mut mounts = table(root.canonicalize().unwrap()).unwrap();
+        for (relative, mount) in mounts.mounts_mut() {
+            if !relative.is_empty() {
+                mount.native_root = Some(native.clone());
+            }
+        }
+        let suffix = if escape { ".escape" } else { &component };
+        let result = prepare(BashInput {
+            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout: None,
+        }, &mounts, invocation(&mounts.root), 1);
+        if escape {
+            prop_assert!(matches!(result, Err(Error::Invalid(_))));
+        } else {
+            let prepared = result.unwrap();
+            prop_assert_eq!(prepared.cwd, native.join(&component));
+            prop_assert_eq!(prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(), native.to_str().unwrap());
+        }
+    }
+}
+
+#[tokio::test]
+async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> {
+    use proptest::prelude::*;
+    use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
+    const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
+    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    if std::env::var_os(CHILD).is_none() {
+        let bin = temp.path().join("bin");
+        let home = temp.path().join("home");
+        std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::create_dir(&home).map_err(|error| Error::Storage(error.to_string()))?;
+        let tool = bin.join("acyclic-host-path-only");
+        std::fs::write(&tool, b"#!/bin/sh\nprintf 'host tool: %s\\nnative: %s\\n' \"$HOME\" \"$ACYCLIC_TEST_NATIVE_BYTES\"\n")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        // Isolate host settings in a child test process; never mutate this
+        // process's environment while other tests or native workers run.
+        let executable =
+            std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
+        // Property: every non-NUL native value survives launch byte-for-byte,
+        // while host tools remain reachable and mount hints override the host.
+        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32)).run(
+            &prop::collection::vec(1u8..=255, 0..32),
+            |value| {
+        let result = std::process::Command::new(&executable)
+        .args([
+            "filesystem::native_process::bash::tests::host_home_and_path_survive_mount_environment_overrides",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("PATH", &bin)
+        .env("HOME", &home)
+        .env("ACYCLIC_VOLUME_DATA", "stale mount")
+        .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
+        .env("ACYCLIC_TEST_NATIVE_BYTES", std::ffi::OsString::from_vec(value))
+        .env(std::ffi::OsString::from_vec(b"ACYCLIC_TEST_UNRELATED_\xff".to_vec()), "native key")
+        .env_remove("BASH_ENV")
+        .output()
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        Ok(())
+        }).map_err(|error| Error::Invalid(error.to_string()))?;
+        return Ok(());
+    }
+    std::fs::create_dir_all(temp.path().join(".volumes/data"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mounts = table(
+        temp.path()
+            .canonicalize()
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    )?;
+    let input = BashInput {
+        command:
+            r#"test -n "$HOME" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-host-path-only"#
+                .into(),
+        cwd: None,
+        timeout: Some(5),
+    };
+    let prepared = prepare(input.clone(), &mounts, invocation(&mounts.root), 1)?;
+    assert_eq!(
+        prepared.environment.get("ACYCLIC_VOLUME_DATA"),
+        mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
+    );
+    // Negative control: mount-only settings cannot find the host-PATH tool,
+    // even after restoring HOME independently.
+    let mut broken = prepared;
+    broken.inherit_environment = false;
+    broken.environment = mounts.environment()?;
+    broken
+        .environment
+        .insert("HOME".into(), std::env::var("HOME").unwrap());
+    assert!(
+        !capture::capture_checked(broken, None, || Ok(()))
+            .await?
+            .unwrap()
+            .success
+    );
+    let output = run(input, &mounts, invocation(&mounts.root), 1, None, || Ok(()))
+        .await?
+        .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
+    assert!(
+        output.success,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut expected =
+        format!("host tool: {}\nnative: ", std::env::var("HOME").unwrap()).into_bytes();
+    expected.extend(
+        std::env::var_os("ACYCLIC_TEST_NATIVE_BYTES")
+            .unwrap()
+            .into_vec(),
+    );
+    expected.push(b'\n');
+    assert_eq!(output.stdout, expected);
+    Ok(())
 }
 
 #[cfg(unix)]

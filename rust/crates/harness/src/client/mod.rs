@@ -59,6 +59,9 @@ mod command_output;
 mod file_query;
 mod task_projection;
 pub use file_query::{FileQueryView, GoalFileView};
+mod model_identity;
+mod model_view;
+pub use model_view::{ModelFileView, ModelQueryView};
 mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]

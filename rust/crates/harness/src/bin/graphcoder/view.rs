@@ -18,7 +18,8 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let authority = local.client_owner();
     let mut client =
-        client::TaskFileClient::observe(local.task_files(), &authority, 4096, 65_536).await?;
+        client::TaskFileClient::observe(local.task_files().as_ref(), &authority, 4096, 65_536)
+            .await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let mut host = Box::pin(client::run_local_commands(local.clone(), operation));
@@ -54,8 +55,9 @@ pub async fn run(
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
     let mut documents = client::local_documents(&local, &authority).await?;
-    renderer.update(client.views(), &authority);
     loop {
+        client.project_commands(&commands, &authority)?;
+        renderer.update(client.views(), &authority);
         if commands.exit_requested()? {
             return Ok(());
         }
@@ -86,7 +88,6 @@ pub async fn run(
         )
         .await?
         else {
-            renderer.update(client.views(), &authority);
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);

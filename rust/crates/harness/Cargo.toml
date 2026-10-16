@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
 autobins = false
 name = "acyclic-harness"
@@ -56,6 +57,10 @@ path = "tests/file_query.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "client-model-views"
+path = "tests/client_model_views.rs"
+
+[[test]]
 name = "client-goal-views"
 path = "tests/client_goal_views.rs"
 required-features = ["wasm"]
@@ -63,6 +68,11 @@ required-features = ["wasm"]
 [[test]]
 name = "mcp-loom"
 path = "tests/mcp_loom.rs"
+
+[[test]]
+name = "memory-accounting-model"
+path = "tests/memory_accounting_model.rs"
+required-features = ["filesystem"]
 
 [[test]]
 name = "goal-files"
@@ -139,7 +149,7 @@ required-features = ["filesystem-local"]
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
-required-features = ["filesystem", "test-support"]
+required-features = ["filesystem-local", "native-execution", "test-support"]
 
 [[test]]
 name = "search-http-codec"
@@ -170,7 +180,7 @@ required-features = ["filesystem"]
 
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
-test-support = ["dep:tempfile"]
+test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
 model-checking = ["dep:loom", "dep:same-file"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
@@ -260,6 +270,7 @@ which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
+acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }

@@ -63,3 +63,33 @@ pub(super) fn text(file: &FileValue) -> Option<(u64, String)> {
     let text: Text = serde_json::from_str(outcome.ok?.get()).ok()?;
     Some((outcome.sequence, text.text?))
 }
+
+/// Fold the current session archive without copying any authoritative file state.
+pub(super) fn project<P: acyclic_stream::StreamProvider + ?Sized>(
+    views: &mut super::ClientViews,
+    files: &super::CommandSession<P>,
+    owner: &crate::wire::Authority,
+) -> Result<()> {
+    let mut answers = Vec::new();
+    let mut back = 0;
+    while let Some(value) = files.output_page(back)? {
+        if let Some(text) = value
+            .get("ok")
+            .and_then(|value| value.get("text"))
+            .and_then(serde_json::Value::as_str)
+        {
+            answers.push(text.to_owned());
+        }
+        back += 1;
+    }
+    answers.reverse();
+    let transcript = views
+        .transcripts
+        .entry(super::views::authority_key(owner))
+        .or_default();
+    transcript.streaming_text = answers.join("\n\n");
+    transcript.streaming_turn = Some(crate::OperationId::from_bytes(
+        u128::from(files.output_sequence()).to_be_bytes(),
+    ));
+    Ok(())
+}

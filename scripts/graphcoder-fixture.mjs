@@ -32,7 +32,7 @@ export async function fixture() {
   const catalog = join(directory, "catalog.json");
   writeFileSync(catalog, JSON.stringify({ scripted: {
     adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
-    models: { test: { context_tokens: 8192, output_tokens: 1024 } }, max_event_bytes: 65536,
+    models: { test: { capacity: { context_tokens: 8192, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
     token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
   } }));
   return {

@@ -6,17 +6,21 @@ use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
-#[path = "session_archive.rs"]
-mod archive;
 #[path = "session_activity.rs"]
 mod activity;
+#[path = "session_archive.rs"]
+mod archive;
+#[path = "session_confirmation.rs"]
+mod confirmation;
 #[path = "session_init.rs"]
 mod init;
-#[path = "session_publish.rs"]
-mod publication;
 #[cfg(all(test, acyclic_harness_loom))]
 #[path = "session_init_models.rs"]
 mod init_models;
+#[path = "session_publish.rs"]
+mod publication;
+#[path = "session_view.rs"]
+mod view;
 
 /// Disposable command/UI fold. All authoritative contents and execution markers
 /// are ordinary files in the supplied, already-authorized private/config volume.
@@ -74,20 +78,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Open the caller-authorized file binding; execution-owned writes stay denied.
     pub async fn open_authorized(
-        files: files::TaskFiles<P>,
+        files: Arc<files::TaskFiles<P>>,
         session: uuid::Uuid,
         maximum_bytes: u64,
         maximum_files: usize,
     ) -> Result<Self> {
-        let volume = Arc::clone(&files.inner);
-        Self::open_bound(
-            volume,
-            Some(Arc::new(files)),
-            session,
-            maximum_bytes,
-            maximum_files,
-        )
-        .await
+        let volume = Arc::new(files.inner.reopen().await.map_err(storage)?);
+        Self::open_bound(volume, Some(files), session, maximum_bytes, maximum_files).await
     }
 
     async fn open_bound(
@@ -161,6 +158,25 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(client)
     }
 
+    pub(super) fn volume(&self) -> &Arc<files::TaskVolume<P>> {
+        &self.volume
+    }
+
+    /// Open an independent observer of this authorized command volume.
+    pub fn reopen(&self) -> acyclic_stream::BoxProviderFuture<'static, Result<Self>>
+    where
+        P: 'static,
+    {
+        let volume = self.volume.clone();
+        let (session, maximum_bytes, maximum_files) =
+            (self.session, self.maximum_bytes, self.maximum_files);
+        Box::pin(async move { Self::open(volume, session, maximum_bytes, maximum_files).await })
+    }
+
+    pub(super) fn position(&self) -> u64 {
+        self.generation.position
+    }
+
     /// Catalog from the latest observed command-definition file.
     pub fn catalog(&self) -> &CommandCatalog {
         &self.catalog
@@ -179,13 +195,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// One archive page from immutable outcome files, newest first. Selection
     /// lives in layout.json; the index is reconstructed from file-query snapshots.
     pub fn output_page(&self, back: usize) -> Result<Option<Value>> {
-        if back >= self.outputs.len() {
-            return Ok(None);
-        }
+        let after = self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("history_after").and_then(Value::as_u64))
+            .unwrap_or(0);
         self.outputs
-            .values()
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
             .rev()
             .nth(back)
+            .map(|(_, key)| key)
             .and_then(|key| self.files.get(key))
             .map(|file| serde_json::from_slice(&file.bytes).map_err(codec))
             .transpose()
@@ -194,6 +212,33 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Latest immutable outcome ordinal at the observed query cut.
     pub fn output_sequence(&self) -> u64 {
         self.outputs.keys().next_back().copied().unwrap_or(0)
+    }
+
+    /// Every retained result after the renderer's own cursor, oldest first.
+    pub fn output_since(&self, after: u64) -> impl Iterator<Item = Result<(u64, Value)>> + '_ {
+        self.outputs
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .map(|(sequence, key)| {
+                let file = self
+                    .files
+                    .get(key)
+                    .ok_or_else(|| Error::Conflict("output file missing".into()))?;
+                Ok((
+                    *sequence,
+                    serde_json::from_slice(&file.bytes).map_err(codec)?,
+                ))
+            })
+    }
+
+    /// Follow through the currently accepted file cut, including results folded
+    /// while another input or worker was being processed.
+    pub async fn refresh_files(&mut self) -> Result<()> {
+        self.read_file(&ui("config", "settings.json")?).await?;
+        Ok(())
+    }
+
+    fn request_id(&self, operation: OperationId) -> Result<files::Component> {
+        component(format!("command-{}.{operation}", self.session))
     }
 
     /// SDK activity selection derived from its immutable outcome files.
@@ -236,7 +281,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             files::FileKey::Task { task, .. } => {
                 ui(&format!("task-{}", task.as_str()), "settings.json")?
             }
-            files::FileKey::Session { .. } => ui("config", "settings.json")?,
+            files::FileKey::Session { .. } => {
+                ui(&format!("session-{}", self.session), "task-settings.json")?
+            }
             _ => return Err(Error::Invalid("not a command request".into())),
         };
         let task: Value = self
@@ -288,8 +335,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Publish owner-provided definitions at the current query cut.
     pub async fn install_catalog(&mut self, bytes: Vec<u8>) -> Result<()> {
         let _ = CommandCatalog::from_bytes(&bytes, self.maximum_bytes)?;
-        self.publish(ui("config", "commands.json")?, bytes, false)
-            .await
+        let key = ui("config", "commands.json")?;
+        let expected = self.files.get(&key).map(|file| file.bytes.clone());
+        let current = self.read_file(&key).await?;
+        if current.as_ref().map(|file| &file.bytes) != expected.as_ref() {
+            return Err(Error::Conflict(
+                "command catalog changed; review the new revision".into(),
+            ));
+        }
+        self.publish(key, bytes, false).await
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
@@ -343,19 +397,39 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         input: &str,
         reader: &dyn ContentResidencyVerifier,
     ) -> Result<OperationId> {
+        if let Some(confirmation) = self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|layout| layout.get("confirmation").cloned())
+            .filter(|value| !value.is_null())
+        {
+            match input.trim().to_ascii_lowercase().as_str() {
+                "yes" | "y" => return self.confirm_request(confirmation, true).await,
+                "no" | "n" => return self.confirm_request(confirmation, false).await,
+                _ => {}
+            }
+        }
+        if let Some(operation) = self.view_input(input).await? {
+            return Ok(operation);
+        }
+        let cut = self.generation;
         let resolution = self
             .catalog
             .resolve(input, reader, self.maximum_bytes)
             .await?;
+        self.load_task_settings().await?;
+        if self.generation != cut {
+            return Err(Error::Conflict(
+                "command query advanced during resolution; retry from the new cut".into(),
+            ));
+        }
         self.publish_resolution(resolution).await
     }
 
-    /// Publish a typed key action through the same files as slash commands.
+    /// Publishes an already-resolved key action at its observed file cut.
     pub async fn publish_resolution(
         &mut self,
         resolution: CommandResolution,
     ) -> Result<OperationId> {
-        self.load_task_settings().await?;
         let operation = OperationId::new();
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
@@ -364,7 +438,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 } else {
                     self.selected_task()?
                 };
-                let file = files::TaskFile::Request(component(operation.to_string())?);
+                let file = files::TaskFile::Request(self.request_id(operation)?);
                 match task {
                     Some(task) => files::FileKey::Task {
                         task: component(task.to_string())?,
@@ -389,6 +463,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     fn fold(&mut self, file: files::FileValue) -> Result<()> {
+        if matches!(&file.key, files::FileKey::Task { .. })
+            && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
+        {
+            return Ok(());
+        }
         if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
         {
             return Ok(());
@@ -580,7 +659,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 ));
             }
         };
-        let operation = OperationId::parse(id.as_str())?;
+        let (owner, operation) = files::command_query::identity(id)
+            .ok_or_else(|| Error::Invalid("not a command request identity".into()))?;
+        if owner.is_some_and(|owner| owner != self.session) {
+            return Err(Error::Invalid(
+                "command belongs to another UI session".into(),
+            ));
+        }
         let key = |file| match &request.key {
             files::FileKey::Task { task, .. } => files::FileKey::Task {
                 task: task.clone(),
@@ -644,6 +729,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         self.persist_activity().await?;
+        if let Ok(value) = &result {
+            self.apply_outcome(value).await?;
+        }
         result.map(Some)
     }
 
@@ -663,3 +751,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .unwrap_or(false))
     }
 }
+
+#[cfg(all(test, acyclic_loom))]
+#[path = "session_models.rs"]
+mod models;

@@ -1,7 +1,7 @@
 //! The local owner consumes actual authorized request files through stock turns.
 use super::*;
 use crate::{
-    client::{CommandResolution, CommandSession, consume_local_command},
+    client::{CommandResolution, CommandSession, run_local_command as consume_local_command},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile},
 };
 
@@ -53,15 +53,22 @@ async fn roundtrip(prompt: String) -> Result<()> {
     let files = harness.task_files();
     let snapshot = files.snapshot(&Query::Root, 128).await?;
     files.write(snapshot.generation, &request).await?;
-    let mut owner = CommandSession::open(Arc::clone(&files.inner), session, 65_536, 128).await?;
+    let mut owner =
+        CommandSession::open(Arc::new(files.inner.reopen().await?), session, 65_536, 128).await?;
     let observed = owner.next_request().await?;
     assert_eq!(observed, request);
     let output = consume_local_command(&mut owner, &harness, &observed)
         .await?
         .unwrap();
     assert_eq!(output["text"], "done");
-    let projected =
-        crate::client::TaskFileClient::observe(files, &harness.client_owner(), 128, 65_536).await?;
+    let mut projected = crate::client::TaskFileClient::observe(
+        files.as_ref(),
+        &harness.client_owner(),
+        128,
+        65_536,
+    )
+    .await?;
+    projected.project_commands(&owner, &harness.client_owner())?;
     let key = format!("AGGREGATE_KIND_TASK:{}", harness.client_owner().id);
     assert_eq!(projected.views().transcripts[&key].streaming_text, "done");
     drop(projected);
@@ -84,7 +91,7 @@ async fn roundtrip(prompt: String) -> Result<()> {
     )
     .await?;
     let mut owner = CommandSession::open(
-        Arc::clone(&harness.task_files().inner),
+        Arc::new(harness.task_files().inner.reopen().await?),
         session,
         65_536,
         128,
@@ -130,8 +137,13 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
     let files = harness.task_files();
     let snapshot = files.snapshot(&Query::Root, 128).await?;
     files.write(snapshot.generation, &request).await?;
-    let mut owner =
-        CommandSession::open(Arc::clone(&files.inner), uuid::Uuid::new_v4(), 65_536, 128).await?;
+    let mut owner = CommandSession::open(
+        Arc::new(files.inner.reopen().await?),
+        uuid::Uuid::new_v4(),
+        65_536,
+        128,
+    )
+    .await?;
     assert!(matches!(
         consume_local_command(&mut owner, &harness, &request).await,
         Err(Error::Unauthorized(_))

@@ -48,3 +48,40 @@ async fn followed_task_files_render_without_a_wire_connection() {
     assert!(picture(&renderer).contains("File-backed answer"));
     assert!(!picture(&renderer).contains("**File-backed answer**"));
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    // A session's file outcomes remain ordered, replayable and visible after
+    // owner dispatch selects a different admitted task for each prompt.
+    #[test]
+    fn command_outcomes_remain_in_the_session_transcript(texts in proptest::collection::vec("[a-z]{1,12}", 1..5)) {
+        struct NoFiles;
+        impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("session-transcript").unwrap()).await.unwrap());
+            let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "owner".into() };
+            let mut commands = acyclic_harness::client::CommandSession::open(volume.clone(), acyclic_harness::OperationId::new().to_string().parse().unwrap(), 65_536, 128).await.unwrap();
+            let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
+            let mut expected = Vec::new();
+            for text in texts {
+                commands.submit("prompt", &NoFiles).await.unwrap();
+                let request = commands.take_request().unwrap();
+                let value = serde_json::json!({"text":text,"selected_task":acyclic_harness::TaskId::new()});
+                commands.consume(&request, |_,_,_| async { Ok(value) }).await.unwrap();
+                expected.push(text);
+                client.project_commands(&commands, &owner).unwrap();
+                client.project_commands(&commands, &owner).unwrap();
+                let key = format!("AGGREGATE_KIND_TASK:{}", owner.id);
+                proptest::prop_assert_eq!(&client.views().transcripts[&key].streaming_text, &expected.join("\n\n"));
+                let mut renderer = ClientRenderer::default(); renderer.update(client.views(), &owner);
+                let visible = picture(&renderer);
+                for text in &expected { proptest::prop_assert!(visible.contains(text)); }
+                let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
+                replay.project_commands(&commands, &owner).unwrap();
+                proptest::prop_assert_eq!(&replay.views().transcripts[&key], &client.views().transcripts[&key]);
+            }
+            Ok(())
+        })?;
+    }
+}

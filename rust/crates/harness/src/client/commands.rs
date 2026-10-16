@@ -15,20 +15,36 @@ mod parse;
 use parse::{expand, has_frontmatter, validate_name};
 mod presentation;
 pub use presentation::*;
+mod control;
+#[cfg(not(target_arch = "wasm32"))]
+mod driver;
+mod scheduling;
+#[cfg(not(target_arch = "wasm32"))]
+pub use driver::run_command_client;
+pub use scheduling::{command_loop_finished, schedule_command_effect};
+mod diff;
 mod files;
+pub use diff::render_command_diff;
+mod view;
+pub use view::render_command_record;
+mod view_files;
+pub use view_files::CommandViewFiles;
+#[cfg(all(test, acyclic_loom))]
+mod model;
+pub use control::CommandControl;
 mod name_index;
 mod session;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub(crate) mod local;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{consume_local_command, run_local_commands};
+mod sources;
+pub use sources::CommandSources;
 mod syntax;
+pub use files::*;
 pub use session::CommandSession;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod host_tools;
-pub use files::*;
+mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use host_tools::execute_host_command;
+pub use local::{consume_local_command, run_local_command, run_local_commands};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub(crate) use local::run_local_command_files;
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
@@ -129,6 +145,15 @@ pub enum CommandAction {
         source: PinnedContextPath,
         /// Determines override precedence.
         scope: CommandScope,
+    },
+    /// Template captured from a followed command/skill definition file.
+    Template {
+        /// Relative input-file identity for provenance and replacement.
+        file: crate::task_volume::FileKey,
+        /// Exact file digest at the catalog's publication cut.
+        digest: [u8; 32],
+        /// Pinned template text; subsequent file edits publish a new catalog.
+        body: String,
     },
     /// Selected skill using the ordinary context loader.
     Skill {
@@ -631,6 +656,11 @@ impl CommandCatalog {
                 )
             }
             CommandAction::Builtin { command } => Ok(resolve_builtin(*command, arguments)),
+            CommandAction::Template { body, .. } => Ok(CommandResolution::Prompt {
+                text: expand(body, arguments, maximum_bytes)?,
+                source: None,
+                mentions: Vec::new(),
+            }),
             CommandAction::Prompt { source, .. } => {
                 let (_, bytes) = source.read(reader, maximum_bytes).await?;
                 let body = if has_frontmatter(&bytes) {

@@ -5,11 +5,29 @@ use acyclic_fs::{
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+pub(in crate::local) fn require_available(
+    capabilities: acyclic_fs::NativeMountCapabilities,
+) -> Result<()> {
+    if capabilities.available() {
+        return Ok(());
+    }
+    use acyclic_fs::NativeMountKind;
+    Err(Error::MountUnavailable {
+        device: match capabilities.kind {
+            Some(NativeMountKind::LinuxFuse) => "/dev/fuse",
+            Some(NativeMountKind::WindowsProjFs) => "ProjectedFSLib.dll",
+            Some(NativeMountKind::MacOsNfs) => "/sbin/mount_nfs",
+            None => "native mount provider",
+        },
+    })
+}
+
 pub(in crate::local) fn excluded(
     root: &Path,
     config: acyclic_fs::VolumeConfig,
+    relative: &str,
 ) -> Result<Vec<NamespacePath>> {
-    let destination = root.join(SCRATCH_PATH);
+    let destination = root.join(relative);
     std::iter::once(destination.clone())
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
         .map(|path| {
@@ -84,6 +102,54 @@ pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
     Ok(())
 }
 
+// fusermount's elevated helper cannot traverse an owner-only FUSE mount.
+// Retain the already bound volume and expose its authorized path instead of
+// starting a second kernel mount below the task's sparse projection.
+#[cfg(target_os = "linux")]
+pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative.is_empty() {
+            continue;
+        }
+        let native = mount
+            .view
+            .source
+            .as_ref()
+            .and_then(|source| source.native.as_ref())
+            .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
+        let target = native.path();
+        let relative = Path::new(relative);
+        if let Some(parent) = relative.parent() {
+            create_mount_directory(root, parent)?;
+        }
+        let path = root.join(relative);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                if std::fs::read_link(&path).map_err(mount_io)? != target {
+                    return Err(Error::Conflict("volume alias names another binding".into()));
+                }
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                // remove_dir atomically refuses a nonempty directory; user
+                // content is never replaced to install a volume binding.
+                std::fs::remove_dir(&path).map_err(mount_io)?;
+                std::os::unix::fs::symlink(target, &path).map_err(mount_io)?;
+            }
+            Ok(_) => {
+                return Err(Error::Conflict(
+                    "volume alias replaces a project file".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::os::unix::fs::symlink(target, &path).map_err(mount_io)?;
+            }
+            Err(error) => return Err(mount_io(error)),
+        }
+        mount.native_root = Some(target.to_path_buf());
+    }
+    Ok(())
+}
+
 fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let mut path = root.to_path_buf();
     for part in relative.components() {
@@ -114,6 +180,22 @@ fn mount_io(cause: std::io::Error) -> Error {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_fuse_device_has_a_typed_tool_admission_error() {
+        let error = require_available(acyclic_fs::NativeMountCapabilities {
+            kind: Some(acyclic_fs::NativeMountKind::LinuxFuse),
+            unavailable_reason: Some("missing device"),
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::MountUnavailable {
+                device: "/dev/fuse"
+            }
+        ));
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
+    }
 
     #[test]
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {
