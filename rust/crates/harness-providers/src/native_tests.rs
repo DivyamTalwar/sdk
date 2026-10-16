@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "native_stock_probe.rs"]
 mod probe;
 #[path = "native_stock_tests.rs"]
-mod stock;
+pub(crate) mod stock;
 
 pub(super) struct Fixture {
     pub(super) response: Bytes,

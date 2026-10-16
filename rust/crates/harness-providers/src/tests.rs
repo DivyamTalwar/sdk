@@ -34,7 +34,7 @@ mod gemini_replay_tests;
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
-mod native_tests;
+pub(crate) mod native_tests;
 #[path = "tool_name_tests.rs"]
 mod tool_name_tests;
 
@@ -295,6 +295,8 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         },
         key: Some("scripted-key".into()),
         transport: script.clone(),
+        #[cfg(not(target_arch = "wasm32"))]
+        codex_count: crate::codex_count::Counter::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
     };

@@ -37,6 +37,33 @@ pub(crate) async fn count(
             "request model differs from resolved selection",
         ));
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if provider.codex_login.is_some() {
+        let custody = work
+            .map(|work| {
+                work.claim(
+                    (std::mem::size_of::<ModelTokenCount>() + request.request().messages.len() * 4)
+                        as u64,
+                    1,
+                    acyclic_fs::WorkCounters {
+                        bytes_encoded: request.bytes().len() as u64,
+                        items_examined: request.request().messages.len() as u64,
+                        ..acyclic_fs::WorkCounters::UNCHARGED
+                    },
+                )
+            })
+            .transpose()?;
+        let result = provider
+            .codex_count
+            .count(request)
+            .and_then(|tokens| projection::plan(provider, request, tokens));
+        let mut custody = custody;
+        let result = match custody.as_mut() {
+            Some(hold) => crate::native::diagnostic(result, hold),
+            None => result,
+        };
+        return Ok((result?, custody));
+    }
     let spec = provider.config.token_counter.as_ref().ok_or_else(|| {
         let reason = "configure a verified input token counter for this endpoint";
         #[cfg(not(target_arch = "wasm32"))]

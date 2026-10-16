@@ -9,7 +9,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
-use time::OffsetDateTime;
 
 const RESPONSE: &str = concat!(
     "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n",
@@ -56,6 +55,10 @@ mod controls;
 mod native;
 #[path = "codex_reasoning_tests.rs"]
 mod reasoning;
+#[path = "codex_recovery_tests.rs"]
+mod recovery;
+#[path = "codex_stock_tests.rs"]
+mod stock;
 
 fn fixture(
     replies: Vec<(u16, String)>,
@@ -65,7 +68,7 @@ fn fixture(
         "header.{}.signature",
         URL_SAFE_NO_PAD.encode(
             json!({
-                "exp":OffsetDateTime::now_utc().unix_timestamp() + 3600
+                "exp":crate::codex::fixed_now().unix_timestamp() + 3600
             })
             .to_string()
         )
@@ -81,7 +84,7 @@ fn fixture(
     .map_err(|error| invalid(error.to_string()))?;
     Ok((
         root,
-        CodexLogin::from_path(path),
+        CodexLogin::from_path(path).with_clock(crate::codex::fixed_now),
         Arc::new(Server {
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),

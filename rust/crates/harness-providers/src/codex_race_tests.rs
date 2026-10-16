@@ -99,7 +99,7 @@ fn race(path: &Path, cli: Value, replies: Vec<(u16, Value)>) -> RacingCli {
 async fn cli_write_during_successful_refresh_wins_without_extra_auth_directory_files() -> Result<()>
 {
     let (root, login, _) = fixture(&jwt(0), 200)?;
-    let cli_access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 7200);
+    let cli_access = jwt(crate::codex::fixed_now().unix_timestamp() + 7200);
     let mut cli = auth(&cli_access);
     cli["tokens"]["refresh_token"] = json!("cli-refresh");
     cli["unrelated_cli_field"] = json!([1, 2, 3]);
@@ -129,7 +129,7 @@ async fn cli_write_during_successful_refresh_wins_without_extra_auth_directory_f
 async fn rejected_refresh_reloads_a_fresh_cli_bearer_once() -> Result<()> {
     for status in [400, 401] {
         let (root, login, _) = fixture(&jwt(0), 200)?;
-        let cli_access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 7200);
+        let cli_access = jwt(crate::codex::fixed_now().unix_timestamp() + 7200);
         let transport = race(
             &root.path().join("auth.json"),
             auth(&cli_access),
@@ -188,7 +188,7 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
 {
     for status in [200, 400, 401] {
         let (root, login, _) = fixture(&jwt(0), 200)?;
-        let mut cli = auth(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 7200));
+        let mut cli = auth(&jwt(crate::codex::fixed_now().unix_timestamp() + 7200));
         cli["tokens"]["account_id"] = json!("another-account");
         let transport = race(
             &root.path().join("auth.json"),
@@ -211,8 +211,9 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
 async fn independent_login_instances_adopt_cli_credentials_published_during_refresh() -> Result<()>
 {
     let (root, first, _) = fixture(&jwt(0), 200)?;
-    let second = CodexLogin::from_path(root.path().join("auth.json"));
-    let cli_access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 7200);
+    let second =
+        CodexLogin::from_path(root.path().join("auth.json")).with_clock(crate::codex::fixed_now);
+    let cli_access = jwt(crate::codex::fixed_now().unix_timestamp() + 7200);
     let transport = race(
         &root.path().join("auth.json"),
         auth(&cli_access),

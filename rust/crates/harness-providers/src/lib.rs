@@ -8,6 +8,12 @@ mod codex;
 #[cfg(not(target_arch = "wasm32"))]
 mod refresh;
 #[cfg(not(target_arch = "wasm32"))]
+mod credential_file;
+#[cfg(not(target_arch = "wasm32"))]
+mod codex_count;
+#[cfg(not(target_arch = "wasm32"))]
+mod usage_snapshot;
+#[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 mod call_ids;
 #[cfg(all(test, not(target_arch = "wasm32")))]

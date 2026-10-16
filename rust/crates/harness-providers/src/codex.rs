@@ -24,7 +24,55 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 pub struct CodexLogin {
     path: PathBuf,
     account: OnceLock<Option<blake3::Hash>>,
-    refresh: crate::sync::Arc<crate::sync::AsyncMutex<()>>,
+    refresh: crate::sync::Arc<crate::refresh::Refresh<RefreshFailure>>,
+    clock: std::sync::Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+}
+
+#[derive(Clone, Copy)]
+struct RefreshFailure {
+    code: acyclic_harness::wire::ErrorCode,
+    message: [u8; 256],
+    length: usize,
+}
+impl RefreshFailure {
+    fn from_error(error: &acyclic_harness::Error) -> Option<Self> {
+        use acyclic_harness::Error;
+        let message = match error {
+            Error::Unauthorized(message)
+            | Error::Storage(message)
+            | Error::Invalid(message)
+            | Error::NativeDiagnostic { message, .. } => message.as_str(),
+            Error::NativeBoundary { reason, .. } => reason,
+            _ => return None,
+        };
+        if !matches!(
+            error.code(),
+            acyclic_harness::wire::ErrorCode::Unauthorized
+                | acyclic_harness::wire::ErrorCode::Storage
+                | acyclic_harness::wire::ErrorCode::Invalid
+        ) || message.len() > 256
+        {
+            return None;
+        }
+        let mut failure = Self {
+            code: error.code(),
+            message: [0; 256],
+            length: message.len(),
+        };
+        failure.message[..message.len()].copy_from_slice(message.as_bytes());
+        Some(failure)
+    }
+    fn error(self, io: &mut CredentialIo<'_>) -> Result<acyclic_harness::Error> {
+        use acyclic_harness::{Error, wire::ErrorCode};
+        let text = std::str::from_utf8(&self.message[..self.length])
+            .map_err(|_| invalid("invalid shared refresh diagnostic"))?;
+        let message = io.string(text)?;
+        Ok(match self.code {
+            ErrorCode::Unauthorized => Error::Unauthorized(message),
+            ErrorCode::Storage => Error::Storage(message),
+            _ => Error::Invalid(message),
+        })
+    }
 }
 
 impl CodexLogin {
@@ -33,8 +81,18 @@ impl CodexLogin {
         Self {
             path,
             account: OnceLock::new(),
-            refresh: crate::sync::Arc::new(crate::sync::AsyncMutex::new(())),
+            refresh: crate::sync::Arc::new(crate::refresh::Refresh::new()),
+            clock: std::sync::Arc::new(OffsetDateTime::now_utc),
         }
+    }
+
+    /// Supplies the clock for expiry decisions and publication timestamps.
+    pub fn with_clock(
+        mut self,
+        clock: impl Fn() -> OffsetDateTime + Send + Sync + 'static,
+    ) -> Self {
+        self.clock = std::sync::Arc::new(clock);
+        self
     }
 
     pub(crate) fn fresh(&self) -> Self {
@@ -42,6 +100,7 @@ impl CodexLogin {
             path: self.path.clone(),
             account: OnceLock::new(),
             refresh: self.refresh.clone(),
+            clock: self.clock.clone(),
         }
     }
 
@@ -65,11 +124,16 @@ impl CodexLogin {
         custody: Option<&mut NativeAllocation>,
     ) -> Result<(String, Option<String>)> {
         let mut io = CredentialIo::new(custody)?;
-        let result = crate::refresh::serialized(
-            &self.refresh,
-            self.refresh_bearer(transport, rejected, &mut io),
-        )
+        let result = crate::refresh::serialized(&self.refresh, async {
+            let result = self.refresh_bearer(transport, rejected, &mut io).await;
+            let failure = result.as_ref().err().and_then(RefreshFailure::from_error);
+            (result, failure)
+        })
         .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(failure) => Err(failure.error(&mut io)?),
+        };
         io.checked(result)
     }
 
@@ -84,7 +148,7 @@ impl CodexLogin {
         for attempt in 0..2 {
             let access = token(&auth, "access_token")?;
             let force = rejected.is_some_and(|rejected| rejected == access);
-            if !force && !needs_refresh(&auth, OffsetDateTime::now_utc()) {
+            if !force && !needs_refresh(&auth, (self.clock)()) {
                 break;
             }
             let refresh = token(&auth, "refresh_token")?;
@@ -166,7 +230,7 @@ impl CodexLogin {
                 }
             }
             auth["last_refresh"] = json!(
-                OffsetDateTime::now_utc()
+                (self.clock)()
                     .format(&Rfc3339)
                     .map_err(|_| invalid("Codex refresh timestamp failed"))?
             );
@@ -349,7 +413,7 @@ fn persist_with(
     let Some(mut auth) = merge_refresh(&baseline, &observed, &current, &auth, io)? else {
         return Ok(current);
     };
-    let mut file = tempfile::NamedTempFile::new_in(parent)
+    let mut file = crate::credential_file::create(parent)
         .map_err(|_| invalid("cannot create Codex credential update"))?;
     stage(&mut file, &auth, io)?;
     before_replace()?;
@@ -458,3 +522,8 @@ fn merge_refresh(
 #[cfg(test)]
 #[path = "codex_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn fixed_now() -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(1_792_150_400).expect("fixed fixture timestamp")
+}

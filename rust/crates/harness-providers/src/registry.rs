@@ -97,11 +97,6 @@ impl Registry {
         let capacity = config.models.get(name).copied().ok_or_else(|| {
             invalid("register the exact selected model context and output capacities")
         })?;
-        if config.token_counter.is_none() {
-            return Err(acyclic_harness::Error::Unsupported(
-                "configure a verified input token counter for this endpoint".into(),
-            ));
-        }
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -124,11 +119,21 @@ impl Registry {
             }
             Arc::new(ProviderSpec {
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
+                token_counter: None,
                 ..config.as_ref().clone()
             })
         } else {
             config
         };
+        #[cfg(target_arch = "wasm32")]
+        let local_count = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let local_count = codex_login.is_some();
+        if config.token_counter.is_none() && !local_count {
+            return Err(acyclic_harness::Error::Unsupported(
+                "configure a verified input token counter for this endpoint".into(),
+            ));
+        }
         let authenticated = key.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();
@@ -142,6 +147,8 @@ impl Registry {
             capacity,
             key,
             transport: self.transport.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_count: crate::codex_count::Counter::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         })
