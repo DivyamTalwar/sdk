@@ -112,7 +112,7 @@ async fn discover_with_creation(
             Ok::<_, Error>((updates, created, provider))
         },
     ));
-    let mut client = super::client(
+    let client = super::client(
         limits((count + usize::from(new_child.is_some_and(|id| id != usize::MAX))).max(1)),
     )
     .unwrap();
@@ -221,7 +221,7 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
         for channel_id in [0, 1, 2, 3] {
             let (frames, incoming) = mpsc::unbounded();
             let snapshots = RefCell::new(0);
-            let mut client = super::client(limits(1)).unwrap();
+            let client = super::client(limits(1)).unwrap();
             let views = client.views();
             let result = client
                 .follow(

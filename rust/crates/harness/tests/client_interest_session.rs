@@ -67,7 +67,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
     chunk.channel = Some(Channel::Text);
     volume.append(initial.generation, &chunk).await.unwrap();
 
-    let mut client = super::client(
+    let client = super::client(
         SwarmClientLimits {
             agents: 10,
             selected: 2,
@@ -328,7 +328,7 @@ async fn check_snapshot_follow(
     )
     .await
     .unwrap();
-    let mut client = super::client(
+    let client = super::client(
         SwarmClientLimits {
             agents: 4,
             selected: 4,

@@ -198,9 +198,11 @@ impl SwarmClient {
     /// `heads` executes the provider's bounded root query on `<agent>/files`;
     /// it reuses the query owner's materialized index rather than replaying agent
     /// history into a second client index.
+    /// Consumes one subscription session. Platform reconnects and moves retain
+    /// this fold; a fatal reset creates a new client from authoritative snapshots.
     /// Finite sources fail closed rather than returning success with stale views.
     pub async fn follow<D, P, S, I, Q, QFut, F>(
-        &mut self,
+        self,
         streams: &D,
         files: &TaskVolume<P>,
         mut session: S,

@@ -37,7 +37,7 @@ async fn view_file_writes_update_subscriptions_and_the_same_file_fold() -> Resul
     let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("client/config")).await.unwrap();
     put(&config, "workspace/layout.json", br#"{"prefetch":["swarm/a"]}"#).await;
     let limits = SwarmClientLimits { agents: 4, selected: 1, layout_bytes: 1024, config_files: 4, snapshot_files: 16 };
-    let mut client = SwarmClient::new(path("swarm"), limits, SwarmViewLimits {
+    let client = SwarmClient::new(path("swarm"), limits, SwarmViewLimits {
         agents: 4, selected: 1, overview_values: 4, overview_bytes: 4096,
         query: QueryViewLimits { files: 16, segments: 16, bytes: 4096 }
     })?;
