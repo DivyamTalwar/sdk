@@ -36,9 +36,10 @@ impl DemandWork {
             roots: Admissions::default(),
         }
     }
+    #[inline]
     pub(crate) fn scope<T, R>(
         &mut self,
-        field: fn(&mut Self) -> &mut T,
+        field: impl Fn(&mut Self) -> &mut T,
         value: T,
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
