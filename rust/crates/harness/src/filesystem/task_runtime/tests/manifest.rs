@@ -305,9 +305,13 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
 
 #[tokio::test]
 async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
-    let mut fixture = Fixture::new().await?;
+    let mut fixture = Fixture::new()
+        .await
+        .inspect_err(|error| eprintln!("native manifest fixture: {error:?}"))?;
     fixture.machine.native.store(true, Ordering::SeqCst);
-    let reference = recovery::publish_sources(&fixture).await?;
+    let reference = recovery::publish_sources(&fixture)
+        .await
+        .inspect_err(|error| eprintln!("native manifest sources: {error:?}"))?;
     let tools = fixture.tools.definitions(None)?;
     change_live_revision(&mut fixture, 2)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -315,7 +319,10 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let runtime = fixture.runtime(Some(&io)).await?;
+    let runtime = fixture
+        .runtime(Some(&io))
+        .await
+        .inspect_err(|error| eprintln!("native manifest runtime: {error:?}"))?;
     let (lease, custody) = fixture
         .native_lease_command(
             &runtime,
@@ -324,8 +331,11 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             &work,
         )
-        .await?;
-    recovery::mutate_sources(&fixture, true).await?;
+        .await
+        .inspect_err(|error| eprintln!("native manifest lease: {error:?}"))?;
+    recovery::mutate_sources(&fixture, true)
+        .await
+        .inspect_err(|error| eprintln!("native manifest source mutation: {error:?}"))?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(PendingModel {
@@ -341,13 +351,17 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     )?;
     let (attempt, custody) = runtime
         .resume_task_with_native_work(lease, custody, &commands, 2, &work)
-        .await?;
+        .await
+        .inspect_err(|error| eprintln!("native manifest resume: {error:?}"))?;
     match attempt {
         TaskWorkerAttempt::Unresolved {
             lease,
             error: Error::Indeterminate(_),
         } => assert_eq!(lease, original),
-        TaskWorkerAttempt::Unresolved { error, .. } => return Err(error),
+        TaskWorkerAttempt::Unresolved { error, .. } => {
+            eprintln!("native manifest attempt: {error:?}");
+            return Err(error);
+        }
         _ => {
             return Err(Error::Invalid(
                 "native pending provider unexpectedly completed".into(),
@@ -392,7 +406,10 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
             io: Some(&io),
         },
     )?;
-    let records = journal.replay(operation, 0, 64, Some(&io))?.await?;
+    let records = journal
+        .replay(operation, 0, 64, Some(&io))?
+        .await
+        .inspect_err(|error| eprintln!("native manifest inspection replay: {error:?}"))?;
     let reference = records
         .iter()
         .find_map(|record| match &record.event {
@@ -400,7 +417,10 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
             _ => None,
         })
         .expect("native model request must be retained");
-    let bytes = journal.load(reference, Some(&io))?.await?;
+    let bytes = journal
+        .load(reference, Some(&io))?
+        .await
+        .inspect_err(|error| eprintln!("native manifest inspection load: {error:?}"))?;
     let request: ModelRequest =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(request.tools, tools);
