@@ -18,7 +18,7 @@ fn joined_workers(broken: bool) {
         let completed = Arc::new(AtomicUsize::new(0));
         let state = Arc::clone(&completed);
         let operation = move |index| {
-            state.fetch_or(1 << index, Ordering::SeqCst);
+            state.fetch_or(1usize << index, Ordering::SeqCst);
             if index == 0 {
                 Err(index)
             } else {
