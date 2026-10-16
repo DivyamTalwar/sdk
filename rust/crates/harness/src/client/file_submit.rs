@@ -19,6 +19,7 @@ type Result<T> = std::result::Result<T, FileClientError>;
 
 /// The publication prefix required before an outbox entry can be acknowledged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileClientDurability {
     /// Process-local memory sessions; no crash recovery guarantee.
     Accepted,
@@ -29,6 +30,8 @@ pub enum FileClientDurability {
 /// Bounds retained pending requests, independent of already acknowledged history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct FileClientLimits {
     /// Maximum queued commands.
     pub commands: usize,

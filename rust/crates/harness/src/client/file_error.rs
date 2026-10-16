@@ -1,7 +1,10 @@
 use crate::Error;
 
 /// Submission backpressure is distinct from malformed input and provider failure.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize)]
+#[serde(tag = "kind", content = "detail")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum FileClientError {
     /// The pending command count has reached its configured bound.
     #[error("outbox command quota reached ({limit})")]
@@ -17,5 +20,14 @@ pub enum FileClientError {
     },
     /// Input, history, identity or provider failure, retaining its classification.
     #[error(transparent)]
-    Harness(#[from] Error),
+    Harness(
+        #[from]
+        #[serde(serialize_with = "diagnostic")]
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        Error,
+    ),
+}
+
+fn diagnostic<S: serde::Serializer>(error: &Error, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(error)
 }

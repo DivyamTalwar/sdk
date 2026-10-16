@@ -27,9 +27,9 @@ pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
 mod change;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
 mod interest;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
@@ -53,6 +53,8 @@ mod obs;
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmStream;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
@@ -63,6 +65,9 @@ pub mod verification;
 #[cfg(all(acyclic_loom, feature = "local"))]
 /// Bounded models of the real child-discovery providers.
 pub use memory::discovery_model as discovery_verification;
+#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+#[doc(hidden)]
+pub use memory::browser_follow_model as browser_follow_verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
