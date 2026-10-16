@@ -1,0 +1,177 @@
+use crate::{
+    Error, OperationId, Result,
+    runtime::TaskDefinition,
+    workflow::{
+        MachineIdentity, MachineStatus, MachineTransition, ResumableMachine, WorkflowCommand,
+    },
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+/// A session's single command slot, executed by the existing durable task worker.
+/// Request files supply commands; the worker retains their dispatch and results.
+pub struct CommandSessionMachine {
+    identity: MachineIdentity,
+    schema: Value,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Input {
+    command: WorkflowCommand,
+    terminal: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
+enum State {
+    Ready {
+        input: Input,
+    },
+    Waiting {
+        operation_id: OperationId,
+        terminal: bool,
+    },
+    Idle,
+    Closed,
+}
+
+impl CommandSessionMachine {
+    /// Pins the implementation and its durable state schema.
+    #[must_use]
+    pub fn new() -> Self {
+        let implementation = include_str!("session.rs").replace("\r\n", "\n");
+        Self {
+            identity: MachineIdentity {
+                name: "acyclic.command_session".into(),
+                version: "1".into(),
+                digest: *blake3::hash(implementation.as_bytes()).as_bytes(),
+            },
+            schema: json!({"oneOf":[
+                {"type":"object","required":["stage","input"],"properties":{
+                    "stage":{"const":"ready"},"input":input_schema()
+                },"additionalProperties":false},
+                {"type":"object","required":["stage","operation_id","terminal"],"properties":{
+                    "stage":{"const":"waiting"},"operation_id":{"type":"string"},
+                    "terminal":{"type":"boolean"}
+                },"additionalProperties":false},
+                {"type":"object","required":["stage"],"properties":{
+                    "stage":{"enum":["idle","closed"]}
+                },"additionalProperties":false}
+            ]}),
+        }
+    }
+
+    /// Registers a session without a model provider or a separate executor.
+    pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, ()>> {
+        TaskDefinition::resumable(self.clone(), input_schema(), json!({"type":"null"}))
+    }
+}
+
+impl Default for CommandSessionMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResumableMachine for CommandSessionMachine {
+    fn identity(&self) -> &MachineIdentity {
+        &self.identity
+    }
+
+    fn state_schema(&self) -> &Value {
+        &self.schema
+    }
+
+    fn initialize(&self, input: &Value) -> Result<Value> {
+        let input: Input = decode(input)?;
+        input.command.validate(&mut None)?;
+        encode(State::Ready { input })
+    }
+
+    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        let mut commands = Vec::new();
+        let state = match decode(state)? {
+            State::Ready { input: command } if input.is_null() => dispatch(command, &mut commands)?,
+            State::Idle if input.is_null() => State::Idle,
+            State::Idle => dispatch(decode(input)?, &mut commands)?,
+            State::Waiting {
+                operation_id,
+                terminal,
+            } => {
+                require_result(input, operation_id)?;
+                if terminal { State::Closed } else { State::Idle }
+            }
+            State::Ready { .. } => {
+                return Err(invalid("session must start before receiving input"));
+            }
+            State::Closed => return Err(invalid("session is closed")),
+        };
+        let status = if matches!(state, State::Closed) {
+            MachineStatus::Completed { value: Value::Null }
+        } else {
+            MachineStatus::Suspended
+        };
+        Ok(MachineTransition {
+            state: encode(state)?,
+            commands,
+            status,
+        })
+    }
+}
+
+fn dispatch(input: Input, commands: &mut Vec<WorkflowCommand>) -> Result<State> {
+    input.command.validate(&mut None)?;
+    let state = State::Waiting {
+        operation_id: input.command.operation_id,
+        terminal: input.terminal,
+    };
+    commands.push(input.command);
+    Ok(state)
+}
+
+fn require_result(input: &Value, operation_id: OperationId) -> Result<()> {
+    let envelope = input
+        .as_object()
+        .filter(|value| value.len() == 1)
+        .ok_or_else(|| invalid("session requires one command result"))?;
+    let results = envelope
+        .get("commands")
+        .and_then(Value::as_array)
+        .filter(|values| values.len() == 1)
+        .ok_or_else(|| invalid("session requires one command result"))?;
+    let result = results[0]
+        .as_object()
+        .filter(|value| value.len() == 2)
+        .ok_or_else(|| invalid("session command result is malformed"))?;
+    let id: OperationId = decode(
+        result
+            .get("operation_id")
+            .ok_or_else(|| invalid("session result identity is missing"))?,
+    )?;
+    if id != operation_id || !result.contains_key("value") {
+        return Err(invalid("session result differs from the pending command"));
+    }
+    Ok(())
+}
+
+fn input_schema() -> Value {
+    json!({"type":"object","required":["command","terminal"],"properties":{
+        "command":{"type":"object","required":["operation_id","kind","payload"],"properties":{
+            "operation_id":{"type":"string"},"kind":{"type":"string"},"payload":{"type":"object"}
+        },"additionalProperties":false},"terminal":{"type":"boolean"}
+    },"additionalProperties":false})
+}
+
+fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T> {
+    T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
+}
+
+fn encode(state: State) -> Result<Value> {
+    serde_json::to_value(state).map_err(|error| Error::Invalid(error.to_string()))
+}
+
+fn invalid(message: &str) -> Error {
+    Error::Invalid(message.into())
+}

@@ -17,6 +17,12 @@ mod follow_model;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "external_hooks/properties.rs"]
 mod properties;
+#[path = "external_hooks/session.rs"]
+#[cfg(not(target_arch = "wasm32"))]
+mod session;
+#[path = "external_hooks/session_runtime.rs"]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod session_runtime;
 #[path = "external_hooks/volume.rs"]
 mod volume;
 

@@ -2,8 +2,11 @@
 //! Native hooks normalize into the same bounded request files as actor clients.
 
 use acyclic_harness::{
-    external_executor::{ExternalHost, ExternalRequest, HookBinding, hook_answer, request},
+    external_executor::{
+        CommandSessionMachine, ExternalHost, ExternalRequest, HookBinding, hook_answer, request,
+    },
     task_volume::{Component, FileKey, FileValue, TaskFile},
+    workflow::ResumableMachine,
 };
 use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
@@ -34,6 +37,22 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let task = Component::new("task")?;
+    if let Ok((state, input)) =
+        serde_json::from_slice::<(serde_json::Value, serde_json::Value)>(input)
+    {
+        let machine = CommandSessionMachine::new();
+        if let Ok(initial) = machine.initialize(&input) {
+            let emitted = machine.transition(&initial, &serde_json::Value::Null)?;
+            assert_eq!(emitted.commands.len(), 1);
+        }
+        if let Ok(next) = machine.transition(&state, &input) {
+            assert!(next.commands.len() <= 1);
+            assert_eq!(machine.transition(&state, &input)?, next);
+            let bytes = serde_json::to_vec(&next.state)?;
+            let decoded: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(decoded, next.state);
+        }
+    }
     for host in [
         ExternalHost::Codex,
         ExternalHost::ClaudeCode,

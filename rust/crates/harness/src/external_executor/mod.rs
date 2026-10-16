@@ -10,6 +10,7 @@ mod manifest;
 mod native;
 mod normalize;
 mod request;
+mod session;
 mod volume;
 
 pub use answer::hook_answer;
@@ -21,3 +22,4 @@ pub use manifest::{claude_hooks, claude_manifest};
 pub use native::{HookBinding, run_hook};
 pub use normalize::request;
 pub use request::{ExternalAction, ExternalRequest};
+pub use session::CommandSessionMachine;
