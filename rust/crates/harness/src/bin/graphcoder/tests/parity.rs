@@ -11,6 +11,12 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
     for row in rows {
         let name = row["row"].as_str().unwrap();
         let mut input = PromptInput::new(Editor::new(row["text"].as_str().unwrap()));
+        if let Some(files) = row["files"].as_object() {
+            for (path, text) in files {
+                input.completion.set_file(path, Some(text.as_str().unwrap().as_bytes())).unwrap();
+            }
+        }
+        input.refresh_completions();
         let mut effects = Vec::new();
         for (index, event) in row["events"].as_array().unwrap().iter().enumerate() {
             let now = event["at"].as_u64().unwrap_or((index as u64 + 1) * 1000);
@@ -42,6 +48,8 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
                     "Backspace" => KeyCode::Backspace,
                     "Delete" => KeyCode::Delete,
                     "Tab" => KeyCode::Tab,
+                    "Up" => KeyCode::Up,
+                    "Down" => KeyCode::Down,
                     character => KeyCode::Char(character.chars().next().unwrap()),
                 };
                 let mut modifiers = KeyModifiers::NONE;
@@ -84,6 +92,9 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
             row["expected"].as_str().unwrap(),
             "{name}"
         );
+        if let Some(active) = row["completion"].as_bool() {
+            assert_eq!(input.completion.active(&input.editor), active, "{name}");
+        }
         assert_eq!(
             effects.len(),
             row["effects"].as_u64().unwrap_or(0) as usize,

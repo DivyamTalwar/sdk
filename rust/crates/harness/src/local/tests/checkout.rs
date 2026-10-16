@@ -547,11 +547,9 @@ async fn bash_output_is_live_before_exit_and_replays_without_relaunch() -> Resul
         Err(Error::NotFound("live bash output".into()))
     };
     let commands = harness.commands()?;
+    let checked = super::checked_commands::Checked(&commands);
     let (advanced, acknowledged) = tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        tokio::join!(
-            harness.advance(task, &super::checked_commands::Checked(&commands)),
-            acknowledge
-        )
+        tokio::join!(harness.advance(task, &checked), acknowledge)
     })
     .await
     .map_err(super::super::storage)?;

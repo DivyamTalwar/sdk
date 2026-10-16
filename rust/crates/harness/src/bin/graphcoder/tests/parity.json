@@ -286,5 +286,40 @@
     "events": [{"key":"Enter"},{"text":"two"}],
     "expected": "one\ntwo",
     "visible": ["one","two"]
+  },
+  {
+    "row": "Slash completion popup shows alias and tool suffix",
+    "text": "/ru",
+    "files": {"commands/tools.json":"[{\"name\":\"shell\",\"aliases\":[\"run\"],\"description\":\"Run a command\",\"tool\":true}]"},
+    "events": [], "completion": true,
+    "expected": "/ru", "visible": ["Completions","/run [tool]","Run a command"]
+  },
+  {
+    "row": "Enter accepts command completion without submitting",
+    "text": "/ru",
+    "files": {"commands/tools.json":"[{\"name\":\"shell\",\"aliases\":[\"run\"],\"tool\":true}]"},
+    "events": [{"key":"Enter"}], "completion": false,
+    "expected": "/run ", "visible": ["/run"]
+  },
+  {
+    "row": "File mention completion preserves at sign and uses fuzzy matching",
+    "text": "@sct",
+    "files": {"workspace/source_code_test.rs":""},
+    "events": [{"key":"Tab"}], "completion": false,
+    "expected": "@source_code_test.rs ", "visible": ["@source_code_test.rs"]
+  },
+  {
+    "row": "File completion does not activate inside email addresses",
+    "text": "person@example",
+    "files": {"workspace/example.rs":""},
+    "events": [], "completion": false,
+    "expected": "person@example", "visible": ["person@example"]
+  },
+  {
+    "row": "Custom prompt command completion",
+    "text": "/review",
+    "files": {"commands/review/code.md":"Review the changes"},
+    "events": [{"key":"Tab"}], "completion": false,
+    "expected": "/review:code ", "visible": ["/review:code"]
   }
 ]
