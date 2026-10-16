@@ -27,8 +27,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "task scope lacks model:generate",
             ));
         }
-        let scope = RuntimeScope::new(admission.grants, admission.limits)?
-            .with_run_limits(admission.run_limits, quota.work())?;
+        #[cfg(feature = "filesystem")]
+        let created = if admission.resource_proofs.is_empty() {
+            None
+        } else {
+            let (scope, retained) = self.authenticated_scope(&admission, quota.work()).await?;
+            quota.adopt(retained)?;
+            Some(scope)
+        };
+        #[cfg(not(feature = "filesystem"))]
+        let created: Option<RuntimeScope> = None;
+        let scope = match created {
+            Some(scope) => scope,
+            None => RuntimeScope::new(admission.grants, admission.limits)?
+                .with_run_limits(admission.run_limits, quota.work())?,
+        };
         self.validate_parent_scope(admission.parent, &scope, quota.work())
             .await?;
         let mut coordinator = self.coordinator.lock().await;
