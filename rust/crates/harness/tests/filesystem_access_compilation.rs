@@ -124,6 +124,7 @@ proptest! {
         prop_assert!(stages <= 2);
         prop_assert!(measured.bytes_max <= reserved as u64, "{} live bytes exceed {} reserved for {}", measured.bytes_max, reserved, pattern);
         if let Some(Ok(trie)) = compiled {
+            prop_assert_eq!(trie.logical_owned_bytes(), measured.bytes_current as u64);
             for path in ["", "a/b", "secrets/key", "Σ/b", "a/x/y/b"] {
                 prop_assert_eq!(trie.decide(Action::Read, path, 10),
                     decide(&policy, &caller, Action::Read, Resource { path, ..resource }, context, &capability));

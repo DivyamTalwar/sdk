@@ -226,6 +226,23 @@ impl Alphabet {
 }
 
 impl PathTrie {
+    /// Heap bytes retained by the compiled view, excluding its inline header.
+    #[must_use]
+    pub fn logical_owned_bytes(&self) -> u64 {
+        (self.alphabet.pages.capacity() * size_of::<[u16; 256]>()
+            + size_of::<[u16; 4352]>()
+            + self.states.capacity() * size_of::<State>()
+            + self
+                .states
+                .iter()
+                .map(|state| state.transitions.capacity() * size_of::<usize>())
+                .sum::<usize>()
+            + self.rules.capacity() * size_of::<String>()
+            + self.rules.iter().map(String::capacity).sum::<usize>()
+            + self.volume.capacity()
+            + self.subject.1.capacity()) as u64
+    }
+
     /// Authoritative name semantics pinned by this view.
     #[must_use]
     pub const fn config(&self) -> crate::VolumeConfig {

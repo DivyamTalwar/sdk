@@ -33,14 +33,22 @@ mod verification;
 pub use verification::check_access_record;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    pub(in crate::filesystem) async fn require_file_read_access(
+    pub(in crate::filesystem) async fn read_file_with_access(
         &self,
         verifier: &AuthorityVerifier,
         scope: &Scope,
         reference: &FileRef,
+        maximum_bytes: u64,
         inherited_reference: bool,
         io: &PreparationIo,
-    ) -> Result<()> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        reference.validate(&mut Some(&mut io.history_io()))?;
+        if reference.volume().provider() != &self.provider
+            || maximum_bytes == 0
+            || reference.descriptor().byte_length() > maximum_bytes
+        {
+            return Err(io.invalid("content provider or size limit mismatch"));
+        }
         verifier.verify(scope, &mut Some(&mut io.history_io()))?;
         let label = crate::core::filesystem_scope_label(scope, &mut Some(&mut io.history_io()))?;
         // A legacy grant is authority for this exact request only. A structured
@@ -187,7 +195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(error) = admission_error {
             return Err(error);
         }
-        let compiled = (
+        let mut compiled = (
             compiled.map_err(|_| {
                 stock_boundary(
                     Some(io),
@@ -197,6 +205,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })?,
             holds,
         );
+        let mut retained = compiled.0.logical_owned_bytes();
+        for hold in compiled.1.iter_mut().flatten() {
+            let bytes = retained.min(hold.bytes());
+            hold.substitute(bytes)?;
+            retained -= bytes;
+        }
+        if retained != 0 {
+            return Err(io.invalid("compiled access storage exceeds admission"));
+        }
         let allowed = compiled
             .0
             .decide(Action::Read, reference.path(), context.now)
@@ -205,16 +222,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(volume);
         drop(principal);
         drop(policy);
+        drop(capability);
         drop(bytes);
-        drop(workspace_ref);
-        if allowed {
-            Ok(())
-        } else {
-            Err(stock_boundary(
+        drop(head);
+        if !allowed {
+            return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "filesystem access decision denied read",
-            ))
+            ));
         }
+        let pinned = io.sdk(
+            workspace
+                .generation(
+                    GenerationId::new(Digest::from_bytes(generation)),
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )?;
+        fork_preparer_io::retain(&pinned, Some(io)).await?;
+        let path = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+        })?;
+        let path_hold = io.guard_owned(path.capacity() as u64)?;
+        let path = (path, path_hold);
+        let bytes = read_generation(&pinned, &path.0, maximum_bytes, Some(io)).await?;
+        reference
+            .descriptor()
+            .verify(&bytes, &mut Some(&mut io.history_io()))?;
+        Ok(bytes)
     }
 }

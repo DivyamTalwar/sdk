@@ -28,6 +28,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_policy(true).await
+    }
+
+    async fn with_policy(initialize: bool) -> Result<Self, Box<dyn Error>> {
         let fs = Fs::memory();
         let provider = ProviderRef::new(
             "access-test".into(),
@@ -43,7 +47,16 @@ impl Fixture {
             VolumeOwner::Project("owner".into()),
             &mut None,
         )?;
-        host.create_volume(&volume).await?;
+        if initialize {
+            host.create_volume(&volume).await?;
+        } else {
+            fs.create_workspace(
+                volume.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        }
         let issuer = AuthorityIssuer::new(
             "owner",
             [19; 32],
@@ -242,6 +255,74 @@ async fn legacy_label_cannot_bypass_capability_path_or_expiry() -> Result<(), Bo
             allowed
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn content_reads_fail_closed_without_a_persisted_policy() -> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::with_policy(false).await?;
+    assert!(matches!(
+        fixture
+            .reader(&fixture.scope)?
+            .read(&fixture.file, 4096, None)?
+            .await,
+        Err(acyclic_harness::Error::Unauthorized(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let allow = Capability {
+        layers: vec![vec![Grant {
+            actions: [Action::Read, Action::ReadHistory].into_iter().collect(),
+            resource: ResourcePattern {
+                lineage_root: None,
+                volume: None,
+                generations: Generations::All,
+                path: "**".into(),
+            },
+        }]],
+        expires_at: None,
+    };
+    let only = fixture.issuer.issue(
+        "structured",
+        &Capabilities::new([allow.to_scope_label()?]),
+        fixture.scope.agent(),
+        None,
+        &mut None,
+    )?;
+    assert_eq!(
+        fixture
+            .reader(&only)?
+            .read(&fixture.file, 4096, None)?
+            .await?
+            .as_ref(),
+        b"private"
+    );
+    let narrower = allow.clone().attenuate(vec![], None);
+    let ambiguous = fixture.issuer.issue(
+        "ambiguous",
+        &Capabilities::new([
+            fixture
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+            allow.to_scope_label()?,
+            narrower.to_scope_label()?,
+        ]),
+        fixture.scope.agent(),
+        None,
+        &mut None,
+    )?;
+    assert!(matches!(
+        fixture
+            .reader(&ambiguous)?
+            .read(&fixture.file, 4096, None)?
+            .await,
+        Err(acyclic_harness::Error::Unauthorized(_))
+    ));
     Ok(())
 }
 
