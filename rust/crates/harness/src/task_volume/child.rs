@@ -2,6 +2,95 @@
 use super::{Component, Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// Spawn request read from `agents/<ref>/request.md`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildRequest {
+    /// Markdown prompt, excluding the optional frontmatter.
+    pub prompt: String,
+    /// Model name within the parent's configured provider.
+    pub model: Option<String>,
+    /// Requested subset of the parent's tool grants.
+    pub tools: Option<Vec<String>>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestMetadata {
+    model: Option<String>,
+    tools: Option<Vec<String>>,
+}
+
+impl ChildRequest {
+    /// Parses a bounded Markdown request with flat YAML metadata. Aliases,
+    /// duplicate keys, tags and recursive metadata cannot grant authority.
+    pub fn parse(bytes: &[u8], maximum_bytes: u64) -> crate::Result<Self> {
+        let invalid = || crate::Error::Invalid("invalid child request".into());
+        if bytes.is_empty() || bytes.len() as u64 > maximum_bytes {
+            return Err(invalid());
+        }
+        let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+        let (metadata, prompt) = if text.starts_with("---\n") || text.starts_with("---\r\n") {
+            let (start, end, body) = crate::context::frontmatter_end(bytes)?;
+            let header = text.get(start..end).ok_or_else(invalid)?;
+            let options = serde_saphyr::options! {
+                budget: serde_saphyr::budget! {
+                    max_events: header.len().saturating_add(1),
+                    max_nodes: header.len().saturating_add(1), max_depth: 3,
+                    flow_nesting_limit: 3, max_documents: 1,
+                    max_aliases: 0, max_anchors: 0, max_merge_keys: 0,
+                    max_total_scalar_bytes: header.len(),
+                },
+                duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+                merge_keys: serde_saphyr::MergeKeyPolicy::Error,
+                reject_unsupported_tags: true, emit_comments: false, with_snippet: false,
+            };
+            let metadata = if header.trim().is_empty() {
+                RequestMetadata::default()
+            } else {
+                serde_saphyr::from_str_with_options(header, options).map_err(|_| invalid())?
+            };
+            (metadata, text.get(body..).ok_or_else(invalid)?)
+        } else {
+            (RequestMetadata::default(), text)
+        };
+        if prompt.is_empty()
+            || metadata.model.as_ref().is_some_and(String::is_empty)
+            || metadata
+                .tools
+                .as_ref()
+                .is_some_and(|tools| tools.iter().any(String::is_empty))
+        {
+            return Err(invalid());
+        }
+        Ok(Self {
+            prompt: prompt.into(),
+            model: metadata.model,
+            tools: metadata.tools,
+        })
+    }
+
+    /// Renders metadata as JSON within YAML frontmatter, preserving the literal
+    /// prompt even when that prompt itself begins with a frontmatter delimiter.
+    pub fn encode(&self) -> Vec<u8> {
+        if self.model.is_some()
+            || self.tools.is_some()
+            || self.prompt.starts_with("---\n")
+            || self.prompt.starts_with("---\r\n")
+        {
+            format!(
+                "---\n{}\n---\n{}",
+                serde_json::json!({
+                    "model":self.model,"tools":self.tools,
+                }),
+                self.prompt
+            )
+            .into_bytes()
+        } else {
+            self.prompt.as_bytes().to_vec()
+        }
+    }
+}
+
 /// Files owned by a parent below `agents/<ref>/`.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ChildFile {
@@ -146,7 +235,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn request_metadata_rejects_aliases_duplicates_and_recursive_shapes() {
+        for header in [
+            "model: first\nmodel: second",
+            "tools: &tools [read]\nmodel: *tools",
+            "tools: [[read]]",
+            "tools: [read]\ncapabilities: [admin]",
+            "model: ''",
+            "tools: ['']",
+        ] {
+            let request = format!("---\n{header}\n---\nwork");
+            assert!(
+                ChildRequest::parse(request.as_bytes(), 4096).is_err(),
+                "{header}"
+            );
+        }
+        for prompt in ["---\nliteral prompt", "---\r\nliteral prompt"] {
+            let request = ChildRequest {
+                prompt: prompt.into(),
+                model: None,
+                tools: None,
+            };
+            assert_eq!(
+                ChildRequest::parse(&request.encode(), 4096).unwrap(),
+                request
+            );
+        }
+    }
+
     proptest! {
+        #[test]
+        fn request_metadata_round_trips_without_changing_the_literal_prompt(
+            prompt in ".{1,100}", model in prop::option::of("[a-z]{1,10}"),
+            tools in prop::option::of(prop::collection::vec("[a-z]{1,10}", 0..8)),
+        ) {
+            let request = ChildRequest { prompt, model, tools };
+            let encoded = request.encode();
+            prop_assert_eq!(ChildRequest::parse(&encoded, encoded.len() as u64).unwrap(), request);
+            prop_assert!(ChildRequest::parse(&encoded, encoded.len() as u64 - 1).is_err());
+        }
+
         #[test]
         fn terminal_state_survives_every_suffix(commands in prop::collection::vec(0usize..5, 0..100)) {
             for terminal in [ChildState::Archived, ChildState::Cancelled] {

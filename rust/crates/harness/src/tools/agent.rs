@@ -3,7 +3,8 @@ use crate::{
     Error, Result,
     runtime::{RuntimeScope, ToolContext},
     task_volume::{
-        ChildFile, ChildState, Component, Control, FileKey, FileValue, Query, TaskFiles,
+        ChildFile, ChildRequest, ChildState, Component, Control, FileKey, FileValue, Query,
+        TaskFiles,
     },
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -223,20 +224,16 @@ async fn access<P: StreamProvider + ?Sized>(
             if prompt.is_empty() {
                 return Err(invalid("child prompt is empty"));
             }
-            let prompt = if model.is_some() || tools.is_some() {
-                format!(
-                    "---\n{}\n---\n{prompt}",
-                    json!({"model":model,"tools":tools})
-                )
-            } else {
-                prompt
+            let request = ChildRequest {
+                prompt,
+                model,
+                tools,
             };
-            (
-                reference,
-                Some((ChildFile::Request, prompt.into_bytes())),
-                false,
-            )
+            let bytes = request.encode();
+            ChildRequest::parse(&bytes, bytes.len() as u64)?;
+            (reference, Some((ChildFile::Request, bytes)), false)
         }
+
         AgentCommand::Send { reference, message } => {
             if message.is_empty() {
                 return Err(invalid("child message is empty"));

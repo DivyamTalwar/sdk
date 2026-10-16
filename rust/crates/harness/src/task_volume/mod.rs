@@ -2,7 +2,7 @@
 
 mod child;
 mod query;
-pub use child::{ChildFile, ChildState, Control};
+pub use child::{ChildFile, ChildRequest, ChildState, Control};
 pub use query::Query;
 mod files;
 mod follow;
