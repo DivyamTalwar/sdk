@@ -93,7 +93,7 @@ impl LocalHarness {
             };
             let publisher = FilesystemContentPublisher::new(
                 self.files.clone(),
-                &self.journal,
+                &self.scratch,
                 &self.verifier,
                 &self.signed,
                 self.limits.file_bytes,
