@@ -26,9 +26,10 @@ pub(super) struct CheckoutTools {
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     mounts: crate::workspace::MountTable<()>,
     task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
-    // Lock order: checkout state is outermost; command-local git merge cache
-    // and switched-view locks are innermost and never held together. Native
-    // completion locks are also inner; neither callback reacquires state.
+    // Lock order: checkout state -> coordinator, released before task-file
+    // index -> provider visibility -> provider state. Command-local git cache
+    // and switched-view locks are innermost and never held together. Worker
+    // callbacks never reacquire checkout state; the Loom model checks custody.
     state: StateArc<AsyncMutex<State>>,
 }
 
@@ -53,6 +54,16 @@ impl CheckoutTools {
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     ) -> Result<Self> {
+        if workspace
+            .filesystem
+            .workspace_id(&project.storage_name(&mut None)?)
+            .map_err(Error::from)?
+            != workspace.view().workspace().id()
+        {
+            return Err(Error::Unauthorized(
+                "workspace differs from the bound project volume".into(),
+            ));
+        }
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
@@ -115,12 +126,11 @@ impl ToolExecutor for CheckoutTools {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             let request = serde_json::to_vec(&invocation).map_err(storage)?;
             let bash = if invocation.name == "bash" {
-                Some(
-                    serde_json::from_value::<crate::tools::BashInput>(std::mem::take(
-                        &mut invocation.arguments,
-                    ))
-                    .map_err(|cause| Error::Invalid(cause.to_string()))?,
-                )
+                let input: crate::tools::BashInput =
+                    serde_json::from_value(std::mem::take(&mut invocation.arguments))
+                        .map_err(|cause| Error::Invalid(cause.to_string()))?;
+                input.validate()?;
+                Some(input)
             } else {
                 None
             };

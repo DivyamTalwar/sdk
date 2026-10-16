@@ -113,6 +113,27 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
         b"final"
     );
+    let output_files = harness
+        .task_files()
+        .snapshot(&crate::task_volume::Query::Tasks, 32)
+        .await?;
+    let steps: std::collections::BTreeSet<_> = output_files
+        .files
+        .iter()
+        .filter_map(|file| match &file.key {
+            crate::task_volume::FileKey::Task {
+                file:
+                    crate::task_volume::TaskFile::Tool {
+                        turn,
+                        file: crate::task_volume::ToolFile::Request,
+                        ..
+                    },
+                ..
+            } => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(steps, [0, 3, 6].into_iter().collect());
     let view = harness
         .workspace()
         .ok_or_else(|| Error::NotFound("checkout view".into()))?
@@ -143,6 +164,8 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
 async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
+    std::fs::write(directory.path().join("unopened"), b"uncaptured")
+        .map_err(super::super::storage)?;
     let provider = text();
     let harness = LocalHarness::open(LocalHarnessConfig::new(
         directory.path(),
@@ -178,6 +201,67 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .runtime
             .task_context(task, crate::scheduler::LeaseFence::from(&lease.reservation))
             .await?,
+    );
+    let workspace = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("workspace".into()))?;
+    assert!(matches!(
+        workspace.executor(
+            harness.scratch(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::clone(harness.task_files())
+        ),
+        Err(Error::Unauthorized(_))
+    ));
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let head = workspace
+        .view()
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .id();
+    let bash = harness
+        .tools()
+        .get("bash", None, None)?
+        .ok_or_else(|| Error::NotFound("bash".into()))?;
+    for cwd in ["..", "src/../outside", "/absolute"] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "invalid-cwd".into(),
+            name: "bash".into(),
+            arguments: json!({"command":"printf unwanted > result", "cwd":cwd}),
+        };
+        let context = ToolContext::new(
+            Arc::clone(&task_context),
+            invocation.operation_id,
+            &invocation.call_id,
+            None,
+        )?;
+        assert!(matches!(
+            bash.executor.execute(invocation, Some(context)).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert_eq!(
+        workspace
+            .view()
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .id(),
+        head
+    );
+    assert!(
+        harness
+            .task_files()
+            .snapshot(&crate::task_volume::Query::Tasks, 0)
+            .await?
+            .files
+            .is_empty()
     );
     // Property: arbitrary call identities are authorized exactly when both
     // identities and every required grant survive scope attenuation.

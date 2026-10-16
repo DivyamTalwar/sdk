@@ -238,6 +238,7 @@ pub struct ToolContext {
     pub(super) task: Arc<TaskContext>,
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
+    pub(crate) model_step: u32,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_interactions: Option<Arc<dyn InteractionRouter>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -252,6 +253,7 @@ impl Clone for ToolContext {
             task: self.task.clone(),
             operation_id: self.operation_id,
             call_id: self.call_id.clone(),
+            model_step: self.model_step,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -328,6 +330,7 @@ impl ToolContext {
             task,
             operation_id,
             call_id,
+            model_step: 0,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

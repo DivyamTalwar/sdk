@@ -42,9 +42,15 @@ impl CheckoutTools {
                         "checkout root was replaced",
                     ));
                 }
-                runtime
-                    .block_on(check_owner.verify(false, &mut None))
+                runtime.block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        check_owner.verify(false, &mut None),
+                    )
+                    .await
+                    .map_err(std::io::Error::other)?
                     .map_err(std::io::Error::other)
+                })
             },
             (state, files),
         )
