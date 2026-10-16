@@ -88,5 +88,21 @@
     "width": 12,
     "expected": ["Private reas", "oning", "Visible answ", "er"],
     "absent": ["Private reasoning", "Visible answer"]
+  },
+  {
+    "row": "Followed goal and plans Markdown wrap inside their bordered panels",
+    "reasoning": false,
+    "width": 100,
+    "goal": "**aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaBBBB**",
+    "plan": "**ppppppppppppppppppppppppppppppZZZZ**",
+    "expected": ["GOAL.md", "plans/", "BBB", "ZZZ"],
+    "absent": ["**"]
+  },
+  {
+    "row": "Removed documents release the side panel after reflow",
+    "reasoning": false,
+    "width": 100,
+    "expected": ["Visible answer"],
+    "absent": ["GOAL.md", "plans/", "BBB", "ZZZ"]
   }
 ]

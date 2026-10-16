@@ -63,6 +63,30 @@ async fn followed_presentation_rows_are_declarative_and_live() {
     renderer.update(&views, &owner);
     for row in rows {
         views.tasks.clear();
+        views.documents.clear();
+        let mut documents = acyclic_harness::client::DocumentViews::default();
+        for (field, key) in [
+            ("goal", acyclic_harness::task_volume::FileKey::Goal),
+            (
+                "plan",
+                acyclic_harness::task_volume::FileKey::Plan(
+                    acyclic_harness::task_volume::Component::new("layout").unwrap(),
+                ),
+            ),
+        ] {
+            if let Some(text) = row[field].as_str() {
+                documents
+                    .apply(&acyclic_harness::task_volume::Write::new(
+                        key,
+                        text.as_bytes().to_vec(),
+                    ))
+                    .unwrap();
+            }
+        }
+        views.documents.insert(
+            format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id),
+            documents,
+        );
         if let Some(status) = row.get("status") {
             views.tasks.insert(
                 format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id),

@@ -48,6 +48,11 @@ pub struct ClientRenderer {
     reasoning_changed: usize,
     wrapped_transcript: super::WrappedLines,
     wrapped_reasoning: super::WrappedLines,
+    wrapped_goal: super::WrappedLines,
+    wrapped_plans: super::WrappedLines,
+    side_wrapped: bool,
+    goal_changed: usize,
+    plans_changed: usize,
     goal_source: String,
     goal: Vec<Line<'static>>,
     plan_source: String,
@@ -148,6 +153,7 @@ impl ClientRenderer {
             let goal = documents.goal.as_deref().unwrap_or_default();
             if self.goal_source != goal {
                 self.goal = markdown(goal);
+                self.goal_changed = 0;
                 self.goal_source = goal.into();
             }
             let plans = documents
@@ -158,13 +164,16 @@ impl ClientRenderer {
                 .join("\n\n");
             if self.plan_source != plans {
                 self.plans = markdown(&plans);
+                self.plans_changed = 0;
                 self.plan_source = plans;
             }
         } else {
             self.goal_source.clear();
             self.goal.clear();
+            self.goal_changed = 0;
             self.plan_source.clear();
             self.plans.clear();
+            self.plans_changed = 0;
         }
         let diff = views.diffs.get(&key);
         let cut = diff.map(|view| (view.volume(), view.base(), view.generation()));
@@ -215,13 +224,25 @@ impl ClientRenderer {
         height: u16,
     ) -> crate::Result<()> {
         let area = super::ratatui::layout::Rect::new(0, 0, width, height);
-        let width = self.screen_for(files)?.areas(area, input).transcript.width;
+        self.wrapped = false;
+        let areas = self.screen_for(files)?.areas(area, input);
+        let width = areas.transcript.width;
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
         self.wrapped_reasoning
             .update(&self.reasoning_rows, self.reasoning_changed, width);
         self.transcript_changed = self.transcript.len();
         self.reasoning_changed = self.reasoning_rows.len();
+        let side_width = areas.side.width.saturating_sub(2);
+        self.side_wrapped = side_width > 0;
+        if self.side_wrapped {
+            self.wrapped_goal
+                .update(&self.goal, self.goal_changed, side_width);
+            self.wrapped_plans
+                .update(&self.plans, self.plans_changed, side_width);
+            self.goal_changed = self.goal.len();
+            self.plans_changed = self.plans.len();
+        }
         self.wrapped = true;
         Ok(())
     }
@@ -314,8 +335,16 @@ impl ClientRenderer {
                 &self.transcript
             },
             diff: &self.diff,
-            goal: &self.goal,
-            plans: &self.plans,
+            goal: if self.wrapped && self.side_wrapped {
+                self.wrapped_goal.rows()
+            } else {
+                &self.goal
+            },
+            plans: if self.wrapped && self.side_wrapped {
+                self.wrapped_plans.rows()
+            } else {
+                &self.plans
+            },
             notifications: &self.composed_notices,
             status: self.status.clone(),
             ..Screen::default()
