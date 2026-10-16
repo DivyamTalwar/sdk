@@ -1,18 +1,23 @@
 use super::sync::{Arc, AtomicU64, Mutex, Ordering};
 use super::*;
-use crate::{RecordStream, grpc};
-use futures::{future::BoxFuture, stream::FuturesUnordered};
+use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
+use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-use tonic::{
-    Request,
-    metadata::{Ascii, MetadataValue},
-    transport::Channel as TransportChannel,
-};
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native::Connect;
+#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+use tonic::transport::Channel as TransportChannel;
+pub mod transport;
+use transport::Endpoint;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod cache;
 mod credit;
 mod deadline;
 mod observation;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::Cache;
 use observation::Observation;
 mod outbound;
@@ -30,23 +35,18 @@ pub use pool::model::{
 };
 mod progress;
 use progress::Progress;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
-type Connect = std::sync::Arc<
-    dyn Fn(wire::SessionNode) -> BoxFuture<'static, Result<TransportChannel, StreamError>>
-        + Send
-        + Sync,
->;
 type Ready = (String, Link, Response);
-type Dial = BoxFuture<'static, (String, u64, Result<Ready, StreamError>)>;
-type Response = tonic::Streaming<wire::SessionFrame>;
-type Read = BoxFuture<
+type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
+type Response = transport::Responses;
+type Read = BoxProviderFuture<
     'static,
     (
         String,
         u64,
         Response,
-        Option<Result<wire::SessionFrame, tonic::Status>>,
+        Option<Result<wire::SessionFrame, StreamError>>,
     ),
 >;
 const QUEUE: usize = 2;
@@ -55,6 +55,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 /// Shared pool owning one bidirectional Streams session per authenticated node.
 #[derive(Clone)]
 pub struct Client {
+    executor: std::sync::Arc<dyn super::runtime::Executor>,
     commands: mpsc::Sender<Command>,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
@@ -82,7 +83,7 @@ enum Command {
         progress: Arc<Progress>,
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
-        observation: crate::obs::OperationSpan,
+        observation: super::runtime::OperationSpan,
     },
 }
 struct Route {
@@ -100,23 +101,22 @@ struct Route {
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
     ready: Option<oneshot::Sender<Result<u64, StreamError>>>,
-    observation: crate::obs::OperationSpan,
+    observation: super::runtime::OperationSpan,
 }
 struct Link {
     observation: Option<Observation>,
     epoch: u64,
     credit: wire::SessionWindow,
-    channel: TransportChannel,
+    channel: Endpoint,
     sender: Arc<Outbound<wire::SessionFrame>>,
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
 }
 struct Pool {
+    executor: std::sync::Arc<dyn super::runtime::Executor>,
     identity: Bytes,
-    authorization: Option<MetadataValue<Ascii>>,
-    credential: Option<grpc::CredentialProvider>,
-    connect: Connect,
+    connect: std::sync::Arc<transport::Connect>,
     home: String,
     routes: BTreeMap<u64, Route>,
     links: BTreeMap<String, Link>,
@@ -124,7 +124,7 @@ struct Pool {
     dials: FuturesUnordered<Dial>,
     connecting: BTreeSet<String>,
     pending: VecDeque<(u64, u64)>,
-    home_channel: TransportChannel,
+    home_channel: Endpoint,
     next_link: u64,
     active: Arc<AtomicU64>,
     attempt_epoch: Arc<AtomicU64>,
@@ -144,31 +144,11 @@ impl Drop for Link {
     }
 }
 impl Client {
-    pub(crate) fn open(
-        channel: TransportChannel,
-        authorization: Option<MetadataValue<Ascii>>,
-        credential: Option<grpc::CredentialProvider>,
-        ca: Option<std::sync::Arc<[u8]>>,
-        verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
-    ) -> Self {
-        let connect: Connect = std::sync::Arc::new(move |node| {
-            let ca = ca.clone();
-            let verifier = verifier.clone();
-            Box::pin(async move {
-                match verifier {
-                    Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
-                    None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,
-                }
-                .map_err(|_| StreamError::Unavailable)
-            })
-        });
-        Self::with_connector(channel, authorization, credential, connect)
-    }
-    fn with_connector(
-        channel: TransportChannel,
-        authorization: Option<MetadataValue<Ascii>>,
-        credential: Option<grpc::CredentialProvider>,
-        connect: Connect,
+    /// Shares one protocol pool across platform endpoints and every logical follow.
+    pub fn with_transport(
+        channel: Endpoint,
+        connect: std::sync::Arc<transport::Connect>,
+        executor: std::sync::Arc<dyn super::runtime::Executor>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         // Drop produces at most one removal per admitted channel; it must never block.
@@ -178,9 +158,8 @@ impl Client {
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
+            executor: executor.clone(),
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
-            authorization,
-            credential,
             connect,
             home: String::new(),
             routes: BTreeMap::new(),
@@ -200,13 +179,14 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        let context = crate::obs::OperationSpan::new(tracing::Span::current());
-        tokio::spawn(context.scope(async move {
+        let context = super::runtime::OperationSpan::new(tracing::Span::current());
+        executor.spawn(Box::pin(context.scope(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
-        }));
+        })));
         Self {
+            executor,
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
@@ -257,14 +237,14 @@ impl Client {
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
         });
-        Ok(self
-            .open_kind(kind, from, acknowledge)
-            .await?
-            .map(|item| match item? {
-                Received::Record(record) => Ok(record),
-                _ => Err(StreamError::Unavailable),
-            })
-            .boxed())
+        Ok(super::runtime::boxed(
+            self.open_kind(kind, from, acknowledge)
+                .await?
+                .map(|item| match item? {
+                    Received::Record(record) => Ok(record),
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
     }
     /// Discovers direct children on the same per-node session as record follows.
     pub async fn children(
@@ -276,21 +256,21 @@ impl Client {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         });
-        Ok(self
-            .open_kind(kind, 0, true)
-            .await?
-            .map(|item| match item? {
-                Received::Child(child) => Ok(child),
-                _ => Err(StreamError::Unavailable),
-            })
-            .boxed())
+        Ok(super::runtime::boxed(
+            self.open_kind(kind, 0, true)
+                .await?
+                .map(|item| match item? {
+                    Received::Child(child) => Ok(child),
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
     }
     async fn open_kind(
         &self,
         kind: Kind,
         from: u64,
         acknowledge: bool,
-    ) -> Result<BoxStream<'static, Result<Received, StreamError>>, StreamError> {
+    ) -> Result<BoxProviderStream<'static, Result<Received, StreamError>>, StreamError> {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
         let preceding = match &kind {
@@ -335,10 +315,7 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(deadline::until(
-                registration,
-                tokio::time::sleep(std::time::Duration::from_secs(10)),
-            ))
+            .scope(deadline::until(registration, self.executor.sleep(10_000)))
             .await
             .unwrap_or(Err(StreamError::DeadlineElapsed));
         if let Err(error) = registered {
@@ -346,8 +323,9 @@ impl Client {
             return Err(error);
         }
         operation.record("registration", "opened");
-        Ok(operation
-            .scope(stream::try_unfold(cursor, |mut cursor| async move {
+        Ok(super::runtime::boxed(operation.scope(stream::try_unfold(
+            cursor,
+            |mut cursor| async move {
                 loop {
                     let delivery = match cursor
                         .receiver
@@ -380,8 +358,8 @@ impl Client {
                         return Ok(Some((delivery.item, cursor)));
                     }
                 }
-            }))
-            .boxed())
+            },
+        ))))
     }
     fn cursor(
         &self,

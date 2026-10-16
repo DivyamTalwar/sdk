@@ -1,7 +1,7 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: Box<dyn StreamProvider>,
+    provider: std::sync::Arc<dyn StreamProvider>,
 }
 
 #[wasm_bindgen]
@@ -10,7 +10,7 @@ impl WasmStream {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            provider: Box::new(MemoryStream::default()),
+            provider: std::sync::Arc::new(MemoryStream::default()),
         }
     }
 
@@ -27,12 +27,18 @@ impl WasmStream {
             ..Default::default()
         };
         Ok(Self {
-            provider: Box::new(
+            provider: std::sync::Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
                     .map_err(js_error)?,
             ),
         })
+    }
+
+    /// Connects canonical platform RPCs and shared push follows. Credentials stay live.
+    #[wasm_bindgen(js_name = connect)]
+    pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
+        Ok(Self { provider: std::sync::Arc::new(remote::Remote::new(endpoint, credential).map_err(js_error)?) })
     }
 
     /// Executes one finite unary operation over canonical protobuf bytes.
@@ -196,4 +202,10 @@ impl WasmStream {
             )),
         })
     }
+}
+
+impl WasmStream {
+    /// Shares the exact provider with higher-level Rust WASM clients.
+    #[must_use]
+    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> { self.provider.clone() }
 }
