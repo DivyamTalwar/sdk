@@ -1,6 +1,6 @@
+use super::task_query_case::TaskQueryCase;
 use super::{TestResult, composer::Composer, execution, notifications::Notifications, scenario};
 use serde_json::Value;
-use super::task_query_case::TaskQueryCase;
 
 trait Driver {
     type Case;

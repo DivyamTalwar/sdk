@@ -36,7 +36,7 @@ pub struct Expectations {
     #[serde(default)]
     pub errors: Vec<Failure>,
     pub order: Option<Vec<String>>,
-    pub heads: BTreeMap<String, String>,
+    pub heads: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

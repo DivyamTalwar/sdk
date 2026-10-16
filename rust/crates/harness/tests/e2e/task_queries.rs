@@ -7,7 +7,12 @@ use std::{collections::BTreeMap, sync::Arc};
 fn files(values: &[FileValue]) -> TestResult<BTreeMap<String, String>> {
     values
         .iter()
-        .map(|file| Ok((file.key.path(), std::str::from_utf8(&file.bytes)?.to_owned())))
+        .map(|file| {
+            Ok((
+                file.key.path(),
+                std::str::from_utf8(&file.bytes)?.to_owned(),
+            ))
+        })
         .collect()
 }
 
@@ -37,7 +42,13 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
     if observation.reset {
         return Err("initial observe unexpectedly reset".into());
     }
-    let initial = observation.snapshot.take().ok_or("missing initial snapshot")?;
+    let initial = observation
+        .snapshot
+        .take()
+        .ok_or("missing initial snapshot")?;
+    if !initial.files.is_empty() {
+        return Err("fresh volume contains query files".into());
+    }
     let mut generation = initial.generation;
     let mut cursor = initial.cursor.clone();
     let mut cuts = vec![initial];
@@ -48,7 +59,11 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
             Ok(write) => match volume.append(generation, &write).await {
                 Ok(next) if next != generation => {
                     generation = next;
-                    let change = observation.changes.next().await.ok_or("live follow ended")??;
+                    let change = observation
+                        .changes
+                        .next()
+                        .await
+                        .ok_or("live follow ended")??;
                     check_cursor(&cursor, &change.cursor)?;
                     cursor = change.cursor.clone();
                     changes.push(change);
@@ -61,8 +76,7 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
         }
     }
     // Observe the actual accepted cut, regardless of the fixture's expected length.
-    if cursor.position != generation.position
-        || observation.changes.next().now_or_never().is_some()
+    if cursor.position != generation.position || observation.changes.next().now_or_never().is_some()
     {
         return Err("live follow did not end at the accepted cut".into());
     }
@@ -72,36 +86,60 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
     let actual = changes
         .iter()
         .map(|change| {
-            change.file.as_ref().map(|file| {
-                Ok(super::task_query_case::File {
-                    path: file.key.path(),
-                    text: std::str::from_utf8(&file.bytes)?.to_owned(),
-                    channel: file.channel,
+            change
+                .file
+                .as_ref()
+                .map(|file| {
+                    Ok(super::task_query_case::File {
+                        path: file.key.path(),
+                        text: std::str::from_utf8(&file.bytes)?.to_owned(),
+                        channel: file.channel,
+                    })
                 })
-            }).transpose()
+                .transpose()
         })
         .collect::<TestResult<Vec<_>>>()?;
     if actual != case.expect.changes {
-        return Err(format!("changes: expected {:?}, got {actual:?}", case.expect.changes).into());
+        return Err(format!(
+            "changes: expected {:?}, got {actual:?}",
+            case.expect.changes
+        )
+        .into());
     }
     let snapshot = volume.snapshot(&query, 100).await?;
     if files(&snapshot.files)? != case.expect.files {
         return Err("final query files differ".into());
     }
     if let Some(order) = case.expect.order {
-        if snapshot.files.iter().map(|file| file.key.path()).collect::<Vec<_>>() != order {
+        if snapshot
+            .files
+            .iter()
+            .map(|file| file.key.path())
+            .collect::<Vec<_>>()
+            != order
+        {
             return Err("query identity order differs".into());
         }
     }
     let heads = volume.heads(&query, None, 100).await?;
-    let actual_heads = heads.files.iter().map(|file| {
-        let bytes: Vec<_> = file.segments.iter().flat_map(|segment| segment.iter().copied()).collect();
-        if bytes.len() as u64 != file.length {
-            return Err("head length differs".into());
-        }
-        Ok((file.key.path(), String::from_utf8(bytes)?))
-    }).collect::<TestResult<BTreeMap<_, _>>>()?;
-    if actual_heads != case.expect.heads || heads.cursor != snapshot.cursor {
+    let actual_heads = heads
+        .files
+        .iter()
+        .map(|file| {
+            let bytes: Vec<_> = file
+                .segments
+                .iter()
+                .flat_map(|segment| segment.iter().copied())
+                .collect();
+            if bytes.len() as u64 != file.length {
+                return Err("head length differs".into());
+            }
+            Ok((file.key.path(), String::from_utf8(bytes)?))
+        })
+        .collect::<TestResult<BTreeMap<_, _>>>()?;
+    if &actual_heads != case.expect.heads.as_ref().unwrap_or(&case.expect.files)
+        || heads.cursor != snapshot.cursor
+    {
         return Err("materialized heads differ".into());
     }
     // Every cut must survive later writes, reopen, and snapshot + follow transitions.
@@ -111,33 +149,54 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
         return Err("reopened query differs".into());
     }
     for cut in cuts {
-        let pinned = reopened.snapshot_at(&query, cut.cursor.clone(), 100).await?;
+        let pinned = reopened
+            .snapshot_at(&query, cut.cursor.clone(), 100)
+            .await?;
         if pinned.files != cut.files || pinned.generation != cut.generation {
             return Err("pinned query cut changed".into());
         }
         let expected_heads = cut.into_heads()?;
-        let pinned_heads = reopened.heads(&query, Some(pinned.cursor.clone()), 100).await?;
+        let pinned_heads = reopened
+            .heads(&query, Some(pinned.cursor.clone()), 100)
+            .await?;
         if pinned_heads.files.len() != expected_heads.files.len()
-            || pinned_heads.files.iter().zip(&expected_heads.files).any(|(actual, expected)| {
-                actual.key != expected.key || actual.segments != expected.segments
-                    || actual.length != expected.length || actual.through_sequence != expected.through_sequence
-            })
+            || pinned_heads
+                .files
+                .iter()
+                .zip(&expected_heads.files)
+                .any(|(actual, expected)| {
+                    actual.key != expected.key
+                        || actual.segments != expected.segments
+                        || actual.length != expected.length
+                        || actual.through_sequence != expected.through_sequence
+                })
         {
             return Err("pinned materialized heads changed".into());
         }
-        let mut folded: BTreeMap<FileKey, FileValue> = pinned.files.into_iter()
-            .map(|file| (file.key.clone(), file)).collect();
-        let mut resumed = reopened.observe(query.clone(), Some(pinned.cursor.clone()), 100).await?;
+        let mut folded: BTreeMap<FileKey, FileValue> = pinned
+            .files
+            .into_iter()
+            .map(|file| (file.key.clone(), file))
+            .collect();
+        let mut resumed = reopened
+            .observe(query.clone(), Some(pinned.cursor.clone()), 100)
+            .await?;
         if resumed.reset || resumed.snapshot.is_some() {
             return Err("valid cut unexpectedly reset".into());
         }
         let mut cursor = pinned.cursor;
         while cursor.position < generation.position {
-            let change = resumed.changes.next().await.ok_or("resumed follow ended")??;
+            let change = resumed
+                .changes
+                .next()
+                .await
+                .ok_or("resumed follow ended")??;
             check_cursor(&cursor, &change.cursor)?;
             let expected = &changes[(cursor.position - 1) as usize];
-            if change.file != expected.file || change.cursor.position != expected.cursor.position
-                || change.cursor.commit != expected.cursor.commit {
+            if change.file != expected.file
+                || change.cursor.position != expected.cursor.position
+                || change.cursor.commit != expected.cursor.commit
+            {
                 return Err("resumed change differs from live delivery".into());
             }
             cursor = change.cursor;
@@ -146,7 +205,8 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
             }
         }
         if folded.into_values().collect::<Vec<_>>() != snapshot.files
-            || resumed.changes.next().now_or_never().is_some() {
+            || resumed.changes.next().now_or_never().is_some()
+        {
             return Err("snapshot + follow differs from uninterrupted observation".into());
         }
     }
