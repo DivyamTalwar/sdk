@@ -48,12 +48,21 @@ fuzz_target!(|data: &[u8]| {
                 return;
             };
             let mut input = PromptInput::new(Editor::new("original"));
+            let mut projected = input.clone();
+            let mut live = PromptFiles::default();
+            let refreshed = live.refresh(&files, &mut projected);
             match restore_tui_prompt(&files, &mut input) {
                 Err(_) => {
+                    assert!(refreshed.is_err());
+                    assert_eq!(projected.editor.text(), "original");
+                    assert!(projected.history().entries().is_empty());
                     assert_eq!(input.editor.text(), "original");
                     assert!(input.history().entries().is_empty());
                 }
                 Ok(()) => {
+                    refreshed.unwrap();
+                    assert_eq!(projected.editor.text(), input.editor.text());
+                    assert_eq!(projected.history().entries(), input.history().entries());
                     let mut projection = PromptFiles::default();
                     projection.refresh(&files, &mut input).unwrap();
                     let generation = input.history().generation();
