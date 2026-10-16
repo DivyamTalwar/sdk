@@ -209,7 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest[..16]);
         self.filesystem
-            .create_workspace_with_operation::<_, (), Error>(
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
                 &name,
                 acyclic_fs::VolumeInitialization {
                     config: acyclic_fs::VolumeConfig::portable(
@@ -227,7 +227,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None,
             )
             .await
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| map_error(failure.error))?;
         self.resolve(&workspace_ref(self.provider.clone(), &name)?, None)
             .await
     }
