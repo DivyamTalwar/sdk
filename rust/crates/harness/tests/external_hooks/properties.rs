@@ -38,6 +38,12 @@ proptest! {
         prop_assert_eq!(&actual, &expected);
         let task = Component::new("task")?;
         let file = actual.to_file(task.clone())?;
+        let mut forged = actual.clone();
+        forged.operation_id = acyclic_harness::OperationId::from_bytes(
+            forged.operation_id.into_bytes().map(|byte| byte ^ 1),
+        );
+        prop_assert!(matches!(forged.to_file(task.clone()),
+            Err(acyclic_harness::task_volume::Error::InvalidSegment)));
         prop_assert_eq!(ExternalRequest::from_file(&task, &file)?, actual);
         prop_assert!(ExternalRequest::from_file(&Component::new("other-task")?, &file).is_err());
     }
