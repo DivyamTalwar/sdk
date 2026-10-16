@@ -201,7 +201,10 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(64))]
         #[test]
         fn ambiguous_keys_retain_only_collision_buffers(
-            keys in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..24), 0..64),
+            keys in prop::collection::vec(prop_oneof![
+                prop::collection::vec(any::<u8>(), 0..24),
+                prop::collection::vec(0_u8..4, 0..4),
+            ], 0..64),
         ) {
             check_retention(keys).map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
