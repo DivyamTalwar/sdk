@@ -18,17 +18,6 @@ struct Parser<'work> {
     allocation: NativeAllocation,
 }
 
-struct RequestBody {
-    bytes: Vec<u8>,
-    _custody: NativeAllocation,
-}
-
-impl AsRef<[u8]> for RequestBody {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
 async fn send(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
@@ -50,7 +39,6 @@ async fn send(
     )?;
     let input_bytes = body.len();
     let retained = (std::mem::size_of::<crate::HttpRequest>()
-        + std::mem::size_of::<RequestBody>()
         + url.capacity()
         + body.capacity()
         + headers.len() * std::mem::size_of::<(String, String)>()
@@ -59,10 +47,7 @@ async fn send(
             .map(|(name, value)| name.capacity() + value.capacity())
             .sum::<usize>()) as u64;
     retain(&mut allocation, retained)?;
-    let body = bytes::Bytes::from_owner(RequestBody {
-        bytes: body,
-        _custody: allocation,
-    });
+    let body = crate::http::owned_bytes::owned(body, allocation)?;
     let response = provider
         .transport
         .send_with_native_work(crate::HttpRequest { url, headers, body }, work)?
