@@ -1,45 +1,65 @@
 //! Multiplexed Streams follows shared by client and node-to-node sessions.
 
-use crate::{StreamError, StreamPath, StreamProvider, wire, wire_codec};
+use crate::{StreamError, StreamPath, wire, wire_codec};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::StreamProvider;
 use bytes::Bytes;
 use futures::{
     StreamExt, future,
-    stream::{self, BoxStream, SelectAll},
+    stream,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use futures::stream::{BoxStream, SelectAll};
 use prost::Message as _;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
+#[cfg(not(target_arch = "wasm32"))]
 mod admission;
+#[cfg(not(target_arch = "wasm32"))]
 mod children;
 mod client;
+mod connection;
+pub use connection::Connections;
+#[cfg(acyclic_stream_loom)]
+pub use connection::verify_connections;
 mod gate;
+#[cfg(not(target_arch = "wasm32"))]
 mod interest;
+#[cfg(not(target_arch = "wasm32"))]
 mod policy;
+#[cfg(not(target_arch = "wasm32"))]
 mod queue;
+pub mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
 mod service;
 mod signal;
 mod sync;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use client::Cache;
 pub use client::Client;
+pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_interest_accounting, verify_link_isolation,
     verify_pool_lifetime, verify_registration_deadline,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
 // Child frames carry both their path and the provider-owned resume anchor.
 const CHILD_FRAME_BYTES: usize = 2 * crate::MAX_PATH_BYTES + 128;
+#[cfg(not(target_arch = "wasm32"))]
 const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES + 128 {
     CHILD_FRAME_BYTES
 } else {
     crate::MAX_RECORD_BYTES + 128
 };
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 /// Finite session admission independent of the number of stored streams.
@@ -62,6 +82,7 @@ impl Default for Limits {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Channel {
     generation: u64,
     latest: bool,
@@ -74,17 +95,21 @@ struct Channel {
     ending: Option<StreamError>,
     cancel: Option<oneshot::Sender<()>>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 struct Pending {
     frame: wire::SessionFrame,
     key: Option<Bytes>,
 }
+#[cfg(not(target_arch = "wasm32"))]
 enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Child(crate::Child, wire::SessionCursor),
 }
+#[cfg(not(target_arch = "wasm32"))]
 type Source = BoxStream<'static, (wire::SessionChannel, Result<Event, StreamError>)>;
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Session<P> {
     provider: Arc<P>,
     limits: Limits,
@@ -104,6 +129,7 @@ struct Session<P> {
 
 /// Opens one bidirectional node session over the canonical provider.
 /// Transport authentication and per-path capabilities remain the host's responsibility.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn serve<P: StreamProvider>(
     provider: Arc<P>,
     node: String,
@@ -182,6 +208,7 @@ fn frame(channel_id: u64, generation: u64, body: Body) -> wire::SessionFrame {
         body: Some(body),
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn cursor(next: u64) -> wire::SessionCursor {
     wire::SessionCursor {
         next,
@@ -189,6 +216,7 @@ fn cursor(next: u64) -> wire::SessionCursor {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<P: StreamProvider> Session<P> {
     fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
         if input.encoded_len() > crate::MAX_COMMAND_BYTES {

@@ -4,9 +4,9 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
+        connections: super::super::super::Connections::new(),
+        executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
-        authorization: Some("Bearer fixture".parse().unwrap()),
-        credential: None,
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
         routes: BTreeMap::new(),
@@ -15,7 +15,11 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
         dials: FuturesUnordered::new(),
         connecting: BTreeSet::new(),
         pending: VecDeque::new(),
-        home_channel: channel.clone(),
+        home_channel: native::endpoint(
+            channel.clone(),
+            Some("Bearer fixture".parse().unwrap()),
+            None,
+        ),
         next_link: 3,
         active: Arc::new(AtomicU64::new(0)),
         attempt_epoch: Arc::new(AtomicU64::new(0)),
@@ -36,7 +40,11 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
                     bytes: crate::MAX_COMMAND_BYTES as u64,
                     frames: 2,
                 },
-                channel: channel.clone(),
+                channel: native::endpoint(
+                    channel.clone(),
+                    Some("Bearer fixture".parse().unwrap()),
+                    None,
+                ),
                 sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
                 revision: 0,
                 applied_revision: 0,
@@ -110,6 +118,8 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let mut links = std::mem::take(&mut pool.links);
             let (commands, _) = mpsc::channel(2);
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -213,6 +223,8 @@ pub fn verify_pool_lifetime(fault: u8) {
         let links = std::mem::take(&mut pool.links);
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -310,6 +322,8 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands,
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -480,6 +494,8 @@ pub fn verify_registration_deadline(broken: bool) {
         loom::model(move || {
             let (commands, _commands) = mpsc::channel(1);
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),

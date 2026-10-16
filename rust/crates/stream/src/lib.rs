@@ -19,7 +19,10 @@ pub mod http_response;
 pub mod persistence;
 pub mod preparation;
 pub mod request;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub mod session;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
@@ -42,13 +45,13 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
-#[doc(hidden)]
-pub mod query_sync;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
 ))]
 mod obs;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

@@ -1,25 +1,19 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: Arc<dyn StreamProvider>,
-}
-
-impl WasmStream {
-    /// Shares the caller's platform provider with other Rust WASM packages.
-    #[must_use]
-    pub fn provider(&self) -> Arc<dyn StreamProvider> {
-        Arc::clone(&self.provider)
-    }
+    provider: std::sync::Arc<dyn StreamProvider>,
+    connections: Option<crate::session::Connections>,
 }
 
 #[wasm_bindgen]
 impl WasmStream {
-    /// Creates a process-local memory provider.
     #[wasm_bindgen(constructor)]
     #[must_use]
+    /// Creates an in-process provider.
     pub fn new() -> Self {
         Self {
-            provider: Arc::new(MemoryStream::default()),
+            connections: None,
+            provider: std::sync::Arc::new(MemoryStream::default()),
         }
     }
 
@@ -36,12 +30,34 @@ impl WasmStream {
             ..Default::default()
         };
         Ok(Self {
-            provider: Arc::new(
+            connections: None,
+            provider: std::sync::Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
                     .map_err(js_error)?,
             ),
         })
+    }
+
+    /// Connects canonical platform RPCs and shared push follows. Credentials stay live.
+    #[wasm_bindgen(js_name = connect)]
+    pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
+        let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
+        Ok(Self {
+            connections: Some(remote.connections()),
+            provider: std::sync::Arc::new(remote),
+        })
+    }
+
+    /// Pushes the next successful handshake, including reconnects without further records.
+    #[wasm_bindgen(js_name = nextConnection)]
+    pub async fn next_connection(&self, after: u64) -> Result<u64, JsValue> {
+        self.connections
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .changed(after)
+            .await
+            .map_err(js_error)
     }
 
     /// Executes one finite unary operation over canonical protobuf bytes.
@@ -65,15 +81,10 @@ impl WasmStream {
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
-                let (tail, durable) = if request.accepted {
-                    let watermarks = self.provider.watermarks(path).await.map_err(js_error)?;
-                    (watermarks.accepted, Some(watermarks.durable))
-                } else {
-                    (self.provider.tail(path).await.map_err(js_error)?, None)
-                };
+                let tail = self.provider.tail(path).await.map_err(js_error)?;
                 wire::TailResponse {
                     tail,
-                    durable,
+                    ..Default::default()
                 }
                 .encode_to_vec()
             }
@@ -209,5 +220,18 @@ impl WasmStream {
                     .boxed_local(),
             )),
         })
+    }
+}
+
+impl WasmStream {
+    /// Physical connection generations used by Rust client recovery drivers.
+    #[must_use]
+    pub fn connections(&self) -> Option<crate::session::Connections> {
+        self.connections.clone()
+    }
+    /// Shares the exact provider with higher-level Rust WASM clients.
+    #[must_use]
+    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> {
+        self.provider.clone()
     }
 }
