@@ -200,6 +200,7 @@ tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
+shuttle = "0.8.1"
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
