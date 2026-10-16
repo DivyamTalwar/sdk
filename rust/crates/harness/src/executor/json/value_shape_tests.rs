@@ -1,5 +1,6 @@
+#![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+
 use super::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn hidden_raw_values_are_bounded_before_decode() {
     let raw = |payload: &str| {

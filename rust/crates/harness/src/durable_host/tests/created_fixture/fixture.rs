@@ -142,6 +142,7 @@ impl CreationFixture {
         )
         .await?;
         let host = runtime.task_host().clone();
+        #[cfg(not(target_arch = "wasm32"))]
         let harness = runtime.harness().clone();
         let worker = crate::distributed::Worker {
             id: "created-worker".into(),
@@ -174,7 +175,9 @@ impl CreationFixture {
         host.start_task(&root_lease, &mut None).await?;
         Ok(Self {
             host,
+            #[cfg(not(target_arch = "wasm32"))]
             harness,
+            #[cfg(not(target_arch = "wasm32"))]
             runtime,
             filesystem,
             stream,

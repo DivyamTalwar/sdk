@@ -115,7 +115,7 @@ pub(crate) fn encoded_len(value: &impl serde::Serialize) -> Result<usize> {
     Ok(count.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn body(
     provider: &ResolvedModel,
     request: &ModelRequest,
