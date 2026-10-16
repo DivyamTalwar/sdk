@@ -60,7 +60,14 @@ export class MemoryOutbox implements OutboxStore {
   }
 
   async load(): Promise<readonly ClientCommand[]> {
-    return [...this.#commands.values()].map(({ command }) => cloneStructuredValue(command, new Set()) as ClientCommand);
+    const commands = new Array<ClientCommand>(this.#commands.size);
+    if (commands.length === 0) return commands;
+    const ancestors = new Set<object>();
+    let index = 0;
+    for (const { command } of this.#commands.values()) {
+      commands[index++] = cloneStructuredValue(command, ancestors) as ClientCommand;
+    }
+    return commands;
   }
 
   async put(command: ClientCommand): Promise<void> {
