@@ -387,6 +387,7 @@ impl StreamProvider for HttpStream {
                     "tail",
                     wire::TailRequest {
                         path: path.to_string(),
+                        ..Default::default()
                     }
                     .encode_to_vec(),
                 )
@@ -397,6 +398,9 @@ impl StreamProvider for HttpStream {
         Ok(StreamBounds {
             tail: self.tail(path).await?,
         })
+    }
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        self.session_client()?.watermarks(path).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         parse_append(
@@ -427,6 +431,16 @@ impl StreamProvider for HttpStream {
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
         self.session_client()?.follow(path, from).await
+    }
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.session_client()?
+            .follow_checked(path, from, preceding)
+            .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.session_client()?.children(request).await
@@ -562,6 +576,7 @@ mod tests {
                             "tail",
                             wire::TailRequest {
                                 path: "valid/path".into(),
+                                ..Default::default()
                             }
                             .encode_to_vec(),
                         ),

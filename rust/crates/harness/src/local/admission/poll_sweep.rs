@@ -37,7 +37,7 @@ struct Fixture {
     objects: MemoryObjectBackend,
     stream: Arc<stream::Stream>,
     issuer: AuthorityIssuer,
-    volumes: [VolumeRef; 3],
+    volumes: [VolumeRef; 4],
     provider: Arc<ModelEffects>,
     effect: Arc<Effect>,
     scenario: Scenario,
@@ -80,6 +80,7 @@ impl Fixture {
             volume("project".into())?,
             volume("scratch".into())?,
             volume("journal".into())?,
+            volume("tasks".into())?,
         ];
         for volume in &volumes {
             files.create_volume(volume).await?;
@@ -154,6 +155,7 @@ impl Fixture {
         let (runtime, signed) = runtime::open(runtime::Configuration {
             files: files.clone(),
             stream: self.stream.clone(),
+            task_volume: &self.volumes[3],
             issuer: &self.issuer,
             verifier: &verifier,
             agent: AgentId::from_bytes([1; 16]),
@@ -175,7 +177,18 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
+        let task_files = Arc::new(
+            crate::task_volume::TaskFiles::open(
+                self.stream.clone(),
+                &self.volumes[3],
+                &verifier,
+                &signed,
+                Limits::default().file_bytes,
+            )
+            .await?,
+        );
         Ok(LocalHarness {
+            task_files,
             files: files.clone(),
             runtime: Arc::new(runtime),
             project: self.volumes[0].clone(),

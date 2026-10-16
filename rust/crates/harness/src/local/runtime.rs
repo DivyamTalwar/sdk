@@ -3,6 +3,7 @@ use super::*;
 pub(super) struct Configuration<'a, P, A, O> {
     pub files: Arc<FilesystemHost<A, O>>,
     pub stream: Arc<P>,
+    pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,
@@ -85,6 +86,7 @@ where
     .with_run_limits(config.run_limits, &mut None)?;
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(config.journal.capability(operation, &mut None)?);
+        grants.push(config.task_volume.capability(operation, &mut None)?);
     }
     let signed = config.issuer.issue(
         "owner",
