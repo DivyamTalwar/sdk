@@ -20,6 +20,7 @@ impl CheckoutTools {
         slot: &mut Option<NativeWatch>,
         operation: OperationId,
         phase: u8,
+        owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
     ) -> Result<()> {
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
@@ -109,19 +110,19 @@ impl CheckoutTools {
                     PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &cancellation,
-                    |_| {
-                        std::future::ready(
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: WorkCounters::UNCHARGED,
-                                },
-                            ),
-                        )
+                    |_| async {
+                        owner
+                            .verify(false, &mut None)
+                            .await
+                            .map_err(acyclic_fs::OperationFailure::before_work)?;
+                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        })
                     },
                 )
                 .await
-                .map_err(storage)?
+                .map_err(|failure| failure.error)?
                 .value;
             if !matches!(
                 committed,

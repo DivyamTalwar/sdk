@@ -394,6 +394,47 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         b"final"
     );
     assert_eq!(provider.requests().len(), 0);
+    // A retained scope does not retain execution ownership after settlement.
+    harness
+        .runtime
+        .task_host()
+        .settle_task(
+            task,
+            &crate::scheduler::LeaseFence::from(&lease.reservation),
+            crate::Outcome::Failed {
+                message: "retired owner".into(),
+            },
+            &mut None,
+        )
+        .await?;
+    for (name, command) in [("fs", "clean -f"), ("bash", "rm unopened")] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "retired-owner".into(),
+            name: name.into(),
+            arguments: json!({"command":command}),
+        };
+        let context = ToolContext::new(
+            Arc::clone(&task_context),
+            invocation.operation_id,
+            &invocation.call_id,
+            None,
+        )?;
+        let tool = harness
+            .tools()
+            .get(name, None, None)?
+            .ok_or_else(|| Error::NotFound(name.into()))?;
+        assert!(
+            tool.executor
+                .execute(invocation, Some(context))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("unopened")).map_err(super::super::storage)?,
+            b"uncaptured"
+        );
+    }
     Ok(())
 }
 

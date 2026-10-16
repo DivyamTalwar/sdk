@@ -125,7 +125,11 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            let request = serde_json::to_vec(&invocation).map_err(storage)?;
+            let request = if invocation.name == "bash" {
+                serde_json::to_vec(&invocation).map_err(storage)?
+            } else {
+                Vec::new()
+            };
             let bash = if invocation.name == "bash" {
                 let input: crate::tools::BashInput =
                     serde_json::from_value(std::mem::take(&mut invocation.arguments))
@@ -157,10 +161,12 @@ impl ToolExecutor for CheckoutTools {
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
+            let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
             serialized(&self.state, async |mut state| {
+                owner.verify(false, &mut None).await?;
                 let State { active, watcher } = &mut *state;
                 let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                self.capture(view, watcher, invocation.operation_id, 0)
+                self.capture(view, watcher, invocation.operation_id, 0, &owner)
                     .await?;
                 if let Some(command) = command {
                     let view = state
@@ -182,7 +188,7 @@ impl ToolExecutor for CheckoutTools {
                         self.bash(input, maximum, state, files).await?;
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(view, watcher, invocation.operation_id, 1)
+                    self.capture(view, watcher, invocation.operation_id, 1, &owner)
                         .await?;
                     if let Ok(result) = &result {
                         files.finish(result).await?;

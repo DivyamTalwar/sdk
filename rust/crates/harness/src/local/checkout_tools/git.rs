@@ -7,10 +7,11 @@ impl CheckoutTools {
         view: &workspace::View,
         command: &str,
     ) -> Result<(ToolResult, Option<workspace::View>)> {
-        let mut argv = crate::tools::parse_command(command)?;
-        if argv.first().is_some_and(|arg| arg == "git") {
-            argv.remove(0);
-        }
+        let argv = crate::tools::parse_command(command)?;
+        let args = match argv.split_first() {
+            Some((prefix, args)) if prefix == "git" => args,
+            _ => &argv,
+        };
         let output = crate::tools::git::run(
             crate::tools::git::Workspace {
                 filesystem: &self.workspace.filesystem,
@@ -24,7 +25,7 @@ impl CheckoutTools {
                 authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),
             },
-            &argv,
+            args,
         )
         .await?;
         let command = output.command.ok_or_else(|| {
