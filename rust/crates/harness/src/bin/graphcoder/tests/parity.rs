@@ -40,6 +40,8 @@ fn declarative_prompt_parity_rows_render_through_test_backend() {
                     "Left" => KeyCode::Left,
                     "Right" => KeyCode::Right,
                     "Backspace" => KeyCode::Backspace,
+                    "Delete" => KeyCode::Delete,
+                    "Tab" => KeyCode::Tab,
                     character => KeyCode::Char(character.chars().next().unwrap()),
                 };
                 let mut modifiers = KeyModifiers::NONE;

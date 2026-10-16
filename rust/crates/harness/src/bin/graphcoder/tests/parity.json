@@ -244,5 +244,47 @@
     "visible": [
       "日本語 draft"
     ]
+  },
+  {
+    "row": "Buffer start/end",
+    "text": "one\ntwo",
+    "events": [{"key":"Home","ctrl":true},{"text":"X"},{"key":"End","ctrl":true},{"text":"Y"}],
+    "expected": "Xone\ntwoY",
+    "visible": ["Xone","twoY"]
+  },
+  {
+    "row": "Backspace and Delete preserve graphemes",
+    "text": "a界b",
+    "events": [{"key":"Home"},{"key":"Delete"},{"key":"Right"},{"key":"Backspace"}],
+    "expected": "b",
+    "visible": ["b"]
+  },
+  {
+    "row": "Delete word backward",
+    "text": "one two",
+    "events": [{"key":"Backspace","ctrl":true}],
+    "expected": "one ",
+    "visible": ["one"]
+  },
+  {
+    "row": "Delete word forward",
+    "text": "one two",
+    "events": [{"key":"Home"},{"key":"Delete","ctrl":true}],
+    "expected": " two",
+    "visible": ["two"]
+  },
+  {
+    "row": "Select all; typing replaces the selection",
+    "text": "old\ntext",
+    "events": [{"key":"a","ctrl":true},{"text":"replacement"}],
+    "expected": "replacement",
+    "visible": ["replacement"]
+  },
+  {
+    "row": "Backslash then Enter inserts a newline",
+    "text": "one\\",
+    "events": [{"key":"Enter"},{"text":"two"}],
+    "expected": "one\ntwo",
+    "visible": ["one","two"]
   }
 ]

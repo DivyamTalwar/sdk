@@ -647,3 +647,6 @@ mod parity;
 
 #[path = "tests/presentation.rs"]
 mod presentation;
+
+#[path = "tests/layout.rs"]
+mod layout;

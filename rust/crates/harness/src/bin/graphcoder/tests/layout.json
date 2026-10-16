@@ -1,0 +1,46 @@
+[
+  {
+    "row": "Layout: header, messages, input dock and status",
+    "width": 80, "height": 20,
+    "expected": ["● GraphCoder", "message 00", "draft", "model · tokens"],
+    "absent": ["shell output", "GOAL.md"]
+  },
+  {
+    "row": "Optional terminal panel composition",
+    "width": 80, "height": 20, "terminal": true,
+    "expected": ["shell output", "message 00", "draft", "model · tokens"],
+    "absent": ["GOAL.md"]
+  },
+  {
+    "row": "Goal, plans and diff panels",
+    "width": 100, "height": 30, "documents": true,
+    "expected": ["GOAL.md", "Goal contents", "plans/", "Plan contents", "Diff", "+added code"],
+    "absent": ["shell output"]
+  },
+  {
+    "row": "Resize: narrow layout yields side panels to transcript",
+    "width": 40, "height": 12, "documents": true,
+    "expected": ["message 00", "draft", "model · tokens"],
+    "absent": ["GOAL.md", "Goal contents", "Plan contents", "+added code"]
+  },
+  {
+    "row": "Notifications reserve two rows above the prompt",
+    "width": 80, "height": 20,
+    "notices": ["First notice", "Second notice", "Third notice"],
+    "expected": ["First notice", "Second notice", "draft", "model · tokens"],
+    "absent": ["Third notice"]
+  },
+  {
+    "row": "Follow tail after resize",
+    "width": 40, "height": 12, "tail": true,
+    "expected": ["message 39", "draft", "model · tokens"],
+    "absent": ["message 00"]
+  },
+  {
+    "row": "Follow tail with terminal and notifications",
+    "width": 80, "height": 20, "tail": true, "terminal": true,
+    "notices": ["Turn completed"],
+    "expected": ["message 39", "shell output", "Turn completed", "draft"],
+    "absent": ["message 00"]
+  }
+]
