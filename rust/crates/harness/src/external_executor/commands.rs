@@ -20,6 +20,8 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde_json::Value;
 
+mod children;
+
 /// Executes prepared request commands through the runtime's existing executors.
 /// Started/result files use the same provider transaction as the task fence.
 /// The actor prepares the pinned command; this adapter owns no task state.
@@ -27,6 +29,7 @@ pub struct RequestCommands<'a, P, A, O> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
     requests: &'a TaskVolume<P>,
     results: &'a TaskVolume<P>,
+    payloads: &'a dyn crate::distributed::SchedulerPayloadStore,
 }
 
 impl<'a, P, A, O> RequestCommands<'a, P, A, O>
@@ -40,11 +43,13 @@ where
         runtime: &'a FilesystemTaskRuntime<P, A, O>,
         requests: &'a TaskVolume<P>,
         results: &'a TaskVolume<P>,
+        payloads: &'a dyn crate::distributed::SchedulerPayloadStore,
     ) -> Self {
         Self {
             runtime,
             requests,
             results,
+            payloads,
         }
     }
 
@@ -89,14 +94,16 @@ where
                 .snapshot(&Query::File(key), 1)
                 .await
                 .map_err(storage)?;
-            let original = snapshot
-                .files
-                .pop()
-                .ok_or_else(|| Error::NotFound("task request file is missing".into()))?;
+            let original = snapshot.files.pop();
             let request_volume = snapshot.generation.volume;
             drop(snapshot);
-            let request = ExternalRequest::from_file(&task, &original).map_err(storage)?;
-            drop(original);
+            let request = match original {
+                Some(original) => ExternalRequest::from_file(&task, &original).map_err(storage)?,
+                None => {
+                    self.initial_child_request(&owner, &command, &payload, reconcile)
+                        .await?
+                }
+            };
             if request.operation_id != command.operation_id {
                 return Err(Error::Conflict(
                     "request differs from the retained command".into(),
@@ -156,7 +163,12 @@ where
             }
             drop(cached);
             let mut cancelled = None;
-            let progress = if command.kind == LIFECYCLE {
+            let progress = if command.kind == LIFECYCLE
+                && matches!(request.action, ExternalAction::Fork { .. })
+            {
+                self.fork(&context, &fence, &owner, &request, reconcile)
+                    .await?
+            } else if command.kind == LIFECYCLE {
                 if let ExternalAction::ToolFinished { call_id, .. } = &request.action {
                     let result_key = request
                         .original_tool_result_key(
@@ -185,6 +197,13 @@ where
                     }
                 };
                 TaskCommandProgress::Ready(value)
+            } else if !matches!(request.action, ExternalAction::RunTool { .. }) {
+                let commands = self.runtime.commands();
+                if reconcile {
+                    commands.reconcile(context, fence, command, payload).await?
+                } else {
+                    commands.execute(context, fence, command, payload).await?
+                }
             } else {
                 // Establish the cancellation cut before polling any execution.
                 let follow = super::cancellation::prepare(
@@ -292,9 +311,7 @@ pub(super) fn validate_command(
         ExternalAction::RunTool { .. } => {
             Some("native tool request has no supported prepared tool command")
         }
-        ExternalAction::Fork { .. } | ExternalAction::Join { .. } => {
-            Some("external child preparation is not bound")
-        }
+        ExternalAction::Join { .. } => Some("native join has no prepared child wait"),
         _ => None,
     })
 }

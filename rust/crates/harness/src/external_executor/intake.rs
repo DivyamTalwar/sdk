@@ -106,6 +106,23 @@ where
                     .runtime
                     .harness()
                     .task::<serde_json::Value, ()>("acyclic.command_session@1")?;
+                if let Some((admitted, _)) = self
+                    .runtime
+                    .harness()
+                    .reconcile_admission(OperationId::from_bytes(task_id.into_bytes()))
+                    .await?
+                {
+                    let retained = self.runtime.task_host().observe_admission(admitted).await?;
+                    if admitted != task_id
+                        || retained.task.name != "acyclic.command_session"
+                        || retained.input != input
+                    {
+                        return Err(Error::Conflict(
+                            "native attachment differs from its retained admission".into(),
+                        ));
+                    }
+                    return Ok(());
+                }
                 return match self
                     .runtime
                     .harness()
@@ -159,7 +176,9 @@ where
             }
             let command = self.command(&request).await?;
             // Detach closes a native connection, not its resumable task.
-            let input = serde_json::json!({"command":command,"terminal":false});
+            let terminal =
+                admission.parent.is_some() && matches!(request.action, ExternalAction::Detach);
+            let input = serde_json::json!({"command":command,"terminal":terminal});
             let (phase, slot) = self
                 .runtime
                 .task_host()
@@ -201,24 +220,25 @@ where
 
     async fn command(&self, request: &ExternalRequest) -> Result<WorkflowCommand> {
         let (kind, bytes) = match &request.action {
-            ExternalAction::RunTool { .. } => match request.task_command() {
-                Ok(Some((kind, payload))) => (kind, volume::encode(&payload).map_err(storage)?),
-                Err(_) => (LIFECYCLE, volume::encode(request).map_err(storage)?),
-                Ok(None) => match request.tool_call(self.runtime.tool_registry()) {
-                    Ok(input) => (
-                        TOOL_TASK_COMMAND_KIND,
-                        volume::encode(&input).map_err(storage)?,
-                    ),
+            ExternalAction::RunTool { .. } | ExternalAction::Join { .. } => {
+                match request.task_command() {
+                    Ok(Some((kind, payload))) => (kind, volume::encode(&payload).map_err(storage)?),
                     Err(_) => (LIFECYCLE, volume::encode(request).map_err(storage)?),
-                },
-            },
+                    Ok(None) => match request.tool_call(self.runtime.tool_registry()) {
+                        Ok(input) => (
+                            TOOL_TASK_COMMAND_KIND,
+                            volume::encode(&input).map_err(storage)?,
+                        ),
+                        Err(_) => (LIFECYCLE, volume::encode(request).map_err(storage)?),
+                    },
+                }
+            }
             ExternalAction::Attach { .. }
             | ExternalAction::Detach
             | ExternalAction::CancelTool { .. }
             | ExternalAction::HostTool { .. }
             | ExternalAction::ToolFinished { .. }
-            | ExternalAction::Fork { .. }
-            | ExternalAction::Join { .. } => (LIFECYCLE, volume::encode(request).map_err(storage)?),
+            | ExternalAction::Fork { .. } => (LIFECYCLE, volume::encode(request).map_err(storage)?),
         };
         let key = format!("external-command:{}", request.operation_id);
         let payload = self

@@ -53,7 +53,7 @@ macro_rules! command_record {
 }
 
 command_record!(
-    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand, CommittedMailResult,
+    TimerTaskCommand, TaskObserveCommand, TaskJoinCommand, TaskInspectCommand, TaskCancelCommand, CommittedMailResult,
     TaskAdmitCommand => TaskAdmitCommand,
     PreparedTaskAdmitCommand => PreparedTaskAdmitCommand,
     ModelTaskCommand => ModelTaskCommand,
@@ -111,6 +111,10 @@ pub struct MailReceiveTaskCommand {
 pub const TASK_ADMIT_COMMAND_KIND: &str = "acyclic.task.admit.v1";
 /// Versioned nonblocking observation of that command's direct child.
 pub const TASK_OBSERVE_COMMAND_KIND: &str = "acyclic.task.observe.v1";
+/// Versioned passive inspection of retained task metadata and outcome.
+pub const TASK_INSPECT_COMMAND_KIND: &str = "acyclic.task.inspect.v1";
+/// Versioned direct-child wait when its admitted identity is already known.
+pub const TASK_JOIN_COMMAND_KIND: &str = "acyclic.task.join.v1";
 
 /// Exact registered resumable child with inherited task authority and limits.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,6 +134,22 @@ pub struct TaskAdmitCommand {
 pub struct TaskObserveCommand {
     /// Logical operation ID of the admitting workflow command.
     pub admission_operation: OperationId,
+}
+
+/// Selects one admitted task without adopting its content or execution grants.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskInspectCommand {
+    /// Exact retained task identity.
+    pub task: TaskId,
+}
+
+/// Waits for one retained direct child without deriving a second identity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskJoinCommand {
+    /// Exact admitted direct child.
+    pub child: TaskId,
 }
 
 /// Ref-resolved model input. The worker supplies the stable execution identity.

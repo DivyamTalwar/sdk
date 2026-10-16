@@ -38,7 +38,10 @@ impl Volumes {
 
 impl LocalHarness {
     pub(crate) fn external_volumes(&self) -> (&TaskVolume<LocalStream>, &TaskVolume<LocalStream>) {
-        (&self.external_volumes.requests, &self.external_volumes.results)
+        (
+            &self.external_volumes.requests,
+            &self.external_volumes.results,
+        )
     }
 
     /// Reads an existing native result without admitting or executing work.
@@ -83,7 +86,16 @@ impl LocalHarness {
                 .snapshot(&Query::File(key), 1)
                 .await
                 .map_err(storage)?;
-            let commands = RequestCommands::new(&self.runtime, requests, results);
+            let publisher = FilesystemContentPublisher::new(
+                self.files.clone(),
+                &self.journal,
+                &self.verifier,
+                &self.signed,
+                self.limits.file_bytes,
+                None,
+            )?;
+            let commands =
+                RequestCommands::new(&self.runtime, requests, results, publisher.as_ref());
             recovery::recover_before_delivery(
                 matches!(request.action, ExternalAction::Attach { .. }),
                 !cached.files.is_empty(),
@@ -97,14 +109,6 @@ impl LocalHarness {
                 ExternalAction::Attach { workspace } => workspace.as_str(),
                 _ => "",
             };
-            let publisher = FilesystemContentPublisher::new(
-                self.files.clone(),
-                &self.journal,
-                &self.verifier,
-                &self.signed,
-                self.limits.file_bytes,
-                None,
-            )?;
             RequestConsumer::new(
                 &self.runtime,
                 requests,

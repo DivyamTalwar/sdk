@@ -43,21 +43,32 @@ proptest! {
 
 #[test]
 fn result_publication_is_atomic_with_task_ownership_loss() {
-    model(false, true);
+    model(false, true, false);
 }
 
 #[test]
 #[should_panic(expected = "stale task owner published a result")]
 fn negative_control_detects_dropping_the_owner_commit_condition() {
-    model(true, true);
+    model(true, true, false);
 }
 
 #[test]
 fn concurrent_sessions_publish_both_results_under_their_original_fences() {
-    model(false, false);
+    model(false, false, false);
 }
 
-fn model(broken: bool, invalidate_owner: bool) {
+#[test]
+fn initial_child_attachment_is_published_under_its_admitted_fence() {
+    model(false, true, true);
+}
+
+#[test]
+#[should_panic(expected = "stale task owner published a result")]
+fn negative_control_detects_an_unfenced_child_attachment() {
+    model(true, true, true);
+}
+
+fn model(broken: bool, invalidate_owner: bool, child_attachment: bool) {
     shuttle::check_dfs(
         move || {
             let result: std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> =
@@ -95,7 +106,11 @@ fn model(broken: bool, invalidate_owner: bool) {
                     let file = FileValue::new(
                         FileKey::Task {
                             task: Component::new("task")?,
-                            file: TaskFile::RequestResult(Component::new("request")?),
+                            file: if child_attachment {
+                                TaskFile::Request(Component::new("request")?)
+                            } else {
+                                TaskFile::RequestResult(Component::new("request")?)
+                            },
                         },
                         b"{}".to_vec(),
                     );

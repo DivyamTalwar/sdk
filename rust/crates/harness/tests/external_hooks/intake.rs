@@ -124,7 +124,8 @@ async fn intake_rejects_unbound_workspaces_and_unpublished_delivery_bytes() -> R
 async fn rejected_native_actions_settle_without_blocking_the_next_request() -> Result<()> {
     Box::pin(async {
         let fixture = Fixture::new(VolumeBinding::Separate).await?;
-        let folder = Component::new(TaskId::from_bytes([81; 16]).to_string()).map_err(storage)?;
+        let task = TaskId::from_bytes([81; 16]);
+        let folder = Component::new(task.to_string()).map_err(storage)?;
         let host = ExternalHost::ClaudeCode;
         let start = request(
             host,
@@ -170,6 +171,23 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
                 matches!(outcome, acyclic_harness::Outcome::Failed { .. }),
                 "{event}: {answer}"
             );
+            if event == "SubagentStart" {
+                assert!(
+                    answer["Failed"]["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("session")),
+                    "the fork must reach the retained session limit: {answer}"
+                );
+                assert!(
+                    fixture
+                        .runtime
+                        .harness()
+                        .children(task, None, None, 1)
+                        .await?
+                        .entries
+                        .is_empty()
+                );
+            }
             assert!(
                 hook_answer(
                     host,
@@ -257,7 +275,7 @@ async fn a_disconnected_hook_leaves_its_request_for_the_existing_worker() -> Res
     .await
 }
 
-async fn publish(
+pub(super) async fn publish(
     fixture: &Fixture,
     folder: &Component,
     request: &ExternalRequest,
@@ -326,13 +344,18 @@ pub(super) async fn deliver(
     Ok(answer)
 }
 
-async fn execute(fixture: &Fixture, task: TaskId) -> Result<()> {
+pub(super) async fn execute(fixture: &Fixture, task: TaskId) -> Result<()> {
     let worker = Worker {
         id: "native-session".into(),
         available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
-    let commands = RequestCommands::new(&fixture.runtime, &fixture.requests, &fixture.results);
+    let commands = RequestCommands::new(
+        &fixture.runtime,
+        &fixture.requests,
+        &fixture.results,
+        fixture.publisher.as_ref(),
+    );
     match Box::pin(
         fixture
             .runtime

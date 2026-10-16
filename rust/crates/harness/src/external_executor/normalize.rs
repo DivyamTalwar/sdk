@@ -71,6 +71,12 @@ pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<External
         HookAction::Detach => ExternalAction::Detach,
     };
     let operation_id = operation(host, &session_id, &caller, &action);
+    // Session attachment is independent of whichever turn the host has open.
+    let turn_id = if matches!(action, ExternalAction::Attach { .. }) {
+        None
+    } else {
+        turn_id
+    };
     Ok(ExternalRequest {
         operation_id,
         host,

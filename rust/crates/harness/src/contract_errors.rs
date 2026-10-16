@@ -45,6 +45,9 @@ pub enum Error {
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// Scheduler validation refused a task before any declaration append.
+    #[error("task admission rejected: {0}")]
+    AdmissionRejected(String),
     /// A definitive tool rejection; safe to journal without allocating a diagnostic.
     #[error("tool rejected: {0}")]
     ToolRejected(&'static str),
@@ -347,7 +350,9 @@ impl Error {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
-            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
+            Self::Invalid(_) | Self::AdmissionRejected(_) | Self::ToolRejected(_) => {
+                ErrorCode::Invalid
+            }
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -408,6 +413,7 @@ impl Error {
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
+                | Self::AdmissionRejected(_)
                 | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
                 | Self::InteractionRejected(_)

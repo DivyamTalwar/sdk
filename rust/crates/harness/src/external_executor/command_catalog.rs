@@ -23,6 +23,9 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
         ("acyclic_cancel", "Cancel a direct child and its subtree under the caller's fence", json!({
             "child":operation
         }), vec!["child"]),
+        ("acyclic_inspect", "Inspect retained task metadata and outcome without adopting its grants", json!({
+            "task":operation
+        }), vec!["task"]),
     ].into_iter().map(|(name, description, properties, required)| {
         let output = json!({});
         ToolDefinition {

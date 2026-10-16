@@ -162,7 +162,7 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
         available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
-    let commands = RequestCommands::new(&runtime, &requests, &results);
+    let commands = RequestCommands::new(&runtime, &requests, &results, publisher.as_ref());
     let guarded = SizeGuard(&commands);
     let attempt = Box::pin(runtime.run_operation(&worker, task, &guarded, 8, None)).await?;
     if !matches!(

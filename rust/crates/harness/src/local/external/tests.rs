@@ -129,18 +129,12 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
             harness.limits.file_bytes,
             None,
         )?;
-        RequestConsumer::new(
-            &harness.runtime,
-            requests,
-            results,
-            publisher.as_ref(),
-            "",
-        )
-        .accept(&task, &file)
-        .await?;
+        RequestConsumer::new(&harness.runtime, requests, results, publisher.as_ref(), "")
+            .accept(&task, &file)
+            .await?;
         let reached = tokio::sync::Notify::new();
         let interrupted = Published {
-            commands: RequestCommands::new(&harness.runtime, requests, results),
+            commands: RequestCommands::new(&harness.runtime, requests, results, publisher.as_ref()),
             reached: &reached,
         };
         let mut drive = Box::pin(harness.advance(first.task_id(), &interrupted));

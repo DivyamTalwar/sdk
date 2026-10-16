@@ -11,7 +11,7 @@ proptest! {
     fn stock_commands_round_trip_without_accepting_an_executor_override(
         sequence in any::<u64>(),
         id in any::<[u8;16]>(),
-        choice in 0usize..4,
+        choice in 0usize..5,
         input in "[a-z]{0,32}",
     ) {
         let operation = crate::OperationId::from_bytes(id);
@@ -19,7 +19,8 @@ proptest! {
             0 => ("acyclic_spawn", json!({"name":"acyclic.command_session","version":"1","input":input}), TASK_ADMIT_COMMAND_KIND),
             1 => ("acyclic_receive", json!({"after":sequence}), MAIL_RECEIVE_TASK_COMMAND_KIND),
             2 => ("acyclic_wait", json!({"admission_operation":operation}), TASK_OBSERVE_COMMAND_KIND),
-            _ => ("acyclic_cancel", json!({"child":crate::TaskId::from_bytes(id)}), TASK_CANCEL_COMMAND_KIND),
+            3 => ("acyclic_cancel", json!({"child":crate::TaskId::from_bytes(id)}), TASK_CANCEL_COMMAND_KIND),
+            _ => ("acyclic_inspect", json!({"task":crate::TaskId::from_bytes(id)}), TASK_INSPECT_COMMAND_KIND),
         };
         for host in [ExternalHost::Codex, ExternalHost::ClaudeCode, ExternalHost::Pi] {
             let call = request(host, if host == ExternalHost::Pi {"tool_call"} else {"PreToolUse"},
@@ -59,4 +60,29 @@ fn every_exposed_command_has_a_typed_preparation() -> Result<()> {
         assert_eq!(definition.input_schema["additionalProperties"], false);
     }
     Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    // A child start and stop select the same session regardless of parent turn;
+    // the child receives its own caller identity, never its parent's identity.
+    #[test]
+    fn native_child_identity_is_stable_across_start_stop_and_turns(
+        session in "[a-z]{1,24}", child in "[a-z]{1,24}", turn in "[a-z]{1,24}",
+    ) {
+        for host in [ExternalHost::Codex, ExternalHost::ClaudeCode, ExternalHost::Pi] {
+            let start = request(host, if host == ExternalHost::Pi {"subagent_start"} else {"SubagentStart"},
+                json!({"sessionId":session,"agentId":child,"parentAgentId":"parent","turnId":turn}))?;
+            let stop = request(host, if host == ExternalHost::Pi {"subagent_stop"} else {"SubagentStop"},
+                json!({"sessionId":session,"agentId":child,"parentAgentId":"parent"}))?;
+            let attached = request(host, if host == ExternalHost::Pi {"session_start"} else {"SessionStart"},
+                json!({"sessionId":session,"agentId":child,"cwd":"/project","turnId":turn}))?;
+            prop_assert_eq!(start.child_attachment("/project")?, attached.clone());
+            prop_assert_eq!(stop.child_attachment("/project")?, attached.clone());
+            let expected = serde_json::to_value(TaskJoinCommand {child:attached.task_id()}).unwrap();
+            prop_assert_eq!(stop.task_command()?, Some((TASK_JOIN_COMMAND_KIND, expected)));
+            prop_assert!(super::super::commands::validate_command(&stop, super::super::intake::LIFECYCLE,
+                &serde_json::to_value(&stop).unwrap(), &crate::tool::ToolRegistry::default())?.is_some());
+        }
+    }
 }

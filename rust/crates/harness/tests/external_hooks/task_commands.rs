@@ -57,6 +57,10 @@ async fn all_hosts_use_stock_child_and_mail_commands_through_request_files() -> 
             assert_eq!(fixture.runtime.task_host().observe_admission(child).await?.parent, Some(attach.task_id()));
             run_child(&fixture, child, true).await?;
             assert_eq!(fixture.runtime.task_host().outcome(child).await?, Some(Outcome::Succeeded(Value::Null)));
+            let inspected = call(&fixture, &folder, host, "inspect", "acyclic_inspect", json!({"task":child})).await?;
+            assert_eq!(inspected["Succeeded"]["task"], child.to_string());
+            assert_eq!(inspected["Succeeded"]["admission"]["parent"], attach.task_id().to_string());
+            assert_eq!(inspected["Succeeded"]["outcome"], json!({"Succeeded":null}));
             let waited = call(&fixture, &folder, host, "wait", "acyclic_wait",
                 json!({"admission_operation":spawn.operation_id})).await?;
             assert_eq!(waited, json!({"Succeeded":null}));

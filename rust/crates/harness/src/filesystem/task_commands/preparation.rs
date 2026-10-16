@@ -303,14 +303,50 @@ where
                 )
                 .await;
         }
+        if command.kind == TASK_INSPECT_COMMAND_KIND {
+            let input: TaskInspectCommand = mail::decode_command(payload, io)?;
+            if !context.scope().grants().contains("operation:observe") {
+                return Err(boundary(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "task lacks operation:observe",
+                ));
+            }
+            let source = self.runtime.admission_observed(input.task, io).await?;
+            let outcome = self.runtime.outcome_observed(input.task, io).await?;
+            #[derive(Serialize)]
+            struct Inspection<'a> {
+                task: TaskId,
+                admission: &'a TaskAdmissionRecord,
+                outcome: Option<Outcome<Value>>,
+            }
+            return ready(
+                Outcome::Succeeded(Inspection {
+                    task: input.task,
+                    admission: &source,
+                    outcome,
+                }),
+                io,
+            );
+        }
         if reconciliation_only {
             return mail::reconciled(io);
         }
-        let input: TaskObserveCommand = mail::decode_command(payload, io)?;
-        match self
-            .observe_child(task, input.admission_operation, io)
-            .await?
-        {
+        let outcome = if command.kind == TASK_JOIN_COMMAND_KIND {
+            let input: TaskJoinCommand = mail::decode_command(payload, io)?;
+            match self.observe_direct_child(task, input.child, io).await {
+                Ok(outcome) => outcome,
+                Err(Error::NotFound(message) | Error::Unauthorized(message)) => {
+                    return ready(Outcome::<Value>::Failed { message }, io);
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            let input: TaskObserveCommand = mail::decode_command(payload, io)?;
+            self.observe_child(task, input.admission_operation, io)
+                .await?
+        };
+        match outcome {
             None | Some(Outcome::Indeterminate { .. }) => Ok(TaskCommandProgress::Pending),
             Some(outcome) => ready(outcome, io),
         }
@@ -330,6 +366,15 @@ where
             )?
             .into_bytes(),
         );
+        self.observe_direct_child(task, child, io).await
+    }
+
+    pub(super) async fn observe_direct_child(
+        &self,
+        task: TaskId,
+        child: TaskId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Outcome<Value>>> {
         if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
             return Err(boundary(
                 io,

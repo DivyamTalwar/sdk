@@ -69,7 +69,12 @@ async fn retained_lifecycle_intent_can_settle_during_reconciliation() -> Result<
             }
         };
         let reservation = lease.reservation.id.clone();
-        let commands = RequestCommands::new(&fixture.runtime, &fixture.requests, &fixture.results);
+        let commands = RequestCommands::new(
+            &fixture.runtime,
+            &fixture.requests,
+            &fixture.results,
+            fixture.publisher.as_ref(),
+        );
         match Box::pin(
             fixture
                 .runtime

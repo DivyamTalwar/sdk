@@ -136,8 +136,9 @@ pub use task_commands::{
     MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
     MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, PreparedTaskAdmitCommand,
     TASK_ADMIT_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, TASK_CANCEL_COMMAND_KIND,
-    TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
-    TaskCancelCommand, TaskObserveCommand, TimerTaskCommand, ToolTaskCommand,
+    TASK_INSPECT_COMMAND_KIND, TASK_JOIN_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
+    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCancelCommand,
+    TaskInspectCommand, TaskJoinCommand, TaskObserveCommand, TimerTaskCommand, ToolTaskCommand,
 };
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,

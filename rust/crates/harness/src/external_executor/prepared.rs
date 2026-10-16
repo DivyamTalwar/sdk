@@ -6,6 +6,15 @@ use serde_json::Value;
 
 impl ExternalRequest {
     pub(super) fn task_command(&self) -> Result<Option<(&'static str, Value)>> {
+        if matches!(self.action, ExternalAction::Join { .. }) {
+            return Ok(Some((
+                TASK_JOIN_COMMAND_KIND,
+                serde_json::to_value(TaskJoinCommand {
+                    child: self.child_attachment("")?.task_id(),
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            )));
+        }
         let ExternalAction::RunTool {
             name, arguments, ..
         } = &self.action
@@ -32,6 +41,10 @@ impl ExternalRequest {
             "acyclic_cancel" => (
                 TASK_CANCEL_COMMAND_KIND,
                 canonical::<TaskCancelCommand>(arguments)?,
+            ),
+            "acyclic_inspect" => (
+                TASK_INSPECT_COMMAND_KIND,
+                canonical::<TaskInspectCommand>(arguments)?,
             ),
             _ => return Ok(None),
         };

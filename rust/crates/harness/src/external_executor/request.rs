@@ -26,6 +26,32 @@ pub(super) fn valid_text(text: &str) -> bool {
 }
 
 impl ExternalRequest {
+    pub(super) fn child_attachment(&self, workspace: &str) -> crate::Result<Self> {
+        let (ExternalAction::Fork { child_id, .. } | ExternalAction::Join { child_id }) =
+            &self.action
+        else {
+            return Err(crate::Error::Invalid(
+                "request does not select a native child".into(),
+            ));
+        };
+        let caller = Some(child_id.clone());
+        let action = ExternalAction::Attach {
+            workspace: workspace.into(),
+        };
+        Ok(Self {
+            operation_id: super::normalize::operation(
+                self.host,
+                &self.session_id,
+                &caller,
+                &action,
+            ),
+            host: self.host,
+            session_id: self.session_id.clone(),
+            turn_id: None,
+            caller,
+            action,
+        })
+    }
     /// Durable session identity, independent of tool calls and turn changes.
     #[must_use]
     pub fn task_id(&self) -> crate::TaskId {
@@ -58,6 +84,7 @@ impl ExternalRequest {
         action
             && valid_text(&self.session_id)
             && self.turn_id.as_deref().is_none_or(valid_text)
+            && (!matches!(self.action, ExternalAction::Attach { .. }) || self.turn_id.is_none())
             && self.caller.as_deref().is_none_or(valid_text)
             && self.operation_id
                 == super::normalize::operation(

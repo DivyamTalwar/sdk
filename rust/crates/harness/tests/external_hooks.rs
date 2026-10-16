@@ -57,6 +57,9 @@ mod client;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 #[path = "external_hooks/follow_model.rs"]
 mod follow_model;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "external_hooks/native_children.rs"]
+mod native_children;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "external_hooks/properties.rs"]
 mod properties;

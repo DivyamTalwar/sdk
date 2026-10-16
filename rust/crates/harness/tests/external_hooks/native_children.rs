@@ -1,0 +1,179 @@
+//! Host-owned native children share the fenced task admission and join path.
+use super::{
+    intake::{deliver, execute, publish},
+    session_runtime::{Fixture, VolumeBinding},
+    *,
+};
+use acyclic_harness::{
+    Outcome, TaskId,
+    distributed::Worker,
+    filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
+    runtime::TaskStateProvider,
+    task_volume::Component,
+};
+
+#[tokio::test]
+async fn native_child_hooks_admit_attach_complete_and_join_for_every_host() -> Result<()> {
+    Box::pin(async {
+        for host in [
+            ExternalHost::Codex,
+            ExternalHost::ClaudeCode,
+            ExternalHost::Pi,
+        ] {
+            let fixture = Fixture::new(VolumeBinding::Recursive).await?;
+            let pi = host == ExternalHost::Pi;
+            let parent = request(
+                host,
+                if pi { "session_start" } else { "SessionStart" },
+                json!({"sessionId":"session","cwd":"/project"}),
+            )?;
+            let folder = Component::new(parent.task_id().to_string()).map_err(storage)?;
+            deliver(&fixture, &folder, &parent).await?;
+            let fork = request(
+                host,
+                if pi {
+                    "subagent_start"
+                } else {
+                    "SubagentStart"
+                },
+                json!({"sessionId":"session","agentId":"child","agentType":"worker"}),
+            )?;
+            let admitted = deliver(&fixture, &folder, &fork).await?;
+            let child: TaskId =
+                serde_json::from_value(admitted["Succeeded"].clone()).map_err(storage)?;
+            assert_eq!(
+                fixture
+                    .runtime
+                    .task_host()
+                    .observe_admission(child)
+                    .await?
+                    .parent,
+                Some(parent.task_id())
+            );
+            let child_folder = Component::new(child.to_string()).map_err(storage)?;
+            let attached = request(
+                host,
+                if pi { "session_start" } else { "SessionStart" },
+                json!({"sessionId":"session","agentId":"child","cwd":"/project"}),
+            )?;
+            assert_eq!(attached.task_id(), child);
+            let consumer = RequestConsumer::new(
+                &fixture.runtime,
+                &fixture.requests,
+                &fixture.results,
+                fixture.publisher.as_ref(),
+                "/project",
+            );
+            // Claim before SessionStart to exercise the fenced initial input.
+            execute(&fixture, child).await?;
+            let file = attached.to_file(child_folder.clone()).map_err(storage)?;
+            consumer.accept(&child_folder, &file).await?;
+            let mut forged = attached.clone();
+            forged.action = ExternalAction::Attach {
+                workspace: "/another-project".into(),
+            };
+            assert!(
+                forged
+                    .send(&fixture.requests, &fixture.results, child_folder.clone())
+                    .await
+                    .is_err(),
+                "a precomputed acknowledgement cannot admit changed native input"
+            );
+            assert_eq!(
+                attached
+                    .send(&fixture.requests, &fixture.results, child_folder.clone())
+                    .await
+                    .map_err(storage)?["task"],
+                child.to_string()
+            );
+            assert_eq!(
+                fork.send(&fixture.requests, &fixture.results, folder.clone())
+                    .await
+                    .map_err(storage)?,
+                admitted
+            );
+
+            let join = request(
+                host,
+                if pi { "subagent_stop" } else { "SubagentStop" },
+                json!({"sessionId":"session","agentId":"child"}),
+            )?;
+            let file = publish(&fixture, &folder, &join).await?;
+            consumer.accept(&folder, &file).await?;
+            execute(&fixture, parent.task_id()).await?;
+            assert!(
+                fixture
+                    .results
+                    .snapshot(
+                        &acyclic_harness::task_volume::Query::File(
+                            join.result_key(folder.clone()).map_err(storage)?
+                        ),
+                        1
+                    )
+                    .await
+                    .map_err(storage)?
+                    .files
+                    .is_empty(),
+                "join cannot complete while the child is running"
+            );
+
+            let stop = request(
+                host,
+                if pi { "session_shutdown" } else { "SessionEnd" },
+                json!({"sessionId":"session","agentId":"child"}),
+            )?;
+            let file = publish(&fixture, &child_folder, &stop).await?;
+            consumer.accept(&child_folder, &file).await?;
+            let commands = RequestCommands::new(
+                &fixture.runtime,
+                &fixture.requests,
+                &fixture.results,
+                fixture.publisher.as_ref(),
+            );
+            let worker = Worker {
+                id: "native-child".into(),
+                available: Default::default(),
+                labels: Default::default(),
+            };
+            match Box::pin(
+                fixture
+                    .runtime
+                    .run_operation(&worker, child, &commands, 16, None),
+            )
+            .await?
+            {
+                Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task })) => {
+                    assert_eq!(task, child)
+                }
+                Some(TaskWorkerAttempt::Unresolved { error, .. }) => return Err(error),
+                _ => return Err(Error::Storage("native child did not complete".into())),
+            }
+            assert_eq!(
+                fixture.runtime.task_host().outcome(child).await?,
+                Some(Outcome::Succeeded(Value::Null))
+            );
+            execute(&fixture, parent.task_id()).await?;
+            assert_eq!(
+                join.send(&fixture.requests, &fixture.results, folder.clone())
+                    .await
+                    .map_err(storage)?,
+                json!({"Succeeded":null})
+            );
+            assert_eq!(
+                fixture
+                    .runtime
+                    .task_host()
+                    .outcome(parent.task_id())
+                    .await?,
+                None,
+                "joining a child keeps its parent attached"
+            );
+        }
+        Ok(())
+    })
+    .await
+}
+
+fn storage(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}
