@@ -37,6 +37,33 @@ async fn unbound_tool_oracles_reject_corrupted_names_and_arguments() -> TestResu
 }
 
 #[tokio::test]
+async fn unbound_tool_oracles_reject_inserted_arguments() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for (path, arguments) in [
+        (
+            "array-arguments",
+            json!([1, {"path":"unbound-output.txt"}, "injected"]),
+        ),
+        (
+            "array-arguments",
+            json!([1, {"path":"unbound-output.txt", "injected":true}]),
+        ),
+        ("plain", json!({"name":"No route", "injected":true})),
+    ] {
+        let baseline =
+            crate::scenario::load_value(&root, &root.join(format!("errors/unbound/{path}.json")))?;
+        run(baseline.clone()).await?;
+        let mut case = baseline;
+        case["turns"][0][0]["arguments"] = arguments;
+        assert!(
+            run(case).await.is_err(),
+            "accepted inserted arguments in {path}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn driver_schemas_reject_unknown_and_inapplicable_fields() {
     let base = json!({"driver":"composer","prompt":"/plan",
         "expect":{"result":{"kind":"select","query":"plan"}}});
