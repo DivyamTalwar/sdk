@@ -649,9 +649,9 @@ pub(super) fn collect_source_files_inner(
                     "imported source contains a linked or escaping member".into(),
                 ));
             }
-            if path.is_dir() {
+            if metadata.is_dir() {
                 collect_source_files_inner(root, &path, output, files, true)?;
-            } else if path.is_file() {
+            } else if metadata.is_file() {
                 files.push(path);
             } else {
                 return Err(CliError(
