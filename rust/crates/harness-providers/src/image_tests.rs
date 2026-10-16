@@ -17,7 +17,7 @@ use base64::Engine as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PNG: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5U8AAAAASUVORK5CYII=";
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 
 struct Reads {
     inner: Arc<dyn ContentResidencyVerifier>,
