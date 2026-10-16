@@ -95,7 +95,7 @@ fn removed_metadata_rejection_does_not_leave_the_decoded_record_retained() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn guarded_splits_and_joins_conserve_the_original_ledger(bytes in 0u64..8192, fraction in any::<u16>()) {
+    fn guarded_joins_conserve_the_original_ledger(bytes in 0u64..8192, additional in 0u64..8192) {
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(100_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
@@ -103,14 +103,13 @@ proptest! {
         let io = PreparationIo::from_native_work(&work).unwrap();
         let baseline = work.live_allocation_bytes();
         let mut hold = io.reserve_decode(bytes).unwrap();
-        let part = bytes * u64::from(fraction) / u64::from(u16::MAX);
-        let split = hold.split_off(part).unwrap();
-        prop_assert_eq!(hold.bytes() + split.bytes(), bytes);
-        prop_assert_eq!(work.live_allocation_bytes() - baseline, bytes);
-        hold.absorb(split).unwrap();
-        prop_assert_eq!(hold.bytes(), bytes);
-        prop_assert!(hold.split_off(bytes+1).is_err());
-        prop_assert_eq!(hold.bytes(), bytes);
+        let incoming = io.reserve_decode(additional).unwrap();
+        prop_assert_eq!(hold.bytes() + incoming.bytes(), bytes + additional);
+        prop_assert_eq!(work.live_allocation_bytes() - baseline, bytes + additional);
+        hold.absorb(incoming).unwrap();
+        prop_assert_eq!(hold.bytes(), bytes + additional);
+        prop_assert!(hold.substitute(bytes + additional + 1).is_err());
+        prop_assert_eq!(hold.bytes(), bytes + additional);
         drop(hold);
         prop_assert_eq!(work.live_allocation_bytes(), baseline);
     }

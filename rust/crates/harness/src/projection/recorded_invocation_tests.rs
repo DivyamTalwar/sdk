@@ -1,8 +1,8 @@
 #![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
-#[path = "../fuzz/fuzz_targets/recorded_invocation_input.rs"]
+#[path = "../../fuzz/fuzz_targets/recorded_invocation_input.rs"]
 mod input;
-use acyclic_harness::{OperationId, conversation::Limits, tool::ToolInvocation};
+use crate::{OperationId, conversation::Limits, tool::ToolInvocation};
 use input::Record;
 use proptest::prelude::*;
 use serde_json::{Value, json};

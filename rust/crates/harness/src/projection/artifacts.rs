@@ -11,7 +11,7 @@ pub(crate) async fn read_tool_call(
 ) -> Result<ToolCall> {
     let (mut value, hold) = read_value(resolver, file, maximum, io).await?;
     #[cfg(feature = "filesystem")]
-    let mut source_hold = hold;
+    let source_hold = hold;
     #[cfg(not(feature = "filesystem"))]
     let _ = hold;
     crate::model::charge_items(io, 5)?;
@@ -53,38 +53,25 @@ pub(crate) async fn read_tool_call(
             })?;
         let argument_bytes = crate::executor::json::json_value_logical_owned_bytes(&arguments)?;
         let metadata_bytes = crate::executor::json::json_value_logical_owned_bytes(&metadata)?;
-        let mut source = source_hold.take().ok_or_else(|| {
+        let mut source = source_hold.ok_or_else(|| {
             stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
                 "observed tool value lacks ownership",
             )
         })?;
-        let discarded = source
-            .bytes()
-            .checked_sub(strings)
-            .and_then(|bytes| bytes.checked_sub(argument_bytes))
-            .and_then(|bytes| bytes.checked_sub(metadata_bytes))
+        let retained = strings
+            .checked_add(argument_bytes)
+            .and_then(|bytes| bytes.checked_add(metadata_bytes))
             .ok_or_else(|| {
                 stock_boundary(Some(io), Invalid, "tool fields exceed source ownership")
             })?;
-        let mut output_hold = source.split_off(strings)?;
-        let arguments = (arguments, source.split_off(argument_bytes)?);
-        let metadata = (metadata, source.split_off(metadata_bytes)?);
-        debug_assert_eq!(source.bytes(), discarded);
-        drop((value, invocation, source));
-        // Keep each field guarded until both conversions and all validation succeed.
-        let (arguments, arguments_hold) = convert::<Value>(arguments, maximum, 126, io)?;
-        let (metadata, metadata_hold) = convert::<Value>(metadata, maximum, 127, io)?;
-        output_hold.absorb(arguments_hold)?;
-        output_hold.absorb(metadata_hold)?;
-        output_hold.into_retained()?;
-        return Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata));
+        drop((value, invocation));
+        // These fields are already decoded Values validated by read_value. Keep
+        // their original guard; a second serde conversion only interprets markers.
+        source.substitute(retained)?;
+        source.into_retained()?;
     }
-    let arguments = serde_json::from_value(arguments)
-        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    let metadata = serde_json::from_value(metadata)
-        .map_err(|error| Error::Invalid(format!("tool metadata is invalid: {error}")))?;
     Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata))
 }
 
@@ -97,8 +84,7 @@ pub(super) async fn read_result(
     let (value, hold) = read_value(resolver, file, maximum, io).await?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        // The Value conversion normalizes serde_json's private raw markers.
-        let normalized = convert::<Value>(
+        let (result, hold) = convert(
             (
                 value,
                 hold.ok_or_else(|| {
@@ -113,14 +99,11 @@ pub(super) async fn read_result(
             128,
             io,
         )?;
-        let (result, hold) = convert(normalized, maximum, 128, io)?;
         hold.into_retained()?;
         return Ok(result);
     }
     let _ = hold;
-    let normalized: Value = serde_json::from_value(value)
-        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    serde_json::from_value(normalized).map_err(|error| Error::Invalid(error.to_string()))
+    serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 pub(crate) async fn read_value<'a>(

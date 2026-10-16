@@ -37,7 +37,7 @@ impl crate::filesystem::UploadRecord for RecordedInvocation {
 }
 
 impl ToolInvocation {
-    /// Admits the complete saved record under the same byte, depth and numeric bounds as replay.
+    /// Admits the complete saved record under the same byte, depth and literal JSON bounds as replay.
     pub fn validate_recorded(
         &self,
         metadata: &Value,

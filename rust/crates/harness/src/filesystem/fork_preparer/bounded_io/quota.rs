@@ -18,28 +18,6 @@ impl<'a> DecodeReservation<'a> {
         self.bytes
     }
 
-    pub(crate) fn split_off(&mut self, bytes: u64) -> Result<Self> {
-        let remaining = self
-            .bytes()
-            .checked_sub(bytes)
-            .ok_or_else(|| self.io.invalid("reservation ownership underflows"))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = &mut self.custody {
-            return Ok(Self {
-                io: self.io,
-                bytes: 0,
-                custody: Some(custody.split_off(bytes)?),
-            });
-        }
-        self.bytes = remaining;
-        Ok(Self {
-            io: self.io,
-            bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            custody: None,
-        })
-    }
-
     pub(crate) fn absorb(&mut self, mut other: Self) -> Result<()> {
         if !std::ptr::eq(self.io, other.io) {
             return Err(self.io.invalid("reservation ledgers differ"));
