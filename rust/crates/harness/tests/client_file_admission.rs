@@ -101,12 +101,12 @@ fn negative_control_copying_before_admission_is_detected() {
         futures::executor::block_on(lazy_quota(16 * 1024 * 1024, true))
     })
     .expect_err("copy-before-admission passed");
-    assert!(
-        failure
-            .downcast_ref::<String>()
-            .unwrap()
-            .contains("quota rejection copied")
-    );
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("quota rejection copied"), "{message}");
 }
 
 proptest::proptest! {
