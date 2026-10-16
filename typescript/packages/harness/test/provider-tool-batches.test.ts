@@ -6,7 +6,7 @@ import {
 
 const contracts = await NativeContracts.create();
 await initializeModelProviders();
-const schema = { type: "integer" };
+const schema = { type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false };
 const projection = await jsonToolProjection(schema);
 
 for (const adapter of ["chat", "gemini"] as const) {
@@ -15,7 +15,7 @@ for (const adapter of ["chat", "gemini"] as const) {
       fc.array(fc.integer({ min: 1, max: 1024 }), { minLength: 2, maxLength: 8 }),
       async values => {
         let requests = 0;
-        const calls = values.map((value, index) => ({ id: `call_${index}`, name: "echo", args: value }));
+        const calls = values.map((value, index) => ({ id: `call_${index}`, name: "echo", args: { value } }));
         const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
         const registry = new ModelRegistry({}, DEFAULT_LIMITS, async (_url, init) => {
           if (!(init?.body instanceof Uint8Array)) throw new Error("expected Rust request bytes");
