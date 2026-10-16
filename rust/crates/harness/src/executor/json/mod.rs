@@ -35,6 +35,29 @@ pub use serialization::{
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use serialization::{json_digest_bounded, json_write_bounded};
 
+/// Fixed JSON input failures, distinct from exhausted work allowances.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum JsonInputError {
+    /// A closing container has no matching opener.
+    #[error("invalid JSON nesting")]
+    Nesting,
+    /// The source ends inside a string or container.
+    #[error("incomplete JSON document")]
+    Incomplete,
+    /// A value exceeds the fixed nesting limit.
+    #[error("JSON nesting limit exceeded")]
+    Depth,
+}
+
+fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(code) = code {
+        return Error::NativeJsonAdmission { code, kind };
+    }
+    let _ = code;
+    Error::Invalid(kind.to_string())
+}
+
 /// Finite byte, node and nesting admission for one document.
 #[derive(Clone, Copy, Debug)]
 pub struct JsonBounds {
