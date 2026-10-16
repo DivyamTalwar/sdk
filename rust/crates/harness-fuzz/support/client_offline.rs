@@ -2,6 +2,36 @@
 use acyclic_harness::Result;
 use serde_json::{Value, json};
 
+fn file(input: &[u8]) -> Value {
+    use acyclic_harness::{
+        conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
+    let provider =
+        ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None).unwrap();
+    let volume = VolumeRef::new(
+        provider,
+        "files".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+        &mut None,
+    )
+    .unwrap();
+    let descriptor = FileDescriptor::from_bytes(input, "text/plain", &mut None).unwrap();
+    serde_json::to_value(
+        FileRef::new(
+            volume,
+            "prompt.txt".into(),
+            "v1".into(),
+            descriptor,
+            "prompt".into(),
+            &mut None,
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
 pub fn exercise(input: &[u8], admit: fn(&[u8]) -> Result<()>) {
     let command = json!({
         "operationId": "operation", "authority": { "kind": "task", "id": "task" },
@@ -10,6 +40,37 @@ pub fn exercise(input: &[u8], admit: fn(&[u8]) -> Result<()>) {
     });
     let encoded = serde_json::to_vec(&command).unwrap();
     admit(&encoded).expect("reference-only generated command must be accepted");
+    for container in ["content", "artifacts", "references"] {
+        let mut pinned = command.clone();
+        let reference = file(input);
+        pinned["payload"][container] = if container == "content" {
+            reference
+        } else {
+            json!([reference])
+        };
+        admit(&serde_json::to_vec(&pinned).unwrap())
+            .expect("canonical pinned reference must be accepted");
+        for key in [
+            "token",
+            "Authorization",
+            "credential",
+            "bearer",
+            "scope",
+            "unexpected",
+        ] {
+            let mut unsafe_command = pinned.clone();
+            let reference = if container == "content" {
+                &mut unsafe_command["payload"][container]
+            } else {
+                &mut unsafe_command["payload"][container][0]
+            };
+            reference["volume"]["owner"][key] = json!("secret");
+            assert!(
+                admit(&serde_json::to_vec(&unsafe_command).unwrap()).is_err(),
+                "nested owner metadata entered offline storage"
+            );
+        }
+    }
     for value in [false, true] {
         let mut unsafe_command = command.clone();
         if value {
@@ -96,4 +157,18 @@ pub fn broken_allow_all(_: &[u8]) -> Result<()> {
 #[cfg(test)]
 pub fn broken_reject_all(_: &[u8]) -> Result<()> {
     Err(acyclic_harness::Error::Invalid("broken admission".into()))
+}
+
+#[cfg(test)]
+pub fn broken_discard_owner_token(input: &[u8]) -> Result<()> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(input) else {
+        return acyclic_harness::client::validate_offline_request(input);
+    };
+    if let Some(owner) = value
+        .pointer_mut("/payload/content/volume/owner")
+        .and_then(Value::as_object_mut)
+    {
+        owner.remove("token");
+    }
+    acyclic_harness::client::validate_offline_request(&serde_json::to_vec(&value).unwrap())
 }
