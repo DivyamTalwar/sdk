@@ -21,118 +21,106 @@ impl LocalHarness {
         self.dispatch_configured_command(operation, target, resolution, &json!({}))
             .await
     }
-    pub(crate) async fn dispatch_configured_command(
-        &self,
+    pub(crate) fn dispatch_configured_command<'a>(
+        &'a self,
         operation: OperationId,
         target: Option<TaskId>,
         resolution: CommandResolution,
-        settings: &Value,
-    ) -> Result<Value> {
-        match resolution {
-            CommandResolution::Tool {
-                tool: CommandTool::Spawn,
-                input,
-            } => {
-                let prompt = input["task"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("delegate requires text".into()))?;
-                self.queue_prompt(operation, target, prompt, settings).await
-            }
-            CommandResolution::Tool { tool, input } => {
-                self.direct_tool(operation, target, tool, input).await
-            }
-            CommandResolution::Prompt { text, .. } => {
-                self.queue_prompt(operation, target, &text, settings).await
-            }
-            CommandResolution::Submit {
-                request: CommandRequest::New,
-            } => Ok(json!({"selected_task":null})),
-            CommandResolution::Submit {
-                request: CommandRequest::Delete,
-            } => self.delete_commands(Some(required(target)?)).await,
-            CommandResolution::Submit {
-                request: CommandRequest::ClearAll,
-            } => self.delete_commands(None).await,
-            CommandResolution::Submit {
-                request: CommandRequest::Export,
-            } => self.export(operation, target).await,
-            CommandResolution::Submit {
-                request: CommandRequest::Compact { instructions },
-            } => {
-                self.compact(operation, required(target)?, &instructions)
-                    .await
-            }
-            CommandResolution::Submit { request } => {
-                let (task, paused) = match request {
-                    CommandRequest::TogglePause => (Some(required(target)?), None),
-                    CommandRequest::Pause { scope } => (
-                        match scope {
-                            CommandTaskScope::All => None,
-                            _ => Some(required(target)?),
-                        },
-                        Some(true),
-                    ),
-                    CommandRequest::Resume { scope } => (
-                        match scope {
-                            CommandTaskScope::All => None,
-                            _ => Some(required(target)?),
-                        },
-                        Some(false),
-                    ),
+        settings: &'a Value,
+    ) -> BoxProviderFuture<'a, Result<Value>> {
+        Box::pin(async move {
+            match resolution {
+                CommandResolution::Tool {
+                    tool: CommandTool::Spawn,
+                    input,
+                } => {
+                    let prompt = input["task"]
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("delegate requires text".into()))?;
+                    self.queue_prompt(operation, target, prompt, settings).await
+                }
+                CommandResolution::Tool { tool, input } => {
+                    self.direct_tool(operation, target, tool, input).await
+                }
+                CommandResolution::Prompt { text, .. } => {
+                    self.queue_prompt(operation, target, &text, settings).await
+                }
+                CommandResolution::Submit {
+                    request: CommandRequest::New,
+                } => Ok(json!({"selected_task":null})),
+                CommandResolution::Submit {
+                    request: CommandRequest::Delete,
+                } => self.delete_commands(Some(required(target)?)).await,
+                CommandResolution::Submit {
+                    request: CommandRequest::ClearAll,
+                } => self.delete_commands(None).await,
+                CommandResolution::Submit {
+                    request: CommandRequest::Export,
+                } => self.export(operation, target).await,
+                CommandResolution::Submit {
+                    request: CommandRequest::Compact { instructions },
+                } => {
+                    self.compact(operation, required(target)?, &instructions)
+                        .await
+                }
+                CommandResolution::Submit { request } => {
+                    let (task, paused) = match request {
+                        CommandRequest::TogglePause => (Some(required(target)?), None),
+                        CommandRequest::Pause { scope } => (
+                            match scope {
+                                CommandTaskScope::All => None,
+                                _ => Some(required(target)?),
+                            },
+                            Some(true),
+                        ),
+                        CommandRequest::Resume { scope } => (
+                            match scope {
+                                CommandTaskScope::All => None,
+                                _ => Some(required(target)?),
+                            },
+                            Some(false),
+                        ),
 
-                    _ => {
-                        return Err(Error::Invalid(
-                            "presentation changes are applied before owner dispatch".into(),
-                        ));
+                        _ => {
+                            return Err(Error::Invalid(
+                                "presentation changes are applied before owner dispatch".into(),
+                            ));
+                        }
+                    };
+                    if let Some(task) = task {
+                        self.runtime.task_host().observe_admission(task).await?;
                     }
-                };
-                let lineage = self.command_lineage(task).await?;
-                let paused = CommandControl::change(
-                    &self.task_files.inner,
-                    task,
-                    &lineage,
-                    paused,
-                    self.limits.file_bytes,
-                )
-                .await?;
-                Ok(json!({"paused":paused,"scope":task}))
+                    let paused = CommandControl::change_matching(
+                        &self.task_files.inner,
+                        task,
+                        |scope| Box::pin(self.command_has_ancestor(task, scope)),
+                        paused,
+                        self.limits.file_bytes,
+                    )
+                    .await?;
+                    Ok(json!({"paused":paused,"scope":task}))
+                }
+                _ => Err(Error::Invalid(
+                    "renderer selection is not a harness request".into(),
+                )),
             }
-            _ => Err(Error::Invalid(
-                "renderer selection is not a harness request".into(),
-            )),
-        }
+        })
     }
-    pub(super) async fn command_lineage(&self, task: Option<TaskId>) -> Result<Vec<TaskId>> {
-        match task {
-            Some(task) => {
-                let admission = self.runtime.task_host().observe_admission(task).await?;
-                self.runtime
-                    .harness()
-                    .durable_context(task, admission.operation_id, None)
-                    .await?
-                    .lineage(task)
-                    .await
-            }
-            None => Ok(Vec::new()),
-        }
+    pub(super) async fn wait_command_control(&self, task: TaskId) -> Result<()> {
+        CommandControl::wait_matching(
+            &self.task_files.inner,
+            |scope| Box::pin(self.command_has_ancestor(Some(task), scope)),
+            self.limits.file_bytes,
+        )
+        .await
     }
     pub(super) async fn prompt_context(
         &self,
         target: Option<TaskId>,
         prompt: &str,
     ) -> Result<String> {
-        for task in self.command_lineage(target).await? {
-            let snapshot = self
-                .task_files
-                .inner
-                .snapshot(&Query::File(compact_key(task)?), 1)
-                .await
-                .map_err(storage)?;
-            if let Some(file) = snapshot.files.first() {
-                let value: Value = serde_json::from_slice(&file.bytes).map_err(storage)?;
-                let summary = value["summary"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("compacted context missing summary".into()))?;
+        if let Some(target) = target {
+            if let Some(summary) = self.resolved_value(target, "summary").await? {
                 let text = format!(
                     "Previous compacted conversation:\n{summary}\nCurrent request:\n{prompt}"
                 );
@@ -364,6 +352,8 @@ impl LocalHarness {
             .harness()
             .task::<Value, crate::tool::ToolResult>("acyclic.direct_tool@1")?;
         let input = json!({"command":command});
+        self.prepare_inheritance(crate::runtime::task_id_for_admission(operation), parent)
+            .await?;
         let admission = if let Some(parent) = parent {
             let record = self.runtime.task_host().observe_admission(parent).await?;
             self.runtime
@@ -569,9 +559,7 @@ impl TaskCommandHost for CommandOwner<'_> {
             let task = context
                 .durable_task_id()
                 .ok_or_else(|| Error::Invalid("command task absent".into()))?;
-            let lineage = context.lineage(task).await?;
-            CommandControl::wait(&self.0.task_files.inner, &lineage, self.0.limits.file_bytes)
-                .await?;
+            self.0.wait_command_control(task).await?;
             self.0
                 .stock_commands(Some(task))
                 .await?
