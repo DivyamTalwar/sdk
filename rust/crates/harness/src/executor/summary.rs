@@ -144,18 +144,43 @@ impl StockExecution<'_> {
         text: String,
     ) -> Result<crate::context::ContextSummary> {
         let (source_messages, source_digest) = source;
-        let output_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
-        })?;
-        let output = journal
-            .stage(
-                operation_id,
-                &output_key,
-                text.as_bytes(),
-                "text/plain",
-                self.io,
-            )?
-            .await?;
+        let output = if let Some(context) = self.original_context() {
+            let path = with_history_io(self.io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("summaries/{operation_id}/{step}.txt"),
+                    work,
+                )
+            })?;
+            // A turn may compact more than once. Its file receipt must not alias
+            // another step or any of the task's tool publications.
+            let digest = crate::model::hash_bytes(path.as_bytes(), self.io)?;
+            let mut identity = [0; 16];
+            identity.copy_from_slice(&digest[..16]);
+            self.verify_execution_owner().await?;
+            let output = context
+                .stage_private_file_once(
+                    OperationId::from_bytes(identity),
+                    &path,
+                    text.as_bytes(),
+                    self.io,
+                )
+                .await?;
+            self.verify_execution_owner().await?;
+            output
+        } else {
+            let output_key = with_history_io(self.io, |work| {
+                crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
+            })?;
+            journal
+                .stage(
+                    operation_id,
+                    &output_key,
+                    text.as_bytes(),
+                    "text/plain",
+                    self.io,
+                )?
+                .await?
+        };
         let summary = crate::context::ContextSummary {
             operation_id,
             step,
@@ -170,3 +195,6 @@ impl StockExecution<'_> {
         Ok(summary)
     }
 }
+
+#[cfg(test)]
+mod tests;

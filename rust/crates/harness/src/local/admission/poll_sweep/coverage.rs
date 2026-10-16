@@ -6,6 +6,7 @@ fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
     let name = match scenario {
         Scenario::Text => "text",
         Scenario::EffectAndContinuation => "effect_goal",
+        Scenario::Compaction => "compaction",
     };
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
         "src/local/admission/poll_sweep/coverage/{name}.json"
@@ -57,8 +58,8 @@ pub(super) fn check_cuts(
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
-    fn broken_real_sweep_cannot_drop_a_cut(which in proptest::bool::ANY, omitted in 0usize..4096) {
-        let scenario = if which { Scenario::Text } else { Scenario::EffectAndContinuation };
+    fn broken_real_sweep_cannot_drop_a_cut(which in 0u8..3, omitted in 0usize..4096) {
+        let scenario = match which { 0 => Scenario::Text, 1 => Scenario::EffectAndContinuation, _ => Scenario::Compaction };
         let total = expected(scenario).unwrap().iter().filter(|(name, _)| name.as_str() != "stream:read:ready").map(|(_, count)| *count).sum::<usize>();
         let omitted = 1 + omitted % total;
         // This is the actual replay planner, deliberately missing a real cut.

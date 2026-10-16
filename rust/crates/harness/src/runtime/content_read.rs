@@ -118,6 +118,16 @@ impl TaskContext {
                 })
             })
             .or_else(|| self.scope.created_content(volume))
+            .or_else(|| {
+                self.harness.artifacts.as_ref().filter(|binding| {
+                    volume.is_some_and(|volume| {
+                        binding
+                            .writer
+                            .as_ref()
+                            .is_some_and(|writer| writer.volume() == volume)
+                    })
+                })
+            })
             .or(self.harness.content.as_ref())
     }
 

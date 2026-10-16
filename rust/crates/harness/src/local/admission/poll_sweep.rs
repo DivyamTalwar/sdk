@@ -1,7 +1,8 @@
 //! Replay the real run state machine over in-process filesystem/stream providers.
 use super::*;
 use crate::{
-    context::CompactionPolicy,
+    context::{CompactionPolicy, Context, ContextPlacement, SourceStage, ThresholdCompaction},
+    model::{ModelMessage, ModelRole},
     resources::ProviderRef,
     test_support::ScriptedTurn,
     tool::{JsonToolProjection, ToolDefinition},
@@ -27,6 +28,7 @@ const PROMPT: &str = "recover the original run input";
 enum Scenario {
     Text,
     EffectAndContinuation,
+    Compaction,
 }
 
 struct Clock;
@@ -70,7 +72,13 @@ impl Fixture {
             )
         };
         let volumes = [
-            volume("project".into())?,
+            VolumeRef::new(
+                reference.clone(),
+                "project".into(),
+                VolumeClass::Project,
+                VolumeOwner::Project("project".into()),
+                &mut None,
+            )?,
             volume("scratch".into())?,
             volume("journal".into())?,
             volume("tasks".into())?,
@@ -92,6 +100,10 @@ impl Fixture {
                 ScriptedTurn::Text("root".into()),
                 ScriptedTurn::Text("done".into()),
             ],
+            Scenario::Compaction => vec![
+                ScriptedTurn::Text("summary".into()),
+                ScriptedTurn::Text("done".into()),
+            ],
         };
         Ok(Self {
             directory,
@@ -106,7 +118,11 @@ impl Fixture {
                 },
             ),
             volumes,
-            provider: Arc::new(ModelEffects::new(turns, schedule.clone())),
+            provider: Arc::new(ModelEffects::new(
+                turns,
+                schedule.clone(),
+                matches!(scenario, Scenario::Compaction),
+            )),
             effect: Arc::new(Effect {
                 schedule,
                 calls: Default::default(),
@@ -198,6 +214,29 @@ impl Fixture {
             )
             .await?,
         );
+        let compact = matches!(self.scenario, Scenario::Compaction);
+        let context = if compact {
+            ContextPipeline::new([Arc::new(SourceStage::new(
+                "history",
+                "1",
+                Arc::new(Context {
+                    messages: vec![
+                        ModelMessage {
+                            role: ModelRole::User,
+                            content: ModelContent::Text("old-user".into()),
+                        },
+                        ModelMessage {
+                            role: ModelRole::Assistant,
+                            content: ModelContent::Text("old-assistant".into()),
+                        },
+                    ],
+                    ..Default::default()
+                }),
+                ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>])
+        } else {
+            ContextPipeline::default()
+        };
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -214,9 +253,17 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context: ContextPipeline::default(),
+            context,
             limits: Limits::default(),
-            compaction: CompactionPolicy::Disabled,
+            compaction: if compact {
+                CompactionPolicy::Threshold(ThresholdCompaction {
+                    response_reserve_tokens: 64,
+                    recent_tokens: 16,
+                    retention: Default::default(),
+                })
+            } else {
+                CompactionPolicy::Disabled
+            },
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: vec![],
             goal_continuations: matches!(self.scenario, Scenario::EffectAndContinuation).then_some(
@@ -257,6 +304,7 @@ impl Fixture {
         let (models, tools) = match self.scenario {
             Scenario::Text => (1, 0),
             Scenario::EffectAndContinuation => (3, 1),
+            Scenario::Compaction => (2, 0),
         };
         assert_eq!(
             self.provider.accepted(),
@@ -372,6 +420,36 @@ async fn case(
         let reopened = fixture.open().await?;
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
+        if matches!(scenario, Scenario::Compaction) {
+            let admission = reopened.runtime.task_host().observe_admission(root).await?;
+            assert!(
+                !admission.grants.contains(
+                    &reopened
+                        .journal
+                        .capability(VolumeOperation::Read, &mut None)?
+                ),
+                "compaction must not widen the task's host-journal authority"
+            );
+            let summaries = fixture.provider.summary_files();
+            assert_eq!(
+                summaries.len(),
+                1,
+                "compacted request must contain one summary"
+            );
+            let summary = &summaries[0];
+            assert_eq!(summary.volume(), &reopened.scratch);
+            assert_ne!(summary.volume(), &reopened.project);
+            assert_ne!(summary.volume(), &reopened.journal);
+            let reader = crate::filesystem::FilesystemContentVerifier::new(
+                reopened.files.clone(),
+                &reopened.verifier,
+                &reopened.signed,
+                reopened.limits.file_bytes,
+                None,
+            )?;
+            use crate::conversation::ContentResidencyVerifier;
+            assert_eq!(reader.read(summary, 32, None)?.await?.as_ref(), b"summary");
+        }
         Ok(Coverage {
             points,
             unadmitted,
@@ -519,4 +597,19 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         "submitted admission did not commit while draining"
     );
     Ok(())
+}
+
+#[test]
+fn compaction_summary_is_readable_before_any_cancellation() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    runtime.block_on(case(Scenario::Compaction, None, &[], None))?;
+    Ok(())
+}
+
+#[test]
+fn compaction_cancellation_at_every_native_boundary_recovers_once() -> Result<()> {
+    sweep(&[Scenario::Compaction])
 }
