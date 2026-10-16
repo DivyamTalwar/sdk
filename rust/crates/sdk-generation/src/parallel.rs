@@ -13,13 +13,21 @@ where
     F: Fn(T) -> R + Send + Sync + 'static,
 {
     let operation = Arc::new(operation);
-    let jobs = inputs
-        .into_iter()
-        .map(|input| {
-            let operation = Arc::clone(&operation);
-            thread::spawn(move || operation(input))
-        })
-        .collect::<Vec<_>>();
+    let mut jobs = Vec::new();
+    for input in inputs {
+        let operation = Arc::clone(&operation);
+        match thread::Builder::new().spawn(move || operation(input)) {
+            Ok(job) => jobs.push(job),
+            Err(error) => {
+                drop(join_all(jobs));
+                panic!("cannot start owner compiler: {error}");
+            }
+        }
+    }
+    join_all(jobs)
+}
+
+fn join_all<R>(jobs: Vec<thread::JoinHandle<R>>) -> Vec<R> {
     let joined = jobs.into_iter().map(|job| job.join()).collect::<Vec<_>>();
     joined
         .into_iter()

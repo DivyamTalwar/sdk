@@ -176,13 +176,13 @@ pub(super) fn execute_historical_profiles(
     // Default receipts use Cargo target names. Preserve sequential behavior
     // when owners collide, including Windows case aliases.
     let disjoint = distinct_receipt_names(
-        metadata
-            .packages
+        plan.released_packages
             .iter()
-            .filter(|package| {
-                plan.released_packages
+            .filter_map(|release| {
+                metadata
+                    .packages
                     .iter()
-                    .any(|release| release.package == package.name.as_ref())
+                    .find(|package| release.package == package.name.as_ref())
             })
             .flat_map(historical_targets)
             .map(|(target, _)| target.name.as_str()),
