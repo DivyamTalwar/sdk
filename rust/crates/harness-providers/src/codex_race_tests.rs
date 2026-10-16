@@ -246,3 +246,86 @@ async fn oauth_transient_statuses_keep_the_retryable_classification() -> Result<
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> Result<()> {
+    let (root, login, _) = fixture(&jwt(0), 200)?;
+    let mut cli = auth(&jwt(0));
+    cli["agent_identity"] = json!({"new":"metadata"});
+    cli["tokens"]["cli_metadata"] = json!(["keep", "λ"]);
+    let transport = race(
+        &root.path().join("auth.json"),
+        cli,
+        vec![(
+            200,
+            json!({"access_token":"new-access", "refresh_token":"single-use-rotated", "id_token":"new-id"}),
+        )],
+    );
+    assert_eq!(login.bearer(&transport, None, None).await?.0, "new-access");
+    let stored = decode_auth(&std::fs::read(&transport.path).unwrap())?;
+    assert_eq!(stored["tokens"]["refresh_token"], "single-use-rotated");
+    assert_eq!(stored["tokens"]["id_token"], "new-id");
+    assert_eq!(stored["tokens"]["cli_metadata"], json!(["keep", "λ"]));
+    assert_eq!(stored["agent_identity"], json!({"new":"metadata"}));
+    Ok(())
+}
+
+#[test]
+fn metadata_only_edit_after_staging_is_merged_into_rotated_credentials() -> Result<()> {
+    let (root, _, _) = fixture(&jwt(0), 200)?;
+    let path = root.path().join("auth.json");
+    let original = std::fs::read(&path).unwrap();
+    let mut refreshed = auth("rotated-access");
+    refreshed["tokens"]["refresh_token"] = json!("rotated-refresh");
+    let mut cli = auth(&jwt(0));
+    cli["agent_identity"] = json!({"metadata":"after-staging"});
+    let merged = persist_with(
+        &path,
+        &original,
+        refreshed,
+        || {
+            std::fs::write(&path, serde_json::to_vec_pretty(&cli).unwrap())
+                .map_err(|_| invalid("fixture write"))
+        },
+        &mut CredentialIo::new(None)?,
+    )?;
+    assert_eq!(merged["tokens"]["access_token"], "rotated-access");
+    assert_eq!(merged["tokens"]["refresh_token"], "rotated-refresh");
+    assert_eq!(merged["agent_identity"], cli["agent_identity"]);
+    assert_eq!(decode_auth(&std::fs::read(path).unwrap())?, merged);
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn metadata_merges_preserve_new_tokens_but_credential_changes_take_ownership(
+        metadata in ".{0,96}", access in ".{0,96}", refresh in ".{0,96}",
+        changed in prop::option::of(0usize..6),
+    ) {
+        let original = auth("original");
+        let mut current = original.clone();
+        current["agent_identity"] = json!({"arbitrary":metadata});
+        current["tokens"]["extra"] = json!(metadata);
+        if let Some(field) = changed {
+            let path = [
+                vec!["tokens", "account_id"], vec!["tokens", "access_token"],
+                vec!["tokens", "refresh_token"], vec!["tokens", "id_token"],
+                vec!["auth_mode"], vec!["OPENAI_API_KEY"],
+            ].into_iter().nth(field).unwrap();
+            if path.len() == 2 { current[path[0]][path[1]] = json!("different"); }
+            else { current[path[0]] = json!("different"); }
+        }
+        let mut refreshed = original.clone();
+        refreshed["tokens"]["access_token"] = json!(access);
+        refreshed["tokens"]["refresh_token"] = json!(refresh);
+        let merged = merge_refresh(&original, &current, &refreshed, &mut CredentialIo::new(None).unwrap()).unwrap();
+        prop_assert_eq!(merged.is_none(), changed.is_some());
+        if let Some(merged) = merged {
+            prop_assert_eq!(&merged["agent_identity"], &current["agent_identity"]);
+            prop_assert_eq!(&merged["tokens"]["extra"], &current["tokens"]["extra"]);
+            prop_assert_eq!(&merged["tokens"]["access_token"], &refreshed["tokens"]["access_token"]);
+            prop_assert_eq!(&merged["tokens"]["refresh_token"], &refreshed["tokens"]["refresh_token"]);
+        }
+    }
+}

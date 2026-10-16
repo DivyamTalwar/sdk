@@ -342,36 +342,34 @@ fn persist_with(
     let parent = path
         .parent()
         .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
-    // A temporary sibling makes the final rename atomic even when CODEX_HOME
-    // is a mount point. It is removed on every discarded or failed update.
+    // Stage on the same filesystem. A metadata edit does not take credential
+    // ownership: preserve it while publishing the rotated token fields.
+    let baseline = document(original, io)?;
+    let (mut observed, current) = load(path, io)?;
+    let Some(mut auth) = merge_refresh(&baseline, &current, &auth, io)? else {
+        return Ok(current);
+    };
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| invalid("cannot create Codex credential update"))?;
-    let encoded = crate::projection::encoded_len(&auth)? as u64 + 1;
-    io.charge(WorkCounters {
-        bytes_encoded: encoded,
-        output_bytes: encoded,
-        backend_write_operations: 2,
-        durability_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })?;
-    serde_json::to_writer(file.as_file_mut(), &auth)
-        .map_err(|_| invalid("cannot encode Codex credential update"))?;
-    file.write_all(b"\n")
-        .and_then(|()| file.as_file().sync_all())
-        .map_err(|_| invalid("cannot flush Codex credential update"))?;
-    let bytes = read(path, io)?;
-    if bytes != original {
-        return document(&bytes, io);
-    }
+    stage(&mut file, &auth, io)?;
     before_replace()?;
-    // The CLI does not cooperate with a lock. Compare the whole document (also
-    // preserving non-token CLI edits), after staging/fsync and immediately before
-    // rename. This is best-effort: a CLI write during this final read + rename
-    // window cannot be excluded by a portable filesystem conditional replacement.
     let bytes = read(path, io)?;
-    if bytes != original {
-        return document(&bytes, io);
+    if bytes != observed {
+        let current = document(&bytes, io)?;
+        let Some(merged) = merge_refresh(&baseline, &current, &auth, io)? else {
+            return Ok(current);
+        };
+        auth = merged;
+        stage(&mut file, &auth, io)?;
+        observed = bytes;
+        if read(path, io)? != observed {
+            return Err(acyclic_harness::Error::Storage(
+                "Codex credentials changed during publication; retry".into(),
+            ));
+        }
     }
+    // The CLI does not participate in our lock. This final read + replacement
+    // is still best-effort, not an atomic compare-and-swap against CLI writes.
     io.charge(WorkCounters {
         backend_write_operations: 1,
         ..WorkCounters::UNCHARGED
@@ -379,6 +377,59 @@ fn persist_with(
     file.persist(path)
         .map_err(|_| invalid("cannot replace Codex auth.json"))?;
     Ok(auth)
+}
+
+fn stage(
+    file: &mut tempfile::NamedTempFile,
+    auth: &Value,
+    io: &mut CredentialIo<'_>,
+) -> Result<()> {
+    use std::io::{Seek as _, SeekFrom};
+    let encoded = crate::projection::encoded_len(auth)? as u64 + 1;
+    io.charge(WorkCounters {
+        bytes_encoded: encoded,
+        output_bytes: encoded,
+        backend_write_operations: 3,
+        durability_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    file.as_file_mut()
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| file.as_file_mut().set_len(0))
+        .map_err(|_| invalid("cannot prepare Codex credential update"))?;
+    serde_json::to_writer(file.as_file_mut(), auth)
+        .map_err(|_| invalid("cannot encode Codex credential update"))?;
+    file.write_all(b"\n")
+        .and_then(|()| file.as_file().sync_all())
+        .map_err(|_| invalid("cannot flush Codex credential update"))
+}
+
+fn merge_refresh(
+    original: &Value,
+    current: &Value,
+    refreshed: &Value,
+    io: &mut CredentialIo<'_>,
+) -> Result<Option<Value>> {
+    const FIELDS: [&str; 4] = ["account_id", "access_token", "refresh_token", "id_token"];
+    if original["auth_mode"] != current["auth_mode"]
+        || original["OPENAI_API_KEY"] != current["OPENAI_API_KEY"]
+        || FIELDS
+            .iter()
+            .any(|field| original["tokens"][field] != current["tokens"][field])
+    {
+        return Ok(None);
+    }
+    // This clone is a paid, bounded credential graph, including unrelated CLI edits.
+    let size = (crate::projection::encoded_len(current)? as u64)
+        .checked_add(crate::projection::encoded_len(refreshed)? as u64)
+        .ok_or_else(|| invalid("Codex credential merge size overflow"))?;
+    io.graph(size, size)?;
+    let mut merged = current.clone();
+    for field in ["access_token", "refresh_token", "id_token"] {
+        merged["tokens"][field] = refreshed["tokens"][field].clone();
+    }
+    merged["last_refresh"] = refreshed["last_refresh"].clone();
+    Ok(Some(merged))
 }
 
 #[cfg(test)]
