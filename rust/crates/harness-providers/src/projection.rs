@@ -204,6 +204,7 @@ pub(crate) fn body_named(
         return Err(invalid("requested output exceeds selected model capacity"));
     }
     let mut body = request.model.options.clone();
+    names.controls(adapter, &mut body)?;
     let map = body
         .as_object_mut()
         .ok_or_else(|| invalid("model options must be an object"))?;
