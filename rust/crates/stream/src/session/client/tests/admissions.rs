@@ -62,7 +62,11 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
             Ok("fixture".into())
         }
     });
-    pool.links.get_mut("good").unwrap().channel = native::endpoint(fixture.channel.clone(), Some("Bearer fixture".parse()?), Some(credential));
+    pool.links.get_mut("good").unwrap().channel = native::endpoint(
+        fixture.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        Some(credential),
+    );
     pool.reconnect("good")?;
     assert!(
         futures::poll!(future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))).is_pending()

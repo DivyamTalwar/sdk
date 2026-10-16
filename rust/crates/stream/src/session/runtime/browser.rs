@@ -4,22 +4,60 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use wasm_bindgen::{JsCast as _, closure::Closure};
+use wasm_bindgen::{closure::Closure, prelude::wasm_bindgen};
 
 #[derive(Clone)]
 pub(crate) struct OperationSpan {
     span: tracing::Span,
+    context: tracing::Span,
     dispatch: tracing::Dispatch,
 }
 impl OperationSpan {
     pub(crate) fn new(span: tracing::Span) -> Self {
+        let dispatch = span
+            .with_subscriber(|(_, dispatch)| dispatch.clone())
+            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+        let context = if span.is_disabled() {
+            tracing::Span::current()
+        } else {
+            span.clone()
+        };
         Self {
             span,
-            dispatch: tracing::dispatcher::get_default(Clone::clone),
+            context,
+            dispatch,
+        }
+    }
+    pub(crate) fn new_root(span: tracing::Span) -> Self {
+        let dispatch = span
+            .with_subscriber(|(_, dispatch)| dispatch.clone())
+            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+        Self {
+            context: span.clone(),
+            span,
+            dispatch,
+        }
+    }
+    pub(crate) fn follows_from_same_subscriber(&self, cause: &Self) {
+        if let (Some(registry), Some(origin)) = (
+            self.dispatch.downcast_ref::<tracing_subscriber::Registry>(),
+            cause
+                .dispatch
+                .downcast_ref::<tracing_subscriber::Registry>(),
+        ) && std::ptr::eq(registry, origin)
+        {
+            self.span.follows_from(cause.context.id());
         }
     }
     pub(crate) fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
-        tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
+        if self.dispatch.is::<tracing::subscriber::NoSubscriber>()
+            && tracing::dispatcher::get_default(|current| {
+                current.is::<tracing::subscriber::NoSubscriber>()
+            })
+        {
+            return work();
+        }
+        tracing::dispatcher::with_default(&self.dispatch, || self.context.in_scope(work))
     }
     pub(crate) fn scope<T>(&self, source: T) -> Scoped<T> {
         Scoped {
@@ -72,35 +110,34 @@ impl<T: Stream> Stream for Scoped<T> {
     }
 }
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout(callback: &Closure<dyn FnMut()>, milliseconds: u32) -> wasm_bindgen::JsValue;
+    #[wasm_bindgen(js_name = clearTimeout)]
+    fn clear_timeout(timer: &wasm_bindgen::JsValue);
+}
 struct Timer {
-    global: web_sys::WorkerGlobalScope,
-    handle: i32,
+    handle: wasm_bindgen::JsValue,
     _callback: Closure<dyn FnMut()>,
 }
 impl Drop for Timer {
     fn drop(&mut self) {
-        self.global.clear_timeout_with_handle(self.handle);
+        clear_timeout(&self.handle);
     }
 }
 pub(crate) async fn delay(milliseconds: u32) {
-    // Window and worker globals expose the same timer operations. Cancellation
-    // unregisters the callback; no polling task or detached timeout is retained.
-    let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+    // Browsers return a number; Node/Bun may return an object. Preserve the
+    // original handle so cancellation clears the actual runtime timer.
     let (sender, receiver) = oneshot::channel();
-    let callback = Closure::once(move || {
-        let _ = sender.send(());
+    let mut sender = Some(sender);
+    let callback: Closure<dyn FnMut()> = Closure::new(move || {
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(());
+        }
     });
-    let Ok(milliseconds) = i32::try_from(milliseconds) else {
-        return;
-    };
-    let Ok(handle) = global.set_timeout_with_callback_and_timeout_and_arguments_0(
-        callback.as_ref().unchecked_ref(),
-        milliseconds,
-    ) else {
-        return;
-    };
+    let handle = set_timeout(&callback, milliseconds);
     let _timer = Timer {
-        global,
         handle,
         _callback: callback,
     };

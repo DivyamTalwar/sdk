@@ -56,7 +56,8 @@ tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
-web-sys = { workspace = true, features = ["BroadcastChannel", "MessageEvent", "WorkerGlobalScope", "WebSocket", "BinaryType", "Event", "CloseEvent", "Url"], optional = true }
+tracing-subscriber.workspace = true
+web-sys = { workspace = true, features = ["BroadcastChannel", "MessageEvent", "WorkerGlobalScope", "WebSocket", "BinaryType", "Event", "CloseEvent", "Url", "AbortController", "AbortSignal"], optional = true }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"], optional = true }
 tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2", optional = true }
 indexed_db_futures = { workspace = true, optional = true }

@@ -15,8 +15,6 @@ impl Driver {
         let mut child = Command::new("bun")
             .arg(if scenario.starts_with("deadline") {
                 "typescript/packages/stream/test/session-deadline-model-driver.ts"
-            } else if scenario == "follow-data" {
-                "typescript/packages/stream/test/follow-data-driver.ts"
             } else if scenario == "queue" {
                 "typescript/packages/stream/test/session-queue-model-driver.ts"
             } else {

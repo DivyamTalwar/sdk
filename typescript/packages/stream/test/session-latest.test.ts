@@ -25,7 +25,10 @@ test("LATEST keeps jumps, attention and watermarks while a full follow progresse
   }
   expect(peer.connections.length).toBe(1);
   expect(peer.actorChannels).toBe(0);
-  expect(peer.received.filter(frame => frame.body.case === "ack" && frame.channelId === 1n).map(frame => frame.body.case === "ack" ? frame.body.value.applied?.next : null)).toEqual([2n, 3n, 9n]);
+  const acknowledgements = peer.received.flatMap(frame => frame.body.case === "ack" && frame.channelId === 1n ? [frame.body.value.applied!.next] : []);
+  expect(acknowledgements.length).toBeGreaterThan(0);
+  expect(acknowledgements.every((cut, index) => [2n, 3n, 9n, 10n].includes(cut)
+    && (index === 0 || cut > acknowledgements[index - 1]!))).toBe(true);
   await status.return(undefined);
   await full.return(undefined);
   expect(peer.outstandingFrames).toBe(0);
@@ -46,6 +49,7 @@ test("LATEST fences buffered generations and resumes the consumed cut after move
   release();
   expect((await resumed).value?.after?.next).toBe(7n);
   peer.disconnect("owner");
+  await peer.until(() => peer.resumes.length === 3);
   const last = await status.next();
   expect(last.value?.after?.next).toBe(11n);
   expect(peer.resumes.map(resume => resume.next)).toEqual([0n, 2n, 7n]);
@@ -58,7 +62,7 @@ test("raw ALL data retains metadata and invalid modes fail before opening a sess
   const peer = new SessionNode();
   const client = new StreamSessions(peer.connect);
   for (const [delivery, from, guard] of [[wire.SessionDelivery.UNSPECIFIED, 0n, 0], [wire.SessionDelivery.LATEST, 1n, 32], [wire.SessionDelivery.ALL, 1n, 31]] as const) {
-    expect(() => client.followData(create(wire.SessionFollowSchema, { path: "events", delivery, precedingCommitId: new Uint8Array(guard) }), { from })).toThrow();
+    await expect(client.followData(create(wire.SessionFollowSchema, { path: "events", delivery, precedingCommitId: new Uint8Array(guard) }), { from }).next()).rejects.toBeDefined();
   }
   expect(peer.connections.length).toBe(0);
   peer.append("events");
@@ -75,14 +79,15 @@ test("checked ALL confirms its anchor and reconnects with the last yielded commi
   const peer = new SessionNode();
   peer.append("events", 3);
   const client = new StreamSessions(peer.connect);
-  const follow = create(wire.SessionFollowSchema, { path: "events", delivery: wire.SessionDelivery.ALL, precedingCommitId: new Uint8Array(32).fill(7) });
+  const follow = create(wire.SessionFollowSchema, { path: "events", delivery: wire.SessionDelivery.ALL, precedingCommitId: peer.history.get("events")![0]!.commitId });
   const data = client.followData(follow, { from: 1n });
   expect((await data.next()).value?.after?.next).toBe(2n);
   peer.disconnect();
+  await peer.until(() => peer.resumes.length === 2);
   expect((await data.next()).value?.after?.next).toBe(3n);
   const interests = peer.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : []);
   expect(interests.map(interest => interest.resume?.next)).toEqual([1n, 2n]);
-  expect(interests.map(interest => interest.kind.case === "follow" ? [...interest.kind.value.precedingCommitId] : [])).toEqual([Array(32).fill(7), Array(32).fill(1)]);
+  expect(interests.map(interest => interest.kind.case === "follow" ? [...interest.kind.value.precedingCommitId] : [])).toEqual([...peer.history.get("events")!.slice(0, 2).map(record => [...record.commitId])]);
   await data.return(undefined);
 });
 

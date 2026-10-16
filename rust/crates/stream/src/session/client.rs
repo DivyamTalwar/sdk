@@ -38,6 +38,8 @@ pub use pool::model::{
     verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
     verify_terminal_cursor_dial,
 };
+#[cfg(acyclic_stream_loom)]
+pub use pool::retry_model::verify_initial_retry_yield;
 mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]
@@ -263,13 +265,14 @@ impl Client {
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
         };
-        Ok(super::runtime::boxed(self
-            .follow_data_with_ack(follow, from, acknowledge)
-            .await?
-            .map(|data| match data?.item {
-                Some(Item::Record(record)) => wire_codec::record(record),
-                _ => Err(StreamError::Unavailable),
-            })))
+        Ok(super::runtime::boxed(
+            self.follow_data_with_ack(follow, from, acknowledge)
+                .await?
+                .map(|data| match data?.item {
+                    Some(Item::Record(record)) => wire_codec::record(record),
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
@@ -277,8 +280,11 @@ impl Client {
         &self,
         follow: wire::SessionFollow,
         from: u64,
-    ) -> Result<BoxProviderStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
-        Ok(super::runtime::boxed(self.follow_data_with_ack(follow, from, true).await?))
+    ) -> Result<BoxProviderStream<'static, Result<wire::SessionData, StreamError>>, StreamError>
+    {
+        Ok(super::runtime::boxed(
+            self.follow_data_with_ack(follow, from, true).await?,
+        ))
     }
     pub(crate) async fn follow_data_with_ack(
         &self,
@@ -286,7 +292,10 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<
-        impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + crate::ProviderTask + 'static + use<>,
+        impl futures::Stream<Item = Result<wire::SessionData, StreamError>>
+        + crate::ProviderTask
+        + 'static
+        + use<>,
         StreamError,
     > {
         StreamPath::validate(&follow.path)?;
@@ -329,7 +338,10 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<
-        impl futures::Stream<Item = Result<Received, StreamError>> + crate::ProviderTask + 'static + use<>,
+        impl futures::Stream<Item = Result<Received, StreamError>>
+        + crate::ProviderTask
+        + 'static
+        + use<>,
         StreamError,
     > {
         let (records, receiver) = mpsc::channel(QUEUE);

@@ -40,7 +40,10 @@ export class SessionNode {
     return {
       incoming: connection.output,
       send: async input => this.receive(connection, fromBinary(wire.SessionFrameSchema, toBinary(wire.SessionFrameSchema, input))),
-      close: () => { connection.closed = true; connection.routes.clear(); connection.output.end(); },
+      close: () => {
+        connection.closed = true; connection.routes.clear(); connection.output.end();
+        for (const notify of this.changed) notify();
+      },
     } satisfies SessionTransport;
   };
   append(path: string, count = 1): void {
@@ -55,7 +58,11 @@ export class SessionNode {
     }
     let history = this.history.get(path);
     if (history === undefined) { history = []; this.history.set(path, history); }
-    for (let index = 0; index < count; index += 1) history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), commitId: new Uint8Array(32).fill(1), committedAtMicros: 0n });
+    for (let index = 0; index < count; index += 1) {
+      const commit = new Uint8Array(32);
+      new DataView(commit.buffer).setBigUint64(0, BigInt(history.length + 1), true);
+      history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), commitId: commit, committedAtMicros: 0n });
+    }
     for (const connection of this.connections) this.pump(connection);
   }
   publishLatest(path: string, next: bigint, attention = false): void {

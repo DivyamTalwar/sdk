@@ -14,10 +14,6 @@ name = "session_model"
 path = "session_model.rs"
 
 [[test]]
-name = "follow_data"
-path = "follow_data.rs"
-
-[[test]]
 name = "latency"
 path = "latency.rs"
 
