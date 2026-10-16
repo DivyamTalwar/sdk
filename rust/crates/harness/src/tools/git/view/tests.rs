@@ -84,8 +84,9 @@ async fn volume_branches_use_the_same_facade_without_a_native_source() -> TestRe
     assert!(matches!(&child, OwnedView::Volume(_)));
     assert_eq!(
         GitCompatRepository::new(repository, store.clone())
-            .selected_workspace()
-            .await?,
+            .checkout_selection()
+            .await?
+            .0,
         child.workspace().id()
     );
     child.workspace().write_text("/note", "child\n").await?;
@@ -122,8 +123,9 @@ async fn volume_branches_use_the_same_facade_without_a_native_source() -> TestRe
     assert_eq!(selected.workspace().id(), main.id());
     assert_eq!(
         GitCompatRepository::new(repository, store.clone())
-            .selected_workspace()
-            .await?,
+            .checkout_selection()
+            .await?
+            .0,
         main.id()
     );
     execute(
