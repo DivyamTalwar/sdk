@@ -96,6 +96,11 @@ fn copy_fixture(template: &Fixture) -> Fixture {
     let suffix = format!("copy-{}", NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed));
     let root = template.root.with_extension(&suffix);
     replay::copy_tree(&template.root, &root);
+    assert_ne!(
+        sdk_file_identity::stamp(&template.root.join(".git/config")).unwrap(),
+        sdk_file_identity::stamp(&root.join(".git/config")).unwrap(),
+        "mutable Git configuration must remain private to each control"
+    );
     let output = template
         .output
         .strip_prefix(&template.root)

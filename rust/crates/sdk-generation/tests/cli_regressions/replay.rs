@@ -61,7 +61,12 @@ fn copy_tree_inner(source: &Path, destination: &Path, immutable: bool) {
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
         let target = destination.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
+        if source.file_name() == Some(std::ffi::OsStr::new(".git"))
+            && entry.file_name() == "objects"
+        {
+            // Git objects are immutable; refs, index and configuration stay private.
+            copy_git_objects(&entry.path(), &target);
+        } else if entry.file_type().unwrap().is_dir() {
             copy_tree_inner(&entry.path(), &target, immutable);
         } else if immutable {
             fs::hard_link(entry.path(), target).unwrap();
