@@ -31,6 +31,8 @@ mod prompt_input;
 mod screen;
 #[cfg(feature = "tui")]
 mod widget;
+#[cfg(feature = "tui")]
+mod wrapped_lines;
 
 #[cfg(feature = "tui")]
 pub use completion::{
@@ -65,10 +67,11 @@ pub use prompt_input::{InputEffect, PromptInput};
 pub use ratatui;
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
+#[cfg(feature = "tui")]
+pub use wrapped_lines::WrappedLines;
 
 #[cfg(feature = "tui")]
 pub use screen::{Screen, ScreenAreas};
 #[cfg(feature = "tui")]
 pub mod term;
-
 

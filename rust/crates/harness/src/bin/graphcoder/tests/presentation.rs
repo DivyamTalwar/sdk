@@ -126,6 +126,83 @@ async fn followed_presentation_rows_are_declarative_and_live() {
     assert!(renderer.screen_for(&files).is_err());
 }
 
+#[tokio::test]
+async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("wrapped-transcript").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let files = CommandSession::open(
+        volume,
+        OperationId::from_bytes([21; 16])
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        64,
+    )
+    .await
+    .unwrap();
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let mut views = ClientViews::default();
+    let mut live = ClientRenderer::default();
+    for width in [12, 20, 12] {
+        views
+            .model_event(
+                &owner,
+                OperationId::from_bytes([22; 16]),
+                ModelEvent::Content {
+                    delta: "界👩‍💻e\u{301} end ".repeat(8),
+                },
+            )
+            .unwrap();
+        live.update(&views, &owner);
+        let mut replay = ClientRenderer::default();
+        replay.update(&views, &owner);
+        let mut pictures = Vec::new();
+        for renderer in [&mut live, &mut replay] {
+            renderer
+                .layout(&files, &PromptInput::default(), width, 12)
+                .unwrap();
+            let screen = renderer.screen_for(&files).unwrap();
+            assert!(
+                screen
+                    .transcript
+                    .iter()
+                    .all(|line| line.width() <= usize::from(width))
+            );
+            assert!(screen.transcript.len() > 1);
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let scroll = screen.tail_scroll(frame.area(), &PromptInput::default());
+                    screen.render(
+                        frame,
+                        &PromptInput::default(),
+                        &mut Viewport::default(),
+                        scroll,
+                        0,
+                    );
+                })
+                .unwrap();
+            assert!(super::screen_text(&terminal).contains("end"));
+            pictures.push(terminal.backend().buffer().clone());
+        }
+        assert_eq!(pictures[0], pictures[1]);
+    }
+    live.update(&ClientViews::default(), &owner);
+    live.layout(&files, &PromptInput::default(), 12, 12)
+        .unwrap();
+    assert!(live.screen().transcript.is_empty());
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
     // Property: streamed reasoning and live visibility changes paint the same
@@ -148,9 +225,10 @@ proptest::proptest! {
                 replay.update(&views, &owner);
                 let mut pictures = Vec::new();
                 for renderer in [&mut live, &mut replay] {
+                    renderer.layout(&files, &PromptInput::default(), 40, 20).unwrap();
                     let screen = renderer.screen_for(&files).unwrap();
                     if !visible { proptest::prop_assert!(screen.reasoning.is_empty()); }
-                    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+                    let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
                     terminal.draw(|frame| { screen.render(frame, &PromptInput::default(), &mut Viewport::default(), 0, 0); }).unwrap();
                     pictures.push(terminal.backend().buffer().clone());
                 }

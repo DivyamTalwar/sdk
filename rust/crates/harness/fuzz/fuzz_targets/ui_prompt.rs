@@ -2,7 +2,10 @@
 use acyclic_harness::{
     client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_scroll},
     task_volume::{FileKey, Query, TaskVolume, Write},
-    tui::{ClientRenderer, Editor, InputKeymap, PromptInput},
+    tui::{
+        ClientRenderer, Editor, InputKeymap, PromptInput, WrappedLines,
+        ratatui::text::{Line, Span},
+    },
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use libfuzzer_sys::fuzz_target;
@@ -12,6 +15,28 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {
         return;
     }
+    let width = u16::from(data.first().copied().unwrap_or(0) % 80) + 1;
+    let text = String::from_utf8_lossy(data);
+    let source = [Line::raw(text.as_ref())];
+    let mut wrapped = WrappedLines::default();
+    wrapped.update(&source, 0, width);
+    assert!(
+        wrapped
+            .rows()
+            .iter()
+            .all(|row| row.width() <= usize::from(width))
+    );
+    let middle = text
+        .char_indices()
+        .nth(text.chars().count() / 2)
+        .map_or(text.len(), |(index, _)| index);
+    let split = [Line::from(vec![
+        Span::raw(&text[..middle]),
+        Span::raw(&text[middle..]),
+    ])];
+    let mut split_wrapped = WrappedLines::default();
+    split_wrapped.update(&split, 0, width);
+    assert_eq!(wrapped.rows(), split_wrapped.rows());
     let mut fields = data.splitn(5, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();
     let Some(history) = fields.next() else {

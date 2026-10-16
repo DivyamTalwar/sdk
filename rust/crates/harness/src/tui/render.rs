@@ -43,6 +43,11 @@ pub struct ClientRenderer {
     reasoning: StreamText,
     reasoning_rows: Vec<Line<'static>>,
     transcript: Vec<Line<'static>>,
+    wrapped: bool,
+    transcript_changed: usize,
+    reasoning_changed: usize,
+    wrapped_transcript: super::WrappedLines,
+    wrapped_reasoning: super::WrappedLines,
     goal_source: String,
     goal: Vec<Line<'static>>,
     plan_source: String,
@@ -72,12 +77,14 @@ impl ClientRenderer {
                 ..Self::default()
             };
         }
+        self.wrapped = false;
         if let Some(transcript) = views.transcripts.get(&key) {
             if transcript.messages.len() < self.seen {
                 self.seen = 0;
                 self.stable = 0;
             }
             if transcript.messages.len() != self.seen {
+                self.transcript_changed = self.transcript_changed.min(self.stable);
                 self.transcript.truncate(self.stable);
                 for message in &transcript.messages[self.seen..] {
                     self.transcript.push(Line::styled(
@@ -102,9 +109,11 @@ impl ClientRenderer {
                 self.turn = transcript.streaming_turn;
                 self.reasoning = StreamText::default();
                 self.stream = StreamText::default();
+                self.transcript_changed = self.transcript_changed.min(self.stable);
                 self.transcript.truncate(self.stable);
             }
             let changed_reasoning = self.reasoning.push(&transcript.reasoning);
+            self.reasoning_changed = self.reasoning_changed.min(changed_reasoning);
             self.reasoning_rows.truncate(changed_reasoning);
             self.reasoning_rows.extend(
                 self.reasoning
@@ -115,6 +124,7 @@ impl ClientRenderer {
                     .map(line),
             );
             let changed = self.stream.push(&transcript.streaming_text);
+            self.transcript_changed = self.transcript_changed.min(self.stable + changed);
             self.transcript.truncate(self.stable + changed);
             self.transcript
                 .extend(self.stream.markdown.lines().iter().skip(changed).map(line));
@@ -124,8 +134,10 @@ impl ClientRenderer {
             self.turn = None;
             self.stream = StreamText::default();
             self.transcript.clear();
+            self.transcript_changed = 0;
             self.reasoning = StreamText::default();
             self.reasoning_rows.clear();
+            self.reasoning_changed = 0;
         }
         if let Some(tools) = views.tools.get(&key) {
             for tool in tools.values().filter(|tool| tool.result.is_none()) {
@@ -193,6 +205,27 @@ impl ClientRenderer {
         self.compose_notices();
     }
 
+    /// Project changed transcript/reasoning rows at the composed viewport width.
+    /// Repeated frames at the same width do not reflow the unchanged prefix.
+    pub fn layout<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        files: &crate::client::CommandSession<P>,
+        input: &super::PromptInput,
+        width: u16,
+        height: u16,
+    ) -> crate::Result<()> {
+        let area = super::ratatui::layout::Rect::new(0, 0, width, height);
+        let width = self.screen_for(files)?.areas(area, input).transcript.width;
+        self.wrapped_transcript
+            .update(&self.transcript, self.transcript_changed, width);
+        self.wrapped_reasoning
+            .update(&self.reasoning_rows, self.reasoning_changed, width);
+        self.transcript_changed = self.transcript.len();
+        self.reasoning_changed = self.reasoning_rows.len();
+        self.wrapped = true;
+        Ok(())
+    }
+
     fn compose_notices(&mut self) {
         self.composed_notices.clone_from(&self.notices);
         self.composed_notices.extend_from_slice(&self.file_notices);
@@ -245,7 +278,11 @@ impl ClientRenderer {
             .unwrap_or(false);
         let mut screen = self.screen();
         if reasoning {
-            screen.reasoning = &self.reasoning_rows;
+            screen.reasoning = if self.wrapped {
+                self.wrapped_reasoning.rows()
+            } else {
+                &self.reasoning_rows
+            };
         }
         match view {
             Some("shortcuts") => {
@@ -271,7 +308,11 @@ impl ClientRenderer {
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),
-            transcript: &self.transcript,
+            transcript: if self.wrapped {
+                self.wrapped_transcript.rows()
+            } else {
+                &self.transcript
+            },
             diff: &self.diff,
             goal: &self.goal,
             plans: &self.plans,

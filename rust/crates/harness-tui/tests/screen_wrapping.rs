@@ -1,0 +1,94 @@
+use acyclic_harness_tui::ratatui::{
+    Terminal,
+    backend::TestBackend,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+use acyclic_harness_tui::{PromptInput, Screen, Viewport, WrappedLines};
+use proptest::prelude::*;
+
+fn text(rows: &[Line<'_>]) -> String {
+    rows.iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn wrapped_graphemes_keep_style_and_exact_width_has_no_cursor_row() {
+    let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let source = [Line::from(vec![
+        Span::styled("e", red),
+        Span::raw("\u{301}界👩‍💻"),
+    ])];
+    let mut cache = WrappedLines::default();
+    cache.update(&source, 0, 2);
+    assert_eq!(text(cache.rows()), "e\u{301}界👩‍💻");
+    assert_eq!(cache.rows().len(), 3);
+    assert_eq!(cache.rows()[0].spans[0].style, red);
+    assert_eq!(cache.rows()[0].spans[0].content, "e\u{301}");
+    assert_eq!(cache.rows()[2].spans[0].content, "👩‍💻");
+    let allocations = allocation_counter::measure(|| cache.update(&source, source.len(), 2));
+    assert_eq!(
+        allocations.count_total, 0,
+        "unchanged frames must reuse the projection"
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(12, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen {
+                transcript: cache.rows(),
+                ..Screen::default()
+            }
+            .render(
+                frame,
+                &PromptInput::default(),
+                &mut Viewport::default(),
+                0,
+                0,
+            );
+        })
+        .unwrap();
+    let first = &terminal.backend().buffer()[(0, 1)];
+    assert_eq!(first.symbol(), "e\u{301}");
+    assert_eq!(first.fg, Color::Red);
+    assert!(first.modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn crlf_split_across_styles_is_one_line_break() {
+    let source = [Line::from(vec![
+        Span::raw("first\r"),
+        Span::styled("\nsecond", Style::default().fg(Color::Blue)),
+    ])];
+    let mut cache = WrappedLines::default();
+    cache.update(&source, 0, 20);
+    assert_eq!(cache.rows().len(), 2);
+    assert_eq!(text(cache.rows()), "firstsecond");
+    assert_eq!(cache.rows()[1].spans[0].style.fg, Some(Color::Blue));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    // Property: every append/replacement/truncation and width change has the
+    // same styled rows as a fresh projection, and wrapping preserves all text.
+    #[test]
+    fn incremental_projection_equals_reopen(
+        changes in prop::collection::vec((0usize..8, prop::collection::vec(prop::sample::select(vec!["a", "日", "界", "👩‍💻", "e\u{301}", " "]), 0..20), 2u16..24), 1..16)
+    ) {
+        let mut cache = WrappedLines::default();
+        let mut source = Vec::new();
+        for (cut, pieces, width) in changes {
+            let cut = cut.min(source.len());
+            source.truncate(cut);
+            source.push(Line::raw(pieces.concat()));
+            cache.update(&source, cut, width);
+            let mut replay = WrappedLines::default();
+            replay.update(&source, 0, width);
+            prop_assert_eq!(cache.rows(), replay.rows());
+            prop_assert_eq!(text(cache.rows()), text(&source));
+            prop_assert!(cache.rows().iter().all(|row| row.width() <= usize::from(width)));
+        }
+    }
+}
