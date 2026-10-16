@@ -202,7 +202,22 @@ impl CheckoutTools {
             native.advance_to_head().await?;
         }
         owner.verify_owner(None)?.await?;
-        let output = result?;
+        let output = match result {
+            Ok(output) => output,
+            Err(
+                error @ (Error::Conflict(_)
+                | Error::Invalid(_)
+                | Error::NotFound(_)
+                | Error::Unsupported(_)),
+            ) => {
+                // Acknowledged facade refusals and projected merge conflicts
+                // are feedback for the model. Failed publication or ownership
+                // checks remain execution failures and never enter this branch.
+                publication?;
+                return Ok(argument_error(error));
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(switched) = output.switched {
             *active = Some(switched.into_checkout()?);
         }
