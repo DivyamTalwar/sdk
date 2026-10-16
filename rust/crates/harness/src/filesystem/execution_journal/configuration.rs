@@ -6,11 +6,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    #[cfg(test)]
-    pub(crate) fn execution_operation_id(&self) -> Option<OperationId> {
-        self.execution.as_ref().map(|binding| binding.0)
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_native_execution_work_matches(
         &self,

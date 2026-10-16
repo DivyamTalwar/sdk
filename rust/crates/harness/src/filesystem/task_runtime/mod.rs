@@ -462,7 +462,7 @@ where
         &self.tools
     }
 
-    pub(crate) async fn execution_journal(
+    pub(super) async fn execution_journal(
         &self,
         task: TaskId,
         fence: LeaseFence,

@@ -17,8 +17,10 @@ use crate::{
     tool::{Tool, ToolRegistry},
     workflow::{MachineRegistry, WorkflowCommand},
 };
-use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
-use acyclic_stream::LocalStream;
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
+};
+use acyclic_stream::{LocalStream, StreamProvider};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -47,13 +49,14 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
+#[cfg(test)]
 pub(crate) type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
-pub struct LocalHarness {
-    files: Arc<LocalFilesystem>,
-    runtime: Arc<LocalTaskRuntime>,
+pub struct LocalHarness<P = LocalStream, A = LocalAuthorityBackend, O = LocalObjectBackend> {
+    files: Arc<FilesystemHost<A, O>>,
+    runtime: Arc<FilesystemTaskRuntime<P, A, O>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -209,8 +212,6 @@ impl LocalHarness {
             let verifier = issuer.verifier(&mut None)?;
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),
-                #[cfg(feature = "native-execution")]
-                workspace: workspace.as_ref().map(Arc::clone),
                 stream,
                 issuer: &issuer,
                 verifier: &verifier,
@@ -225,12 +226,40 @@ impl LocalHarness {
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
                 concurrency: config.concurrency,
+                #[cfg(feature = "native-execution")]
+                clock: config.clock.clone(),
+                #[cfg(not(feature = "native-execution"))]
                 clock: config.clock,
             })
             .await?;
+            #[cfg(feature = "native-execution")]
+            let runtime = match workspace.as_ref() {
+                Some(workspace) => {
+                    let tools = Arc::new(
+                        checkout_tools::CheckoutTools::new(
+                            workspace.clone(),
+                            &owner.project,
+                            config.clock,
+                        )
+                        .await?,
+                    );
+                    let publisher = checkout_tools::publisher::CheckoutPublisher::new(
+                        tools.clone(),
+                        files.clone(),
+                        &owner.project,
+                        &verifier,
+                        &signed,
+                        config.limits.file_bytes,
+                    );
+                    runtime
+                        .with_content_publisher(Arc::new(publisher))?
+                        .with_workspace_tools(tools)?
+                }
+                None => runtime,
+            };
             Ok(Self {
                 files,
-                runtime,
+                runtime: Arc::new(runtime),
                 project: owner.project.clone(),
                 scratch,
                 journal,
