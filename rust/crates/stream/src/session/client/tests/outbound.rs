@@ -132,7 +132,8 @@ async fn paused_peer()
 #[tokio::test]
 async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancellation()
 -> TestResult {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    let phase = std::cell::Cell::new("connecting nodes");
+    let result = tokio::time::timeout(Duration::from_secs(8), async {
         let memory = Arc::new(MemoryStream::default());
         append(&memory, "healthy", 1).await?;
         let healthy = Fixture::open(Arc::clone(&memory), "healthy").await?;
@@ -146,6 +147,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         let client =
             Client::with_connector(paused.channel.clone(), "Bearer fixture".parse()?, connect)
                 .await?;
+        phase.set("opening redirected healthy follow");
         let mut records = client.follow(StreamPath::new("healthy")?, 1).await?;
         let rejected = Arc::new(tokio::sync::Notify::new());
         let rejection = Arc::clone(&rejected);
@@ -160,14 +162,18 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
                 }
             }
         });
+        phase.set("waiting for bounded admission rejection");
         rejected.notified().await;
+        phase.set("delivering while the peer is blocked");
         assert_eq!(paused.counts.sessions.load(Ordering::Relaxed), 1);
         for sequence in 1..=4 {
             append(&memory, "healthy", 1).await?;
             assert_eq!(next(&mut records).await?.sequence, sequence);
         }
+        phase.set("cancelling blocked opens");
         storm.abort();
         assert!(storm.await.is_err_and(|error| error.is_cancelled()));
+        phase.set("delivering after cancellation");
         for sequence in 5..=8 {
             append(&memory, "healthy", 1).await?;
             assert_eq!(next(&mut records).await?.sequence, sequence);
@@ -177,10 +183,15 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         assert_eq!(healthy.counts.actors.load(Ordering::Relaxed), 0);
         drop(records);
         drop(client);
+        phase.set("waiting for cancelled RPC cleanup");
         closed.notified().await;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
-    .await?
+    .await;
+    if result.is_err() {
+        eprintln!("blocked-peer watchdog expired while {}", phase.get());
+    }
+    result?
 }
 
 #[tokio::test]
