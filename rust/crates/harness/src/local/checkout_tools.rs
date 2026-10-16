@@ -47,16 +47,6 @@ async fn serialized<T, R>(
     command(lock_owned(StateArc::clone(state)).await).await
 }
 
-// A submitted blocking job owns the guard until its body and cleanup finish,
-// even when its awaiting task is cancelled.
-fn guarded<T, R>(
-    mut state: OwnedMutexGuard<T>,
-    operation: impl FnOnce(&mut T) -> R,
-) -> (R, OwnedMutexGuard<T>) {
-    let result = operation(&mut *state);
-    (result, state)
-}
-
 impl CheckoutTools {
     pub(super) async fn new(
         workspace: Arc<LocalWorkspace>,
