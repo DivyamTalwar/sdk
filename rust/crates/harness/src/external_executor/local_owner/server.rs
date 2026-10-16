@@ -1,6 +1,7 @@
 //! The surviving local owner serves the SDK Streams API, never harness RPCs.
 use super::*;
 use crate::task_volume::{Component, FileKey, FileValue, TaskFile, TaskVolume};
+use acyclic_stream::StreamProvider as _;
 use acyclic_stream::grpc::Service as StreamService;
 use fs2::FileExt as _;
 use futures::StreamExt as _;
@@ -237,21 +238,90 @@ pub(super) async fn drive(
     stop: Arc<TaskVolume<LocalStream>>,
     instance: uuid::Uuid,
 ) -> Result<()> {
-    let (requests, _) = harness.external_volumes();
-    let mut files =
-        request_feed::follow(harness.task_stream().as_ref(), requests.path().clone()).await?;
+    let mut children = harness
+        .task_stream()
+        .children(acyclic_stream::ChildrenRequest {
+            parent: Some(StreamPath::new(super::super::local_paths::REQUESTS).map_err(storage)?),
+            limit: 64,
+        })
+        .await
+        .map_err(storage)?;
+    let mut tasks = futures::stream::FuturesUnordered::new();
+    let stopping = stopped(&stop, instance);
+    tokio::pin!(stopping);
+    let result = loop {
+        tokio::select! {
+            biased;
+            result = &mut stopping => break result,
+            finished = tasks.next(), if !tasks.is_empty() => {
+                if let Some(Err(error)) = finished {break Err(error);}
+            }
+            child = children.next() => {
+                let path = match child {
+                    Some(Ok(child)) => child.path,
+                    Some(Err(error)) => break Err(storage(error)),
+                    None => break Err(Error::Storage("local task discovery ended".into())),
+                };
+                match super::super::local_paths::task(super::super::local_paths::REQUESTS,&path) {
+                    Ok(task) => tasks.push(Box::pin(drive_task(Arc::clone(&harness),task,
+                        Arc::clone(&stop),instance))),
+                    Err(error) => break Err(error),
+                }
+            }
+        }
+    };
+    if result.is_err() {
+        // Fail closed on a broken provider follow, then drain every active
+        // effect before releasing the workspace's sole owner.
+        let file = FileValue::new(stop_key(instance)?, b"{}".as_slice());
+        super::super::publish_request(&stop, &file, None, None)
+            .await
+            .map_err(storage)?;
+    }
+    let mut result = result;
+    while let Some(finished) = tasks.next().await {
+        if let Err(error) = finished {
+            if result.is_ok() {
+                result = Err(error);
+            }
+        }
+    }
+    result
+}
+
+async fn drive_task(
+    harness: Arc<LocalHarness>,
+    task: crate::TaskId,
+    stop: Arc<TaskVolume<LocalStream>>,
+    instance: uuid::Uuid,
+) -> Result<()> {
+    let volumes = harness.external_volumes(task).await?;
+    let mut files = request_feed::follow(
+        harness.task_stream().as_ref(),
+        volumes.requests.path().clone(),
+    )
+    .await?;
     let stopping = stopped(&stop, instance);
     tokio::pin!(stopping);
     loop {
         let request = tokio::select! {
             biased;
-            result = &mut stopping => return result,
-            file = files.next() => match file {
-                Some(request) => request?,
-                None => return Err(Error::Storage("local request follow ended".into())),
-            }
+            stopped = &mut stopping => return stopped,
+            request = files.next() => request
+                .ok_or_else(|| Error::Storage("local request follow ended".into()))??,
         };
-        harness.external_request(&request).await?;
+        if request.task_id() != task {
+            return Err(Error::Unauthorized(
+                "request belongs to another task stream".into(),
+            ));
+        }
+        if harness
+            .external_request_until(&request, stopped(&stop, instance))
+            .await?
+            .is_none()
+        {
+            return Ok(());
+        }
     }
 }
 

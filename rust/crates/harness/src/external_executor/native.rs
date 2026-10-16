@@ -105,7 +105,7 @@ pub(super) fn run_request<'a>(
         let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
-                let (requests, results) = local_volumes(cwd).await?;
+                let (requests, results) = local_volumes(cwd, request.task_id()).await?;
                 let task = Component::new(request.task_id().to_string()).map_err(storage)?;
                 return Ok((
                     request
@@ -140,7 +140,13 @@ pub(super) fn read_tool_result(
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
                 let cwd = std::env::current_dir().map_err(storage)?;
-                let (requests, results) = local_volumes(&cwd).await?;
+                let key = super::handoff::file_key(&arguments)?;
+                let crate::task_volume::FileKey::Task { task, .. } = key else {
+                    return Err(Error::Invalid("native result is not a task file".into()));
+                };
+                let id = uuid::Uuid::parse_str(task.as_str()).map_err(storage)?;
+                let (requests, results) =
+                    local_volumes(&cwd, crate::TaskId::from_bytes(id.into_bytes())).await?;
                 return super::handoff::read_result(name, arguments, &requests, &results).await;
             }
             #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
@@ -191,24 +197,49 @@ async fn platform_volumes(
 #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 async fn local_volumes(
     cwd: &std::path::Path,
+    task: crate::TaskId,
 ) -> Result<(
     TaskVolume<acyclic_stream::grpc::Client>,
     TaskVolume<acyclic_stream::grpc::Client>,
 )> {
     let (client, _) = super::local_owner::binding(cwd).await?;
     let provider = Arc::new(client);
-    let requests = TaskVolume::open_existing(
+    let requests = TaskVolume::open(
         provider.clone(),
-        StreamPath::new("external/requests").map_err(storage)?,
+        super::local_paths::path(super::local_paths::REQUESTS, task),
     )
     .await
     .map_err(storage)?;
-    let results = TaskVolume::open_existing(
-        provider,
-        StreamPath::new("external/results").map_err(storage)?,
-    )
-    .await
-    .map_err(storage)?;
+    let result_path = super::local_paths::path(super::local_paths::RESULTS, task);
+    match TaskVolume::open_existing(provider.clone(), result_path.clone()).await {
+        Ok(results) => return Ok((requests, results)),
+        Err(crate::task_volume::Error::ResetRequired) => {}
+        Err(error) => return Err(storage(error)),
+    }
+    // Only the owner creates result volumes. Discovery is a live replay plus
+    // follow, so cold task binding has no sleep or check/subscription gap.
+    use acyclic_stream::StreamProvider as _;
+    use futures::StreamExt as _;
+    let mut children = provider
+        .children(acyclic_stream::ChildrenRequest {
+            parent: Some(StreamPath::new(super::local_paths::RESULTS).map_err(storage)?),
+            limit: 64,
+        })
+        .await
+        .map_err(storage)?;
+    loop {
+        let child = children
+            .next()
+            .await
+            .ok_or_else(|| Error::Storage("result discovery ended".into()))?
+            .map_err(storage)?;
+        if child.path == result_path {
+            break;
+        }
+    }
+    let results = TaskVolume::open_existing(provider, result_path)
+        .await
+        .map_err(storage)?;
     Ok((requests, results))
 }
 

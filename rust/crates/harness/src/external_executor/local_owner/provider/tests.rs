@@ -15,7 +15,8 @@ fn client_commit_authority_never_widens_to_owner_paths() {
             .unwrap(),
     );
     let client = ClientStream::workspace(Arc::clone(&local));
-    let writable = StreamPath::new("external/requests").unwrap();
+    let task = crate::TaskId::from_bytes([1; 16]);
+    let writable = super::super::super::local_paths::path("external/requests", task);
     runtime
         .block_on(local.append(AppendRequest {
             path: writable,
@@ -24,7 +25,7 @@ fn client_commit_authority_never_widens_to_owner_paths() {
             idempotency_key: None,
         }))
         .unwrap();
-    let protected = StreamPath::new("external/results").unwrap();
+    let protected = super::super::super::local_paths::path("external/results", task);
     runtime
         .block_on(local.append(AppendRequest {
             path: protected.clone(),
@@ -34,6 +35,14 @@ fn client_commit_authority_never_widens_to_owner_paths() {
         }))
         .unwrap();
     let strategy = prop_oneof![
+        Just(format!("external/requests/{task}")),
+        Just(format!("external/results/{task}")),
+        Just(format!("external/requests/{task}/private")),
+        Just(format!("external/requests/{{{task}}}")),
+        Just(format!(
+            "external/requests/{}",
+            uuid::Uuid::from_bytes(task.into_bytes()).simple()
+        )),
         Just("external/requests".to_owned()),
         Just("external/results".to_owned()),
         Just("owner/control".to_owned()),
@@ -63,7 +72,7 @@ fn client_commit_authority_never_widens_to_owner_paths() {
                     .unwrap(),
             };
             let result = runtime.block_on(client.commit(request));
-            if name == "external/requests" {
+            if name == format!("external/requests/{task}") {
                 prop_assert!(
                     matches!(result, Ok(CommitOutcome::Committed(_))),
                     "{result:?}"

@@ -2,6 +2,134 @@
 use super::*;
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn task_stream_drivers_keep_a_parent_wait_and_child_completion_independent() -> Result<()> {
+    use crate::external_executor::{ExternalHost, request};
+    use serde_json::json;
+    let root = tempfile::tempdir().map_err(storage)?;
+    let project = root.path().join("project");
+    std::fs::create_dir(&project).map_err(storage)?;
+    let harness = Arc::new(LocalHarness::open(LocalHarnessConfig::external(&project)).await?);
+    let stop = Arc::new(
+        TaskVolume::open(
+            harness.task_stream(),
+            StreamPath::new("test/control").map_err(storage)?,
+        )
+        .await
+        .map_err(storage)?,
+    );
+    let instance = uuid::Uuid::new_v4();
+    let handler = drive_task(
+        Arc::clone(&harness),
+        crate::TaskId::from_bytes([7; 16]),
+        Arc::clone(&stop),
+        instance,
+    );
+    let size = std::mem::size_of_val(&handler);
+    eprintln!("per-task owner handler future: {size} bytes");
+    assert!(size < 16 * 1024, "task handler future grew to {size} bytes");
+    drop(handler);
+    let scenario = async {
+        for host in [
+            ExternalHost::Codex,
+            ExternalHost::ClaudeCode,
+            ExternalHost::Pi,
+        ] {
+            let pi = host == ExternalHost::Pi;
+            let attach = if pi { "session_start" } else { "SessionStart" };
+            let parent = request(host, attach, json!({"sessionId":host.name(),"cwd":project}))?;
+            let parent_files = harness.external_volumes(parent.task_id()).await?;
+            let folder = Component::new(parent.task_id().to_string()).map_err(storage)?;
+            parent
+                .send(
+                    &parent_files.requests,
+                    &parent_files.results,
+                    folder.clone(),
+                )
+                .await
+                .map_err(storage)?;
+            let fork = request(
+                host,
+                if pi {
+                    "subagent_start"
+                } else {
+                    "SubagentStart"
+                },
+                json!({"sessionId":host.name(),"agentId":"child","agentType":"worker"}),
+            )?;
+            fork.send(
+                &parent_files.requests,
+                &parent_files.results,
+                folder.clone(),
+            )
+            .await
+            .map_err(storage)?;
+            let child = request(
+                host,
+                attach,
+                json!({"sessionId":host.name(),"agentId":"child","cwd":project}),
+            )?;
+            let child_files = harness.external_volumes(child.task_id()).await?;
+            let child_folder = Component::new(child.task_id().to_string()).map_err(storage)?;
+            child
+                .send(
+                    &child_files.requests,
+                    &child_files.results,
+                    child_folder.clone(),
+                )
+                .await
+                .map_err(storage)?;
+            let join = request(
+                host,
+                if pi { "subagent_stop" } else { "SubagentStop" },
+                json!({"sessionId":host.name(),"agentId":"child"}),
+            )?;
+            let ended = async {
+                let key = FileKey::Task {
+                    task: folder.clone(),
+                    file: TaskFile::RequestStarted(
+                        Component::new(join.operation_id.to_string()).map_err(storage)?,
+                    ),
+                };
+                super::super::super::client::follow_file(&parent_files.results, key)
+                    .await
+                    .map_err(storage)?
+                    .await
+                    .map_err(storage)?;
+                let end = request(
+                    host,
+                    if pi { "session_shutdown" } else { "SessionEnd" },
+                    json!({"sessionId":host.name(),"agentId":"child"}),
+                )?;
+                end.send(&child_files.requests, &child_files.results, child_folder)
+                    .await
+                    .map_err(storage)
+            };
+            let (joined, ended) = tokio::join!(
+                join.send(
+                    &parent_files.requests,
+                    &parent_files.results,
+                    folder.clone()
+                ),
+                ended
+            );
+            assert_eq!(joined.map_err(storage)?, json!({"Succeeded":null}));
+            ended?;
+        }
+        let file = FileValue::new(stop_key(instance)?, b"{}".as_slice());
+        super::super::super::publish_request(&stop, &file, None, None)
+            .await
+            .map_err(storage)?;
+        Ok::<_, Error>(())
+    };
+    let mut driver = Box::pin(drive(Arc::clone(&harness), Arc::clone(&stop), instance));
+    tokio::select! {
+        result = &mut driver => panic!("request driver exited before scenario completed: {result:?}"),
+        result = scenario => result?,
+    }
+    driver.await
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
     #[test]

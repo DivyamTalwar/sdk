@@ -59,7 +59,7 @@ pub(super) fn answer(request: ExternalRequest, task: Component, result: &Value) 
     Ok(answer)
 }
 
-pub(super) fn file_key(arguments: &Value) -> Result<FileKey> {
+pub(crate) fn file_key(arguments: &Value) -> Result<FileKey> {
     FileKey::parse(
         arguments
             .get(FIELD)

@@ -29,7 +29,7 @@ mod admission;
 mod checkout_tools;
 mod compaction;
 mod config;
-mod external;
+pub(crate) mod external;
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;
 mod owner;
@@ -57,7 +57,8 @@ pub(crate) type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
-    external_volumes: external::Volumes,
+    external_bindings:
+        crate::external_executor::task_bindings::TaskBindings<Option<Arc<external::Volumes>>>,
     runtime: Arc<LocalTaskRuntime>,
     project: VolumeRef,
     scratch: VolumeRef,
@@ -72,15 +73,14 @@ pub struct LocalHarness {
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     // Lock order: local admission/session gate -> filesystem/provider locks.
-    // Stock admission releases before execution; native delivery retains the
-    // gate through settlement. Providers/tools never acquire this outer gate.
+    // Stock admission releases before execution. External tasks instead use
+    // their independent binding gates. Providers never acquire either gate.
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
 impl LocalHarness {
-    #[cfg(any(test, feature = "test-support", feature = "hooks"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
     }
@@ -262,7 +262,6 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            let external_volumes = external::Volumes::open(stream.clone()).await?;
             let task_files = Arc::new(
                 crate::task_volume::TaskFiles::open(
                     stream,
@@ -276,7 +275,7 @@ impl LocalHarness {
             Ok(Self {
                 files,
                 task_files,
-                external_volumes,
+                external_bindings: Default::default(),
                 runtime,
                 project: owner.project.clone(),
                 scratch,

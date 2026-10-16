@@ -5,37 +5,10 @@ use acyclic_harness::{
     external_executor::{ExternalAction, ExternalHost, ExternalRequest, request},
     task_volume::{Component, Query, TaskVolume},
 };
-use acyclic_stream::{StreamPath, grpc::Client};
+use acyclic_stream::grpc::Client;
 use native_hooks::*;
-use serde_json::{Value, json};
-use std::sync::Arc;
+use serde_json::json;
 use tokio::io::AsyncWriteExt as _;
-
-async fn request_files(fixture: &Fixture) -> Result<TaskVolume<Client>> {
-    let root = fixture.path().parent().unwrap().join("owner");
-    let address: Value = serde_json::from_slice(&std::fs::read(root.join("address.json"))?)?;
-    let secret: [u8; 32] = std::fs::read(root.join("credential"))?
-        .try_into()
-        .map_err(|_| "invalid owner key")?;
-    let path = std::fs::canonicalize(fixture.path())?;
-    let scope = blake3::hash(path.as_os_str().as_encoded_bytes())
-        .to_hex()
-        .to_string();
-    let token = format!(
-        "{scope}.{}",
-        blake3::keyed_hash(&secret, scope.as_bytes()).to_hex()
-    );
-    let client = Client::connect_eager_with_ca_certificate(
-        address["endpoint"].as_str().ok_or("missing endpoint")?,
-        &token,
-        address["certificate"]
-            .as_str()
-            .ok_or("missing certificate")?
-            .as_bytes(),
-    )
-    .await?;
-    Ok(TaskVolume::open_existing(Arc::new(client), StreamPath::new("external/requests")?).await?)
-}
 
 async fn recorded(files: &TaskVolume<Client>, expected: &ExternalRequest) -> Result {
     let task = Component::new(expected.task_id().to_string())?;
@@ -67,7 +40,13 @@ async fn foreign_mcp_and_native_calls_are_host_executed_and_recorded_for_every_h
             json!({"session_id":session,"cwd":cwd}),
         )
         .await?;
-        let files = request_files(&fixture).await?;
+        let task = request(
+            host,
+            if pi { "session_start" } else { "SessionStart" },
+            json!({"session_id":session,"cwd":cwd}),
+        )?
+        .task_id();
+        let files = files(cwd, &format!("external/requests/{task}")).await?;
         for name in [
             "mcp__configured__write",
             if pi { "custom_write" } else { "Write" },

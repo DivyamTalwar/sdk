@@ -44,6 +44,7 @@ impl Address {
 
 #[cfg(feature = "test-support")]
 pub(crate) fn fuzz_input(bytes: &[u8]) {
+    super::local_paths::fuzz(bytes);
     request_feed::fuzz_bytes(bytes);
     let _ = Address::from_bytes(bytes);
     let _ = super::volume::decode::<PathBuf>(bytes);

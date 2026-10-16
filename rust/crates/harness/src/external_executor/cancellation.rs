@@ -22,7 +22,7 @@ pub(super) async fn settle<T, C>(
     }
 }
 
-pub(super) async fn prepare<P: acyclic_stream::StreamProvider + ?Sized>(
+pub(crate) async fn prepare<P: acyclic_stream::StreamProvider + ?Sized>(
     requests: &crate::task_volume::TaskVolume<P>,
     request: &super::ExternalRequest,
     task: crate::task_volume::Component,

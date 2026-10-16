@@ -25,17 +25,24 @@ impl ClientStream {
         }
     }
     fn readable(&self, path: &StreamPath) -> Result<(), StreamError> {
-        if self.read.contains(&path.as_str()) {
+        if self.read.iter().any(|parent| self.matches(parent, path)) {
             Ok(())
         } else {
             Err(StreamError::AccessDenied)
         }
     }
     fn writable(&self, path: &StreamPath) -> Result<(), StreamError> {
-        if path.as_str() == self.write {
+        if self.matches(self.write, path) {
             Ok(())
         } else {
             Err(StreamError::AccessDenied)
+        }
+    }
+    fn matches(&self, parent: &str, path: &StreamPath) -> bool {
+        if self.write == "owner/control" {
+            path.as_str() == parent
+        } else {
+            super::super::local_paths::task(parent, path).is_ok()
         }
     }
     fn commit_allowed(&self, request: &CommitRequest) -> Result<(), StreamError> {
@@ -103,8 +110,16 @@ impl StreamProvider for ClientStream {
         self.readable(&path)?;
         self.stream.follow_checked(path, from, preceding).await
     }
-    async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        Err(StreamError::AccessDenied)
+    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        if self.write == "owner/control"
+            || !request
+                .parent
+                .as_ref()
+                .is_some_and(|parent| self.read.contains(&parent.as_str()))
+        {
+            return Err(StreamError::AccessDenied);
+        }
+        self.stream.children(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.commit_allowed(&request)?;

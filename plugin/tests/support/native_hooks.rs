@@ -55,6 +55,22 @@ pub fn command(directory: &Path) -> Command {
 }
 
 pub async fn hook(directory: &Path, host: &str, event: &str, input: Value) -> Result<Value> {
+    let child = start_hook(directory, host, event, input).await?;
+    let output = child.wait_with_output().await?;
+    assert!(
+        output.status.success(),
+        "{host} {event}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+pub async fn start_hook(
+    directory: &Path,
+    host: &str,
+    event: &str,
+    input: Value,
+) -> Result<tokio::process::Child> {
     let mut child = command(directory).args(["__hook", host, event]).spawn()?;
     child
         .stdin
@@ -62,11 +78,38 @@ pub async fn hook(directory: &Path, host: &str, event: &str, input: Value) -> Re
         .ok_or("hook stdin missing")?
         .write_all(&serde_json::to_vec(&input)?)
         .await?;
-    let output = child.wait_with_output().await?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+    Ok(child)
+}
+
+pub async fn files(
+    directory: &Path,
+    path: &str,
+) -> Result<acyclic_harness::task_volume::TaskVolume<acyclic_stream::grpc::Client>> {
+    let root = directory.parent().unwrap().join("owner");
+    let address: Value = serde_json::from_slice(&std::fs::read(root.join("address.json"))?)?;
+    let secret: [u8; 32] = std::fs::read(root.join("credential"))?
+        .try_into()
+        .map_err(|_| "invalid owner key")?;
+    let canonical = std::fs::canonicalize(directory)?;
+    let scope = blake3::hash(canonical.as_os_str().as_encoded_bytes())
+        .to_hex()
+        .to_string();
+    let token = format!(
+        "{scope}.{}",
+        blake3::keyed_hash(&secret, scope.as_bytes()).to_hex()
     );
-    Ok(serde_json::from_slice(&output.stdout)?)
+    let client = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
+        address["endpoint"].as_str().ok_or("missing endpoint")?,
+        &token,
+        address["certificate"]
+            .as_str()
+            .ok_or("missing certificate")?
+            .as_bytes(),
+    )
+    .await?;
+    Ok(acyclic_harness::task_volume::TaskVolume::open_existing(
+        std::sync::Arc::new(client),
+        acyclic_stream::StreamPath::new(path)?,
+    )
+    .await?)
 }

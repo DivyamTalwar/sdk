@@ -46,7 +46,6 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
     let directory = tempfile::tempdir().map_err(storage)?;
     let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
     let opened = started.elapsed();
-    let volumes = harness.external_volumes();
     let host = crate::external_executor::ExternalHost::Pi;
     let attach = crate::external_executor::request(
         host,
@@ -54,6 +53,7 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
         serde_json::json!({"sessionId":"parallel", "cwd":directory.path()}),
     )?;
     harness.external_request(&attach).await?;
+    let volumes = harness.external_volumes(attach.task_id()).await?;
     let attached = started.elapsed();
     let tool = |name: &str| {
         crate::external_executor::request(
@@ -72,8 +72,15 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
     crate::external_executor::tool_result(left?)?;
     crate::external_executor::tool_result(right?)?;
     let executed = started.elapsed();
-    assert!(std::ptr::eq(volumes.0, harness.external_volumes().0));
-    assert!(std::ptr::eq(volumes.1, harness.external_volumes().1));
+    assert!(Arc::ptr_eq(
+        &volumes,
+        &harness.external_volumes(attach.task_id()).await?
+    ));
+    let other = harness
+        .external_volumes(TaskId::from_bytes([99; 16]))
+        .await?;
+    assert!(!Arc::ptr_eq(&volumes, &other));
+    assert_ne!(volumes.requests.path(), other.requests.path());
     for name in ["first.txt", "second.txt"] {
         assert_eq!(
             std::fs::read_to_string(directory.path().join(name)).map_err(storage)?,
@@ -85,6 +92,53 @@ async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<(
         attached - opened,
         executed - attached,
         started.elapsed()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_releases_a_passive_wait_and_replay_finishes_after_child_completion() -> Result<()>
+{
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
+    let event = |event, input| {
+        crate::external_executor::request(crate::external_executor::ExternalHost::Pi, event, input)
+    };
+    let attach = event(
+        "session_start",
+        serde_json::json!({"sessionId":"wait","cwd":directory.path()}),
+    )?;
+    harness.external_request(&attach).await?;
+    let fork = event(
+        "subagent_start",
+        serde_json::json!({"sessionId":"wait","agentId":"child"}),
+    )?;
+    harness.external_request(&fork).await?;
+    let child = event(
+        "session_start",
+        serde_json::json!({"sessionId":"wait","agentId":"child","cwd":directory.path()}),
+    )?;
+    harness.external_request(&child).await?;
+    let join = event(
+        "subagent_stop",
+        serde_json::json!({"sessionId":"wait","agentId":"child"}),
+    )?;
+    assert_eq!(harness.external_step(&join).await?, None);
+    let waiting = harness.external_request_until(&join, async { Ok(()) });
+    eprintln!(
+        "passive native request future: {} bytes",
+        std::mem::size_of_val(&waiting)
+    );
+    assert!(std::mem::size_of_val(&waiting) < 16 * 1024);
+    assert_eq!(waiting.await?, None);
+    let detach = event(
+        "session_shutdown",
+        serde_json::json!({"sessionId":"wait","agentId":"child"}),
+    )?;
+    harness.external_request(&detach).await?;
+    assert_eq!(
+        harness.external_request(&join).await?,
+        serde_json::json!({"Succeeded":null})
     );
     Ok(())
 }
@@ -111,7 +165,8 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
         let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
         harness.external_request(&attach).await?;
         let task = Component::new(first.task_id().to_string()).map_err(storage)?;
-        let (requests, results) = harness.external_volumes();
+        let volumes = harness.external_volumes(first.task_id()).await?;
+        let (requests, results) = (&volumes.requests, &volumes.results);
         let file = first.to_file(task.clone()).map_err(storage)?;
         let cut = requests
             .snapshot(&Query::File(file.key.clone()), 1)
@@ -161,6 +216,7 @@ async fn published_result_recovers_before_retry_or_the_next_request() -> Result<
         );
         drop(interrupted);
         drop(publisher);
+        drop(volumes);
         drop(harness);
         let reopened = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
         if retry {

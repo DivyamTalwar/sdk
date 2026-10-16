@@ -216,6 +216,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.stream.clone()
     }
 
+    /// Follows from the coordinator's exact observed cut. The guard is released
+    /// before the returned follow waits, so other tasks can publish the wake.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn workflow_changes(&self) -> Result<acyclic_stream::RecordStream> {
+        self.coordinator.lock().await.changes().await
+    }
+
     /// Wakes the exact command wait with its stable null input.
     #[cfg(feature = "filesystem")]
     pub(crate) async fn wake_command(

@@ -3,7 +3,7 @@
 mod answer;
 mod append;
 #[cfg(feature = "filesystem")]
-mod cancellation;
+pub(crate) mod cancellation;
 mod catalog;
 mod client;
 #[cfg(feature = "filesystem")]
@@ -21,6 +21,8 @@ mod intake;
     not(target_arch = "wasm32")
 ))]
 mod local_owner;
+#[cfg(feature = "filesystem-local")]
+pub(crate) mod local_paths;
 mod manifest;
 #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
 mod mcp;
@@ -29,6 +31,8 @@ mod native;
 mod normalize;
 #[cfg(feature = "filesystem")]
 mod prepared;
+#[cfg(feature = "filesystem-local")]
+pub(crate) mod progress;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 pub(crate) use prepared::fuzz_command;
 #[cfg(feature = "filesystem")]
@@ -36,6 +40,8 @@ mod publication;
 mod request;
 mod result;
 mod session;
+#[cfg(feature = "filesystem-local")]
+pub(crate) mod task_bindings;
 #[cfg(feature = "filesystem")]
 mod tool_input;
 pub(crate) mod volume;
@@ -46,6 +52,8 @@ pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
 #[cfg(feature = "filesystem")]
 pub use commands::RequestCommands;
 pub use failure::hook_failure;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub(crate) use handoff::file_key as native_result_key;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use handoff::native_tool_request;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
