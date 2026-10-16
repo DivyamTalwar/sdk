@@ -53,7 +53,7 @@ test("saved parallel calls preserve invocation authority and provider metadata i
       for (const [index, call] of calls.entries()) {
         const saved = contracts.decodeCanonicalJson(await host.read(call.content));
         expect(saved).toEqual({ invocation: {
-          operation_id: receipts[index]!.operationId, call_id: `call_${index}`, name: "echo_saved", arguments: { value: index },
+          operation_id: receipts[index]!.operationId, call_id: `call_${index}`, name: "echo_saved", arguments: { value: BigInt(index) },
         }, metadata: metadata[index] });
       }
       expect((await host.runPrompt(runtime, "second")).text).toBe("done");
