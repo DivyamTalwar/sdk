@@ -29,7 +29,7 @@ struct State<L> {
     waiters: Vec<Waker>,
 }
 
-#[cfg(all(test, loom))]
+#[cfg(all(test, acyclic_harness_loom))]
 #[path = "lifetime/models.rs"]
 mod models;
 
