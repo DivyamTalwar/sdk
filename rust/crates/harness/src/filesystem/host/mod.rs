@@ -5,6 +5,8 @@ pub struct FilesystemHost<A, O> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    project_family: Option<(acyclic_fs::WorkspaceId, acyclic_fs::LocalCoreStateStore)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -43,6 +45,8 @@ impl<A, O> FilesystemHost<A, O> {
             filesystem,
             provider,
             workspace_binding: None,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            project_family: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_custody,
         }))
@@ -68,12 +72,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
                 workspace,
             )),
+            #[cfg(feature = "filesystem-local")]
+            project_family: self.project_family.clone(),
             _native_custody: None,
         }))
     }
 }
 
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl<A, O> FilesystemHost<A, O> {
+    pub(crate) fn with_project_family(
+        mut self: Arc<Self>,
+        root: acyclic_fs::WorkspaceId,
+        store: acyclic_fs::LocalCoreStateStore,
+    ) -> Result<Arc<Self>> {
+        Arc::get_mut(&mut self)
+            .ok_or_else(|| Error::Conflict("bind the project before sharing its host".into()))?
+            .project_family = Some((root, store));
+        Ok(self)
+    }
+}
+
 mod content;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod family;
 mod keys;
 mod reads;
 mod volumes;

@@ -104,6 +104,12 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
 #[cfg(unix)]
 #[tokio::test]
 async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() -> Result<()> {
+    let _diagnostics = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_test_writer()
+            .finish(),
+    );
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let write = |index: usize, text: &str| {
@@ -137,6 +143,18 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     run(&harness).await?;
     let requests = provider.requests();
     assert_eq!(requests.len(), 9);
+    for content in requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+    {
+        let result = serde_json::to_string(content).map_err(super::super::storage)?;
+        assert!(!result.contains("\"error\""), "{result}");
+    }
     for (id, expected) in [
         ("checkout-1", "main file"),
         ("checkout-5", "child file"),
@@ -165,6 +183,65 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
         b"main file"
     );
     assert!(!directory.path().join(".system").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let unread = directory.path().join("unread.txt");
+    std::fs::write(&unread, b"unrelated source bytes").map_err(super::super::storage)?;
+    std::fs::set_permissions(&unread, std::fs::Permissions::from_mode(0))
+        .map_err(super::super::storage)?;
+    let provider = commands(&[
+        ("bash", "echo first"),
+        ("bash", "echo second"),
+        ("bash", "echo third"),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    let view = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let before = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .id();
+    run(&harness).await?;
+    let after = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .id();
+    assert_eq!(
+        after, before,
+        "read-only shell commands authored the lazy source tree"
+    );
+    assert_eq!(provider.requests().len(), 4);
+    assert!(
+        !directory.path().join(".git").exists(),
+        "watch fencing changed the checkout"
+    );
+    assert_eq!(
+        std::fs::metadata(&unread)
+            .map_err(super::super::storage)?
+            .permissions()
+            .mode()
+            & 0o777,
+        0
+    );
     Ok(())
 }
 

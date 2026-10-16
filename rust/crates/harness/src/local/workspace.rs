@@ -15,6 +15,7 @@ pub(super) type View = LazyWorkspace<
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
+    pub(super) fresh: bool,
     view: View,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
@@ -114,6 +115,7 @@ pub(super) async fn open(
         ));
     }
     let source = Arc::new(source);
+    let fresh = original.is_none();
     let view = match original {
         Some(_) => {
             let workspace = filesystem
@@ -145,6 +147,7 @@ pub(super) async fn open(
         .map_err(storage)?;
     Ok(LocalWorkspace {
         path,
+        fresh,
         view,
         filesystem: filesystem.clone(),
         store,

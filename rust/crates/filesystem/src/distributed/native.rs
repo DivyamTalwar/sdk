@@ -197,16 +197,19 @@ impl<'a> AuthorityWork<'a> {
         generation: Option<GenerationId>,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
         const PREFIX: &[u8] = b"fs/authorities/";
+        // The longest generated authority path is its generation locator;
+        // the public Streams path limit is unrelated to this fixed schema.
+        const PATH_BYTES: usize = PREFIX.len() + 32 + b"/generations/".len() + 64;
         let length = PREFIX
             .len()
             .checked_add(32)
             .and_then(|n| n.checked_add(suffix.len()))
             .and_then(|n| n.checked_add(if generation.is_some() { 64 } else { 0 }))
-            .filter(|n| *n <= acyclic_stream::MAX_PATH_BYTES)
+            .filter(|n| *n <= PATH_BYTES)
             .ok_or(AuthorityStoreError::RejectedStatic("fork path is too long"))?;
         let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        let mut text = [0_u8; PATH_BYTES];
         text.get_mut(..PREFIX.len())
             .ok_or(crate::WorkError::Overflow)?
             .copy_from_slice(PREFIX);
@@ -257,7 +260,7 @@ impl<'a> AuthorityWork<'a> {
         lease: crate::OperationLeaseId,
         expiry: u64,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        let mut text = [0_u8; crate::operation_window::lease_path::MAX_ENCODED_BYTES];
         let length = crate::operation_window::lease_path::encode(
             workspace,
             lease,

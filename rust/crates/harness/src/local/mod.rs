@@ -131,6 +131,14 @@ impl LocalHarness {
                 LocalProject::Volume { .. } => None,
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
             // A configured project is opened, never silently replaced by an empty volume.
             files
                 .resolve(

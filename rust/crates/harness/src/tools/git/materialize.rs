@@ -1,16 +1,22 @@
 use super::*;
 
 /// Publishes git facade mutations into the ordinary checkout.
-pub struct RootMaterializingGitExecutor<'a> {
+pub struct RootMaterializingGitExecutor<'a, F> {
     /// Managed workspace executor.
     pub inner: WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
     pub source_root_identity: acyclic_fs::NativeRootIdentity,
+    /// Revalidates the admitted task and its publication permit before each effect.
+    pub before_effect: F,
 }
 
-impl RootMaterializingGitExecutor<'_> {
+impl<F, Fut> RootMaterializingGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), GitError>> + Send,
+{
     /// Publishes a generation transition into the checkout.
     pub async fn materialize(
         &self,
@@ -40,19 +46,26 @@ impl RootMaterializingGitExecutor<'_> {
             operation_id,
             from,
             to_generation,
+            &|| self.validate(),
         )
         .await
     }
 }
 
-pub(crate) async fn publish_checkout_transition(
+pub(crate) async fn publish_checkout_transition<F, Fut>(
     root: &Path,
     source_root_identity: acyclic_fs::NativeRootIdentity,
     store: &LocalCoreStateStore,
     operation_id: OperationId,
     from: LocalGeneration,
     to_generation: LocalGeneration,
-) -> Result<(), GitError> {
+    before_effect: &F,
+) -> Result<(), GitError>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), GitError>> + Send,
+{
+    before_effect().await?;
     let to = to_generation.id();
     if from.id() == to {
         return Ok(());
@@ -98,7 +111,13 @@ pub(crate) async fn publish_checkout_transition(
         },
         acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| display(cause))?,
-        || std::future::ready(Ok(())),
+        || async {
+            before_effect().await.map_err(|error| {
+                acyclic_fs::NativeWorkspacePublicationError::Native(
+                    acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(error)),
+                )
+            })
+        },
     )
     .await
     .map_err(|(cause, _)| display(cause))?;
@@ -114,8 +133,17 @@ pub(crate) async fn publish_checkout_transition(
     Ok(())
 }
 
-impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
+impl<F, Fut> GitFilesystemExecutor for RootMaterializingGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), GitError>> + Send,
+{
     type Error = GitError;
+
+    async fn validate(&self) -> Result<(), Self::Error> {
+        (self.before_effect)().await?;
+        self.inner.validate().await
+    }
 
     async fn execute(
         &self,

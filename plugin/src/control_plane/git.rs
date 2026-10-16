@@ -276,6 +276,7 @@ impl ControlPlane {
             source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(
                 root_binding.created()?.native_root_identity,
             ),
+            before_effect: || std::future::ready(Ok(())),
         };
         let repository = GitCompatRepository::new(repository_id, self.store.clone());
         let output = run_git_command(

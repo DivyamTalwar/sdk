@@ -346,13 +346,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .key()
             .try_into()
             .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
+        let generation = GenerationId::new(Digest::from_bytes(key));
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some((root, store)) = &self.project_family
+            && workspace.id() == *root
+        {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || {
+                self.project_generation(workspace, generation, *root, store, io)
+            })?
+            .await;
+        }
+
         io.sdk(
             workspace
-                .generation(
-                    GenerationId::new(Digest::from_bytes(key)),
-                    io,
-                    io.cancellation(),
-                )
+                .generation(generation, io, io.cancellation())
                 .await,
         )
     }

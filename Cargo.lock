@@ -334,6 +334,7 @@ dependencies = [
  "acyclic-harness",
  "bytes",
  "libfuzzer-sys",
+ "prost",
  "rmcp",
  "serde",
  "serde_json",

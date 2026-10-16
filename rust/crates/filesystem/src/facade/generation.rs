@@ -238,3 +238,32 @@ pub(super) fn generation_from_head_record_value(
     }
     generation_from_record(record, volume_id, accounting)
 }
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    /// Resolves the owning workspace from an authenticated immutable generation.
+    pub async fn generation_workspace_id<W: FsWork>(
+        &self,
+        generation: GenerationId,
+        config: VolumeConfig,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::WorkspaceId, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let (root, _allocation) = crate::kernel::read_generation_root_with_accounting(
+                &self.inner.objects,
+                ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: generation.digest(),
+                },
+                config,
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
+            Ok(crate::WorkspaceId::from_bytes(root.volume_id.into_bytes()))
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+}

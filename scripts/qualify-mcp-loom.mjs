@@ -6,7 +6,7 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
   const build = run("cargo", [
     "rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom",
     ...features, "--features", "model-checking",
-  ], { env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom` }, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+  ], { env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);
   const binaries = [];

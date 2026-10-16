@@ -9,6 +9,7 @@ pub(crate) use std::sync::{Arc, atomic};
     feature = "filesystem-local",
     not(target_arch = "wasm32")
 ))]
+#[path = "sync/owned.rs"]
 pub(crate) mod owned;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
