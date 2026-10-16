@@ -3,7 +3,7 @@ use acyclic_harness::{
     client::{CommandFileRoot, CommandSession, PromptFiles},
     task_volume::TaskVolume,
     tui::{
-        Editor, PromptInput,
+        PromptInput,
         key_event::{KeyCode, KeyEvent, KeyModifiers},
     },
 };
@@ -125,14 +125,17 @@ proptest::proptest! {
             projection.refresh(&files, &mut input).unwrap();
             let mut expected = acyclic_harness::tui::PromptHistory::default();
             for (local, remote) in sequence {
-                let normalized = Editor::new(&local).text().to_owned();
                 let previous = expected.entries().last().cloned();
                 input.editor.set_text(&local, 0);
-                input.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 1, 78);
+                let submitted = input.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 1, 78)
+                    .into_iter().find_map(|effect| match effect {
+                        acyclic_harness::tui::InputEffect::Submit { text, .. } => Some(text),
+                        _ => None,
+                    });
                 expected.push(remote);
                 files.write_state(CommandFileRoot::Config, "history.json", &serde_json::json!(expected.entries())).await.unwrap();
-                if !normalized.trim().is_empty() && previous.as_ref() != Some(&normalized) {
-                    expected.push(normalized);
+                if let Some(submitted) = submitted.filter(|text| previous.as_ref() != Some(text)) {
+                    expected.push(submitted);
                 }
                 projection.save(&mut files, &mut input).await.unwrap();
                 projection.refresh(&files, &mut input).unwrap();
@@ -148,4 +151,29 @@ proptest::proptest! {
             Ok(())
         })?;
     }
+}
+
+#[tokio::test]
+async fn continuation_enter_saves_draft_without_recording_a_submission() {
+    let mut files = session().await;
+    let mut projection = PromptFiles::default();
+    let mut input = PromptInput::default();
+    projection.refresh(&files, &mut input).unwrap();
+    input.editor.set_text("\\", 0);
+    let effects = input.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 1, 78);
+    assert!(effects.is_empty());
+    projection.save(&mut files, &mut input).await.unwrap();
+    assert!(input.history().entries().is_empty());
+    assert!(
+        files
+            .state(CommandFileRoot::Config, "history.json")
+            .unwrap()
+            .is_none()
+    );
+    let mut replayed = PromptInput::default();
+    PromptFiles::default()
+        .refresh(&files, &mut replayed)
+        .unwrap();
+    assert_eq!(replayed.editor.text(), input.editor.text());
+    assert!(replayed.history().entries().is_empty());
 }
