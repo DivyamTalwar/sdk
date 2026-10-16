@@ -13,6 +13,8 @@ use record::Turn;
 mod model;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod poll_sweep;
 
 const HEAD: &str = "inputs/current.json";
 
