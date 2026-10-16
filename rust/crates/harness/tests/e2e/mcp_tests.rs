@@ -20,6 +20,10 @@ async fn mcp_oracles_require_installation_authority_arguments_and_projected_resu
         "result",
         "tool",
         "payload",
+        "schema",
+        "required",
+        "property",
+        "additional",
     ] {
         let mut case = baseline.clone();
         match field {
@@ -33,6 +37,21 @@ async fn mcp_oracles_require_installation_authority_arguments_and_projected_resu
             "payload" => {
                 case["expect"]["events"][0]["event"]["arguments"] = json!({"text":"corrupted"})
             }
+            "schema" => {
+                case["mcp"]["catalog"]["tools"][0]["inputSchema"] = json!({"type":"object"})
+            }
+            "required" => {
+                case["expect"]["requests"][0]["tools"][0]["input_schema"]["required"] =
+                    json!(["wrong"])
+            }
+            "property" => {
+                case["expect"]["requests"][0]["tools"][0]["input_schema"]["properties"]["text"]["type"] =
+                    json!("integer")
+            }
+            "additional" => {
+                case["expect"]["requests"][0]["tools"][0]["input_schema"]["additionalProperties"] =
+                    json!(true)
+            }
             _ => return Err("unknown MCP mutation".into()),
         }
         assert!(
@@ -40,6 +59,35 @@ async fn mcp_oracles_require_installation_authority_arguments_and_projected_resu
             "accepted missing or corrupted {field}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn mcp_oracles_reject_exposing_unselected_tools_and_mixing_call_results() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let selected = scenario::load_value(&root, &root.join("mcp/selected.json"))?;
+    drivers::run(selected.clone()).await?;
+    let mut exposed = selected;
+    exposed["mcp"]["catalog"]["schema_exposure"] = json!({"kind":"eager"});
+    assert!(
+        drivers::run(exposed).await.is_err(),
+        "accepted the unselected tool"
+    );
+
+    let multiple = scenario::load_value(&root, &root.join("mcp/multiple-calls.json"))?;
+    drivers::run(multiple.clone()).await?;
+    let mut arguments = multiple.clone();
+    arguments["turns"][0][1]["arguments"] = arguments["turns"][0][0]["arguments"].clone();
+    assert!(
+        drivers::run(arguments).await.is_err(),
+        "accepted reused call arguments"
+    );
+    let mut results = multiple;
+    results["mcp"]["replies"][1]["result"] = results["mcp"]["replies"][0]["result"].clone();
+    assert!(
+        drivers::run(results).await.is_err(),
+        "accepted reused call results"
+    );
     Ok(())
 }
 
