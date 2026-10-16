@@ -20,10 +20,14 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub fn new(binding: VolumeBinding) -> impl Future<Output = Result<Self>> {
-        Box::pin(Self::open(binding))
+        Self::at_revision(binding, "2")
     }
 
-    async fn open(binding: VolumeBinding) -> Result<Self> {
+    pub fn at_revision(binding: VolumeBinding, revision: &str) -> impl Future<Output = Result<Self>> {
+        Box::pin(Self::open(binding, revision))
+    }
+
+    async fn open(binding: VolumeBinding, selected_revision: &str) -> Result<Self> {
     let provider = ProviderRef::new(
         "session-worker".into(),
         "filesystem".into(),
@@ -70,7 +74,13 @@ impl Fixture {
     let mut tools = acyclic_harness::tool::ToolRegistry::default();
     let write = acyclic_harness::tool::files::write()?;
     let revision = write.definition.revision.clone();
+    let replacement = (binding == VolumeBinding::RetainedRevision).then(|| write.clone());
     tools.register((write, None), &mut None, None)?;
+    if let Some(mut replacement) = replacement {
+        replacement.definition.revision = selected_revision.into();
+        tools.register((replacement, None), &mut None, None)?;
+        tools.select_model_version("write", selected_revision)?;
+    }
     let stream = Arc::new(MemoryStream::default());
     let requests = TaskVolume::open(
         stream.clone(),
@@ -128,7 +138,7 @@ impl Fixture {
 #[tokio::test]
 async fn fixture_creation_future_is_boxed_at_the_runtime_boundary() -> Result<()> {
     {
-        let raw = Fixture::open(VolumeBinding::Separate);
+        let raw = Fixture::open(VolumeBinding::Separate, "2");
         let future = Fixture::new(VolumeBinding::Separate);
         eprintln!("fixture bootstrap futures: raw {} bytes, boxed {} bytes",
             std::mem::size_of_val(&raw), std::mem::size_of_val(&future));

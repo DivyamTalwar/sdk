@@ -23,6 +23,10 @@ impl ExternalRequest {
     /// arguments into the harness's existing schemas. Other registered tools
     /// already use their exact declared schema; unknown options are rejected.
     pub fn tool_call(&self, tools: &ToolRegistry) -> Result<ToolTaskCommand> {
+        self.tool_call_at(tools, None)
+    }
+
+    pub(super) fn tool_call_at(&self, tools: &ToolRegistry, revision: Option<&str>) -> Result<ToolTaskCommand> {
         let ExternalAction::RunTool {name,arguments,..} = &self.action else {
             return Err(Error::Invalid("request is not a native tool call".into()));
         };
@@ -44,7 +48,7 @@ impl ExternalRequest {
             }
             _ => (name.as_str(),arguments.clone()),
         };
-        let tool = tools.get(name,None,None)?.ok_or_else(||Error::Unsupported("native tool is not registered".into()))?;
+        let tool = tools.get(name,revision,None)?.ok_or_else(||Error::Unsupported("native tool is not registered".into()))?;
         crate::executor::validate_json_schema_value(
             &tool.definition.input_schema, &arguments, "native tool input", &mut None,
         )?;

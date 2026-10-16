@@ -20,6 +20,7 @@ use acyclic_harness::{
     workflow::{MachineRegistry, WorkflowCommand},
 };
 use acyclic_stream::{MemoryStream, StreamPath, SystemUnixMillisClock};
+use proptest::prelude::*;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[path = "session_runtime/fixture.rs"]
@@ -50,6 +51,18 @@ async fn prepared_command_cannot_change_the_native_tool_arguments() -> Result<()
 async fn prepared_tool_cannot_be_acknowledged_as_a_lifecycle_command() -> Result<()> {
     Box::pin(run_write_session(VolumeBinding::ForgedLifecycle)).await
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    // Every retained tool revision remains executable after selecting a newer
+    // catalog revision; the exact original arguments and result are preserved.
+    #[test]
+    fn retained_command_ignores_later_catalog_selection(revision in "r[a-z]{1,8}") {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        runtime.block_on(Box::pin(run_write_session_at(VolumeBinding::RetainedRevision, &revision)))?;
+    }
+}
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum VolumeBinding {
     Separate,
@@ -57,10 +70,15 @@ pub(crate) enum VolumeBinding {
     Shared,
     ChangedArguments,
     ForgedLifecycle,
+    RetainedRevision,
 }
 
 async fn run_write_session(binding: VolumeBinding) -> Result<()> {
-    let Fixture {runtime,files,volume,verifier,signed,tasks,revision,publisher,requests,results} = Fixture::new(binding).await?;
+    Box::pin(run_write_session_at(binding, "2")).await
+}
+
+async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -> Result<()> {
+    let Fixture {runtime,files,volume,verifier,signed,tasks,revision,publisher,requests,results} = Fixture::at_revision(binding, selected_revision).await?;
     let operation = OperationId::from_bytes([63; 16]);
     let arguments = json!({
         "path":"session.txt","text":"written by the task worker",
@@ -130,7 +148,7 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
     let commands = RequestCommands::new(&runtime, &requests, &results);
     let guarded = SizeGuard(&commands);
     let attempt = Box::pin(runtime.run_operation(&worker, task, &guarded, 8, None)).await?;
-    if binding != VolumeBinding::Separate {
+    if !matches!(binding, VolumeBinding::Separate | VolumeBinding::RetainedRevision) {
         assert!(matches!(
             attempt,
             Some(TaskWorkerAttempt::Progress(

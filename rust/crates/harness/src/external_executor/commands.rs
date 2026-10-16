@@ -194,7 +194,7 @@ fn validate_command(
     if command.kind == TOOL_TASK_COMMAND_KIND {
         let actual: ToolTaskCommand = serde::Deserialize::deserialize(payload)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        if actual != request.tool_call(tools)? {
+        if actual != request.tool_call_at(tools, Some(&actual.revision))? {
             return Err(Error::Conflict("tool command differs from the original native request".into()));
         }
         return Ok(None);
