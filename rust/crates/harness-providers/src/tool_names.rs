@@ -90,6 +90,15 @@ impl<'a> Names<'a> {
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
     pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
         let table = Self::new(request);
+        for adapter in [
+            crate::Adapter::Anthropic,
+            crate::Adapter::Responses,
+            crate::Adapter::Chat,
+            crate::Adapter::Gemini,
+        ] {
+            let mut options = request.model.options.clone();
+            let _ = table.controls(adapter, &mut options);
+        }
         let mut seen = std::collections::BTreeSet::new();
         for &name in &table.0 {
             let wire = table.wire(name).unwrap();
