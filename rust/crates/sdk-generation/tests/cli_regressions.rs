@@ -328,6 +328,7 @@ fn write_manifest(output: &Path, value: &Value) {
 }
 
 fn invoke(command: &mut Command) -> std::process::Output {
+    runtime::configure_linker(command);
     command.env("RUSTC", runtime::rustc());
     if !command
         .get_envs()
@@ -414,6 +415,7 @@ fn generate_command(
     skip_scenarios: bool,
 ) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
+    runtime::configure_linker(&mut command);
     command.env("PATH", runtime::path());
     command.env("RUSTC", runtime::rustc());
     command.args([

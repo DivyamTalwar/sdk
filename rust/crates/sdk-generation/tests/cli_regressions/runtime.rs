@@ -76,6 +76,29 @@ pub(super) fn rustc() -> PathBuf {
         .join(format!("rustc{}", std::env::consts::EXE_SUFFIX))
 }
 
+pub(super) fn configure_linker(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        let cargo = cargo();
+        let sysroot = cargo.parent().unwrap().parent().unwrap();
+        let linkers = fs::read_dir(sysroot.join("lib/rustlib"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("bin/rust-lld.exe"))
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+        let [linker] = linkers.as_slice() else {
+            panic!("the pinned compiler must provide exactly one host linker");
+        };
+        let host = linker.parent().unwrap().parent().unwrap().file_name().unwrap();
+        command.env(
+            format!("CARGO_TARGET_{}_LINKER", host.to_str().unwrap().replace('-', "_").to_ascii_uppercase()),
+            linker,
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 fn resolve_cargo() -> sync::Arc<PathBuf> {
     sync::get_or_try_init(&CARGO, || {
         let output = Command::new("rustup")
