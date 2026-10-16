@@ -64,6 +64,7 @@ impl Future for Change<'_> {
     type Output = Result<u64, StreamError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let connections = self.connections;
+        let waker = cx.waker().clone();
         let mut state = connections.0.lock().map_err(|_| StreamError::Unavailable)?;
         if state.generation > self.after {
             return Poll::Ready(Ok(state.generation));
@@ -80,17 +81,16 @@ impl Future for Change<'_> {
                 id
             }
         };
-        state.waiters.insert(id, cx.waker().clone());
+        let retired = state.waiters.insert(id, waker);
+        drop(state);
+        drop(retired);
         Poll::Pending
     }
 }
 impl Drop for Change<'_> {
     fn drop(&mut self) {
-        if let Some(id) = self.id
-            && let Ok(mut state) = self.connections.0.lock()
-        {
-            state.waiters.remove(&id);
-        }
+        let retired = self.id.and_then(|id| self.connections.0.lock().ok()?.waiters.remove(&id));
+        drop(retired);
     }
 }
 
@@ -113,7 +113,8 @@ pub fn verify_connections(omit_wake: bool) {
         let waker = waker(wake.clone());
         let mut cx = Context::from_waker(&waker);
         let mut change = Box::pin(connections.changed(0));
-        let parked = change.as_mut().poll(&mut cx).is_pending();
+        let first = change.as_mut().poll(&mut cx);
+        let parked = first.is_pending();
         writer.join().unwrap();
         if parked {
             assert!(
@@ -121,7 +122,8 @@ pub fn verify_connections(omit_wake: bool) {
                 "connection publication lost its wakeup"
             );
         }
-        assert!(matches!(change.as_mut().poll(&mut cx), Poll::Ready(Ok(1))));
+        let result = if parked { change.as_mut().poll(&mut cx) } else { first };
+        assert!(matches!(result, Poll::Ready(Ok(1))));
         drop(change);
         let mut cancelled = Box::pin(connections.changed(1));
         assert!(cancelled.as_mut().poll(&mut cx).is_pending());
