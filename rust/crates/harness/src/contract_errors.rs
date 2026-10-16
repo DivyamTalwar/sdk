@@ -331,7 +331,8 @@ impl Error {
         use crate::wire::ErrorCode;
         match self {
             Self::TaskFiles(error) => match error {
-                crate::task_volume::Error::FenceConflict => ErrorCode::Unauthorized,
+                crate::task_volume::Error::FenceConflict
+                | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
                 crate::task_volume::Error::Conflict(_)
                 | crate::task_volume::Error::ImmutableConflict(_)
                 | crate::task_volume::Error::SequenceConflict(_)

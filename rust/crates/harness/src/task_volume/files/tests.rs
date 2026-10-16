@@ -181,7 +181,12 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
             panic!("a UI must never acquire execution ownership")
         })
         .await;
-    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error,
+        crate::Error::TaskFiles(Error::Unauthorized)
+    ));
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
     assert_eq!(
         files.snapshot(&Query::Root, 64).await.unwrap().generation,
         before

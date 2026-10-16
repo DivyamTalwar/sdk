@@ -563,7 +563,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     "command query advanced; retry from the new cut".into(),
                 ));
             }
-            Err(error) => return Err(storage(error)),
+            Err(error) => return Err(error.into()),
         };
         while self.generation.position < generation.position {
             self.advance().await?;
