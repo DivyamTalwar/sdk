@@ -27,6 +27,9 @@ pub use trie::{PathTrie, PinnedPath, PreparedPath};
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
 
+/// Versioned policy record in the root directory's authenticated metadata.
+pub const POLICY_METADATA_KEY: &[u8] = b"security.acyclic.access.v1";
+
 /// Independently grantable filesystem operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

@@ -15,7 +15,7 @@ pub enum NamedAttributeWriteMode {
     Replace,
 }
 
-async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
@@ -113,7 +113,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     mut metadata: FileMetadata,
     name: &AttributeName,

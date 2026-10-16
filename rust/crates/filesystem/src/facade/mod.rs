@@ -124,6 +124,7 @@ mod fork_selection;
 #[path = "../tests/facade/mod.rs"]
 mod tests;
 
+mod access_policy;
 mod attributes;
 mod authored_compile;
 mod authored_model;
