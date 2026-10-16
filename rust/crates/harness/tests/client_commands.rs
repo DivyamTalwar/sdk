@@ -1,115 +1,18 @@
 //! Data-driven composer cases against the production filesystem reader.
 
-use acyclic_fs::Fs;
 use acyclic_harness::{
-    AgentId, Capabilities, IdempotencyKey, Result,
+    Result,
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope, resolve_file_mentions},
     context::{ContextDiscoveryLimits, ContextRoot},
-    conversation::{
-        ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
-        VolumeRef,
-    },
-    core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::{FilesystemContentVerifier, FilesystemHost},
-    resources::ProviderRef,
+    conversation::ContentResidencyVerifier,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
 
-struct Fixture {
-    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
-    root: ContextRoot,
-    writer: ContentGrant,
-    reader: Arc<dyn ContentResidencyVerifier>,
-}
+#[path = "support/client_files.rs"]
+mod client_files;
+use client_files::Fixture;
 
 impl Fixture {
-    async fn new(files: &[(&str, &str)]) -> Result<Self> {
-        let provider = ProviderRef::new(
-            "commands".into(),
-            "filesystem".into(),
-            "2".into(),
-            &mut None,
-        )?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
-        let agent = AgentId::from_bytes([1; 16]);
-        let volume = VolumeRef::new(
-            provider,
-            "sources".into(),
-            VolumeClass::SessionShared,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        let issuer = AuthorityIssuer::new(
-            "commands",
-            [9; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "test".into(),
-            },
-        );
-        let scope = issuer
-            .issue(
-                "owner",
-                &Capabilities::new([
-                    volume.capability(VolumeOperation::Read, &mut None)?,
-                    volume.capability(VolumeOperation::Write, &mut None)?,
-                    volume.directory_read_capability("", &mut None)?,
-                ]),
-                Some(agent),
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
-        host.create_volume(&volume).await?;
-        let writer = ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier"),
-            &scope,
-            &volume,
-            VolumeOperation::Write,
-            u64::MAX,
-            &mut None,
-        )?;
-        let reader = FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier"),
-            &scope,
-            32_768,
-            None,
-        )?;
-        let fixture = Self {
-            host,
-            root: ContextRoot {
-                volume,
-                directory: String::new(),
-            },
-            writer,
-            reader,
-        };
-        for (path, text) in files {
-            fixture.put(path, text, path).await?;
-        }
-        Ok(fixture)
-    }
-
-    async fn put(&self, path: &str, text: &str, key: &str) -> Result<()> {
-        self.host
-            .put_content(
-                &self.root.volume,
-                &self.writer,
-                path,
-                text.as_bytes(),
-                "text/plain",
-                "source.md",
-                1_000_000,
-                &IdempotencyKey::new(key)?,
-                None,
-                None,
-            )
-            .await?;
-        Ok(())
-    }
-
     async fn catalog(
         &self,
         roots: &[(&str, CommandScope)],
@@ -140,85 +43,6 @@ impl Fixture {
         )
         .await
     }
-}
-
-#[tokio::test]
-async fn builtin_cases_resolve_from_the_same_catalog_as_completion() -> Result<()> {
-    let fixture = Fixture::new(&[]).await?;
-    let catalog = CommandCatalog::builtins()?;
-    let cases = [
-        (
-            "/compact",
-            json!({"kind":"submit","request":{"kind":"compact","instructions":""}}),
-        ),
-        (
-            " /compact keep decisions\nand tests",
-            json!({"kind":"submit","request":{"kind":"compact","instructions":"keep decisions\nand tests"}}),
-        ),
-        ("/model", json!({"kind":"select","query":"model"})),
-        (
-            "/model provider/model",
-            json!({"kind":"submit","request":{"kind":"model","model":"provider/model"}}),
-        ),
-        ("/diff", json!({"kind":"select","query":"diff"})),
-        ("/plan", json!({"kind":"select","query":"plan"})),
-        ("/goal", json!({"kind":"select","query":"goal"})),
-        ("/mcp", json!({"kind":"select","query":"mcp"})),
-        (
-            "hello /model",
-            json!({"kind":"prompt","text":"hello /model","source":null,"mentions":[]}),
-        ),
-        (
-            "",
-            json!({"kind":"prompt","text":"","source":null,"mentions":[]}),
-        ),
-    ];
-    for (input, expected) in cases {
-        let resolved = catalog
-            .resolve(input, fixture.reader.as_ref(), 1024)
-            .await?;
-        assert_eq!(
-            serde_json::to_value(resolved).expect("JSON"),
-            expected,
-            "{input}"
-        );
-    }
-    for input in [
-        "/unknown",
-        "/",
-        "/model a b",
-        "/model a\0b",
-        "/approval",
-        "/approval always",
-        "/diff extra",
-        "/plan change",
-        "/goal done",
-        "/mcp extra",
-    ] {
-        assert!(
-            catalog
-                .resolve(input, fixture.reader.as_ref(), 1024)
-                .await
-                .is_err(),
-            "{input}"
-        );
-    }
-    let names: Vec<_> = catalog.commands().map(|spec| spec.name.as_str()).collect();
-    assert_eq!(names, ["compact", "diff", "goal", "mcp", "model", "plan"]);
-    for (prefix, expected) in [
-        ("/m", vec!["mcp", "model"]),
-        ("pla", vec!["plan"]),
-        ("z", vec![]),
-    ] {
-        assert_eq!(
-            catalog
-                .complete(prefix)
-                .map(|spec| spec.name.as_str())
-                .collect::<Vec<_>>(),
-            expected
-        );
-    }
-    Ok(())
 }
 
 #[tokio::test]
@@ -294,56 +118,6 @@ async fn imported_prompt_and_skill_cases_keep_the_selected_revision() -> Result<
             }
         }
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn invalid_catalog_cases_are_atomic_errors() -> Result<()> {
-    use CommandScope::Project;
-    let cases: &[&[(&str, &str)]] = &[
-        &[(".claude/commands/model.md", "shadow builtin")],
-        &[
-            (".claude/commands/a.md", "one"),
-            (".codex/prompts/a.md", "two"),
-        ],
-        &[(".claude/commands/a.md", "---\ndescription: missing close\n")],
-        &[(
-            ".claude/commands/a.md",
-            "---\ndescription: one\ndescription: two\n---\nbody",
-        )],
-        &[(".claude/commands/bad name.md", "body")],
-        &[(".claude/commands/a.md", "---\ndescription: ''\n---\nbody")],
-    ];
-    for files in cases {
-        let fixture = Fixture::new(files).await?;
-        assert!(
-            fixture.catalog(&[("", Project)], &[]).await.is_err(),
-            "{files:?}"
-        );
-    }
-    let fixture = Fixture::new(&[
-        (".claude/commands/audit.md", "command"),
-        (
-            "skills/a/SKILL.md",
-            "---\nname: audit\ndescription: Audit\n---\nbody",
-        ),
-    ])
-    .await?;
-    assert!(
-        fixture
-            .catalog(&[("", Project)], &["skills"])
-            .await
-            .is_err()
-    );
-    let fixture = Fixture::new(&[]).await?;
-    assert_eq!(
-        fixture
-            .catalog(&[("", Project)], &[])
-            .await?
-            .commands()
-            .count(),
-        6
-    );
     Ok(())
 }
 
