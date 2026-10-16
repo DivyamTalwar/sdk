@@ -431,5 +431,4 @@ impl ViewObserver for ProjectionCore {
 
 pub(super) struct FuseProjection {
     pub(super) core: Arc<ProjectionCore>,
-    pub(super) skips_opendir: bool,
 }

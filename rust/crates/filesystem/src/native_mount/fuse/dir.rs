@@ -83,13 +83,10 @@ pub(super) fn next_visible_child(
             fuse_child_path(&stream.path, &entry.name, work)?,
             work,
         )?;
-        match source.authorize_with_meter(&[(crate::access::Action::List, &child.spelled)], work) {
-            Ok(()) => return Ok(Some(child)),
-            Err(error) if matches!(error.semantic_error(), MountSourceError::AccessDenied) => {
-                stream.entry_position += 1;
-            }
-            Err(error) => return Err(error.into()),
+        if crate::native_mount::filesystem::can_disclose(source, &child.spelled, work)? {
+            return Ok(Some(child));
         }
+        stream.entry_position += 1;
     }
 }
 
@@ -183,17 +180,6 @@ impl DirectoryStreams {
 }
 
 impl ProjectionState {
-    pub(super) fn directory_open_flags(
-        source: &dyn MountFilesystem,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<FopenFlags, NativeMountError> {
-        Ok(if source.view_stamp_with_meter(work)?.is_some() {
-            FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
-        } else {
-            FopenFlags::empty()
-        })
-    }
-
     pub(super) fn directory_stream(
         &mut self,
         source: &dyn MountFilesystem,
@@ -427,6 +413,27 @@ impl DirectoryReply {
 }
 
 impl FuseProjection {
+    pub(super) fn open_directory(
+        &self,
+        inode: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FopenFlags, NativeMountError> {
+        work.charge(Items.delta(1))?;
+        let state = self.core.state()?;
+        let entry = state.by_inode.get(&inode).ok_or(libc::ESTALE)?;
+        if entry.lookup.node.kind != MountNodeKind::Directory {
+            return Err(libc::ENOTDIR.into());
+        }
+        let binding = entry.bindings.first().ok_or(libc::ESTALE)?;
+        self.core.source.authorize_with_meter(
+            &[(crate::access::Action::List, binding.native_path())],
+            work,
+        )?;
+        // Directory pages depend on current policy, so a new open cannot reuse
+        // the kernel's listing from an earlier open. Parked rows are checked.
+        Ok(FopenFlags::empty())
+    }
+
     pub(super) fn list_directory(
         &self,
         inode: u64,

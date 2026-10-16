@@ -176,7 +176,6 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     )?;
     let projection = crate::native_mount::fuse::FuseProjection {
         core: Arc::clone(&core),
-        skips_opendir: false,
     };
     let work = core.callback_meter()?.ok_or("installed original")?;
     assert!(
@@ -449,10 +448,7 @@ pub(super) fn native_access_fuse_open_refuses_an_actual_rebound_file_identity()
         FINITE_HANDLER_POLICY,
         &crate::CancellationToken::new(),
     )?;
-    let projection = crate::native_mount::fuse::FuseProjection {
-        core,
-        skips_opendir: false,
-    };
+    let projection = crate::native_mount::fuse::FuseProjection { core };
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.remove(&path, Some(created.node.file_id), work)?;
         let rebound = source.create_file(&path, FileMetadata::default(), None, work)?;
@@ -480,7 +476,6 @@ fn an_open_drops_the_size_of_any_version_it_does_not_read() -> Result<(), Box<dy
     )?;
     let projection = crate::native_mount::fuse::FuseProjection {
         core: Arc::clone(&core),
-        skips_opendir: false,
     };
     let work = fuse_fixture_work();
     let inode = projection
@@ -656,10 +651,7 @@ fn native_access_fuse_cached_content_cannot_bypass_new_open_revocation()
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    let projection = crate::native_mount::fuse::FuseProjection {
-        core,
-        skips_opendir: false,
-    };
+    let projection = crate::native_mount::fuse::FuseProjection { core };
     let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("cached"), &work)?;
     let inode = entry.attr.ino.0;
     let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
@@ -702,10 +694,7 @@ fn native_access_fuse_cached_metadata_requires_current_list_authority()
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    let projection = crate::native_mount::fuse::FuseProjection {
-        core,
-        skips_opendir: false,
-    };
+    let projection = crate::native_mount::fuse::FuseProjection { core };
     let inode = projection
         .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("cached"), &work)?
         .attr
@@ -763,7 +752,6 @@ fn native_access_fuse_detaching_preserves_each_open_handle_policy()
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )?,
-            skips_opendir: false,
         };
         let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("retained"), &work)?;
         let inode = entry.attr.ino.0;
@@ -815,7 +803,6 @@ fn full_case_fold_fuse_preserves_native_names_for_long_expanding_keys()
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )?,
-        skips_opendir: false,
     };
     let first = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new(&long), &work)?;
     let inode = first.attr.ino.0;

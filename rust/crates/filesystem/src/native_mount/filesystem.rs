@@ -1,5 +1,17 @@
 use super::*;
 
+pub(in crate::native_mount) fn can_disclose(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    work: &NativeMaterializationWork,
+) -> Result<bool, MountSourceError> {
+    match source.authorize_with_meter(&[(crate::access::Action::List, path)], work) {
+        Ok(()) => Ok(true),
+        Err(MountSourceError::AccessDenied) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Synchronous callback surface implemented by an embedded checkout adapter.
 pub trait MountFilesystem: Send + Sync + 'static {
     /// Authorize every requested operation against one current policy/capability view.

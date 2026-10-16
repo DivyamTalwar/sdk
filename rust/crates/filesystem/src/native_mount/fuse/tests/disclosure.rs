@@ -22,15 +22,16 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    let projection = crate::native_mount::fuse::FuseProjection {
-        core,
-        skips_opendir: false,
-    };
+    let projection = crate::native_mount::fuse::FuseProjection { core };
     let mut stream =
         projection
             .core
             .state()?
             .directory_stream(source.as_ref(), ROOT_INODE, 0, &work)?;
+    assert_eq!(
+        projection.open_directory(ROOT_INODE, &work)?,
+        fuser::FopenFlags::empty()
+    );
     projection.position_directory_stream(&mut stream, 0, &work)?;
     let stamp = source.view_stamp_with_meter(&work)?;
     let mut rules = hidden
@@ -46,8 +47,16 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
         })
         .collect::<Vec<_>>();
     if deny_parent {
+        assert!(matches!(
+            projection.open_directory(ROOT_INODE, &work),
+            Err(NativeMountError::Source(MountSourceError::AccessDenied))
+        ));
         rules.push(deny("closed-directory", &[Action::List], ""));
     }
+    assert_eq!(
+        projection.open_directory(ROOT_INODE, &work)?,
+        fuser::FopenFlags::empty()
+    );
     publish_test_access(&source, rules)?;
     assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
     if deny_parent {

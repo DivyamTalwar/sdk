@@ -65,13 +65,7 @@ pub(super) fn folded_projection(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    Ok((
-        FuseProjection {
-            core,
-            skips_opendir: false,
-        },
-        source,
-    ))
+    Ok((FuseProjection { core }, source))
 }
 
 pub(super) fn lookup(
@@ -109,10 +103,7 @@ fn folded_legacy_collisions_cannot_reuse_a_warm_inode() -> TestResult {
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    let projection = FuseProjection {
-        core,
-        skips_opendir: false,
-    };
+    let projection = FuseProjection { core };
     let stamp = source.view_stamp_with_meter(&work)?;
     // Model an already warm exact binding; no alias may inherit its identity.
     let inode = projection
