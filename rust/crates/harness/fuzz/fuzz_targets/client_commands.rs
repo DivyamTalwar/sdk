@@ -24,7 +24,7 @@ fuzz_target!(|input: &[u8]| {
     if let Ok(state) = serde_json::from_slice::<CommandPaletteState>(input) {
         let palette = catalog.palette(&state);
         for state in [palette.next(), palette.previous()] {
-            assert!(state.selected < palette.entries().len().max(1));
+            assert!(state.selected < palette.entries().len().max(1) as u64);
             let encoded = serde_json::to_vec(&state).unwrap();
             assert_eq!(
                 serde_json::from_slice::<CommandPaletteState>(&encoded).unwrap(),

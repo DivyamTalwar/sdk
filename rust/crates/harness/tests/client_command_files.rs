@@ -226,7 +226,7 @@ proptest! {
     // A palette-file snapshot can contain any usize selection: projection and
     // both navigation directions stay within the live match set and round-trip.
     #[test]
-    fn palette_file_selection_is_bounded(selected in any::<usize>(), filter in "[a-z]{0,5}") {
+    fn palette_file_selection_is_bounded(selected in any::<u64>(), filter in "[a-z]{0,5}") {
         let catalog = CommandCatalog::builtins().unwrap();
         let state = CommandPaletteState { filter, selected };
         let encoded = serde_json::to_vec(&state).unwrap();
@@ -234,7 +234,7 @@ proptest! {
         let palette = catalog.palette(&decoded);
         for next in [palette.next(), palette.previous()] {
             if palette.entries().is_empty() { prop_assert_eq!(next.selected, 0); }
-            else { prop_assert!(next.selected < palette.entries().len()); }
+            else { prop_assert!(next.selected < palette.entries().len() as u64); }
         }
         prop_assert_eq!(state, decoded);
     }

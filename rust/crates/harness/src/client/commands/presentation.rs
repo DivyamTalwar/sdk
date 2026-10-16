@@ -76,7 +76,7 @@ pub struct CommandPaletteState {
     /// Substring matched against catalog names, aliases and descriptions.
     pub filter: String,
     /// Logical selection; projection wraps it to the current result count.
-    pub selected: usize,
+    pub selected: u64,
 }
 
 /// Renderer-neutral fold over the palette-state and command-file snapshots.
@@ -104,7 +104,7 @@ impl<'a> CommandPalette<'a> {
             .map_or(0, |index| (index + 1) % self.entries.len());
         CommandPaletteState {
             filter: self.state.filter.clone(),
-            selected,
+            selected: selected as u64,
         }
     }
 
@@ -119,11 +119,12 @@ impl<'a> CommandPalette<'a> {
         });
         CommandPaletteState {
             filter: self.state.filter.clone(),
-            selected,
+            selected: selected as u64,
         }
     }
 
     fn index(&self) -> Option<usize> {
-        (!self.entries.is_empty()).then(|| self.state.selected % self.entries.len())
+        (!self.entries.is_empty())
+            .then(|| (self.state.selected % self.entries.len() as u64) as usize)
     }
 }
