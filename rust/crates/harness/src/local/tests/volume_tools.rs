@@ -6,6 +6,26 @@ use acyclic_fs::{CancellationToken, WorkBudget};
 async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
+    {
+        use acyclic_fs::facade::FsWork as _;
+        let files = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+            directory.path().join("filesystem"),
+        ))
+        .await
+        .map_err(super::super::storage)?;
+        let workspace = files
+            .open_workspace(
+                &project.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(super::super::storage)?;
+        workspace
+            .write_text("/existing.txt", "preexisting")
+            .await
+            .map_err(super::super::storage)?;
+    }
     let provider = scripted([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall {
@@ -20,7 +40,7 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
         super::checked_commands::call(
             1,
             "bash",
-            "test $(cat note.txt) = volume; printf shell > shell.txt",
+            "test $(cat existing.txt) = preexisting; test $(cat note.txt) = volume; printf shell > shell.txt",
         ),
         super::checked_commands::call(2, "fs", "commit -m volume"),
         super::checked_commands::call(3, "fs", "checkout -b agents/child"),
