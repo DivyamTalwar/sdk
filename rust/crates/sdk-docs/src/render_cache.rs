@@ -1,13 +1,14 @@
 use crate::{public_api::PublicItemSignature, Error};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 #[derive(Default)]
 struct Cache {
+    observed: RefCell<BTreeSet<PathBuf>>,
     adapter: RefCell<Option<tempfile::NamedTempFile>>,
     producers: RefCell<
         BTreeMap<
@@ -56,6 +57,31 @@ pub(crate) fn with_adapter<T>(
     result
 }
 
+impl Cache {
+    fn retain_observed_receipts(&self) {
+        self.producers.borrow_mut().clear();
+        self.adapter.borrow_mut().take();
+        let observed = self.observed.take();
+        self.files
+            .borrow_mut()
+            .retain(|path, _| observed.contains(path));
+        let bytes = self
+            .files
+            .borrow()
+            .values()
+            .map(|(_, bytes)| Rc::as_ptr(bytes) as *const u8)
+            .collect::<BTreeSet<_>>();
+        let retained = |raw: &Rc<[u8]>| bytes.contains(&(Rc::as_ptr(raw) as *const u8));
+        self.parsed.borrow_mut().retain(|raw, _| retained(raw));
+        self.json.borrow_mut().retain(|raw, _| retained(raw));
+        self.rendered.borrow_mut().retain(|raw, _| retained(raw));
+        self.normalized.borrow_mut().retain(|_, values| {
+            values.retain(|raw, _| retained(raw));
+            !values.is_empty()
+        });
+    }
+}
+
 pub(crate) fn producer(
     resolve: impl FnOnce() -> Result<
         crate::rustdoc_profiles::RustdocProducer,
@@ -84,6 +110,9 @@ pub(crate) fn producer(
 thread_local! {
     // Every entry belongs to one calling operation; nested operations restore it.
     static CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
+    // Keep only receipts observed in the last operation. Every subsequent read
+    // validates native identity again; tool selection never crosses this boundary.
+    static RECEIPTS: RefCell<Option<Cache>> = const { RefCell::new(None) };
     #[cfg(test)]
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -93,10 +122,14 @@ pub fn with_rustdoc_cache<T>(operation: impl FnOnce() -> T) -> T {
     struct Restore(Option<Cache>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            CACHE.with_borrow_mut(|cache| *cache = self.0.take());
+            if let Some(cache) = CACHE.replace(self.0.take()) {
+                cache.retain_observed_receipts();
+                RECEIPTS.set(Some(cache));
+            }
         }
     }
-    let _restore = Restore(CACHE.replace(Some(Cache::default())));
+    let cache = RECEIPTS.take().unwrap_or_default();
+    let _restore = Restore(CACHE.replace(Some(cache)));
     operation()
 }
 
@@ -147,7 +180,7 @@ pub fn read_rustdoc(path: &Path) -> Result<Rc<[u8]>, Error> {
             })
             .map_err(Error::from)
     };
-    CACHE.with_borrow(|cache| match cache {
+    let result = CACHE.with_borrow(|cache| match cache {
         Some(cache) => sdk_file_identity::cached(
             &cache.files,
             path.to_owned(),
@@ -161,7 +194,15 @@ pub fn read_rustdoc(path: &Path) -> Result<Rc<[u8]>, Error> {
             },
         ),
         None => read(),
-    })
+    });
+    if result.is_ok() {
+        CACHE.with_borrow(|cache| {
+            if let Some(cache) = cache {
+                cache.observed.borrow_mut().insert(path.to_owned());
+            }
+        });
+    }
+    result
 }
 
 /// Read the unchanged JSON tree used for source retention and normalization.
@@ -376,6 +417,38 @@ mod tests {
                 path.unwrap()
             }));
             prop_assert!(!path.exists());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn unchanged_receipts_share_bytes_across_operations_but_never_hide_mutations(
+            first in "[a-z]{1,32}", replacement in "[a-z]{1,32}",
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("receipt.json");
+            let encode = |text: &str| serde_json::to_vec(&serde_json::json!({"value":text})).unwrap();
+            std::fs::write(&path, encode(&first)).unwrap();
+            let original = with_rustdoc_cache(|| read_rustdoc(&path).unwrap());
+            let reads = READS.get();
+            with_rustdoc_cache(|| {
+                assert!(Rc::ptr_eq(&original, &read_rustdoc(&path).unwrap()));
+                assert_eq!(read_rustdoc_json(&path).unwrap()["value"], first);
+            });
+            prop_assert_eq!(READS.get(), reads);
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            std::fs::write(&path, encode(&replacement)).unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+            with_rustdoc_cache(|| {
+                assert_eq!(&*read_rustdoc(&path).unwrap(), encode(&replacement));
+                assert_eq!(read_rustdoc_json(&path).unwrap()["value"], replacement);
+            });
+            prop_assert_eq!(READS.get(), reads+1);
+            std::fs::remove_file(&path).unwrap();
+            with_rustdoc_cache(|| assert!(read_rustdoc(&path).is_err()));
+            prop_assert!(RECEIPTS.with_borrow(|cache| cache.as_ref().unwrap().files.borrow().is_empty()));
         }
     }
 
