@@ -2,6 +2,9 @@ use super::{ordered, subset};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
+#[path = "../../fuzz/fuzz_targets/content_matcher_input.rs"]
+mod content_matcher_input;
+
 fn text() -> impl Strategy<Value = String> {
     proptest::collection::vec(any::<char>(), 0..32)
         .prop_map(|characters| characters.into_iter().collect())
@@ -43,6 +46,30 @@ fn subsequence(expected: &[Value], actual: &[Value]) -> bool {
 }
 
 proptest! {
+    // Content arrays are positional and complete while each part's metadata is
+    // a subset. Inserting even an empty text part at any position is corruption.
+    #[test]
+    fn content_parts_require_exact_shape(
+        parts in proptest::collection::vec(value(), 0..8), extra in value(), slot in any::<usize>(),
+    ) {
+        let expected = json!({"content":parts});
+        prop_assert!(subset(&expected, &json!({"content":parts, "metadata":extra})));
+        for inserted in [extra.clone(), json!({"kind":"text", "text":""}),
+            json!({"kind":"text", "text":"UNEXPECTED TEXT IN IMAGE-ONLY INPUT"})] {
+            let mut actual = parts.clone();
+            actual.insert(slot % (actual.len() + 1), inserted);
+            prop_assert!(!subset(&expected, &json!({"content":actual})), "content insertion");
+        }
+        if !parts.is_empty() {
+            let mut actual = parts.clone();
+            actual.remove(slot % actual.len());
+            prop_assert!(!subset(&expected, &json!({"content":actual})), "missing content part");
+        }
+        let expected = json!({"messages":[{"content":[{"kind":"file", "file":{"path":"image.png"}}]}]});
+        let actual = json!({"messages":[{"content":[{"kind":"file", "file":{"path":"image.png", "descriptor":extra}}]}]});
+        prop_assert!(subset(&expected, &actual), "file metadata remains a subset");
+    }
+
     // Complete argument payloads match iff their JSON values are equal, at any
     // nesting depth; observation metadata outside the payload remains a subset.
     #[test]
@@ -123,5 +150,13 @@ proptest! {
             prop_assert!(subset(&expected, &actual));
         }
         prop_assert!(!subset(&expected, &Value::Null));
+    }
+}
+
+#[test]
+fn content_matcher_seed_corpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/content_matcher");
+    for entry in std::fs::read_dir(root).unwrap() {
+        content_matcher_input::check(&std::fs::read(entry.unwrap().path()).unwrap());
     }
 }

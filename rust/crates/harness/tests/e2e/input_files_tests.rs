@@ -94,6 +94,7 @@ async fn image_oracles_reject_changed_policy_bytes_order_and_pins() -> TestResul
         ("reordered-attachments", "order"),
         ("replaced-after-capture", "pin"),
         ("image-only", "missing"),
+        ("image-only", "inserted_text"),
     ] {
         let path = root.join(format!("images/{file}.json"));
         let mut value = scenario::load_value(&root, &path)?;
@@ -122,6 +123,7 @@ async fn image_oracles_reject_changed_policy_bytes_order_and_pins() -> TestResul
             "order" => value["input_files"].as_array_mut().unwrap().swap(0, 1),
             "pin" => value["expect"]["request_files"] = json!([["replaced"]]),
             "missing" => value["input_files"] = Value::Array(Vec::new()),
+            "inserted_text" => value["prompt"] = json!("UNEXPECTED TEXT IN IMAGE-ONLY INPUT"),
             _ => unreachable!(),
         }
         assert!(

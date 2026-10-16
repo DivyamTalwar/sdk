@@ -84,3 +84,10 @@ required-features = ["scenarios"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content_matcher"
+path = "fuzz_targets/content_matcher.rs"
+test = false
+doc = false
+bench = false

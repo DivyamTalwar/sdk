@@ -7,6 +7,8 @@ mod properties;
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
 // Arguments are complete JSON payloads: extra keys or elements are corruption.
+// Content parts have an exact shape: no additional, missing or reordered parts.
+// File metadata inside a declared part can still use object subset assertions.
 // A sole $json key matches JSON-encoded text; $contains searches text recursively.
 pub fn subset(expected: &Value, actual: &Value) -> bool {
     if let Some(expected) = expected.as_object().filter(|object| object.len() == 1)
@@ -26,6 +28,17 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
             actual.get(key).is_some_and(|actual| {
                 if key == "arguments" {
                     value == actual
+                } else if key == "content" && value.is_array() {
+                    value
+                        .as_array()
+                        .zip(actual.as_array())
+                        .is_some_and(|(expected, actual)| {
+                            expected.len() == actual.len()
+                                && expected
+                                    .iter()
+                                    .zip(actual)
+                                    .all(|(expected, actual)| subset(expected, actual))
+                        })
                 } else {
                     subset(value, actual)
                 }
