@@ -79,6 +79,51 @@ fn negative_control_detects_a_guard_released_before_io() {
     exclusion_model(true);
 }
 
+fn deduplicate_model(broken: bool) {
+    loom::model(move || {
+        let lock = Arc::new(AsyncMutex::new(()));
+        // Model the token endpoint and credential file at their I/O boundary:
+        // version 0 is expired; version 1 is the successfully published bearer.
+        let version = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let (lock, version, requests) = (lock.clone(), version.clone(), requests.clone());
+            tasks.push(loom::thread::spawn(move || {
+                let operation = async {
+                    if version.load(Ordering::SeqCst) == 0 {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        loom::thread::yield_now();
+                        version.store(1, Ordering::SeqCst);
+                    }
+                    version.load(Ordering::SeqCst)
+                };
+                let bearer = if broken {
+                    complete(refresh::released_early(&lock, operation))
+                } else {
+                    complete(refresh::serialized(&lock, operation))
+                };
+                assert_eq!(bearer, 1);
+            }));
+        }
+        for task in tasks {
+            task.join().unwrap();
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "two refreshes raced");
+    });
+}
+
+#[test]
+fn expired_parallel_requests_share_one_refresh_and_reload_the_published_bearer() {
+    deduplicate_model(false);
+}
+
+#[test]
+#[should_panic(expected = "two refreshes raced")]
+fn negative_control_detects_duplicate_token_requests_without_refresh_ownership() {
+    deduplicate_model(true);
+}
+
 #[test]
 fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
     loom::model(|| {

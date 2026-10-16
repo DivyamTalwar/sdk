@@ -74,50 +74,70 @@ async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
 
 #[tokio::test]
 async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> Result<()> {
-    let (root, login, transport) =
-        fixture(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 299), 200)?;
-    let (access, account) = login.bearer(&transport, None, None).await?;
-    assert_eq!(access, transport.response["access_token"]);
-    assert_eq!(account.as_deref(), Some("account"));
-    let stored = crate::json(
-        &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
-    )?;
-    assert_eq!(stored["agent_identity"], json!({"preserve":true}));
-    assert_eq!(stored["tokens"]["refresh_token"], "new-refresh");
-    assert_eq!(stored["tokens"]["id_token"], "new-id");
-    assert_eq!(stored["tokens"]["account_id"], "account");
-    assert!(OffsetDateTime::parse(stored["last_refresh"].as_str().unwrap_or(""), &Rfc3339).is_ok());
-    let requests = transport
-        .sent
-        .lock()
-        .map_err(|_| invalid("fixture poisoned"))?;
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
-    let body = crate::json(&requests[0].body)?;
-    assert_eq!(body["client_id"], CLIENT_ID);
-    assert_eq!(body["grant_type"], "refresh_token");
-    assert_eq!(body["refresh_token"], "old-refresh");
+    for expiry in [0, OffsetDateTime::now_utc().unix_timestamp() + 299] {
+        let (root, login, transport) = fixture(&jwt(expiry), 200)?;
+        let (access, account) = login.bearer(&transport, None, None).await?;
+        assert_eq!(access, transport.response["access_token"]);
+        assert_eq!(account.as_deref(), Some("account"));
+        let stored = crate::json(
+            &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
+        )?;
+        assert_eq!(stored["agent_identity"], json!({"preserve":true}));
+        assert_eq!(stored["tokens"]["refresh_token"], "new-refresh");
+        assert_eq!(stored["tokens"]["id_token"], "new-id");
+        assert_eq!(stored["tokens"]["account_id"], "account");
+        assert!(
+            OffsetDateTime::parse(stored["last_refresh"].as_str().unwrap_or(""), &Rfc3339).is_ok()
+        );
+        let requests = transport
+            .sent
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
+        let body = crate::json(&requests[0].body)?;
+        assert_eq!(body["client_id"], CLIENT_ID);
+        assert_eq!(body["grant_type"], "refresh_token");
+        assert_eq!(body["refresh_token"], "old-refresh");
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn shared_login_serializes_refresh_and_reloads_the_winner() -> Result<()> {
+    refresh_pair(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "two refreshes raced")]
+async fn negative_control_detects_independent_locks_racing_the_scripted_token_endpoint() {
+    refresh_pair(true).await.expect("scripted refresh");
+}
+
+async fn refresh_pair(broken: bool) -> Result<()> {
     let (_root, first, transport) = fixture(&jwt(0), 200)?;
     let transport = Arc::new(transport);
-    let second = first.fresh();
+    let mut second = first.fresh();
     assert!(crate::sync::Arc::ptr_eq(&first.refresh, &second.refresh));
+    if broken {
+        second.refresh = crate::sync::Arc::new(crate::sync::AsyncMutex::new(()));
+    }
+    // The scripted endpoint suspends after recording each request. Both
+    // attempts therefore reach the shared guard before the first refresh returns.
     let (left, right) = futures::join!(
         first.bearer(transport.as_ref(), None, None),
         second.bearer(transport.as_ref(), None, None)
     );
     assert_eq!(left?, right?);
+    let requests = transport
+        .sent
+        .lock()
+        .map_err(|_| invalid("fixture poisoned"))?;
+    assert_eq!(requests.len(), 1, "two refreshes raced");
+    assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
     assert_eq!(
-        transport
-            .sent
-            .lock()
-            .map_err(|_| invalid("fixture poisoned"))?
-            .len(),
-        1
+        crate::json(&requests[0].body)?["refresh_token"],
+        "old-refresh"
     );
     Ok(())
 }
@@ -159,19 +179,33 @@ async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Re
 
 #[tokio::test]
 async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> Result<()> {
-    let (root, login, transport) = fixture(&jwt(0), 400)?;
-    let before =
-        std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
-    assert!(login.bearer(&transport, None, None).await.is_err());
-    assert_eq!(
-        before,
-        std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?
-    );
-    let mut changed = auth(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600));
-    changed["tokens"]["account_id"] = json!("another-account");
-    std::fs::write(root.path().join("auth.json"), changed.to_string())
-        .map_err(|e| invalid(e.to_string()))?;
-    assert!(login.bearer(&transport, None, None).await.is_err());
+    for status in [400, 401, 403] {
+        let (root, login, transport) = fixture(&jwt(0), status)?;
+        let before =
+            std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
+        let error = login
+            .bearer(&transport, None, None)
+            .await
+            .expect_err("rejected refresh");
+        assert!(matches!(error, acyclic_harness::Error::Unauthorized(_)));
+        assert!(error.to_string().contains(&status.to_string()));
+        let requests = transport
+            .sent
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
+        drop(requests);
+        assert_eq!(
+            before,
+            std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?
+        );
+        let mut changed = auth(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600));
+        changed["tokens"]["account_id"] = json!("another-account");
+        std::fs::write(root.path().join("auth.json"), changed.to_string())
+            .map_err(|e| invalid(e.to_string()))?;
+        assert!(login.bearer(&transport, None, None).await.is_err());
+    }
     Ok(())
 }
 
