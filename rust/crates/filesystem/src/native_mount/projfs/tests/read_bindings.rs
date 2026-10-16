@@ -1,7 +1,11 @@
 use super::*;
 
 fn notify(runtime: &Runtime, kind: PRJ_NOTIFICATION) -> HRESULT {
-    let name = HSTRING::from("read.txt");
+    notify_path(runtime, kind, "read.txt")
+}
+
+fn notify_path(runtime: &Runtime, kind: PRJ_NOTIFICATION, path: &str) -> HRESULT {
+    let name = HSTRING::from(path);
     let data = PRJ_CALLBACK_DATA {
         InstanceContext: std::ptr::from_ref(runtime).cast_mut().cast(),
         FilePathName: PCWSTR(name.as_ptr()),
@@ -18,6 +22,41 @@ fn notify(runtime: &Runtime, kind: PRJ_NOTIFICATION) -> HRESULT {
             std::ptr::null_mut(),
         )
     }
+}
+
+#[tokio::test]
+async fn native_access_projfs_cached_opens_require_current_list_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::access::Action;
+    use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
+    for path in ["read.txt", ""] {
+        let work = setup_work()?;
+        let source = windows_checkout_source().await?;
+        source.create_file(
+            &windows_path("read.txt"),
+            FileMetadata::default(),
+            None,
+            &work,
+        )?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("read.txt"), b"cached host contents")?;
+        let runtime = metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &work)?;
+        let stamp = source.view_stamp_with_meter(&work)?;
+        publish_test_access(&source, vec![deny("no-disclosure", &[Action::List], path)])?;
+        assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
+        let before = work.receipt().backend_read_operations;
+        assert_eq!(
+            notify_path(&runtime, PRJ_NOTIFICATION_FILE_OPENED, path),
+            HR_ACCESS_DENIED
+        );
+        assert_eq!(
+            work.receipt().backend_read_operations,
+            before,
+            "denial precedes host probes"
+        );
+        assert!(lock_recover(&runtime.metadata_baselines).is_empty());
+    }
+    Ok(())
 }
 
 fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {

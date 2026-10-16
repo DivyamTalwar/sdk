@@ -169,6 +169,14 @@ pub(super) unsafe fn notification(
     if !runtime.writable {
         return HR_NOT_SUPPORTED;
     }
+    if notification == PRJ_NOTIFICATION_FILE_OPENED {
+        if let Err(error) = runtime
+            .source
+            .authorize_with_meter(&[(crate::access::Action::List, &path)], &work)
+        {
+            return source_hresult(&error);
+        }
+    }
     let file_id = file_id(data);
     // SAFETY: ProjFS passes these names as null or NUL-terminated strings
     let source_is_external = unsafe { empty_destination(data.FilePathName) };
