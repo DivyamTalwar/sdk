@@ -209,7 +209,7 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
         goal(&harness).await,
     ) {
         (Some(expected), None, Ok(actual))
-            if matchers::subset(expected, &serde_json::to_value(actual)?) => {}
+            if matchers::subset(expected, &serde_json::to_value(&actual)?) => {}
         (None, Some(expected), Err(error)) if error.to_string().contains(expected) => {}
         actual => return Err(format!("unexpected goal view: {actual:?}").into()),
     }
