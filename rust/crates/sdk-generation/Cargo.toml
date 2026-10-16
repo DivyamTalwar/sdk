@@ -21,6 +21,10 @@ flate2 = "1"
 [dev-dependencies]
 proptest = "=1.11.0"
 toml = "=0.9.8"
+tempfile = "=3.27.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [[bin]]
 name = "registry-transport-fixture"

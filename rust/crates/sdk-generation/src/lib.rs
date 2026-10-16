@@ -4,8 +4,8 @@ use sdk_docs::rustdoc_profiles::{
     validate_rustdoc_version, ApiOwnerKind, ProfileId, ProfileSpec,
 };
 use sdk_docs::{
-    build_data, merge_profile_catalog, rustdoc_digest, scenarios, write_bundle, write_bundle_files,
-    BuildInput, Channel, GeneratedSource, PackageMetadata,
+    build_data, merge_profile_catalog, scenarios, write_bundle, write_bundle_files, BuildInput,
+    Channel, GeneratedSource, PackageMetadata,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,8 +28,10 @@ use profiles::*;
 mod toolchains;
 use toolchains::*;
 mod artifacts;
+mod file_cache;
 pub use artifacts::materialize_generated_sources;
 use artifacts::*;
+use file_cache::rustdoc_digest;
 
 #[derive(Debug)]
 pub struct CliError(String);

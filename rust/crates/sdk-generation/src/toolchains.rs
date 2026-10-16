@@ -34,14 +34,52 @@ pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
 }
 
 pub(super) fn toolchain_identity(cargo: &Path) -> Result<String, CliError> {
-    let output = Command::new(cargo)
-        .args(["-V", "--verbose"])
-        .output()
-        .map_err(io_error)?;
-    if !output.status.success() {
-        return Err(CliError("pinned Cargo identity query failed".into()));
+    Ok(
+        cargo_version(cargo, &std::env::current_dir().map_err(io_error)?, "")?
+            .trim()
+            .to_owned(),
+    )
+}
+
+pub(super) fn cargo_version(
+    cargo: &Path,
+    root: &Path,
+    discovery: &str,
+) -> Result<String, CliError> {
+    let context = cargo_context(root, discovery, std::env::vars_os());
+    crate::file_cache::get(cargo, &context, || {
+        let output = Command::new(cargo)
+            .current_dir(root)
+            .arg("-vV")
+            .output()
+            .map_err(io_error)?;
+        if !output.status.success() {
+            return Err(CliError("pinned Cargo identity query failed".into()));
+        }
+        String::from_utf8(output.stdout).map_err(|error| CliError(error.to_string()))
+    })
+}
+
+pub(super) fn cargo_context(
+    root: &Path,
+    discovery: &str,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> String {
+    // A Cargo wrapper can observe its working directory, config and environment.
+    // Frame every environment byte, retaining only its digest in the cache key.
+    let mut context = Vec::new();
+    for bytes in [root.as_os_str().as_encoded_bytes(), discovery.as_bytes()] {
+        context.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        context.extend_from_slice(bytes);
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    for (key, value) in environment.into_iter().collect::<BTreeMap<_, _>>() {
+        for part in [key, value] {
+            let bytes = part.as_encoded_bytes();
+            context.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            context.extend_from_slice(bytes);
+        }
+    }
+    format!("cargo-vV:{}", sha256_bytes(&context))
 }
 
 pub(super) fn rustup_targets() -> Result<BTreeSet<String>, CliError> {

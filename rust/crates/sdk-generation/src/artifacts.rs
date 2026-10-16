@@ -482,7 +482,10 @@ pub(super) fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>,
             continue;
         }
         let relative = path.strip_prefix(output).unwrap_or(&path);
-        result.insert(path_string(relative), sha256_file(&path)?);
+        result.insert(
+            path_string(relative),
+            crate::file_cache::sha256_file(&path)?,
+        );
     }
     Ok(result)
 }

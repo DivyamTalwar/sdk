@@ -7,10 +7,9 @@ pub(super) fn drift(
     let output = canonical(&output)?;
     let rustdoc_dir = canonical(&rustdoc_dir)?;
     let manifest_path = output.join("generation-manifest.v1.json");
-    let manifest: GenerationManifest =
-        serde_json::from_slice(&fs::read(&manifest_path).map_err(io_error)?)
-            .map_err(|e| CliError(format!("invalid generation manifest: {e}")))?;
     let manifest_bytes = fs::read(&manifest_path).map_err(io_error)?;
+    let manifest: GenerationManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| CliError(format!("invalid generation manifest: {e}")))?;
     let expected_manifest_digest =
         fs::read_to_string(output.join("generation-manifest.v1.sha256")).map_err(io_error)?;
     if expected_manifest_digest.trim() != sha256_bytes(&manifest_bytes) {
