@@ -148,11 +148,28 @@ fn prepare(
     provider: &ResolvedModel,
     messages: Vec<ModelMessage>,
 ) -> Result<(PreparedModelRequest, ModelDispatch)> {
+    let tools = messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| {
+            let ModelContentPart::ToolCall(call) = part else {
+                return None;
+            };
+            Some(acyclic_harness::tool::ToolDefinition {
+                name: call.name.clone(),
+                revision: "1".into(),
+                description: "Image fixture tool".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({}),
+                projection_schema: json!({}),
+            })
+        })
+        .collect();
     let request = PreparedModelRequest::prepare(
         ModelRequest {
             model: provider.model.clone(),
             messages,
-            tools: Vec::new(),
+            tools,
             max_output_tokens: Some(64),
         },
         Limits::default(),
@@ -580,6 +597,11 @@ async fn image_native_dispatch_uses_original_work_and_releases_content() -> Resu
         .expect("PNG fixture");
     for (adapter, response) in fixtures() {
         let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+        let baseline = work.live_allocation_bytes();
+        assert_eq!(
+            baseline,
+            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+        );
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
         let (file, reads, _) = file(&bytes, "image/png", false, Some(&io)).await?;
         let (mut provider, _) = provider(adapter, 200);
@@ -613,7 +635,7 @@ async fn image_native_dispatch_uses_original_work_and_releases_content() -> Resu
         drop(provider);
         drop(reads);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
