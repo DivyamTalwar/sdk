@@ -1,21 +1,5 @@
-/// Core coordinator for overlapping tool leases and deferred parent advances.
-pub struct OperationWindowCoordinator<S> {
-    store: S,
-}
-
-impl<S> OperationWindowCoordinator<S> {
-    /// Creates a coordinator over a durable state adapter.
-    #[must_use]
-    pub const fn new(store: S) -> Self {
-        Self { store }
-    }
-
-    /// Borrows the underlying adapter.
-    #[must_use]
-    pub const fn store(&self) -> &S {
-        &self.store
-    }
-}
+//! Lease transitions and final-close workspace reconciliation.
+use super::*;
 
 impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
     /// Opens an overlapping lease. The first lease pins `parent`.

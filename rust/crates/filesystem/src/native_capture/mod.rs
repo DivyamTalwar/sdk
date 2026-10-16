@@ -24,6 +24,8 @@ mod model;
 #[cfg(all(test, unix))]
 mod native_view_baseline_tests;
 use accounting::*;
+#[cfg(any(windows, test))]
+mod sparse_scan;
 #[cfg(windows)]
 mod sparse;
 #[cfg(windows)]
@@ -54,6 +56,8 @@ use metadata::*;
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod reuse_properties;
 #[cfg(all(test, unix, feature = "native-mount"))]
 mod root_capture_regression;
 #[cfg(all(test, unix))]

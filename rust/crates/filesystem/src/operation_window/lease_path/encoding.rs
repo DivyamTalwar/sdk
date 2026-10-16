@@ -10,17 +10,18 @@ pub(super) fn length(expires_at_millis: u64) -> usize {
 }
 
 // `length` is obtained from the expiry before the caller admits any writes.
-pub(super) fn write(
+pub(super) fn write<const N: usize>(
     workspace: [u8; 16],
     lease: [u8; 16],
     expires_at_millis: u64,
     length: usize,
-    text: &mut [u8; MAX_ENCODED_BYTES],
+    text: &mut [u8; N],
 ) {
+    const { assert!(N >= MAX_ENCODED_BYTES) };
     write_buffer(workspace, lease, expires_at_millis, length, text);
 }
 
-// The fixed-capacity production entry above retains its type-level bound. This
+// The production entry above retains its compile-time capacity bound. This
 // same formatter is instantiated at 116 bytes by the proof's negative control.
 pub(super) fn write_buffer<const N: usize>(
     workspace: [u8; 16],

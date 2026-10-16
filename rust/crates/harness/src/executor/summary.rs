@@ -115,14 +115,16 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                 }
-                ModelEvent::ToolCall { .. } => {
+                ModelEvent::ToolCall(_) => {
                     return Err(stock_boundary(
                         self.io,
                         crate::wire::ErrorCode::Invalid,
                         "summary requested a tool operation",
                     ));
                 }
-                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
+                ModelEvent::Reasoning { .. }
+                | ModelEvent::ReasoningBlock { .. }
+                | ModelEvent::Completed { .. } => {}
             }
         }
         if text.is_empty() {

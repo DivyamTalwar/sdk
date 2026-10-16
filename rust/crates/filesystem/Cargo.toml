@@ -36,13 +36,13 @@ name = "access"
 path = "tests/access.rs"
 
 [[test]]
+name = "path_properties"
+path = "tests/path_properties.rs"
+
+[[test]]
 name = "cloud_contract"
 path = "tests/cloud_contract.rs"
 required-features = ["memory"]
-
-[[test]]
-name = "native_custody_accounting"
-path = "tests/native_custody_accounting.rs"
 
 [[test]]
 name = "native_owner_registry"
@@ -75,6 +75,11 @@ path = "tests/native_binding_model.rs"
 required-features = ["native-mount"]
 
 [[test]]
+name = "native_stage_loom"
+path = "tests/native_stage_loom.rs"
+required-features = ["native-mount"]
+
+[[test]]
 name = "accounting_reconciliation"
 path = "tests/accounting_reconciliation.rs"
 required-features = ["memory"]
@@ -89,12 +94,28 @@ name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
 
+[[bench]]
+name = "filesystem"
+harness = false
+required-features = ["local", "memory", "native-watch"]
+
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local", "memory", "native-watch"]
+
+[[bench]]
+name = "native_capture"
+harness = false
+required-features = ["memory", "native-watch", "native-mount"]
+
 [[test]]
 name = "native_source_watch_custody"
 path = "tests/native_source_watch_custody.rs"
 required-features = ["local", "native-mount"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
@@ -239,3 +260,13 @@ name = "projfs_paths"
 path = "benches/projfs_paths.rs"
 harness = false
 required-features = ["native-mount"]
+
+[[bench]]
+name = "object_batches"
+harness = false
+required-features = ["memory"]
+
+[[bench]]
+name = "object_batches_alloc"
+harness = false
+required-features = ["memory"]
