@@ -14,13 +14,17 @@ members = ["."]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [features]
+records = ["acyclic-harness/filesystem"]
 notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 acyclic-harness = { path = ".." }
+acyclic-stream = { path = "../../stream", default-features = false }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
 bytes = "1"
+futures = "0.3"
+uuid = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -73,6 +77,14 @@ bench = false
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recorded_invocation"
+path = "fuzz_targets/recorded_invocation.rs"
+required-features = ["records"]
 test = false
 doc = false
 bench = false

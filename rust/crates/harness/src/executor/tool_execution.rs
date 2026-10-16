@@ -11,7 +11,6 @@ impl StockExecution<'_> {
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
         self.verify_task_context_binding(operation_id)?;
-        stock_validate_invocation(&invocation, self.io)?;
         let metadata = prior_messages
             .iter()
             .rev()
@@ -23,15 +22,21 @@ impl StockExecution<'_> {
                 _ => None,
             })
             .unwrap_or(&Value::Null);
-        stock_json_bound(
-            &crate::tool::RecordedInvocation {
-                invocation: &invocation,
-                metadata,
+        invocation.validate_recorded(
+            metadata,
+            crate::conversation::Limits {
+                file_bytes: self
+                    .stock
+                    .limits
+                    .file_bytes
+                    .min(self.stock.tool_scope.limits().file_bytes),
+                render_bytes: self
+                    .stock
+                    .limits
+                    .render_bytes
+                    .min(self.stock.tool_scope.limits().render_bytes),
+                ..self.stock.limits
             },
-            self.stock
-                .limits
-                .file_bytes
-                .min(self.stock.tool_scope.limits().file_bytes),
             self.io,
         )?;
         let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
