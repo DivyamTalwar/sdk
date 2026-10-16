@@ -73,6 +73,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> W::Output<(), FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
+            accounting.check()?;
+            if bytes.len() as u64
+                > MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes)
+            {
+                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;

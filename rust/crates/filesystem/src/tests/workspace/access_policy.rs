@@ -138,6 +138,64 @@ async fn access_policy_storage_failed_preconditions_leave_the_record_unchanged()
     Ok(())
 }
 
+#[tokio::test]
+async fn access_policy_storage_refuses_oversized_records_before_payload_io()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("policy-bounds"))?;
+    let mut checkout = current(&workspace, true).await?;
+    let bytes = vec![b'x'; crate::access::MAXIMUM_POLICY_RECORD_BYTES as usize + 1];
+    let failure = checkout
+        .write_access_policy(
+            &bytes,
+            NamedAttributeWriteMode::Create,
+            WorkBudget {
+                backend_write_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("oversized policy was stored")?;
+    assert!(matches!(
+        failure.error,
+        FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange)
+    ));
+    assert_eq!(failure.work.backend_write_operations, 0);
+    assert!(!checkout.has_pending_mutations());
+
+    // A legacy writer can leave an invalid record; loading must reject its
+    // authenticated length before reading/materializing the payload.
+    let key = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        crate::access::POLICY_METADATA_KEY.to_vec(),
+        255,
+    )?;
+    let root = checkout.root().root_file_id;
+    unbounded!(
+        checkout,
+        change_named_attribute(root, &key, Some((&bytes, NamedAttributeWriteMode::Create)))
+    )?;
+    let failure = checkout
+        .read_access_policy(
+            WorkBudget {
+                object_bytes_read: 16_384,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("oversized legacy policy was read")?;
+    assert!(matches!(
+        failure.error,
+        FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange)
+    ));
+    assert!(failure.work.object_bytes_read < crate::access::MAXIMUM_POLICY_RECORD_BYTES);
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
