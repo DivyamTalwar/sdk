@@ -731,3 +731,6 @@ mod checkout_reconciliation;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod volume_tools;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod reconciliation_interruptions;

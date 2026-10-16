@@ -18,6 +18,7 @@ fn round_trip<T: Serialize + DeserializeOwned>(input: &[u8]) {
 
 fuzz_target!(|input: &[u8]| {
     round_trip::<owner_record::Owner>(input);
+    round_trip::<acyclic_fs::GitCompatState>(input);
     round_trip::<ReadFileInput>(input);
     round_trip::<WriteFileInput>(input);
     round_trip::<EditFileInput>(input);
