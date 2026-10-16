@@ -356,12 +356,30 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                     _ => None,
                 })
                 .collect();
-            assert_eq!(blocks.len(), 1);
-            assert_eq!(blocks[0].text.as_deref(), Some("think"));
-            assert_eq!(
-                blocks[0].origin,
-                provider.reasoning_origin(provider.key.as_deref(), None)
-            );
+            let thinking = if adapter == Adapter::Gemini {
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[0].text, None);
+                assert_eq!(
+                    blocks[0].kind,
+                    acyclic_harness::model::ReasoningKind::Opaque
+                );
+                assert_eq!(
+                    blocks[0].outcome,
+                    acyclic_harness::model::ReasoningOutcome::SuppressedDisplay
+                );
+                assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hé"}));
+                blocks[1]
+            } else {
+                assert_eq!(blocks.len(), 1);
+                blocks[0]
+            };
+            assert_eq!(thinking.text.as_deref(), Some("think"));
+            for block in blocks {
+                assert_eq!(
+                    block.origin,
+                    provider.reasoning_origin(provider.key.as_deref(), None)
+                );
+            }
         }
         let sent = script
             .sent
