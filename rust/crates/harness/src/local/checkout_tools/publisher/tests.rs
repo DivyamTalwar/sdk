@@ -156,8 +156,12 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
     );
     assert_eq!(view.subject().1, agent.to_string());
     assert!(
-        view.decide(acyclic_fs::access::Action::Read, "file", 0)
-            .allowed
+        view.decide(
+            acyclic_fs::access::Action::Read,
+            "file",
+            crate::filesystem::access::access_now()
+        )
+        .allowed
     );
     Ok(())
 }

@@ -2,6 +2,29 @@
 use super::*;
 
 impl CheckoutTools {
+    pub(super) async fn require_command_access(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        ceiling: &Capabilities,
+        facade: bool,
+    ) -> Result<()> {
+        self.require_access(
+            workspace,
+            ceiling,
+            if facade {
+                "local fs facade"
+            } else {
+                "local bash"
+            },
+        )
+        .await?;
+        if facade {
+            self.require_repository_access(workspace.id(), ceiling)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn require_access(
         &self,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
