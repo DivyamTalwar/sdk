@@ -178,15 +178,9 @@ fn text(value: &str) -> ModelContentPart {
 }
 
 fn expected_image(adapter: Adapter) -> serde_json::Value {
-    let url = format!("data:image/png;base64,{PNG}");
-    match adapter {
-        Adapter::Chat => json!({"type":"image_url", "image_url":{"url":url,"detail":"high"}}),
-        Adapter::Responses => json!({"type":"input_image", "image_url":url,"detail":"high"}),
-        Adapter::Anthropic => {
-            json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":PNG}})
-        }
-        Adapter::Gemini => json!({"inlineData":{"mimeType":"image/png","data":PNG}}),
-    }
+    let fixtures = json(include_bytes!("fixtures/image-parts.json")).expect("image wire fixtures");
+    let name = serde_json::to_value(adapter).expect("adapter");
+    fixtures[name.as_str().expect("adapter name")].clone()
 }
 
 fn message_parts<'a>(
