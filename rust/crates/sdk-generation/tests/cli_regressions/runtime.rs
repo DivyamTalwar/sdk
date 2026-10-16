@@ -107,7 +107,6 @@ pub(super) fn configure(command: &mut Command) {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
         let cargo = cargo();
         let sysroot = cargo.parent().unwrap().parent().unwrap();
-        command.env("RUSTUP_TOOLCHAIN", sysroot.file_name().unwrap());
         let linkers = fs::read_dir(sysroot.join("lib/rustlib"))
             .unwrap()
             .map(|entry| entry.unwrap().path().join("bin/rust-lld.exe"))
