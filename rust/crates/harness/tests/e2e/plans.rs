@@ -116,11 +116,11 @@ impl Plans {
             .await?;
         let mut turns: Vec<_> = self.writes.iter().enumerate().map(|(index, write)| {
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("write-{index}"),
-                    name: "acyclic.write_file".into(),
-                    arguments: json!({"path":write.path,"text":write.text,"media_type":"text/markdown","display_name":write.path.rsplit('/').next().unwrap_or_default()}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    format!("write-{index}"),
+                    "acyclic.write_file".into(),
+                    json!({"path":write.path,"text":write.text,"media_type":"text/markdown","display_name":write.path.rsplit('/').next().unwrap_or_default()}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
             ])
         }).collect();
