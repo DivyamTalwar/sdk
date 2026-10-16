@@ -27,6 +27,39 @@ impl Thinking {
 }
 
 impl<'work> State<'work> {
+    // A call-free completion with no signed answer needs only the ordinary
+    // answer text. Keep earlier tool-step fragments to align later signatures.
+    pub(super) fn discard_unsigned_final_text(&mut self) -> Result<()> {
+        if !self.calls.is_empty()
+            || self
+                .thinking
+                .values()
+                .any(|part| part.visible && part.kind == ReasoningKind::Signature)
+        {
+            return Ok(());
+        }
+        let mut error = None;
+        self.thinking.retain(|_, part| {
+            if !part.visible || error.is_some() {
+                return true;
+            }
+            match self.budget.replace(
+                budget::Size {
+                    bytes: size_of::<(u64, Thinking)>() + part.bytes(),
+                    items: 1,
+                },
+                budget::Size::default(),
+            ) {
+                Ok(()) => false,
+                Err(cause) => {
+                    error = Some(cause);
+                    true
+                }
+            }
+        });
+        error.map_or(Ok(()), Err)
+    }
+
     pub(super) fn visible_text(&mut self, text: &str) -> Result<()> {
         if text.is_empty() {
             return Ok(());

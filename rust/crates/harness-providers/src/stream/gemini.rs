@@ -32,6 +32,9 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
     };
     let mut events = Vec::new();
     if let Some(parts) = candidate["content"]["parts"].as_array() {
+        if state.terminal && !parts.is_empty() {
+            return Err(invalid("Gemini content after terminal marker"));
+        }
         let raw: Envelope<'_> =
             serde_json::from_str(data).map_err(|_| invalid("invalid Gemini content parts"))?;
         let raw = &raw
@@ -87,6 +90,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         } else {
             reason
         })?;
+        state.discard_unsigned_final_text()?;
         state.terminal = true;
     }
     Ok(events)

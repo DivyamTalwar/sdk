@@ -1,6 +1,26 @@
 use super::*;
 use serde_json::json;
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn unused_visible_parts_return_the_complete_retained_balance(
+        fragments in proptest::collection::vec(".{0,32}", 0..32),
+        calls in proptest::bool::ANY, signed in proptest::bool::ANY,
+    ) {
+        let mut state=State::new(65_536);
+        if calls {state.call(0).unwrap();}
+        for text in fragments {state.visible_text(&text).unwrap();}
+        if signed {
+            let index=(state.calls.len()+state.thinking.len()) as u64;
+            state.raw_part(index,&json!({"text":"signed","thoughtSignature":"opaque"}),None,true).unwrap();
+        }
+        let before=state.budget.used();
+        state.discard_unsigned_final_text().unwrap();
+        proptest::prop_assert_eq!(state.budget.used(),if calls||signed {before} else {(0,0)});
+    }
+}
+
 #[test]
 fn unsigned_gemini_fragments_coalesce_without_crossing_signature_boundaries() -> Result<()> {
     let mut state = State::new(4096);

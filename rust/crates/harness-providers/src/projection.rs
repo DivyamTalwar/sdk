@@ -383,7 +383,11 @@ fn project_message<'a>(
                         }
                     }
                     ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
-                        if let Some(part) = gemini.native(continuity) {
+                        if let Some(part) = gemini.native(
+                            continuity,
+                            block.outcome
+                                == acyclic_harness::model::ReasoningOutcome::SuppressedDisplay,
+                        ) {
                             ordered.push(part);
                         }
                     }

@@ -36,7 +36,7 @@ impl<'a> Replay<'a> {
         }
     }
 
-    pub fn native(&mut self, bytes: &'a [u8]) -> Option<Item<'a>> {
+    pub fn native(&mut self, bytes: &'a [u8], suppress_display: bool) -> Option<Item<'a>> {
         let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
         let part: Part<'_> = serde_json::from_str(raw.get()).ok()?;
         if part.function_call.is_some() {
@@ -46,7 +46,7 @@ impl<'a> Replay<'a> {
             return None;
         }
         self.signature = None;
-        if part.thought != Some(true) && !part.text.is_empty() {
+        if suppress_display && part.thought != Some(true) && !part.text.is_empty() {
             self.visible.push_back(part.text);
         }
         Some(Item::Native(raw))
@@ -83,7 +83,10 @@ pub(crate) fn assert_visible_replay(events: &[acyclic_harness::model::ModelEvent
     let mut native_text = String::new();
     for event in events {
         if let ModelEvent::ReasoningBlock { block } = event {
-            if let Some(item) = replay.native(&block.continuity) {
+            if let Some(item) = replay.native(
+                &block.continuity,
+                block.outcome == acyclic_harness::model::ReasoningOutcome::SuppressedDisplay,
+            ) {
                 let bytes = serde_json::to_vec(&item).unwrap();
                 assert_eq!(bytes, block.continuity, "native part bytes changed");
                 let part: Value = serde_json::from_slice(&bytes).unwrap();
@@ -102,13 +105,13 @@ pub(crate) fn assert_visible_replay(events: &[acyclic_harness::model::ModelEvent
             _ => None,
         })
         .collect();
-    assert_eq!(
-        native_text, visible,
-        "native replay lost a visible fragment"
-    );
     for event in events {
         if let ModelEvent::Content { delta } = event {
-            assert!(replay.remaining(delta).is_empty(), "answer would repeat");
+            native_text.push_str(replay.remaining(delta));
         }
     }
+    assert_eq!(
+        native_text, visible,
+        "native parts and answer must replay each byte once"
+    );
 }
