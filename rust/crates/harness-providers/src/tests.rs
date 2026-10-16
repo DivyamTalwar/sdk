@@ -32,6 +32,8 @@ mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 mod native_tests;
+#[path = "tool_name_tests.rs"]
+mod tool_name_tests;
 
 use crate::fixtures::{CHAT, fixtures};
 

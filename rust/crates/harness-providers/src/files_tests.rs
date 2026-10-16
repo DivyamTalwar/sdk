@@ -153,7 +153,13 @@ async fn bounded_text_and_reference_files_project_in_order_without_io_during_cou
         )?;
         let count = provider.count_tokens(&prepared)?;
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-        let wire = crate::dispatch::encode(&provider, &prepared, None).await?;
+        let wire = crate::dispatch::encode(
+            &provider,
+            &prepared,
+            &crate::tool_names::Names::new(prepared.request()),
+            None,
+        )
+        .await?;
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         assert!(
             (u64::from(count.fixed_tokens)
@@ -236,9 +242,14 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
             ],
         )?;
         assert!(
-            crate::dispatch::encode(&provider, &prepared, None)
-                .await
-                .is_err()
+            crate::dispatch::encode(
+                &provider,
+                &prepared,
+                &crate::tool_names::Names::new(prepared.request()),
+                None
+            )
+            .await
+            .is_err()
         );
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
     }

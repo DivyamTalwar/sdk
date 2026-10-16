@@ -21,6 +21,7 @@ struct Parser<'work> {
 async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
+    names: &crate::tool_names::Names<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<bytes::Bytes> {
     let (bytes, nodes) = shape(request.bytes());
@@ -35,7 +36,7 @@ async fn encode(
     let mut allocation = reserve(work, expanded, nodes, 0)?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
     let body = diagnostic(
-        dispatch::encode(provider, request, Some(&io)).await,
+        dispatch::encode(provider, request, names, Some(&io)).await,
         &mut allocation,
     )?;
     retain(&mut allocation, body.capacity() as u64)?;
@@ -203,7 +204,8 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
-            let body = encode(provider, request, work).await?;
+            let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
+            let body = encode(provider, request, &names, work).await?;
             let input_bytes = body.len();
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
             let auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
@@ -253,6 +255,7 @@ pub(crate) fn generate<'a>(
             let adapter = provider.config.adapter;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
+                    let _name_custody = name_custody;
                     let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
@@ -288,6 +291,12 @@ pub(crate) fn generate<'a>(
                     })?;
                     let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
+                    let restored = parser.state.restore_names(&names, |length| {
+                        let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;
+                        parser.allocation.absorb(&mut custody)?;
+                        Ok(())
+                    });
+                    diagnostic(restored, &mut parser.allocation)?;
                     let Parser { state, mut allocation } = parser;
                     let events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
