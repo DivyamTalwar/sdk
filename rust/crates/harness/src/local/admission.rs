@@ -106,12 +106,12 @@ impl LocalHarness {
     async fn publish_turn(
         &self,
         operation: OperationId,
-        prompt: &str,
+        inputs: (WorkflowCommand, WorkflowCommand),
         root: OperationId,
         automatic_turns: u32,
         previous: Option<OperationId>,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        let (receive, model) = self.stage_turn(operation, prompt).await?;
+        let (receive, model) = inputs;
         let turn = Turn {
             operation,
             root,
@@ -192,7 +192,7 @@ impl LocalHarness {
             }
             self.publish_turn(
                 operation,
-                prompt,
+                self.stage_turn(operation, prompt).await?,
                 operation,
                 0,
                 current.as_ref().map(|turn| turn.operation),
@@ -231,6 +231,29 @@ impl LocalHarness {
             ) {
                 return Ok(None);
             }
+            let operation = crate::goal::continuation_operation(
+                crate::runtime::task_id_for_admission(current.root),
+                settled,
+            );
+            // A staged model input is already an immutable choice. Recover it
+            // before reading a possibly edited, completed or removed GOAL.md.
+            if let Some(inputs) = self.recover_turn_inputs(operation).await? {
+                let count = current
+                    .automatic_turns
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
+                return admitted_task(
+                    self.publish_turn(
+                        operation,
+                        inputs,
+                        current.root,
+                        count,
+                        Some(current.operation),
+                    )
+                    .await?,
+                )
+                .map(Some);
+            }
             let (source, bytes) = match self
                 .files
                 .read_private_path(
@@ -261,7 +284,7 @@ impl LocalHarness {
                     let admission = self
                         .publish_turn(
                             operation,
-                            &prompt,
+                            self.stage_turn(operation, &prompt).await?,
                             current.root,
                             current.automatic_turns + 1,
                             Some(current.operation),
@@ -300,6 +323,52 @@ impl LocalHarness {
             }
         })
         .await
+    }
+
+    pub(super) async fn loop_root(&self, task: TaskId) -> Result<OperationId> {
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let grant = ContentGrant::verify(
+            &self.verifier,
+            &self.signed,
+            &self.journal,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        // Each head publication already retains its immutable generation under
+        // this ordinary file-write identity, even after a successor replaces HEAD.
+        let Some(file) = self
+            .files
+            .content_for_operation(
+                &self.journal,
+                &grant,
+                &crate::IdempotencyKey::new(format!("local-turn:{operation}"))?,
+                HEAD,
+                self.limits.file_bytes,
+                None,
+            )
+            .await?
+        else {
+            return Ok(operation);
+        };
+        let (_, bytes) = self
+            .files
+            .read_private_path(
+                &self.journal,
+                &self.read_grant(&self.journal)?,
+                HEAD,
+                Some(&self.files.file_generation(&file, None)?),
+                self.limits.file_bytes,
+                None,
+            )
+            .await?;
+        let turn = record::decode(&bytes).map_err(storage)?;
+        if turn.operation != operation {
+            return Err(Error::Conflict(
+                "retained turn belongs to another operation".into(),
+            ));
+        }
+        Ok(turn.root)
     }
 }
 

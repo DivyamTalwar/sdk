@@ -44,14 +44,7 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &str,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let publisher = FilesystemContentPublisher::new(
-            self.files.clone(),
-            &self.journal,
-            &self.verifier,
-            &self.signed,
-            self.limits.file_bytes,
-            None,
-        )?;
+        let publisher = self.input_publisher()?;
         let model = crate::filesystem::ModelTaskCommand {
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
@@ -73,6 +66,47 @@ impl LocalHarness {
             )?
             .await?
             .0;
+        self.finish_turn_inputs(operation, payload).await
+    }
+
+    fn input_publisher(
+        &self,
+    ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
+        FilesystemContentPublisher::new(
+            self.files.clone(),
+            &self.journal,
+            &self.verifier,
+            &self.signed,
+            self.limits.file_bytes,
+            None,
+        )
+    }
+
+    pub(super) async fn recover_turn_inputs(
+        &self,
+        operation: OperationId,
+    ) -> Result<Option<(WorkflowCommand, WorkflowCommand)>> {
+        let publisher = self.input_publisher()?;
+        let (payload, _) = publisher
+            .observe_staged_once(operation, self.limits.file_bytes, None)?
+            .await?;
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
+        if payload.path() != format!("inputs/{operation}.json") {
+            return Err(Error::Conflict(
+                "retained model input has another path".into(),
+            ));
+        }
+        self.finish_turn_inputs(operation, payload).await.map(Some)
+    }
+
+    async fn finish_turn_inputs(
+        &self,
+        operation: OperationId,
+        payload: crate::conversation::FileRef,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let publisher = self.input_publisher()?;
         let model = WorkflowCommand {
             operation_id: operation,
             kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
@@ -173,7 +207,7 @@ impl LocalHarness {
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
     pub fn resume(&self, task: TaskId) -> impl Future<Output = Result<TurnOutput>> {
         Box::pin(async move {
-            let root = OperationId::from_bytes(task.into_bytes());
+            let root = self.loop_root(task).await?;
             let mut current = task;
             loop {
                 let output = self.resume_turn(current).await;

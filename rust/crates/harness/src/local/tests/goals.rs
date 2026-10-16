@@ -215,3 +215,128 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
     assert_eq!(provider.requests().len(), 1);
     Ok(())
 }
+
+async fn write_goal(harness: &LocalHarness, contents: &str) -> Result<()> {
+    use crate::conversation::ContentPublisher;
+    crate::filesystem::FilesystemContentPublisher::new(
+        harness.files.clone(),
+        harness.scratch(),
+        &harness.verifier,
+        &harness.signed,
+        Limits::default().file_bytes,
+        None,
+    )?
+    .stage_once(
+        OperationId::new(),
+        "GOAL.md",
+        contents.as_bytes(),
+        "text/markdown",
+        "GOAL.md",
+        None,
+    )?
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([
+        ScriptedTurn::Text("root".into()),
+        ScriptedTurn::Text("recovered".into()),
+    ]);
+    let config = || volume_config(directory.path(), project.clone(), provider.clone());
+    let harness = LocalHarness::open(config()?).await?;
+    let root = OperationId::new();
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(root, "start").await?
+    else {
+        panic!()
+    };
+    harness.resume_turn(task_id).await?;
+    write_goal(&harness, "original objective").await?;
+    let continuation = crate::goal::continuation_operation(task_id, root);
+    // Interrupt the production path after immutable inputs, before HEAD publication.
+    let original = harness
+        .stage_turn(
+            continuation,
+            "Continue the active goal in GOAL.md.\n\noriginal objective",
+        )
+        .await?;
+    write_goal(&harness, "---\nstatus: done\n---\nchanged objective").await?;
+    // Negative control: rebuilding from the edited file reproduces the old failure.
+    assert!(matches!(
+        harness
+            .stage_turn(
+                continuation,
+                "Continue the active goal in GOAL.md.\n\nchanged objective",
+            )
+            .await,
+        Err(Error::Conflict(reason)) if reason.contains("upload identity belongs to a different request")
+    ));
+    drop(harness);
+    let harness = LocalHarness::open(config()?).await?;
+    assert_eq!(harness.resume(task_id).await?.text, "recovered");
+    assert_eq!(
+        harness.recover_turn_inputs(continuation).await?,
+        Some(original)
+    );
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.remaining(), 0);
+    let request = serde_json::to_string(&provider.requests()[1]).map_err(super::super::storage)?;
+    assert!(request.contains("original objective"));
+    assert!(!request.contains("changed objective"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([
+        ScriptedTurn::Text("root".into()),
+        ScriptedTurn::Text("first".into()),
+        ScriptedTurn::Text("second".into()),
+    ]);
+    let config = || -> Result<LocalHarnessConfig> {
+        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
+        config.goal_continuations = Some(GoalContinuationPolicy {
+            max_continuations: 2,
+        });
+        Ok(config)
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let root = OperationId::new();
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(root, "start").await?
+    else {
+        panic!()
+    };
+    harness.resume_turn(task_id).await?;
+    write_goal(&harness, "Keep going").await?;
+    let first = harness.continue_goal(task_id, root).await?.unwrap();
+    assert_eq!(harness.resume_turn(first).await?.text, "first");
+    let second = harness.continue_goal(first, root).await?.unwrap();
+    // Negative control: the former wrapper used the resumed task as its root.
+    assert_eq!(harness.resume_turn(first).await?.text, "first");
+    assert_eq!(
+        harness
+            .continue_goal(first, OperationId::from_bytes(first.into_bytes()))
+            .await?,
+        None
+    );
+    assert!(harness.runtime.task_host().outcome(second).await?.is_none());
+    assert_eq!(provider.requests().len(), 2);
+    drop(harness);
+    let harness = LocalHarness::open(config()?).await?;
+    assert_eq!(harness.resume(first).await?.text, "second");
+    assert!(matches!(
+        harness.runtime.task_host().outcome(second).await?,
+        Some(crate::Outcome::Succeeded(_))
+    ));
+    assert_eq!(harness.resume(first).await?.text, "second");
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(provider.remaining(), 0);
+    Ok(())
+}
