@@ -21,6 +21,16 @@ pub(super) struct Budget<'work> {
 }
 
 impl<'work> Budget<'work> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bytes(&self) -> Result<usize> {
+        if let Some(work) = self.work {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..acyclic_fs::WorkCounters::UNCHARGED
+            })?;
+        }
+        Ok(self.used.bytes)
+    }
     #[cfg(test)]
     pub fn used(&self) -> (usize, usize) {
         (self.used.bytes, self.used.items)
