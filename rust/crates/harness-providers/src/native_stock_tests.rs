@@ -173,7 +173,11 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             provider
         };
         let model = provider.model().clone();
-        let provider = Arc::new(provider);
+        let stages = Arc::new(probe::Stages::default());
+        let provider = Arc::new(probe::Probe {
+            provider,
+            stages: stages.clone(),
+        });
         let storage_provider =
             ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &storage_provider, None)?;
@@ -286,6 +290,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             Some(&io),
         )
         .await?;
+        let opened = work.receipt().items_examined;
         let definition =
             tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
         assert!(matches!(
@@ -295,6 +300,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
                 .await?,
             Admission::Accepted(_)
         ));
+        let admitted = work.receipt().items_examined;
         let mut history = HistoryWork::new(PreparationIo::from_native_work(&work)?);
         history.retain_owned(
             std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
@@ -321,9 +327,17 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             runtime
                 .commands()
                 .with_model(&model, provider, &context, &policy, Some(&io))?;
-        let (attempt, custody) = runtime
+        let leased = work.receipt().items_examined;
+        let result = runtime
             .resume_task_with_native_work(lease, recovery, &commands, 2, &work)
-            .await?;
+            .await;
+        eprintln!(
+            "{adapter:?} items: open={opened}, admission={}, lease={}, run={}, provider={stages:?}",
+            admitted - opened,
+            leased - admitted,
+            work.receipt().items_examined - leased
+        );
+        let (attempt, custody) = result?;
         if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
             return Err(error);
         }

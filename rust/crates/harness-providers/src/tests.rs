@@ -20,6 +20,8 @@ mod admission_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
+#[path = "call_id_tests.rs"]
+mod call_id_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;

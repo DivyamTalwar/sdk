@@ -3,6 +3,7 @@
 mod accounting;
 mod adapter;
 mod catalog;
+mod call_ids;
 mod counting;
 mod credentials;
 mod dispatch;
