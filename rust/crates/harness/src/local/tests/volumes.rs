@@ -150,6 +150,30 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         .value;
     assert_eq!(
         primary
+            .read("/.volumes/user-owned", 32, budget, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
+        b"retain"
+    );
+    for path in acyclic_fs::native_mount_control_paths(&directory.path().join(".volumes/scratch"))
+        .map_err(Error::from)?
+    {
+        let relative = path
+            .strip_prefix(directory.path())
+            .map_err(super::super::storage)?;
+        let relative = format!("/{}", relative.to_str().unwrap().replace('\\', "/"));
+        assert!(matches!(
+            primary.stat(&relative, budget, &cancellation).await,
+            Err(acyclic_fs::OperationFailure {
+                error: acyclic_fs::WorkspaceError::NotFound,
+                ..
+            })
+        ));
+    }
+    assert_eq!(
+        primary
             .read("/copied", 32, budget, &cancellation)
             .await
             .map_err(super::super::storage)?
@@ -212,7 +236,6 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         if name == "fs" {
             assert!(!result.contains("created"), "{result}");
             assert!(!result.contains("acyclic-fs-mount"), "{result}");
-            assert!(result.contains("user-owned"), "{result}");
         }
     }
     Ok(())

@@ -527,10 +527,12 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
-    assert_eq!(
-        std::fs::read_dir(checkout).map_err(super::storage)?.count(),
-        0
-    );
+    let entries: Vec<_> = std::fs::read_dir(checkout)
+        .map_err(super::storage)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<_>>()
+        .map_err(super::storage)?;
+    assert_eq!(entries, [std::ffi::OsString::from(".volumes")]);
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
