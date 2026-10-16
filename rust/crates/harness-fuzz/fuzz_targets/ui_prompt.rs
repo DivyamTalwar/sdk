@@ -34,6 +34,12 @@ fuzz_target!(|data: &[u8]| {
     }
     let width = u16::from(data.first().copied().unwrap_or(0) % 80) + 1;
     let text = String::from_utf8_lossy(data);
+    let visible = acyclic_harness::tui::display_text(&text);
+    assert!(!visible.chars().any(|character| {
+        (character.is_control() && character != '\t')
+            || matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    }));
+    assert_eq!(acyclic_harness::tui::display_text(&visible), visible);
     let source = [Line::raw(text.as_ref())];
     let mut wrapped = WrappedLines::default();
     wrapped.update(&source, 0, width);

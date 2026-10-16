@@ -282,3 +282,6 @@ fn composed_prompt_restores_each_item_draft_and_shared_history_from_files()
     assert!(visible(&terminal).contains("earlier prompt"));
     Ok(())
 }
+
+#[path = "screen/display_text.rs"]
+mod display_text;

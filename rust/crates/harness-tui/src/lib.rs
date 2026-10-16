@@ -7,7 +7,11 @@ mod completion;
 mod completion_popup;
 #[cfg(feature = "tui")]
 pub mod config;
+#[cfg(feature = "tui")]
+mod display_text;
 mod editor;
+#[cfg(feature = "tui")]
+pub use display_text::display_text;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_args;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
@@ -78,4 +82,3 @@ pub use wrapped_lines::WrappedLines;
 pub use screen::{Screen, ScreenAreas};
 #[cfg(feature = "tui")]
 pub mod term;
-

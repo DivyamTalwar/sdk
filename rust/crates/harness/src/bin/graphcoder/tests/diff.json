@@ -40,5 +40,19 @@
     "path": "note.txt", "base": "before", "current": "after",
     "expected": ["-before", "+after", "\\ No newline at end of file"],
     "absent": ["Binary file changed"]
+  },
+  {
+    "row": "Hostile diff paths and content remain literal",
+    "path": "x‮",
+    "base": "before\n",
+    "current": "safe\u001b[31m‮\n",
+    "expected": [
+      "x\\u{202e} (modified)",
+      "+safe\\u{1b}[31m\\u{202e}"
+    ],
+    "absent": [
+      "\u001b",
+      "‮"
+    ]
   }
 ]

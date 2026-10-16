@@ -14,13 +14,19 @@ pub fn diff_lines(files: &BTreeMap<String, FileDiff>) -> Vec<Line<'static>> {
             DiffKind::Modified => "modified",
         };
         rows.push(Line::raw(format!(
-            "{path} ({kind}) +{} -{}",
-            file.added, file.removed
+            "{} ({kind}) +{} -{}",
+            path.escape_debug(),
+            file.added,
+            file.removed
         )));
         if file.binary {
             rows.push(Line::raw("Binary file changed"));
         } else {
-            rows.extend(file.patch.lines().map(|line| Line::raw(line.to_owned())));
+            rows.extend(
+                file.patch
+                    .lines()
+                    .map(|line| Line::raw(super::display_text(line).into_owned())),
+            );
         }
     }
     rows

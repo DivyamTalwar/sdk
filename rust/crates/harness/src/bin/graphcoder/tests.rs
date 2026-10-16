@@ -602,3 +602,6 @@ mod layout;
 
 #[path = "tests/completion_files.rs"]
 mod completion_files;
+
+#[path = "tests/hostile_text.rs"]
+mod hostile_text;

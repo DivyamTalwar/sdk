@@ -208,12 +208,11 @@ impl ClientRenderer {
                 },
             ),
         ]);
-        self.status = Line::raw(
-            views
-                .usage
-                .get(&key)
-                .map_or(String::new(), ToString::to_string),
-        );
+        let usage = views
+            .usage
+            .get(&key)
+            .map_or(String::new(), ToString::to_string);
+        self.status = Line::raw(super::display_text(&usage).into_owned());
         self.notices = task
             .and_then(|task| task.reason.as_deref())
             .map(|text| vec![Line::raw(text.escape_debug().to_string())])
@@ -417,7 +416,7 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
                     }
                 }
                 // TODO(#604): emit queried OSC 8 link metadata through the terminal backend.
-                Span::styled(span.text.clone(), style)
+                Span::styled(super::display_text(&span.text).into_owned(), style)
             })
             .collect::<Vec<_>>(),
     )
