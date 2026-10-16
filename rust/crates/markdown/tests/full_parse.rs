@@ -4,6 +4,9 @@ use proptest::prelude::*;
 #[path = "inline_chunks.rs"]
 mod inline_chunks;
 
+#[path = "linear_work.rs"]
+mod linear_work;
+
 #[path = "sequence_work.rs"]
 mod sequence_work;
 
