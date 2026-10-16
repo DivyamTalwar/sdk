@@ -218,7 +218,7 @@ proptest! {
             prop_assert_eq!(changes.len(), 1);
             prop_assert_eq!(changes[0].path.as_str(), file);
             prop_assert_eq!(&changes[0].contents["extra"], &state[file]["extra"]);
-            prop_assert_eq!(changes[0].contents[field], json!(expected));
+            prop_assert_eq!(&changes[0].contents[field], &json!(expected));
             state.insert(file.into(), changes[0].contents.clone());
         }
     }
