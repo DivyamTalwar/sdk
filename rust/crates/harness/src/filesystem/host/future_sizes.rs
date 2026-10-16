@@ -3,11 +3,26 @@ use crate::Capabilities;
 use crate::core::{AggregateKind, AuthorityIssuer};
 
 #[tokio::test]
+#[cfg(feature = "filesystem-local")]
 async fn local_content_publication_futures_stay_bounded() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs = Fs::local(acyclic_fs::LocalOptions::new(directory.path()))
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
+    Box::pin(content_publication_futures_stay_bounded(fs)).await
+}
+
+#[tokio::test]
+async fn memory_content_publication_futures_stay_bounded() -> Result<()> {
+    Box::pin(content_publication_futures_stay_bounded(Fs::memory())).await
+}
+
+async fn content_publication_futures_stay_bounded<
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
+    fs: Fs<A, O>,
+) -> Result<()> {
     let provider = ProviderRef::new("sizes".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(fs, &provider, None)?;
     let owner = AgentId::from_bytes([32; 16]);

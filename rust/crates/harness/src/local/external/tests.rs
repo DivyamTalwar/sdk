@@ -41,6 +41,42 @@ impl TaskCommandHost for Published<'_> {
 }
 
 #[tokio::test]
+async fn parallel_native_calls_wait_and_both_publish_their_results() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
+    let host = crate::external_executor::ExternalHost::Pi;
+    let attach = crate::external_executor::request(
+        host,
+        "session_start",
+        serde_json::json!({"sessionId":"parallel", "cwd":directory.path()}),
+    )?;
+    harness.external_request(&attach).await?;
+    let tool = |name: &str| {
+        crate::external_executor::request(
+            host,
+            "tool_call",
+            serde_json::json!({"sessionId":"parallel", "toolCallId":name, "toolName":"write",
+            "input":{"path":name, "content":name}}),
+        )
+    };
+    let first = tool("first.txt")?;
+    let second = tool("second.txt")?;
+    let (left, right) = tokio::join!(
+        harness.external_request(&first),
+        harness.external_request(&second)
+    );
+    crate::external_executor::tool_result(left?)?;
+    crate::external_executor::tool_result(right?)?;
+    for name in ["first.txt", "second.txt"] {
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join(name)).map_err(storage)?,
+            name
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn published_result_recovers_before_retry_or_the_next_request() -> Result<()> {
     for retry in [false, true] {
         let directory = tempfile::tempdir().map_err(storage)?;

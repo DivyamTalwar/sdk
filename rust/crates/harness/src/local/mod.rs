@@ -68,8 +68,9 @@ pub struct LocalHarness {
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
-    // Outermost lock: admission -> filesystem/provider locks. Never held during
-    // model/tool execution, and provider callbacks never acquire admission.
+    // Lock order: local admission/session gate -> filesystem/provider locks.
+    // Stock admission releases before execution; native delivery retains the
+    // gate through settlement. Providers/tools never acquire this outer gate.
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,

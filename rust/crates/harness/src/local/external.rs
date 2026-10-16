@@ -52,7 +52,7 @@ impl LocalHarness {
         &'a self,
         request: &'a ExternalRequest,
     ) -> impl Future<Output = Result<Value>> + 'a {
-        Box::pin(async move {
+        Box::pin(admission::serialized(&self.admission, async move || {
             #[cfg(feature = "native-execution")]
             if let ExternalAction::Attach { workspace } = &request.action {
                 if let Some(path) = self.workspace_path() {
@@ -121,6 +121,6 @@ impl LocalHarness {
             .await?;
             Box::pin(self.advance(task_id, &commands)).await?;
             request.follow_result(&results, task).await.map_err(storage)
-        })
+        }))
     }
 }
