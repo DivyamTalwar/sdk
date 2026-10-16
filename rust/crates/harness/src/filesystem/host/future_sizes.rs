@@ -78,6 +78,15 @@ async fn content_publication_futures_stay_bounded<
     assert!(bytes < 4096, "publication future is {bytes} bytes");
     let file = publication.await?;
     let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name(&mut None)?)?;
+    let mutations = [];
+    let apply = host.apply(&workspace, None, &mutations, &key);
+    let size = std::mem::size_of_val(&apply);
+    eprintln!("filesystem apply future: {size} bytes");
+    assert!(
+        size < 16 * 1024,
+        "filesystem apply future grew to {size} bytes"
+    );
+    drop(apply);
     let read = host.read(&workspace, None, "/file.txt", 4096, None);
     let pinned = host.read_pinned_io(&file, 4096, None);
     let sizes = [std::mem::size_of_val(&read), std::mem::size_of_val(&pinned)];
