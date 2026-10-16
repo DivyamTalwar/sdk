@@ -162,12 +162,7 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
     editor.set_text("/THEME ", 1);
     menu.refresh(&editor);
-    let initial = theme
-        .chars()
-        .next()
-        .unwrap()
-        .to_lowercase()
-        .collect::<String>();
+    let initial = theme.to_lowercase();
     editor.insert(&initial, 2);
     menu.refresh(&editor);
     assert_eq!(menu.items().len(), 1);

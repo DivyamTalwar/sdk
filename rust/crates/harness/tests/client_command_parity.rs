@@ -213,6 +213,16 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
     #[test]
+    fn unicode_theme_completion_and_submission_agree(chars in proptest::collection::vec(any::<char>().prop_filter("theme text", |c| !c.is_control()), 0..48)) {
+        let theme = format!("É{} X", chars.into_iter().collect::<String>());
+        let catalog = CommandCatalog::builtins().unwrap().with_themes([theme.clone()]).unwrap();
+        let input = format!("/theme {}", theme.to_lowercase());
+        prop_assert_eq!(&catalog.complete_input(&input)[0].replacement, &format!("/theme {theme}"));
+        prop_assert_eq!(futures::executor::block_on(catalog.resolve(&input, &DeniedReader, 1024)).unwrap(),
+            CommandResolution::Submit { request: CommandRequest::Theme { name: theme } });
+    }
+
+    #[test]
     fn case_does_not_change_command_arguments(index in 0_usize..30, text in "[a-zA-Z0-9 @:/_-]{1,80}") {
         let catalog = CommandCatalog::builtins().unwrap();
         let spec = catalog.commands().nth(index).unwrap();

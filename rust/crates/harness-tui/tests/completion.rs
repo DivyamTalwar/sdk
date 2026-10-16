@@ -25,6 +25,11 @@ proptest! {
     fn command_and_theme_files_round_trip(name in "cmd[a-z]{1,24}", alias in "sh[a-z]{1,24}", theme in "[A-Z][a-z]{1,24} [A-Z][a-z]{1,24}") {
         prop_assert!(sequences::catalog_round_trip(&name, &alias, &theme).is_ok());
     }
+    #[test]
+    fn unicode_theme_file_completion_round_trips(chars in proptest::collection::vec(any::<char>().prop_filter("theme text", |c| !c.is_control()), 0..48)) {
+        let theme = format!("É{} X", chars.into_iter().collect::<String>());
+        prop_assert!(sequences::catalog_round_trip("shell", "sh", &theme).is_ok());
+    }
 }
 
 #[test]
