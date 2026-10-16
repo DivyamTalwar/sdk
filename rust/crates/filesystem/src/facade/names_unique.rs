@@ -2,7 +2,7 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     // One paged pass. Unique directories retain no name keys; legacy collisions
-    // retain the sorted index so only ambiguous names are refused.
+    // retain only ambiguous identities so unrelated siblings cost no cache space.
     pub(crate) async fn folded_collision_keys(
         &self,
         tree: ObjectId,
@@ -64,16 +64,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
         keys.value.sort_unstable();
-        if !keys.value.windows(2).any(|pair| pair[0] == pair[1]) {
-            keys.retire(accounting)?;
-            return Owned::allocate(0, accounting);
-        }
-        Ok(keys)
+        retain_ambiguous_keys(keys, accounting)
     }
 }
 
-// The sorted index retains duplicates. Binary search can return any equal key;
-// its neighbors tell whether this native identity is ambiguous.
+// Exactly one key is retained per ambiguous identity, in sorted order.
 pub(crate) fn ambiguous_folded_name(
     keys: &[Vec<u8>],
     name: &LogicalName,
@@ -83,13 +78,125 @@ pub(crate) fn ambiguous_folded_name(
         return Ok(false);
     }
     let key = super::names::name_fold_key(name, accounting)?;
-    let ambiguous = keys.binary_search(&key.0).is_ok_and(|index| {
-        index
-            .checked_sub(1)
-            .is_some_and(|before| keys[before] == key.0)
-            || keys.get(index + 1).is_some_and(|after| *after == key.0)
-    });
+    let ambiguous = keys.binary_search(&key.0).is_ok();
     let bytes = key.0.capacity() as u64;
     super::names::retire_name_owned(key, bytes, accounting)?;
     Ok(ambiguous)
+}
+
+fn retain_ambiguous_keys(
+    mut keys: Owned<Vec<Vec<u8>>>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<Vec<Vec<u8>>>, FsError> {
+    let count = keys
+        .value
+        .iter()
+        .enumerate()
+        .filter(|(index, key)| {
+            *index > 0
+                && keys.value[*index - 1] == **key
+                && (*index == 1 || keys.value[*index - 2] != **key)
+        })
+        .count();
+    accounting.charge(WorkCounters {
+        items_examined: keys.value.len() as u64,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut retained = Owned::<Vec<Vec<u8>>>::allocate(count, accounting)?;
+    let backing = (keys.value.capacity() * size_of::<Vec<u8>>()) as u64;
+    let mut input = keys.value.into_iter().peekable();
+    while let Some(key) = input.next() {
+        let ambiguous = input.peek() == Some(&key);
+        while let Some(duplicate) = input.next_if(|next| next == &key) {
+            let bytes = duplicate.capacity() as u64;
+            drop(duplicate);
+            accounting.release_owned(&mut keys.allocation, bytes)?;
+        }
+        let bytes = key.capacity() as u64;
+        if ambiguous {
+            let mut owner = crate::kernel::split_allocation(&mut keys.allocation, bytes)?;
+            retained.allocation.absorb(&mut owner)?;
+            retained.bytes = retained
+                .bytes
+                .checked_add(bytes)
+                .ok_or(WorkError::Overflow)?;
+            retained.value.push(key);
+        } else {
+            drop(key);
+            accounting.release_owned(&mut keys.allocation, bytes)?;
+        }
+    }
+    drop(input);
+    retire_allocation(keys.allocation, backing, accounting)?;
+    Ok(retained)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Retained payload and backing capacity depend only on ambiguous identities,
+    // and their custody exactly matches physical buffers, including after retire.
+    fn check_retention(mut input: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+        input.sort_unstable();
+        let expected = input
+            .windows(2)
+            .filter(|pair| pair[0] == pair[1])
+            .map(|pair| pair[0].clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut keys = Owned::<Vec<Vec<u8>>>::allocate(input.len() * 2, &mut accounting)?;
+        for key in input {
+            let mut owned = Owned::<Vec<u8>>::allocate(key.len() + 7, &mut accounting)?;
+            owned.value.extend_from_slice(&key);
+            keys.bytes += owned.bytes;
+            keys.allocation.absorb(&mut owned.allocation)?;
+            keys.value.push(owned.value);
+        }
+        let keys = retain_ambiguous_keys(keys, &mut accounting)?;
+        assert_eq!(
+            keys.value
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(keys.value.len(), expected.len());
+        assert_eq!(keys.value.capacity(), expected.len());
+        let physical = (keys.value.capacity() * size_of::<Vec<u8>>()
+            + keys.value.iter().map(Vec::capacity).sum::<usize>()) as u64;
+        assert_eq!(keys.bytes, physical);
+        let KernelAccounting::Standalone { allocations, .. } = &accounting else {
+            return Err("expected standalone custody".into());
+        };
+        assert_eq!(allocations.live_bytes(), physical);
+        keys.retire(&mut accounting)?;
+        let KernelAccounting::Standalone { allocations, .. } = &accounting else {
+            return Err("expected standalone custody".into());
+        };
+        assert_eq!(allocations.live_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_keys_discard_large_unrelated_index() -> Result<(), Box<dyn std::error::Error>> {
+        check_retention(
+            [b"strasse".to_vec(), b"strasse".to_vec()]
+                .into_iter()
+                .chain((0..1024).map(|index| format!("sibling{index:04}").into_bytes()))
+                .collect(),
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn ambiguous_keys_retain_only_collision_buffers(
+            keys in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..24), 0..64),
+        ) {
+            check_retention(keys).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        }
+    }
 }
