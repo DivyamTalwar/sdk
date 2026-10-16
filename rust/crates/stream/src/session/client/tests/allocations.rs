@@ -25,6 +25,7 @@ async fn completion_allocations(
 // stream, boxed canonical data projection, then boxed typed-record projection.
 // It uses the same real registration, cursor, credit and observation as today.
 async fn reviewed_follow(client: &Client, path: StreamPath) -> Result<RecordStream, StreamError> {
+    drop(black_box(StreamPath::new(path.as_str())?));
     let received = client
         .open_kind(
             Kind::Follow(wire::SessionFollow {
@@ -123,4 +124,129 @@ async fn typed_follow_boxes_only_at_its_public_boundary() -> TestResult {
 async fn negative_control_rejects_the_reviewed_redundant_boxes() {
     let (before, follows) = paired().await.expect("allocation pair failed");
     public_box_budget(before, follows);
+}
+
+#[derive(Default)]
+struct Allocations {
+    count: u64,
+    bytes: u64,
+    pending_polls: usize,
+}
+
+async fn all_poll_allocations(
+    open: impl Future<Output = Result<RecordStream, StreamError>>,
+    totals: &mut Allocations,
+) -> Result<RecordStream, StreamError> {
+    let mut open = std::pin::pin!(open);
+    future::poll_fn(|cx| {
+        let mut outcome = Poll::Pending;
+        let measured = allocation_counter::measure(|| outcome = open.as_mut().poll(cx));
+        totals.count += measured.count_total;
+        totals.bytes += measured.bytes_total;
+        if outcome.is_pending() {
+            totals.pending_polls += 1;
+        }
+        outcome
+    })
+    .await
+}
+
+fn opening_budget(
+    before: &Allocations,
+    after: &Allocations,
+    path: allocation_counter::AllocationInfo,
+    follows: u64,
+) {
+    assert_eq!(
+        before.count - after.count,
+        follows * (2 + path.count_total),
+        "every opening poll must avoid the discarded path and two internal boxes"
+    );
+    assert_eq!(
+        before.bytes - after.bytes,
+        follows * (2 * std::mem::size_of::<RecordStream>() as u64 + path.bytes_total)
+    );
+}
+
+async fn paired_openings(follows: u64, broken: bool) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 1).await?;
+    let fixture = Fixture::open(provider, "node").await?;
+    let client = || {
+        Client::open(
+            fixture.channel.clone(),
+            Some("Bearer fixture".parse().unwrap()),
+            None,
+            None,
+            None,
+        )
+    };
+    let before_client = client();
+    let after_client = client();
+    // Separate clients keep 10k live interests in each arm, with identical
+    // registration/cache state and one warm physical Session per client.
+    let before_anchor = before_client.follow(StreamPath::new("events")?, 1).await?;
+    let after_anchor = after_client.follow(StreamPath::new("events")?, 1).await?;
+    let path_copy = allocation_counter::measure(|| {
+        drop(black_box(StreamPath::new("events").unwrap()));
+    });
+    assert!(path_copy.count_total > 0);
+    let mut before = Allocations::default();
+    let mut after = Allocations::default();
+    let mut retained = Vec::with_capacity(2 * follows as usize);
+    for index in 0..follows {
+        for legacy in if index % 2 == 0 {
+            [true, false]
+        } else {
+            [false, true]
+        } {
+            let path = StreamPath::new("events")?;
+            let records = if legacy {
+                all_poll_allocations(reviewed_follow(&before_client, path), &mut before).await?
+            } else {
+                let public = async {
+                    if broken {
+                        // Reintroduce the reviewed discarded owned validation
+                        // inside the measured public opening future.
+                        drop(black_box(StreamPath::new(path.as_str())?));
+                    }
+                    after_client.follow(path, 1).await
+                };
+                all_poll_allocations(public, &mut after).await?
+            };
+            retained.push(records);
+        }
+    }
+    assert!(before.pending_polls >= follows as usize);
+    assert!(after.pending_polls >= follows as usize);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
+    eprintln!(
+        "follow_opening_allocations follows={follows} before_count={} after_count={} before_bytes={} after_bytes={} before_pending={} after_pending={} path_count={} path_bytes={}",
+        before.count,
+        after.count,
+        before.bytes,
+        after.bytes,
+        before.pending_polls,
+        after.pending_polls,
+        path_copy.count_total,
+        path_copy.bytes_total
+    );
+    opening_budget(&before, &after, path_copy, follows);
+    drop((retained, before_anchor, after_anchor));
+    Ok(())
+}
+
+#[tokio::test]
+async fn ten_thousand_follow_openings_count_pending_and_ready_allocations() -> TestResult {
+    tokio::time::timeout(Duration::from_secs(5), paired_openings(10_000, false)).await?
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "every opening poll must avoid the discarded path and two internal boxes"
+)]
+async fn negative_control_rejects_owned_validation_during_a_pending_poll() {
+    paired_openings(8, true)
+        .await
+        .expect("allocation pair failed");
 }

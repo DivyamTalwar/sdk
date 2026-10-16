@@ -298,7 +298,7 @@ impl Client {
         impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + Send + 'static + use<>,
         StreamError,
     > {
-        StreamPath::new(&follow.path)?;
+        StreamPath::validate(&follow.path)?;
         if !matches!(
             wire::SessionDelivery::try_from(follow.delivery),
             Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
