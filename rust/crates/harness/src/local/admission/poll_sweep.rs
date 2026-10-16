@@ -231,9 +231,7 @@ impl Fixture {
             context_manifest: Some(context_manifest),
             context_read_observer: None,
             #[cfg(feature = "hooks")]
-            hooks: Default::default(),
-            #[cfg(feature = "native-execution")]
-            checkout_context: false,
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -246,6 +244,8 @@ impl Fixture {
             admission: StateArc::new(Mutex::new(())),
             #[cfg(feature = "native-execution")]
             workspace: None,
+            #[cfg(feature = "native-execution")]
+            checkout_context: false,
         })
     }
 

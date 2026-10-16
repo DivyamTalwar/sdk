@@ -22,10 +22,6 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
-        #[cfg(feature = "hooks")]
-        let hooks = settings::load(&config.project, config.settings)
-            .await?
-            .hooks;
         let (verifier, signed) = authority;
         let LocalProject::Volume { volume, .. } = &config.project else {
             return Err(Error::Invalid(
@@ -126,10 +122,10 @@ impl LocalHarness {
             model,
             provider,
             context_manifest: config.context_manifest,
-            #[cfg(feature = "hooks")]
-            hooks,
             #[cfg(test)]
             context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: config.limits,
             compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
