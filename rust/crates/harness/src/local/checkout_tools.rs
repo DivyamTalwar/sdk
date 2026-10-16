@@ -11,8 +11,8 @@ use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 mod bash;
 mod capture;
 mod git;
-mod lock;
-#[cfg(all(test, loom))]
+use super::lock;
+#[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
 pub(super) struct CheckoutTools {
