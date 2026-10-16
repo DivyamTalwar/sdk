@@ -687,6 +687,9 @@ proptest! {
         let file: FileRef = serde_json::from_value(file)?;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&file)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let receipt = (file, None::<GenerationRef>);
+        acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&receipt)?)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         acyclic_harness::filesystem::check_access_record(&malformed)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
@@ -700,3 +703,6 @@ mod runtime;
 
 #[path = "filesystem_access_writes.rs"]
 mod writes;
+
+#[path = "filesystem_access_publication.rs"]
+mod publication;

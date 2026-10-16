@@ -37,6 +37,7 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     roundtrip::<Policy>(&io, bytes)?;
     roundtrip::<Capability>(&io, bytes)?;
     roundtrip::<FileRef>(&io, bytes)?;
+    roundtrip::<(FileRef, Option<GenerationRef>)>(&io, bytes)?;
     roundtrip::<crate::Capabilities>(&io, bytes)?;
     if let Ok(capabilities) =
         record::<crate::Capabilities>(&io, bytes, crate::wire::ErrorCode::Storage)

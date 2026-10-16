@@ -85,11 +85,14 @@ where
                 let file = self
                     .host
                     .content_for_operation_record_io(
-                        &self.volume,
-                        &key,
-                        Some(&path),
-                        self.maximum_payload_bytes,
-                        Some(InternalContentClass::Execution),
+                        super::super::PublicationLookup {
+                            volume: &self.volume,
+                            key: &key,
+                            expected_path: Some(&path),
+                            maximum_bytes: self.maximum_payload_bytes,
+                            internal_class: Some(InternalContentClass::Execution),
+                            scope: &self.scope,
+                        },
                         Some(&io),
                     )
                     .await?

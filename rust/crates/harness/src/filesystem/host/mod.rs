@@ -48,6 +48,8 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+mod publication;
+pub(in crate::filesystem) use publication::PublicationLookup;
 mod directory;
 mod keys;
 mod reads;
