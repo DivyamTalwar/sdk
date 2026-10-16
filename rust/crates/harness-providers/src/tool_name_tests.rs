@@ -97,7 +97,7 @@ proptest! {
                 for options in choices {
                     let mut request = request.clone();
                     request.model.options = options;
-                    let body = projection::body(&provider, &request).unwrap();
+                    let body = projection::body(&provider, &request, &mut crate::files::FileText::Estimate).unwrap();
                     let (declaration, controls) = match adapter {
                         Adapter::Anthropic => (&body["tools"][0]["name"], vec![&body["tool_choice"]["name"]]),
                         Adapter::Responses => (&body["tools"][0]["name"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
