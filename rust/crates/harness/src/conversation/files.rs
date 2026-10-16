@@ -158,6 +158,13 @@ pub struct FileRef {
 }
 
 impl FileRef {
+    #[cfg(feature = "objects")]
+    pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
+        validate_label(&version, &mut None)?;
+        self.version = version;
+        Ok(self)
+    }
+
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(
         volume: VolumeRef,
@@ -227,7 +234,7 @@ impl FileRef {
     ) -> Result<String> {
         self.validate(work)?;
         content_label(
-            "file:read:",
+            acyclic_fs::access::FILE_READ_PREFIX,
             crate::executor::json::canonical_json_digest(
                 self,
                 crate::store::default_projection_read_limits().maximum_bytes,

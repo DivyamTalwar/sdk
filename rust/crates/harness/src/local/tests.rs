@@ -17,6 +17,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod context;
 mod goals;
 use std::{
     path::Path,
@@ -28,6 +29,16 @@ fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelP
 }
 fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
+}
+
+#[cfg(feature = "native-execution")]
+fn checkout_config(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (Model, Arc<dyn ModelProvider>),
+) -> Result<LocalHarnessConfig> {
+    // These scripts exercise filesystem commands, not summary-model requests.
+    Ok(crate::test_support::local_harness_config(workspace, model)?
+        .compaction(crate::context::CompactionPolicy::Disabled))
 }
 
 fn capacity() -> ModelContextCapacity {
@@ -143,15 +154,23 @@ fn tool(name: &str) -> Tool {
     }
 }
 
-fn volume_config(
+pub(super) fn volume_config(
     directory: &Path,
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
-    Ok(LocalHarnessConfig::new(directory.join("filesystem"), (model()?, provider)).volume(volume))
+    let state = directory
+        .join("state")
+        .join(volume.storage_name(&mut None)?);
+    Ok(crate::test_support::local_harness_config(
+        directory.join("filesystem"),
+        (model()?, provider),
+    )?
+    .volume(volume)
+    .state_directory(state))
 }
 
-async fn volume(directory: &Path) -> Result<VolumeRef> {
+pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
     acyclic_native_runtime::initialize_native_io_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let provider = ProviderRef::new(
@@ -174,6 +193,34 @@ async fn volume(directory: &Path) -> Result<VolumeRef> {
         .create_volume(&volume)
         .await?;
     Ok(volume)
+}
+
+#[tokio::test]
+async fn explicit_state_directory_reopens_the_durable_task_without_a_model_request() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::storage)?;
+    let project = volume(directory.path()).await?;
+    let state = directory.path().join("state");
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project.clone(), text())?.state_directory(&state),
+    )
+    .await?;
+    assert!(state.join("owner.json").is_file());
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(OperationId::new(), "persist").await?
+    else {
+        return Err(Error::Conflict("stock admission rejected".into()));
+    };
+    let output = harness.resume(task_id).await?;
+    assert_eq!(output.text, "done");
+    drop(harness);
+    let provider = scripted([]);
+    let reopened = LocalHarness::open(
+        volume_config(directory.path(), project, provider.clone())?.state_directory(&state),
+    )
+    .await?;
+    assert_eq!(reopened.resume(task_id).await?, output);
+    assert!(provider.requests().is_empty());
+    Ok(())
 }
 
 #[tokio::test]
@@ -266,10 +313,10 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
     let config = || {
         #[cfg(feature = "native-execution")]
         {
-            Ok::<_, Error>(LocalHarnessConfig::new(
+            Ok::<_, Error>(crate::test_support::local_harness_config(
                 selection.join("."),
                 (model()?, provider.clone()),
-            ))
+            )?)
         }
         #[cfg(not(feature = "native-execution"))]
         {
@@ -408,16 +455,16 @@ async fn stock_executor_calls_default_and_custom_tools() -> Result<()> {
     let project = volume(directory.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "default".into(),
-                name: "write".into(),
-                arguments: json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
-            }),
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "custom".into(),
-                name: "test.custom".into(),
-                arguments: json!({}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "default".into(),
+                "write".into(),
+                json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "custom".into(),
+                "test.custom".into(),
+                json!({}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),
@@ -520,7 +567,7 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     let checkout = harness
         .workspace_path()
         .ok_or_else(|| Error::NotFound("checkout".into()))?;
-    let config = LocalHarnessConfig::new(checkout, (model()?, text()));
+    let config = crate::test_support::local_harness_config(checkout, (model()?, text()))?;
     let state = super::owner::state_directory(&config.project)?;
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
@@ -572,7 +619,7 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
         .await
         .map_err(super::storage)?;
     assert_eq!(bytes.bytes.as_ref(), b"original checkout");
-    let other = LocalHarnessConfig::new(other, (model()?, text()));
+    let other = crate::test_support::local_harness_config(other, (model()?, text()))?;
     assert!(matches!(
         super::owner::Owner::open(&state, &other.project),
         Err(Error::Unauthorized(_))
@@ -718,7 +765,28 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     Ok(())
 }
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(feature = "native-execution")]
 mod checked_commands;
+#[cfg(all(feature = "native-execution", windows))]
+mod bash_environment;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volumes;
+
+#[cfg(feature = "native-execution")]
+#[path = "tests/checkout_reopen.rs"]
+mod checkout_reopen;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout_reconciliation;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volume_tools;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod reconciliation_interruptions;
+
+#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+mod mcp;

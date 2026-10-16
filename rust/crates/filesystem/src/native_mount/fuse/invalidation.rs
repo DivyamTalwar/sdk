@@ -2,6 +2,9 @@ use super::*;
 use crate::native_mount::run_native_mount_handler_on_meter;
 use crate::{NativeMaterializationWork as Work, WorkCounters};
 
+#[cfg(all(test, acyclic_fs_loom))]
+pub(super) mod model_checking;
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum KernelCacheItem {
     Inode(u64),
@@ -208,7 +211,7 @@ impl ProjectionState {
                 work.charge(Items.delta(1))?;
                 if let Some(held) = binding.kernel
                     && !source.unchanged_since_with_meter(
-                        &binding.path,
+                        binding.native_path(),
                         Some(file_id),
                         held,
                         work,
@@ -298,6 +301,8 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
                 state.invalidation.retry = false;
                 break key;
             }
+            #[cfg(all(test, acyclic_fs_loom))]
+            model_checking::before_invalidator_wait();
             state = core
                 .invalidation
                 .wait(state)

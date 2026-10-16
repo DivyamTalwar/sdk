@@ -18,7 +18,6 @@ impl LocalHarness {
         self.runtime.commands().with_model(
             &self.model,
             self.provider.clone(),
-            &self.context,
             &self.compaction,
             None,
         )
@@ -45,7 +44,24 @@ impl LocalHarness {
         prompt: &str,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
+        self.stage_turn_with(operation, prompt, publisher.as_ref())
+            .await
+    }
+
+    pub(super) async fn stage_turn_with(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let model = crate::filesystem::ModelTaskCommand {
+            context_manifest: match &self.context_manifest {
+                Some(reference) => reference.clone(),
+                None => {
+                    self.stage_context_manifest_with(operation, publisher)
+                        .await?
+                }
+            },
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -66,10 +82,10 @@ impl LocalHarness {
             )?
             .await?
             .0;
-        self.finish_turn_inputs(operation, payload).await
+        self.finish_turn_inputs(operation, payload, publisher).await
     }
 
-    fn input_publisher(
+    pub(super) fn input_publisher(
         &self,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
@@ -98,15 +114,17 @@ impl LocalHarness {
                 "retained model input has another path".into(),
             ));
         }
-        self.finish_turn_inputs(operation, payload).await.map(Some)
+        self.finish_turn_inputs(operation, payload, publisher.as_ref())
+            .await
+            .map(Some)
     }
 
     async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
+        publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let publisher = self.input_publisher()?;
         let model = WorkflowCommand {
             operation_id: operation,
             kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
@@ -227,7 +245,11 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = self.runtime.harness().attach(task, &definition).await?;
+        let handle = match self.runtime.harness().attach(task, &definition).await {
+            Ok(handle) => handle,
+            Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
+            Err(error) => return Err(error),
+        };
         let terminal = matches!(
             self.runtime.task_host().outcome(task).await?,
             Some(

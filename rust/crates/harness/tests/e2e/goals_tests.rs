@@ -8,9 +8,9 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::path::Path;
 
-#[path = "../../fuzz/fuzz_targets/goal_parser_input.rs"]
+#[path = "../../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
 mod goal_parser_input;
-#[path = "../../fuzz/fuzz_targets/goal_scenario_input.rs"]
+#[path = "../../../harness-fuzz/fuzz_targets/goal_scenario_input.rs"]
 mod goal_scenario_input;
 
 fn text() -> impl Strategy<Value = String> {
@@ -24,7 +24,7 @@ proptest! {
     fn goal_case_scripts_round_trip(body in text(), answer in text(), limit in any::<u32>(), streamed in any::<bool>()) {
         let turns = if streamed {
             json!([[{"type":"event", "kind":"tool_call", "call_id":"write", "name":"write",
-                "arguments":{"path":"GOAL.md", "text":body, "media_type":"text/markdown", "display_name":"GOAL.md"}},
+                "arguments":{"path":".volumes/scratch/GOAL.md", "text":body, "media_type":"text/markdown", "display_name":"GOAL.md"}},
                 {"type":"event", "kind":"completed", "metadata":{"answer":answer}}], answer])
         } else {
             json!([answer])
@@ -86,7 +86,8 @@ proptest! {
 
 #[test]
 fn goal_scenario_fuzz_corpus() -> TestResult {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/goal_scenario");
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/goal_scenario");
     let mut count = 0;
     for entry in std::fs::read_dir(directory)? {
         goal_scenario_input::check(&std::fs::read(entry?.path())?);

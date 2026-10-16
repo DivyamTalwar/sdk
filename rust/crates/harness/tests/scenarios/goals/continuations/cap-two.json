@@ -2,6 +2,6 @@
     "blocked","reason":"Maximum goal continuations reached (limit 2)."},"files":{"GOAL.md":
     "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 2).\"\n---\nShip the change\n"},"requests":[{
     "messages":[{"role":"user","content":"Continue working toward GOAL.md."}]},{"messages":[{"role":"user","content":
-    "Continue the active goal in GOAL.md.\n\nShip the change\n"}]},{"messages":[{"role":"user","content":
-    "Continue the active goal in GOAL.md.\n\nShip the change\n"}]}]},"seed":{"GOAL.md":
+    "Continue the active goal in .volumes/scratch/GOAL.md.\n\nShip the change\n"}]},{"messages":[{"role":"user","content":
+    "Continue the active goal in .volumes/scratch/GOAL.md.\n\nShip the change\n"}]}]},"seed":{"GOAL.md":
     "---\nstatus: active\n---\nShip the change\n"},"policy":{"max_continuations":2}}

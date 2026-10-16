@@ -1,16 +1,19 @@
 use super::*;
+use crate::sync::owned::{Arc as StateArc, Mutex, lock_owned};
 use crate::{
     conversation::ContentGrant,
-    goal::{GoalContinuation, GoalView},
+    goal::{GoalBlockedReason, GoalContinuation, GoalStatus, GoalView},
     resources::GenerationRef,
     runtime::TaskStateProvider,
 };
-use lock::{Arc as StateArc, Mutex, lock_owned};
 
-mod record;
+use crate::goal::request_head as record;
 use record::Turn;
+mod goal;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
 
 const HEAD: &str = "inputs/current.json";
 
@@ -71,11 +74,28 @@ impl LocalHarness {
 
     async fn head_is_terminal(&self, head: Option<&Turn>) -> Result<bool> {
         let Some(head) = head else { return Ok(true) };
+        let outcome = match self
+            .runtime
+            .task_host()
+            .outcome(crate::runtime::task_id_for_admission(head.operation))
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(Error::NotFound(_)) => {
+                // HEAD is a request, not proof of admission. A cancelled first
+                // submission may leave only this file. Incomplete/uncertain
+                // admissions still fail closed through reconciliation.
+                return Ok(self
+                    .runtime
+                    .harness()
+                    .reconcile_admission(head.operation)
+                    .await?
+                    .is_none());
+            }
+            Err(error) => return Err(error),
+        };
         Ok(matches!(
-            self.runtime
-                .task_host()
-                .outcome(crate::runtime::task_id_for_admission(head.operation))
-                .await?,
+            outcome,
             Some(
                 crate::Outcome::Succeeded(_)
                     | crate::Outcome::Failed { .. }
@@ -110,6 +130,26 @@ impl LocalHarness {
         root: OperationId,
         automatic_turns: u32,
         previous: Option<OperationId>,
+    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        self.publish_turn_with(
+            operation,
+            inputs,
+            root,
+            automatic_turns,
+            previous,
+            async |turn| self.admit_retained(turn).await,
+        )
+        .await
+    }
+
+    async fn publish_turn_with(
+        &self,
+        operation: OperationId,
+        inputs: (WorkflowCommand, WorkflowCommand),
+        root: OperationId,
+        automatic_turns: u32,
+        previous: Option<OperationId>,
+        admit: impl AsyncFnOnce(&Turn) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>>,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
         let (receive, model) = inputs;
         let turn = Turn {
@@ -148,7 +188,34 @@ impl LocalHarness {
                 None,
             )
             .await?;
-        self.admit_retained(&turn).await
+        admit(&turn).await
+    }
+
+    pub(super) async fn recover_unadmitted_turn(
+        &self,
+        task: TaskId,
+    ) -> Result<RuntimeTask<crate::executor::TurnOutput>> {
+        serialized(&self.admission, async || {
+            let (current, _) = self.current_turn().await?;
+            let turn = current
+                .filter(|turn| crate::runtime::task_id_for_admission(turn.operation) == task)
+                .ok_or_else(|| Error::NotFound("current local request".into()))?;
+            let admission = self.admit_retained(&turn).await?;
+            match admission {
+                Admission::Accepted(handle @ RuntimeTask::Durable { task_id, .. })
+                    if task_id == task =>
+                {
+                    Ok(handle)
+                }
+                other => {
+                    admitted_task(other)?;
+                    Err(Error::Conflict(
+                        "recovered admission belongs to another task".into(),
+                    ))
+                }
+            }
+        })
+        .await
     }
 
     pub(super) async fn submit_turn(
@@ -271,6 +338,12 @@ impl LocalHarness {
                 Err(error) => return Err(error),
             };
             let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
+            let unreachable = GoalBlockedReason::TaskViewUnreachable;
+            if goal.status == GoalStatus::Blocked
+                && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
+            {
+                return Err(Error::GoalBlocked(unreachable));
+            }
             match policy.on_settle(
                 &goal,
                 crate::runtime::task_id_for_admission(current.root),
@@ -279,8 +352,14 @@ impl LocalHarness {
             ) {
                 None => Ok(None),
                 Some(GoalContinuation::Continue(operation)) => {
+                    let Some(path) = self.goal_task_path() else {
+                        let contents = goal
+                            .status_contents(GoalStatus::Blocked, Some(&unreachable.to_string()))?;
+                        self.block_goal(&goal, settled, &contents).await?;
+                        return Err(Error::GoalBlocked(unreachable));
+                    };
                     let prompt =
-                        format!("Continue the active goal in GOAL.md.\n\n{}", goal.markdown);
+                        format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
                     let admission = self
                         .publish_turn(
                             operation,
@@ -293,31 +372,7 @@ impl LocalHarness {
                     admitted_task(admission).map(Some)
                 }
                 Some(GoalContinuation::Block(contents)) => {
-                    let grant = ContentGrant::verify(
-                        &self.verifier,
-                        &self.signed,
-                        &self.scratch,
-                        VolumeOperation::Write,
-                        u64::MAX,
-                        &mut None,
-                    )?;
-                    self.files
-                        .put_content(
-                            &self.scratch,
-                            &grant,
-                            "GOAL.md",
-                            contents.as_bytes(),
-                            "text/markdown",
-                            "GOAL.md",
-                            self.limits.file_bytes,
-                            &crate::IdempotencyKey::new(format!(
-                                "goal-cap:{settled}:{}",
-                                goal.source.version()
-                            ))?,
-                            Some(&self.files.file_generation(&goal.source, None)?),
-                            None,
-                        )
-                        .await?;
+                    self.block_goal(&goal, settled, &contents).await?;
                     Ok(None)
                 }
             }

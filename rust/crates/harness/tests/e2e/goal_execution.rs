@@ -1,6 +1,6 @@
 use super::{TestResult, goals::GoalCase, matchers};
 use acyclic_harness::{
-    Admission, IdempotencyKey, LocalHarness, LocalHarnessConfig, OperationId,
+    Admission, IdempotencyKey, LocalHarness, OperationId,
     context::CompactionPolicy,
     conversation::{FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{FilesystemHost, WorkspaceMutation, workspace_ref},
@@ -8,7 +8,7 @@ use acyclic_harness::{
     model::{Model, ModelContent, ModelRole},
     resources::ProviderRef,
     runtime::RuntimeTask,
-    test_support::{ScriptedModelProvider, local_task_stream},
+    test_support::{ScriptedModelProvider, local_harness_config, local_task_stream},
 };
 use acyclic_stream::{Record, StreamPath, StreamProvider};
 use futures::TryStreamExt as _;
@@ -59,7 +59,7 @@ async fn goal(harness: &LocalHarness) -> acyclic_harness::Result<GoalView> {
 }
 
 pub(super) async fn run(mut case: GoalCase) -> TestResult {
-    let directory = tempfile::tempdir()?;
+    let directory = super::diff_workspace::temporary()?;
     acyclic_native_runtime::initialize_native_io_services().map_err(|error| error.to_string())?;
     let files = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
     let provider_ref = ProviderRef::new(
@@ -79,20 +79,21 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
         .create_volume(&project)
         .await?;
     let provider = Arc::new(ScriptedModelProvider::new(std::mem::take(&mut case.turns)));
-    let mut config = LocalHarnessConfig::new(
+    let config = local_harness_config(
         directory.path(),
         (
             Model::new("scripted".into(), "goal".into(), "1".into(), Value::Null)?,
             provider.clone(),
         ),
-    )
+    )?
+    .state_directory(directory.path().join("state"))
     .volume(project.clone())
     .compaction(CompactionPolicy::Disabled)
     .limits(Limits {
         model_steps: case.max_steps as usize,
         ..Limits::default()
-    });
-    config.goal_continuations = case.policy;
+    })
+    .goal_continuations(case.policy);
     let harness = LocalHarness::open(config).await?;
     let workspace = workspace_ref(
         harness.scratch().provider().clone(),
@@ -253,20 +254,21 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     drop(followed);
     drop(stream);
     drop(harness);
-    let mut config = LocalHarnessConfig::new(
+    let config = local_harness_config(
         directory.path(),
         (
             Model::new("scripted".into(), "goal".into(), "1".into(), Value::Null)?,
             provider.clone(),
         ),
-    )
+    )?
+    .state_directory(directory.path().join("state"))
     .volume(project.clone())
     .compaction(CompactionPolicy::Disabled)
     .limits(Limits {
         model_steps: case.max_steps as usize,
         ..Limits::default()
-    });
-    config.goal_continuations = None;
+    })
+    .goal_continuations(None);
     let reopened = LocalHarness::open(config).await?;
     if reopened.resume(task_id).await?.text != case.expect.text {
         return Err("reopened goal task changed its settled result".into());

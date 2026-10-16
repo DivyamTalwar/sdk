@@ -2,7 +2,6 @@
 
 use crate::{
     Admission, AgentId, Capabilities, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
     conversation::{
         ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -29,7 +28,9 @@ mod admission;
 mod checkout_tools;
 mod compaction;
 mod config;
-mod lock;
+mod context;
+#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+mod mcp;
 mod owner;
 mod owner_record;
 mod runtime;
@@ -53,6 +54,7 @@ pub(crate) type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -60,18 +62,44 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
+    context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(test)]
+    context_read_observer: Option<
+        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    >,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     // Outermost lock: admission -> filesystem/provider locks. Never held during
     // model/tool execution, and provider callbacks never acquire admission.
-    admission: lock::Arc<lock::Mutex<()>>,
+    admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    checkout_context: bool,
 }
 
 impl LocalHarness {
+    /// Publishes pending mount writes and awaits physical mount retirement.
+    /// Reopening after this completes can immediately acquire the destination.
+    pub async fn close(self) -> Result<()> {
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            for (_, mount) in workspace.mounts.mounts() {
+                if let Some(native) = mount
+                    .view
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.native.as_ref())
+                {
+                    native.unmount().await?;
+                }
+            }
+        }
+        Ok(())
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
@@ -87,24 +115,45 @@ impl LocalHarness {
             }
             let (model, provider) = config.model;
             model.validate()?;
-            let mut tools = if config.default_tools {
-                crate::tools::defaults()?
-            } else {
-                ToolRegistry::default()
-            };
+            let mut tools = ToolRegistry::default();
+            if config.default_tools {
+                crate::tools::bind_defaults(
+                    &mut tools,
+                    &mut Vec::new(),
+                    None,
+                    true,
+                    cfg!(feature = "native-execution"),
+                )?;
+            }
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = mcp::install(
+                &config.project,
+                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
+                tools,
+                config.mcp_limits,
+            )
+            .await?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let tools = installation.tools;
             let compaction = compaction::select(
                 config.compaction,
                 &model,
                 provider.as_ref(),
                 &tools,
                 config.limits,
-            )?;
+            )
+            .await?;
+            #[cfg(feature = "native-execution")]
+            let native_mounts = tools.get("bash", None, None)?.is_some();
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(feature = "native-execution")]
-            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            if native_mounts {
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+                acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            }
             #[cfg(not(feature = "native-execution"))]
             if matches!(config.project, LocalProject::Workspace(_)) {
                 return Err(Error::Unsupported(
@@ -116,7 +165,11 @@ impl LocalHarness {
                     return Err(Error::Invalid("local workspace is not a directory".into()));
                 }
             }
-            let directory = owner::directory(&owner::state_directory(&config.project)?)?;
+            let directory = match config.state_directory {
+                Some(path) => path,
+                None => owner::state_directory(&config.project)?,
+            };
+            let directory = owner::directory(&directory)?;
             let owner = owner::Owner::open(&directory, &config.project)?;
             let filesystem =
                 acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
@@ -126,32 +179,7 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?;
             let provider_ref = owner.project.provider();
-            #[cfg(feature = "native-execution")]
-            let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(Arc::new(
-                    workspace::open(
-                        &filesystem,
-                        &owner.project,
-                        path,
-                        &directory,
-                        owner.workspace_identity,
-                        workspace::attach_operation(owner.task),
-                    )
-                    .await?,
-                )),
-                LocalProject::Volume { .. } => None,
-            };
-            let files = FilesystemHost::new(filesystem, provider_ref, None)?;
-            // A configured project is opened, never silently replaced by an empty volume.
-            files
-                .resolve(
-                    &crate::filesystem::workspace_ref(
-                        provider_ref.clone(),
-                        &owner.project.storage_name(&mut None)?,
-                    )?,
-                    None,
-                )
-                .await?;
+            let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
             let scratch = VolumeRef::new(
                 provider_ref.clone(),
                 format!("scratch-{}", owner.agent),
@@ -166,8 +194,64 @@ impl LocalHarness {
                 VolumeOwner::Agent(owner.agent),
                 &mut None,
             )?;
+            let task_volume = VolumeRef::new(
+                provider_ref.clone(),
+                format!("tasks-{}", owner.agent),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(owner.agent),
+                &mut None,
+            )?;
+            files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = match &config.project {
+                LocalProject::Workspace(path) => Some(
+                    workspace::open(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        path,
+                        &directory,
+                        owner.workspace_identity,
+                        workspace::attach_operation(owner.task),
+                        false,
+                        native_mounts,
+                    )
+                    .await?,
+                ),
+                LocalProject::Volume { .. } => Some(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                        native_mounts,
+                    )
+                    .await?,
+                ),
+            };
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
+            // A configured project is opened, never silently replaced by an empty volume.
+            files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        provider_ref.clone(),
+                        &owner.project.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = workspace.map(Arc::new);
             let stream = Arc::new(
                 LocalStream::open(directory.join("stream"), Default::default())
                     .await
@@ -182,11 +266,12 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
-            let (runtime, signed) = runtime::open(runtime::Configuration {
+            let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
                 stream,
+                task_volume: &task_volume,
                 issuer: &issuer,
                 verifier: &verifier,
                 agent: owner.agent,
@@ -194,6 +279,8 @@ impl LocalHarness {
                 scratch: &scratch,
                 journal: &journal,
                 tools: &tools,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: &installation.capabilities,
                 limits: config.limits,
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
@@ -204,6 +291,7 @@ impl LocalHarness {
             Ok(Self {
                 files,
                 runtime,
+                task_files,
                 project: owner.project.clone(),
                 scratch,
                 journal,
@@ -211,15 +299,26 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context: config.context,
+                context_manifest: config.context_manifest,
+                #[cfg(test)]
+                context_read_observer: None,
+                #[cfg(feature = "native-execution")]
+                checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 limits: config.limits,
                 compaction,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                mcp_diagnostics: installation.diagnostics,
                 goal_continuations: config.goal_continuations,
-                admission: lock::Arc::new(lock::Mutex::new(())),
+                admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
             })
         })
+    }
+
+    /// Trusted host's task-file volume; clients render its bounded live queries.
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<LocalStream>> {
+        &self.task_files
     }
 
     /// Durable content and project host.
@@ -248,6 +347,13 @@ impl LocalHarness {
         self.runtime.tool_registry()
     }
 
+    /// Optional configured servers that failed startup; required failures reject opening.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn mcp_diagnostics(&self) -> &[crate::mcp::McpServerFailure] {
+        &self.mcp_diagnostics
+    }
+
     /// Canonical checkout path, absent for a configured volume.
     #[cfg(feature = "native-execution")]
     #[must_use]
@@ -259,8 +365,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub fn workspace(&self) -> Option<&LocalWorkspace> {
-        self.workspace.as_deref()
+    pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
+        self.workspace.as_ref()
     }
 }
 
