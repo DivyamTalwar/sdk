@@ -67,12 +67,53 @@ where
 {
     before_effect().await?;
     let to = to_generation.id();
-    if from.id() == to {
-        return Ok(());
-    }
     let operation_directory = NativeDirectory(root)
         .publication_directory(operation_id)
         .map_err(Error::Storage)?;
+    let cancellation = CancellationToken::new();
+    let journal = acyclic_fs::load_native_materialization_journal(
+        store,
+        operation_id,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await
+    .map_err(|(cause, _)| display(cause))?
+    .value;
+    if acyclic_fs::capture_root_identity(root).map_err(display)? != source_root_identity {
+        return Err(Error::Unauthorized(
+            "checkout root changed before publication".into(),
+        ));
+    }
+    let mut from = from;
+    if let Some(journal) = &journal {
+        // A git action can commit its logical generation before its native
+        // publication is acknowledged. Its retry then observes the target as
+        // the current head; resume the original journal's source generation.
+        if from.id() == to
+            && let acyclic_fs::MaterializationIntent::GenerationTransition {
+                from: original,
+                to: target,
+            } = journal.plan.intent
+            && target == to
+        {
+            from = from
+                .workspace()
+                .generation(original, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(display)?
+                .value;
+        }
+        if completed(journal, source_root_identity, from.id(), to)? {
+            // The durable journal is also the completion marker. A retry must
+            // not overwrite edits made after an acknowledged publication.
+            cleanup(root, &operation_directory)?;
+            return Ok(());
+        }
+    } else if from.id() == to {
+        return Ok(());
+    }
+    drop(journal);
     let parent = operation_directory
         .parent()
         .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
@@ -124,16 +165,33 @@ where
     )
     .await
     .map_err(|(cause, _)| display(cause))?;
-    store
-        .remove_materialization_async(operation_id)
-        .await
-        .map_err(display)?;
+    cleanup(root, &operation_directory)
+}
+
+fn completed(
+    journal: &acyclic_fs::MaterializationJournal,
+    root: acyclic_fs::NativeRootIdentity,
+    from: acyclic_fs::GenerationId,
+    to: acyclic_fs::GenerationId,
+) -> Result<bool, Error> {
+    if journal.root_identity != Some(root.to_bytes())
+        || journal.plan.intent
+            != (acyclic_fs::MaterializationIntent::GenerationTransition { from, to })
+    {
+        return Err(Error::Storage(
+            "checkout publication differs from its original generation transition".into(),
+        ));
+    }
+    Ok(journal.phase == acyclic_fs::MaterializationPhase::Applied)
+}
+
+fn cleanup(root: &Path, operation_directory: &Path) -> Result<(), Error> {
     NativeDirectory(
         &NativeDirectory(root)
             .publication_root()
             .map_err(Error::Storage)?,
     )
-    .remove(&operation_directory)
+    .remove(operation_directory)
     .map_err(display)?;
     Ok(())
 }
@@ -179,3 +237,6 @@ where
         }
     }
 }
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;

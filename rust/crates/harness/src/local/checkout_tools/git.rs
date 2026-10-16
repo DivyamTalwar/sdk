@@ -21,6 +21,19 @@ impl CheckoutTools {
             self.workspace.filesystem.operation_window_store(),
         );
         let workspace = view.workspace();
+        let now = acyclic_stream::UnixMillisClock::now_unix_millis(
+            &acyclic_stream::SystemUnixMillisClock,
+        );
+        // A previous worker can disappear after opening its lease. Expiry
+        // fences it; complete its durable reconciliation before opening ours.
+        coordinator
+            .recover_workspace(
+                workspace,
+                now,
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+            .await
+            .map_err(storage)?;
         let parent = workspace
             .head(
                 acyclic_fs::WorkBudget::UNBOUNDED,
@@ -29,9 +42,6 @@ impl CheckoutTools {
             .await
             .map_err(storage)?
             .value;
-        let now = acyclic_stream::UnixMillisClock::now_unix_millis(
-            &acyclic_stream::SystemUnixMillisClock,
-        );
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
         let lease = coordinator
             .begin_with_lease_id(

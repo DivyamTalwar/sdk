@@ -1,8 +1,6 @@
 //! The durable branch catalog selects capture before the first reopened command.
-#[cfg(unix)]
 use super::*;
 
-#[cfg(unix)]
 async fn run(harness: &LocalHarness) -> Result<()> {
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "exercise the selected checkout")
@@ -18,13 +16,12 @@ async fn run(harness: &LocalHarness) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn commands(commands: &[(&str, &str)]) -> Arc<ScriptedModelProvider> {
     scripted(
         commands
             .iter()
             .enumerate()
-            .map(|(index, (name, command))| super::checkout::call(index, name, command))
+            .map(|(index, (name, command))| super::checked_commands::call(index, name, command))
             .chain([ScriptedTurn::Text("done".into())]),
     )
 }
@@ -126,13 +123,13 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     };
     let provider = scripted([
         write(0, "main file"),
-        super::checkout::call(1, "bash", "cat from-write.txt"),
-        super::checkout::call(2, "fs", "commit -m initial"),
-        super::checkout::call(3, "fs", "checkout -b agents/child"),
+        super::checked_commands::call(1, "bash", "cat from-write.txt"),
+        super::checked_commands::call(2, "fs", "commit -m initial"),
+        super::checked_commands::call(3, "fs", "checkout -b agents/child"),
         write(4, "child file"),
-        super::checkout::call(5, "bash", "cat from-write.txt"),
-        super::checkout::call(6, "fs", "checkout main"),
-        super::checkout::call(7, "bash", "cat from-write.txt"),
+        super::checked_commands::call(5, "bash", "cat from-write.txt"),
+        super::checked_commands::call(6, "fs", "checkout main"),
+        super::checked_commands::call(7, "bash", "cat from-write.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(LocalHarnessConfig::new(
@@ -186,15 +183,27 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     Ok(())
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Result<()> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let unread = directory.path().join("unread.txt");
     std::fs::write(&unread, b"unrelated source bytes").map_err(super::super::storage)?;
+    #[cfg(unix)]
     std::fs::set_permissions(&unread, std::fs::Permissions::from_mode(0))
         .map_err(super::super::storage)?;
+    #[cfg(windows)]
+    let _unread_guard = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // Deny every subsequent open until the test ends. An eager importer
+        // cannot read this file, while the held lazy checkout can run echo.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&unread)
+            .map_err(super::super::storage)?
+    };
     let provider = commands(&[
         ("bash", "echo first"),
         ("bash", "echo second"),
@@ -234,6 +243,7 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
         !directory.path().join(".git").exists(),
         "watch fencing changed the checkout"
     );
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(&unread)
             .map_err(super::super::storage)?
@@ -280,4 +290,117 @@ proptest::proptest! {
             proptest::prop_assert_eq!(selected, if persisted && select_child { child } else { root });
         }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn arriving_directories_remain_watched_after_creation_and_rename() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checked_commands::call(
+            0,
+            "bash",
+            "mkdir -p sub/deep; printf first > sub/deep/note.txt",
+        ),
+        super::checked_commands::call(1, "bash", "printf created-edit > sub/deep/note.txt"),
+        ScriptedTurn::Text("done".into()),
+        super::checked_commands::call(2, "bash", "mv sub moved"),
+        super::checked_commands::call(3, "bash", "printf renamed-edit > moved/deep/note.txt"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider),
+    ))
+    .await?;
+    let workspace = harness.workspace().unwrap().view().workspace();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    for (path, expected) in [
+        ("/sub/deep/note.txt", b"created-edit".as_slice()),
+        ("/moved/deep/note.txt", b"renamed-edit".as_slice()),
+    ] {
+        run(&harness).await?;
+        let head = workspace
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        let bytes = head
+            .read(path, 1024, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        assert_eq!(bytes.as_ref(), expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checked_commands::call(0, "fs", "status"),
+        ScriptedTurn::Text("done".into()),
+        super::checked_commands::call(1, "fs", "status"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let mut harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    for reconciling in [false, true] {
+        let checkout = harness.workspace().unwrap();
+        let workspace = checkout.view().workspace();
+        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
+            checkout.filesystem.operation_window_store(),
+        );
+        let parent = workspace
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .id();
+        coordinator
+            .begin(workspace.id(), parent, "abandoned-worker", 0, 1)
+            .await
+            .map_err(super::super::storage)?;
+        if reconciling {
+            assert!(
+                coordinator
+                    .claim_reconcile(workspace.id(), 2)
+                    .await
+                    .map_err(super::super::storage)?
+                    .is_some()
+            );
+        }
+        let workspace_id = workspace.id();
+        drop(coordinator);
+        drop(harness);
+        harness = LocalHarness::open(LocalHarnessConfig::new(
+            directory.path(),
+            (model()?, provider.clone()),
+        ))
+        .await?;
+        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
+            harness
+                .workspace()
+                .unwrap()
+                .filesystem
+                .operation_window_store(),
+        );
+        run(&harness).await?;
+        assert!(matches!(
+            coordinator
+                .inspect(workspace_id)
+                .await
+                .map_err(super::super::storage)?
+                .phase,
+            acyclic_fs::OperationWindowPhase::Idle
+        ));
+    }
+    Ok(())
 }

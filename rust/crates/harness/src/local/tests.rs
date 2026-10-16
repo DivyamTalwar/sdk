@@ -717,7 +717,7 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     Ok(())
 }
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(feature = "native-execution")]
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;

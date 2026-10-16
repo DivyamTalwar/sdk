@@ -9,6 +9,8 @@ use acyclic_fs::{
 };
 use std::time::Duration;
 
+mod arrivals;
+
 const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -148,7 +150,9 @@ impl CheckoutTools {
                 watcher.finish_rescan().map_err(storage)?
             }
         };
+        arrivals::register(watcher, &batch, &self.workspace, policy)?;
         if let Some(initial @ WatchBatch::Changes { .. }) = initial {
+            arrivals::register(watcher, &initial, &self.workspace, policy)?;
             capture_watch_batch(
                 &mut checkout,
                 initial,
