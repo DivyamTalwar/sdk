@@ -257,7 +257,7 @@ impl<'a> AuthorityWork<'a> {
         lease: crate::OperationLeaseId,
         expiry: u64,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        let mut text = [0_u8; crate::operation_window::lease_path::MAX_ENCODED_BYTES];
         let length = crate::operation_window::lease_path::encode(
             workspace,
             lease,
@@ -475,3 +475,7 @@ pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "native_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "native_lease_path_tests.rs"]
+mod lease_path_tests;
