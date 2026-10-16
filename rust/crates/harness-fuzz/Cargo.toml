@@ -29,3 +29,10 @@ path = "fuzz_targets/client_files.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "client_mentions"
+path = "fuzz_targets/client_mentions.rs"
+test = false
+doc = false
+bench = false

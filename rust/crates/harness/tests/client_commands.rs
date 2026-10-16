@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 mod client_files;
 use client_files::Fixture;
 
+#[path = "client_mention_attachments.rs"]
+mod attachments;
+
 impl Fixture {
     async fn catalog(
         &self,
