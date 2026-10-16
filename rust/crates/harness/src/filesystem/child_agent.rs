@@ -15,11 +15,11 @@ use std::sync::Arc;
 #[cfg(test)]
 mod tests;
 
-pub(super) fn is_child(admission: &crate::runtime::TaskAdmissionRecord) -> bool {
+pub(crate) fn is_child(admission: &crate::runtime::TaskAdmissionRecord) -> bool {
     admission.task.name == "acyclic.child_agent" && admission.task.version == "1"
 }
 
-pub(super) fn mail_cursor(
+pub(crate) fn mail_cursor(
     transition: &MachineTransition,
     command: &WorkflowCommand,
 ) -> std::result::Result<u64, &'static str> {

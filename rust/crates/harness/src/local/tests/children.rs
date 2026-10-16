@@ -93,8 +93,12 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
             host.send_mail(parent, &fence, child, message, payload, None)
                 .await?;
             harness.advance(child, &harness.commands()?).await?;
+            let outcome = host.outcome(child).await?;
+            assert!(
+                outcome.is_none(),
+                "child stopped after input {index}: {outcome:?}"
+            );
             assert_eq!(provider.requests().len(), index);
-            assert!(host.outcome(child).await?.is_none());
             if index == 1 {
                 let (hidden, _) = publisher
                     .stage_once(
