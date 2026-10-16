@@ -1,10 +1,10 @@
 #![no_main]
 
-#[path = "../../tests/e2e/matchers.rs"]
+#[path = "../../harness/tests/e2e/matchers.rs"]
 mod matchers;
-#[path = "../../tests/e2e/notification_history.rs"]
+#[path = "../../harness/tests/e2e/notification_history.rs"]
 mod notification_history;
-#[path = "../../tests/e2e/notifications.rs"]
+#[path = "../../harness/tests/e2e/notifications.rs"]
 mod notifications;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
