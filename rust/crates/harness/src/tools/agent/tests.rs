@@ -115,6 +115,34 @@ async fn acknowledge(files: &TaskFiles<MemoryStream>, state: ChildState) {
         .unwrap();
 }
 
+#[tokio::test]
+async fn spawn_admission_waits_for_the_harness_status_file() {
+    let files = files().await;
+    let reference = Component::new("worker").unwrap();
+    call(
+        &files,
+        json!({"command":"spawn", "reference":"worker", "prompt":"work"}),
+        OperationId::new(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        admission_status(&files, &reference, limits(), false)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (status, ()) = futures::join!(
+        admission_status(&files, &reference, limits(), true),
+        acknowledge(&files, ChildState::Running),
+    );
+    let status = status.unwrap().unwrap();
+    assert_eq!(
+        status["execution"]["task"],
+        json!(TaskId::from_bytes([7; 16]))
+    );
+}
+
 async fn call(
     files: &TaskFiles<MemoryStream>,
     command: Value,

@@ -444,7 +444,11 @@ impl LocalHarness {
     }
 }
 
-fn child_operation(volume: &VolumeRef, reference: &str, phase: &[u8]) -> Result<OperationId> {
+pub(super) fn child_operation(
+    volume: &VolumeRef,
+    reference: &str,
+    phase: &[u8],
+) -> Result<OperationId> {
     let mut digest = blake3::Hasher::new();
     digest.update(b"acyclic.local.child-file/v1\0");
     digest.update(volume.storage_name(&mut None)?.as_bytes());

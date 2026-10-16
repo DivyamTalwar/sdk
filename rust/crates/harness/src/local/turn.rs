@@ -268,6 +268,10 @@ impl LocalHarness {
         );
         if !terminal {
             let commands = self.commands()?;
+            #[cfg(feature = "native-execution")]
+            self.advance_with_children(task, &commands, self.task_files.clone())
+                .await?;
+            #[cfg(not(feature = "native-execution"))]
             Box::pin(self.advance(task, &commands)).await?;
             if self.runtime.task_host().outcome(task).await?.is_none() {
                 let admission = self.runtime.task_host().observe_admission(task).await?;

@@ -111,6 +111,7 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
             }),
         ]),
         ScriptedTurn::Text("request published".into()),
+        ScriptedTurn::Text("request published".into()),
     ]);
     let harness = LocalHarness::open(volume_config(directory.path(), project, provider)?).await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
@@ -130,7 +131,7 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
         .map_err(super::super::storage)?
         .snapshot
         .unwrap();
-    assert_eq!(snapshot.files.len(), 1);
+    assert_eq!(snapshot.files.len(), 2);
     assert_eq!(snapshot.files[0].key.path(), "agents/worker/request.md");
     assert_eq!(snapshot.files[0].requester(), Some(task_id));
     assert!(

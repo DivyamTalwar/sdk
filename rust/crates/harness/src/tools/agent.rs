@@ -146,7 +146,11 @@ impl ToolExecutor for AgentExecutor {
                 crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
             }
             let files = binding::files(&context).await?;
-            access(
+            let spawn = match &command {
+                AgentCommand::Spawn { reference, .. } => Some(reference.clone()),
+                _ => None,
+            };
+            let result = access(
                 files.as_ref(),
                 command,
                 invocation.operation_id,
@@ -159,7 +163,19 @@ impl ToolExecutor for AgentExecutor {
                 value
                     .map(|value| ToolResult { value })
                     .ok_or(Error::Indeterminate(invocation.operation_id))
-            })
+            })?;
+            match spawn {
+                Some(reference) => admission_status(
+                    files.as_ref(),
+                    &reference,
+                    context.effective_scope().limits(),
+                    true,
+                )
+                .await?
+                .map(|value| ToolResult { value })
+                .ok_or(Error::Indeterminate(invocation.operation_id)),
+                None => Ok(result),
+            }
         })
     }
 
@@ -172,12 +188,17 @@ impl ToolExecutor for AgentExecutor {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             let context =
                 context.ok_or_else(|| Error::Unauthorized("agent context is absent".into()))?;
-            let command = serde_json::from_value(invocation.arguments).map_err(invalid)?;
+            let command: AgentCommand =
+                serde_json::from_value(invocation.arguments).map_err(invalid)?;
             if let AgentCommand::Spawn { tools, .. } = &command {
                 crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
             }
             let files = binding::files(&context).await?;
-            access(
+            let spawn = match &command {
+                AgentCommand::Spawn { reference, .. } => Some(reference.clone()),
+                _ => None,
+            };
+            let result = access(
                 files.as_ref(),
                 command,
                 invocation.operation_id,
@@ -186,7 +207,18 @@ impl ToolExecutor for AgentExecutor {
                 context.task().owned_mailbox.as_deref(),
             )
             .await
-            .map(|result| result.map(|value| ToolResult { value }))
+            .map(|result| result.map(|value| ToolResult { value }))?;
+            match (spawn, result) {
+                (Some(reference), Some(_)) => admission_status(
+                    files.as_ref(),
+                    &reference,
+                    context.effective_scope().limits(),
+                    false,
+                )
+                .await
+                .map(|result| result.map(|value| ToolResult { value })),
+                (_, result) => Ok(result),
+            }
         })
     }
 }
@@ -352,6 +384,48 @@ async fn access<P: StreamProvider + ?Sized>(
             .ok_or_else(|| Error::Conflict("child follow ended".into()))?
             .map_err(storage)?;
         if let Some(file) = change.file {
+            values.retain(|previous| previous.key != file.key);
+            values.push(file);
+        }
+    }
+}
+
+async fn admission_status<P: StreamProvider + ?Sized>(
+    files: &TaskFiles<P>,
+    reference: &Component,
+    limits: Limits,
+    wait: bool,
+) -> Result<Option<Value>> {
+    let mut observation = files
+        .observe_files(
+            Query::Child(reference.clone()),
+            None,
+            limits.attachments,
+            usize::try_from(limits.render_bytes).map_err(invalid)?,
+        )
+        .await
+        .map_err(storage)?;
+    let mut values = observation
+        .snapshot
+        .take()
+        .ok_or_else(|| Error::Conflict("child admission snapshot missing".into()))?
+        .files;
+    loop {
+        if values.iter().any(|file| matches!(&file.key,
+            FileKey::Child { reference: candidate, file: ChildFile::Status } if candidate == reference)) {
+            return status(reference, &values).map(Some);
+        }
+        if !wait {
+            return Ok(None);
+        }
+        let change = observation
+            .changes
+            .next()
+            .await
+            .ok_or_else(|| Error::Conflict("child admission follow ended".into()))?
+            .map_err(storage)?;
+        values.retain(|file| !change.removed.contains(&file.key));
+        for file in change.file.into_iter().chain(change.files) {
             values.retain(|previous| previous.key != file.key);
             values.push(file);
         }
