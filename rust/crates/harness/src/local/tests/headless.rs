@@ -173,3 +173,94 @@ async fn opening_and_empty_jsonl_do_not_start_a_model() -> Result<()> {
     drop(client);
     close(harness).await
 }
+
+#[tokio::test]
+async fn task_files_share_the_snapshot_follow_and_reopen_cut() -> Result<()> {
+    use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile, ToolFile};
+    let (_directory, harness, provider) = local().await?;
+    let operation = OperationId::new();
+    let task = Component::new(crate::runtime::task_id_for_admission(operation).to_string())?;
+    let volume = &harness.task_files().inner;
+    let file = |task: Component, call: &str| -> Result<FileValue> {
+        Ok(FileValue::new(
+            FileKey::Task {
+                task,
+                file: TaskFile::Tool {
+                    turn: 0,
+                    call: Component::new(call)?,
+                    file: ToolFile::Result,
+                },
+            },
+            call.as_bytes().to_vec(),
+        ))
+    };
+    let before = file(task.clone(), "before")?;
+    let after = file(task.clone(), "after")?;
+    let foreign = file(Component::new("unrelated")?, "foreign")?;
+    let cut = volume.snapshot(&Query::Root, 4096).await?;
+    let cut = volume.append(cut.generation, &before).await?;
+    let cut = volume.append(cut, &foreign).await?;
+    let (mut client, target) = connect_local(harness.clone(), operation).await?;
+    volume.append(cut, &after).await?;
+    let mut output = Vec::new();
+    assert_eq!(
+        run_headless(
+            &mut client,
+            local_prompt(&harness, operation, "hello").await?,
+            target,
+            &mut output
+        )
+        .await?,
+        HeadlessOutcome::Completed
+    );
+    let mut lines = std::str::from_utf8(&output).unwrap().lines();
+    let initial: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let head_keys: Vec<FileKey> = initial[1]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| serde_json::from_value(file["key"].clone()).unwrap())
+        .collect();
+    assert!(head_keys.contains(&before.key));
+    assert!(!head_keys.contains(&foreign.key));
+    let changes: Vec<crate::task_volume::Change> = lines
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let keys: Vec<_> = changes
+        .iter()
+        .flat_map(|change| change.file.iter().chain(&change.files))
+        .map(|file| &file.key)
+        .collect();
+    assert!(keys.contains(&&after.key));
+    assert!(!keys.contains(&&foreign.key));
+    drop(client);
+    let (mut client, target) = connect_local(harness.clone(), operation).await?;
+    let mut restored = Vec::new();
+    run_headless(
+        &mut client,
+        local_prompt(&harness, operation, "hello").await?,
+        target,
+        &mut restored,
+    )
+    .await?;
+    let initial: Value = serde_json::from_str(
+        std::str::from_utf8(&restored)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let head_keys: Vec<FileKey> = initial[1]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| serde_json::from_value(file["key"].clone()).unwrap())
+        .collect();
+    assert!(head_keys.contains(&before.key));
+    assert!(head_keys.contains(&after.key));
+    assert!(!head_keys.contains(&foreign.key));
+    assert_eq!(provider.requests().len(), 1);
+    drop(client);
+    close(harness).await
+}

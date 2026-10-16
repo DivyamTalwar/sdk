@@ -131,7 +131,8 @@ async fn scenario(jsonl: bool) {
     let output = execute(&workspace, &catalog, &settings, operation, jsonl).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
     let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    assert_eq!(header[0]["Session"], operation.to_string());
+    assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
+    assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
     let mut answers = Vec::new();
     for line in lines {
         let change: Change = serde_json::from_str(line).unwrap();

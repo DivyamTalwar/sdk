@@ -32,6 +32,10 @@ fuzz_target!(|data: &[u8]| {
     {
         assert_eq!(menu.items().cloned().collect::<Vec<_>>(), before);
     }
+    if let Ok(query) = serde_json::from_slice::<Query>(data) {
+        let encoded = serde_json::to_vec(&query).unwrap();
+        assert_eq!(serde_json::from_slice::<Query>(&encoded).unwrap(), query);
+    }
     let operation = acyclic_harness::OperationId::from_bytes([9; 16]);
     if let Ok(request) =
         acyclic_harness::client::parse_local_request(&String::from_utf8_lossy(data), operation)

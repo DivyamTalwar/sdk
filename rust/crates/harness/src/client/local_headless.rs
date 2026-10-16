@@ -19,6 +19,12 @@ fn session(operation: OperationId) -> Result<Component> {
         uuid::Uuid::from_bytes(operation.into_bytes()).to_string(),
     )?)
 }
+fn selection(operation: OperationId) -> Result<Query> {
+    Ok(Query::TaskSession {
+        task: Component::new(crate::runtime::task_id_for_admission(operation).to_string())?,
+        session: session(operation)?,
+    })
+}
 fn key(operation: OperationId, make: fn(Component) -> TaskFile) -> Result<FileKey> {
     Ok(FileKey::Session {
         session: session(operation)?,
@@ -90,7 +96,7 @@ impl LocalFileClient {
     pub(super) async fn open(local: Arc<LocalHarness>, operation: OperationId) -> Result<Self> {
         let query = ClientQuery::open(
             &local.task_files().inner,
-            Query::Session(session(operation)?),
+            selection(operation)?,
             None,
             QueryViewLimits {
                 files: MAXIMUM_FILES,
@@ -153,10 +159,7 @@ impl LocalFileClient {
                     super::command_output::completion(bytes)?;
                 }
             }
-            emit(
-                output,
-                &(Query::Session(session(self.operation)?), snapshot),
-            )?;
+            emit(output, &(selection(self.operation)?, snapshot))?;
             self.initial = false;
         }
         Ok(())
@@ -265,7 +268,7 @@ impl LocalFileClient {
                     self.drain_through = self
                         .local
                         .task_files()
-                        .snapshot(&Query::Session(session(operation)?), MAXIMUM_FILES)
+                        .snapshot(&selection(operation)?, MAXIMUM_FILES)
                         .await?
                         .cursor
                         .position;
