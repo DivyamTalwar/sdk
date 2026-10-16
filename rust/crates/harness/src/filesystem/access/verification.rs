@@ -2,6 +2,7 @@ use super::*;
 
 fn roundtrip<T: PreparationRecord + serde::Serialize + std::fmt::Debug + PartialEq>(
     io: &PreparationIo,
+    value_io: &PreparationIo,
     bytes: &[u8],
 ) -> Result<()> {
     let expected = serde_json::from_slice::<T>(bytes);
@@ -27,7 +28,8 @@ fn roundtrip<T: PreparationRecord + serde::Serialize + std::fmt::Debug + Partial
     drop(decoded);
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))?;
-    let repeated = io.value_decode_preparation::<T>(&value, crate::wire::ErrorCode::Storage)?;
+    let repeated =
+        value_io.value_decode_preparation::<T>(&value, crate::wire::ErrorCode::Storage)?;
     assert_eq!(expected, repeated.0);
     Ok(())
 }
@@ -48,12 +50,17 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     let io = PreparationIo::from_native_work(&work)?;
     #[cfg(target_arch = "wasm32")]
     let io = PreparationIo::from_budget(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)?;
-    roundtrip::<Policy>(&io, bytes)?;
-    roundtrip::<Capability>(&io, bytes)?;
-    roundtrip::<FileRef>(&io, bytes)?;
-    roundtrip::<GenerationRef>(&io, bytes)?;
-    roundtrip::<(FileRef, Option<GenerationRef>)>(&io, bytes)?;
-    roundtrip::<crate::Capabilities>(&io, bytes)?;
+    let standalone = PreparationIo::from_budget(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)?;
+    for byte_io in [&standalone, &io] {
+        roundtrip::<Policy>(byte_io, &io, bytes)?;
+        roundtrip::<Capability>(byte_io, &io, bytes)?;
+        roundtrip::<FileRef>(byte_io, &io, bytes)?;
+        roundtrip::<GenerationRef>(byte_io, &io, bytes)?;
+        roundtrip::<(FileRef, Option<GenerationRef>)>(byte_io, &io, bytes)?;
+        roundtrip::<crate::Capabilities>(byte_io, &io, bytes)?;
+    }
+    assert_eq!(standalone.owned_bytes()?, 0);
+    drop(standalone);
     if let Ok(capabilities) =
         record::<crate::Capabilities>(&io, bytes, crate::wire::ErrorCode::Storage)
     {
