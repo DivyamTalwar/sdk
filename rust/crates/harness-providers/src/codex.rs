@@ -11,6 +11,10 @@ use std::{
     sync::OnceLock,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+#[path = "credential_io.rs"]
+mod credential_io;
+use acyclic_fs::{NativeAllocation, WorkCounters};
+use credential_io::CredentialIo;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;
@@ -19,7 +23,7 @@ const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 /// Refreshes serialize in memory and defer to concurrent CLI writes.
 pub struct CodexLogin {
     path: PathBuf,
-    account: OnceLock<Option<String>>,
+    account: OnceLock<Option<blake3::Hash>>,
     refresh: crate::sync::Arc<crate::sync::AsyncMutex<()>>,
 }
 
@@ -58,16 +62,24 @@ impl CodexLogin {
         &self,
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
+        custody: Option<&mut NativeAllocation>,
     ) -> Result<(String, Option<String>)> {
-        crate::refresh::serialized(&self.refresh, self.refresh_bearer(transport, rejected)).await
+        let mut io = CredentialIo::new(custody)?;
+        let result = crate::refresh::serialized(
+            &self.refresh,
+            self.refresh_bearer(transport, rejected, &mut io),
+        )
+        .await;
+        io.checked(result)
     }
 
     async fn refresh_bearer(
         &self,
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
+        io: &mut CredentialIo<'_>,
     ) -> Result<(String, Option<String>)> {
-        let (mut original, mut auth) = self.load().await?;
+        let (mut original, mut auth) = load(&self.path, io)?;
         self.check_account(&auth)?;
         for attempt in 0..2 {
             let access = token(&auth, "access_token")?;
@@ -76,16 +88,21 @@ impl CodexLogin {
                 break;
             }
             let refresh = token(&auth, "refresh_token")?;
-            let response = transport.send(HttpRequest {
+            io.graph(refresh.len() as u64 * 6 + 1024, 32)?;
+            let request = HttpRequest {
                 url: "https://auth.openai.com/oauth/token".into(),
                 headers: BTreeMap::new(),
-                body: serde_json::to_vec(&json!({"grant_type":"refresh_token", "client_id":CLIENT_ID,
+                body: io.bytes(serde_json::to_vec(&json!({"grant_type":"refresh_token", "client_id":CLIENT_ID,
                     "refresh_token":refresh,"refresh_reason":if force {"unauthorized"} else {"proactive_expiry"}}))
-                    .map_err(|_| invalid("Codex refresh encoding failed"))?.into(),
-            }).await?;
+                    .map_err(|_| invalid("Codex refresh encoding failed"))?)?,
+            };
+            let response = match io.work() {
+                Some(work) => transport.send_with_native_work(request, work)?.await?,
+                None => transport.send(request).await?,
+            };
             if response.status != 200 {
                 if attempt == 0 && matches!(response.status, 400 | 401) {
-                    let (bytes, current) = self.load().await?;
+                    let (bytes, current) = load(&self.path, io)?;
                     self.check_account(&current)?;
                     if token(&current, "refresh_token").ok() != Some(refresh)
                         || token(&current, "access_token").ok() != Some(access)
@@ -111,9 +128,30 @@ impl CodexLogin {
                 if chunk.len() as u64 > MAX_AUTH_BYTES.saturating_sub(bytes.len() as u64) {
                     return Err(invalid("Codex refresh response exceeds limit"));
                 }
+                if bytes.len() + chunk.len() > bytes.capacity() {
+                    let capacity = (bytes.len() + chunk.len())
+                        .max(bytes.capacity() * 2)
+                        .min(MAX_AUTH_BYTES as usize);
+                    io.claim(
+                        capacity as u64,
+                        1,
+                        WorkCounters {
+                            bytes_copied: bytes.len() as u64,
+                            ..WorkCounters::UNCHARGED
+                        },
+                    )?;
+                    bytes
+                        .try_reserve_exact(capacity - bytes.len())
+                        .map_err(|_| invalid("cannot allocate Codex refresh response"))?;
+                }
+                io.charge(WorkCounters {
+                    source_bytes_read: chunk.len() as u64,
+                    bytes_copied: chunk.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
                 bytes.extend_from_slice(&chunk);
             }
-            let updated = crate::json(&bytes)?;
+            let updated = io.json(&bytes)?;
             if !["access_token", "refresh_token", "id_token"]
                 .iter()
                 .any(|field| updated.get(field).is_some())
@@ -133,29 +171,25 @@ impl CodexLogin {
                     .format(&Rfc3339)
                     .map_err(|_| invalid("Codex refresh timestamp failed"))?
             );
-            let path = self.path.clone();
-            // Return the same document after atomic persistence, avoiding a clone of secrets.
-            auth =
-                tokio::task::spawn_blocking(move || persist_if_unchanged(&path, &original, auth))
-                    .await
-                    .map_err(|_| invalid("Codex credential writer interrupted"))??;
+            // Keep publication inside the refresh guard. A detached blocking task
+            // could outlive cancellation and overwrite a subsequent refresh.
+            auth = persist_if_unchanged(&self.path, &original, auth, io)?;
             self.check_account(&auth)?;
             break;
         }
-        let access = token(&auth, "access_token")?.to_owned();
-        Ok((access, self.account.get().cloned().flatten()))
-    }
-
-    async fn load(&self) -> Result<(Vec<u8>, Value)> {
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || load(&path))
-            .await
-            .map_err(|_| invalid("Codex credential reader interrupted"))?
+        let access = io.string(token(&auth, "access_token")?)?;
+        let account = auth["tokens"]["account_id"]
+            .as_str()
+            .map(|account| io.string(account))
+            .transpose()?;
+        Ok((access, account))
     }
 
     fn check_account(&self, auth: &Value) -> Result<()> {
-        let current = auth["tokens"]["account_id"].as_str().map(str::to_owned);
-        if self.account.get_or_init(|| current.clone()) != &current {
+        let current = auth["tokens"]["account_id"]
+            .as_str()
+            .map(|account| blake3::hash(account.as_bytes()));
+        if self.account.get_or_init(|| current) != &current {
             return Err(acyclic_harness::Error::Unauthorized(
                 "Codex login account changed; resolve the model again".into(),
             ));
@@ -171,13 +205,17 @@ fn token<'a>(auth: &'a Value, field: &str) -> Result<&'a str> {
         .ok_or_else(|| invalid("Codex CLI ChatGPT login is incomplete; sign in again"))
 }
 
-fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
+pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Claims {
+        exp: Option<i64>,
+    }
     let expiry = auth["tokens"]["access_token"]
         .as_str()
         .and_then(|token| token.split('.').nth(1))
         .and_then(|payload| URL_SAFE_NO_PAD.decode(payload).ok())
-        .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok())
-        .and_then(|claims| claims["exp"].as_i64());
+        .and_then(|payload| serde_json::from_slice::<Claims>(&payload).ok())
+        .and_then(|claims| claims.exp);
     if let Some(expiry) = expiry {
         return expiry <= now.unix_timestamp().saturating_add(300);
     }
@@ -187,22 +225,72 @@ fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
         .is_none_or(|last| now - last >= time::Duration::days(8))
 }
 
-fn load(path: &Path) -> Result<(Vec<u8>, Value)> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(|_| invalid("cannot read Codex auth.json"))?
-        .take(MAX_AUTH_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| invalid("cannot read Codex auth.json"))?;
-    let auth = decode_auth(&bytes)?;
+fn load(path: &Path, io: &mut CredentialIo<'_>) -> Result<(Vec<u8>, Value)> {
+    io.charge(WorkCounters {
+        backend_read_operations: 2,
+        object_probes: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut file = File::open(path).map_err(|_| invalid("cannot read Codex auth.json"))?;
+    let length = file
+        .metadata()
+        .map_err(|_| invalid("cannot stat Codex auth.json"))?
+        .len();
+    if length > MAX_AUTH_BYTES {
+        return Err(invalid("Codex auth.json exceeds limit"));
+    }
+    let capacity = length as usize + 1;
+    io.claim(capacity as u64, 1, WorkCounters::UNCHARGED)?;
+    let mut bytes = vec![0; capacity];
+    let read_allowance = io
+        .work()
+        .map(|work| {
+            work.reserve_work(WorkCounters {
+                source_bytes_read: capacity as u64,
+                ..WorkCounters::UNCHARGED
+            })
+        })
+        .transpose()?;
+    let mut read = 0;
+    while read < capacity {
+        io.charge(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let count = file
+            .read(&mut bytes[read..])
+            .map_err(|_| invalid("cannot read Codex auth.json"))?;
+        if count == 0 {
+            break;
+        }
+        if let Some(reserved) = &read_allowance {
+            reserved.record_completed(WorkCounters {
+                source_bytes_read: count as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        read += count;
+    }
+    if read > length as usize {
+        return Err(invalid("Codex auth.json changed while reading"));
+    }
+    bytes.truncate(read);
+    let auth = io.json(&bytes)?;
+    validate_auth(&auth)?;
     Ok((bytes, auth))
 }
 
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn decode_auth(bytes: &[u8]) -> Result<Value> {
     if bytes.len() as u64 > MAX_AUTH_BYTES {
         return Err(invalid("Codex auth.json exceeds limit"));
     }
     let auth = crate::json(bytes)?;
+    validate_auth(&auth)?;
+    Ok(auth)
+}
+
+fn validate_auth(auth: &Value) -> Result<()> {
     if auth["auth_mode"]
         .as_str()
         .is_some_and(|mode| mode != "chatgpt")
@@ -210,11 +298,16 @@ pub(crate) fn decode_auth(bytes: &[u8]) -> Result<Value> {
         return Err(invalid("Codex auth.json is not a ChatGPT CLI login"));
     }
     token(&auth, "access_token")?;
-    Ok(auth)
+    Ok(())
 }
 
-fn persist_if_unchanged(path: &Path, original: &[u8], auth: Value) -> Result<Value> {
-    persist_with(path, original, auth, || Ok(()))
+fn persist_if_unchanged(
+    path: &Path,
+    original: &[u8],
+    auth: Value,
+    io: &mut CredentialIo<'_>,
+) -> Result<Value> {
+    persist_with(path, original, auth, || Ok(()), io)
 }
 
 fn persist_with(
@@ -222,7 +315,17 @@ fn persist_with(
     original: &[u8],
     auth: Value,
     before_replace: impl FnOnce() -> Result<()>,
+    io: &mut CredentialIo<'_>,
 ) -> Result<Value> {
+    io.charge(WorkCounters {
+        backend_write_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    io.claim(
+        path.as_os_str().len() as u64 * 3 + 1024,
+        16,
+        WorkCounters::UNCHARGED,
+    )?;
     let absolute = if path.is_absolute() {
         None
     } else {
@@ -236,12 +339,20 @@ fn persist_with(
     // is a mount point. It is removed on every discarded or failed update.
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| invalid("cannot create Codex credential update"))?;
+    let encoded = crate::projection::encoded_len(&auth)? as u64 + 1;
+    io.charge(WorkCounters {
+        bytes_encoded: encoded,
+        output_bytes: encoded,
+        backend_write_operations: 2,
+        durability_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
     serde_json::to_writer(file.as_file_mut(), &auth)
         .map_err(|_| invalid("cannot encode Codex credential update"))?;
     file.write_all(b"\n")
         .and_then(|()| file.as_file().sync_all())
         .map_err(|_| invalid("cannot flush Codex credential update"))?;
-    let (bytes, current) = load(path)?;
+    let (bytes, current) = load(path, io)?;
     if bytes != original {
         return Ok(current);
     }
@@ -250,10 +361,14 @@ fn persist_with(
     // preserving non-token CLI edits), after staging/fsync and immediately before
     // rename. This is best-effort: a CLI write during this final read + rename
     // window cannot be excluded by a portable filesystem conditional replacement.
-    let (bytes, current) = load(path)?;
+    let (bytes, current) = load(path, io)?;
     if bytes != original {
         return Ok(current);
     }
+    io.charge(WorkCounters {
+        backend_write_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
     file.persist(path)
         .map_err(|_| invalid("cannot replace Codex auth.json"))?;
     Ok(auth)

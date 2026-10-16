@@ -334,6 +334,7 @@ dependencies = [
  "acyclic-stream",
  "async-stream",
  "base64 0.22.1",
+ "blake3",
  "bytes",
  "futures",
  "keyring",

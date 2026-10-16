@@ -17,14 +17,14 @@ pub(crate) fn generate(
         if request.request_digest() != dispatch.request_digest {
             Err(invalid("model dispatch digest differs from prepared request"))?;
         }
-        let auth = authenticate(provider).await?;
+        let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let (response, input_bytes) = send(provider, &request, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
         #[cfg(not(target_arch = "wasm32"))]
         let (response, input_bytes) = if response.status == 401 {
             if let Some(login) = &provider.codex_login {
                 // No stream bytes have been read; a rejected credential did not start inference.
                 drop(response);
-                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref()).await?;
+                let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
                 send(provider, &request, dispatch, Some(&key), account.as_deref()).await?
             } else { (response, input_bytes) }
         } else { (response, input_bytes) };
@@ -43,10 +43,13 @@ pub(crate) fn generate(
 
 pub(crate) async fn authenticate(
     provider: &ResolvedModel,
+    #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
 ) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(login) = &provider.codex_login {
-        let (key, account) = login.bearer(provider.transport.as_ref(), None).await?;
+        let (key, account) = login
+            .bearer(provider.transport.as_ref(), None, custody)
+            .await?;
         return Ok((Some(Cow::Owned(key)), account));
     }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))

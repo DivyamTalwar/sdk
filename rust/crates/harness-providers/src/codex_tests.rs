@@ -58,7 +58,7 @@ fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, 
 async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
     let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
     let (root, login, transport) = fixture(&access, 200)?;
-    let (bearer, account) = login.bearer(&transport, None).await?;
+    let (bearer, account) = login.bearer(&transport, None, None).await?;
     assert_eq!(bearer, access);
     assert_eq!(account.as_deref(), Some("account"));
     assert!(
@@ -76,7 +76,7 @@ async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
 async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> Result<()> {
     let (root, login, transport) =
         fixture(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 299), 200)?;
-    let (access, account) = login.bearer(&transport, None).await?;
+    let (access, account) = login.bearer(&transport, None, None).await?;
     assert_eq!(access, transport.response["access_token"]);
     assert_eq!(account.as_deref(), Some("account"));
     let stored = crate::json(
@@ -107,8 +107,8 @@ async fn shared_login_serializes_refresh_and_reloads_the_winner() -> Result<()> 
     let second = first.fresh();
     assert!(crate::sync::Arc::ptr_eq(&first.refresh, &second.refresh));
     let (left, right) = futures::join!(
-        first.bearer(transport.as_ref(), None),
-        second.bearer(transport.as_ref(), None)
+        first.bearer(transport.as_ref(), None, None),
+        second.bearer(transport.as_ref(), None, None)
     );
     assert_eq!(left?, right?);
     assert_eq!(
@@ -130,7 +130,7 @@ async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Resu
     let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"access_token":"updated-access"});
-    let (updated, _) = login.bearer(&transport, Some(&access)).await?;
+    let (updated, _) = login.bearer(&transport, Some(&access), None).await?;
     assert_eq!(updated, "updated-access");
     let stored = crate::json(
         &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
@@ -145,7 +145,10 @@ async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Re
     let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"refresh_token":"rotated-refresh","id_token":"rotated-id"});
-    assert_eq!(login.bearer(&transport, Some(&access)).await?.0, access);
+    assert_eq!(
+        login.bearer(&transport, Some(&access), None).await?.0,
+        access
+    );
     let stored = crate::json(
         &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
     )?;
@@ -159,7 +162,7 @@ async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> 
     let (root, login, transport) = fixture(&jwt(0), 400)?;
     let before =
         std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
-    assert!(login.bearer(&transport, None).await.is_err());
+    assert!(login.bearer(&transport, None, None).await.is_err());
     assert_eq!(
         before,
         std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?
@@ -168,7 +171,7 @@ async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> 
     changed["tokens"]["account_id"] = json!("another-account");
     std::fs::write(root.path().join("auth.json"), changed.to_string())
         .map_err(|e| invalid(e.to_string()))?;
-    assert!(login.bearer(&transport, None).await.is_err());
+    assert!(login.bearer(&transport, None, None).await.is_err());
     Ok(())
 }
 
@@ -206,6 +209,13 @@ proptest! {
     #[test]
     fn jwt_refresh_boundary_matches_the_signed_expiry(expiry in any::<i64>()) {
         prop_assert_eq!(needs_refresh(&auth(&jwt(expiry)), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
+    }
+
+    #[test]
+    fn jwt_claims_ignore_unrelated_unicode_payloads_without_losing_expiry(expiry in any::<i64>(), text in ".{0,128}") {
+        let payload = json!({"exp":expiry,"extra":[{"text":text},[true,false,null]]});
+        let access = format!("header.{}.signature", URL_SAFE_NO_PAD.encode(payload.to_string()));
+        prop_assert_eq!(needs_refresh(&auth(&access), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
     }
 }
 

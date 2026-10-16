@@ -77,7 +77,7 @@ fn invalid(reason: &'static str) -> Error {
     }
 }
 
-fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
+pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
         let (code, message) = match error {
             Error::Invalid(message) => (ErrorCode::Invalid, message),
@@ -101,7 +101,7 @@ fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result
 
 // Count structural tokens without constructing a second JSON graph. Quoted
 // punctuation and escaped quotes are payload, not allocation-bearing nodes.
-fn shape(bytes: &[u8]) -> (u64, u64) {
+pub(crate) fn shape(bytes: &[u8]) -> (u64, u64) {
     let mut nodes = 1;
     let mut quoted = false;
     let mut escape = false;
@@ -122,7 +122,7 @@ fn shape(bytes: &[u8]) -> (u64, u64) {
 // Admission includes the temporary decoded graph, copies retained by the
 // protocol state, geometric buffer growth and SDK event slots. It precedes the
 // producer; only surviving capacity is transferred to the executor afterwards.
-fn reserve(
+pub(crate) fn reserve(
     work: &NativeMaterializationWork,
     bytes: u64,
     nodes: u64,
@@ -195,7 +195,8 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
-            let auth = dispatch::authenticate(provider).await?;
+            let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+            let auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
             work.remaining()?;
             let (response, input_bytes) = send(
                 provider,
@@ -210,7 +211,11 @@ pub(crate) fn generate<'a>(
                 if let Some(login) = &provider.codex_login {
                     drop(response);
                     let (key, account) = login
-                        .bearer(provider.transport.as_ref(), auth.0.as_deref())
+                        .bearer(
+                            provider.transport.as_ref(),
+                            auth.0.as_deref(),
+                            Some(&mut auth_custody),
+                        )
                         .await?;
                     work.remaining()?;
                     send(
@@ -229,6 +234,7 @@ pub(crate) fn generate<'a>(
                 (response, input_bytes)
             };
             drop(auth);
+            drop(auth_custody);
             if !(200..300).contains(&response.status) {
                 let mut allocation = work.claim(64, 1, WorkCounters::UNCHARGED)?;
                 return diagnostic(Err(crate::http_error(response.status)), &mut allocation);
