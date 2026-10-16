@@ -2,6 +2,8 @@
 
 mod accounting;
 mod adapter;
+mod alloy;
+mod alloy_spec;
 mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex;
@@ -9,6 +11,7 @@ mod codex;
 mod codex_count;
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_file;
+mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]
 mod refresh;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,6 +43,8 @@ mod tests;
 mod tool_names;
 
 pub use adapter::Adapter;
+pub use alloy::ResolvedAlloy;
+pub use alloy_spec::{AlloySelection, AlloySpec, AlloyTurn};
 pub use catalog::default_catalog;
 pub use counting::wire::{TokenCountField, TokenCounterSpec};
 pub use credentials::Credentials;
@@ -48,6 +53,7 @@ pub use http::BrowserTransport;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
+pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
