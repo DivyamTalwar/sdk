@@ -24,6 +24,7 @@ use std::{
     sync::Arc,
 };
 
+mod admission;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod compaction;
@@ -61,11 +62,20 @@ pub struct LocalHarness {
     context: ContextPipeline,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
+    goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
+    // Outermost lock: admission -> filesystem/provider locks. Never held during
+    // model/tool execution, and provider callbacks never acquire admission.
+    admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
 impl LocalHarness {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
+        self.runtime.task_host().workflow_stream()
+    }
+
     /// Opens durable local state and assembles the stock host before admitting work.
     pub fn open(config: LocalHarnessConfig) -> impl Future<Output = Result<Self>> {
         Box::pin(async move {
@@ -220,6 +230,8 @@ impl LocalHarness {
                 context: config.context,
                 limits: config.limits,
                 compaction,
+                goal_continuations: config.goal_continuations,
+                admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
             })
