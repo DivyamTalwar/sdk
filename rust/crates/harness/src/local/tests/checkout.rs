@@ -545,7 +545,9 @@ async fn bash_output_is_live_before_exit_and_replays_without_relaunch() -> Resul
         std::fs::read(directory.path().join("result")).map_err(super::super::storage)?,
         b"final"
     );
-    // Reopening models a host restart; release the existing checkout owner first.
+    // Reopening models a host restart. The follow also retains the LocalStream
+    // writer lock, so release it along with the command and checkout owners.
+    drop(observation);
     drop(commands);
     drop(harness);
     let reopened = LocalHarness::open(LocalHarnessConfig::new(
