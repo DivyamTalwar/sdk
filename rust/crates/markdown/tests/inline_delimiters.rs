@@ -43,6 +43,8 @@ impl Model {
                 opener: opener.range.end - take..opener.range.end,
                 closer: remaining.start..remaining.start + take,
                 byte: run.byte,
+                opener_cursor: 0,
+                closer_cursor: 0,
             });
             opener.range.end -= take;
             if !opener.range.is_empty() {
@@ -85,10 +87,10 @@ proptest! {
                 expected = model.clone();
             }
             let byte = [b'*', b'_', b'~'].get(usize::from(marker)).copied().expect("marker");
-            let run = Run { range: position..position + count, byte, open: flags & 1 != 0, close: flags & 2 != 0 };
+            let run = Run { range: position..position + count, byte, open: flags & 1 != 0, close: flags & 2 != 0, cursor: 0 };
             position += count + 1;
             let mut found = Vec::new();
-            actual.feed(run.clone(), |matched| found.push(matched));
+            actual.feed(run.clone(), |matched| { found.push(matched); (0, 0) });
             prop_assert_eq!(found, expected.feed(run));
             prop_assert_eq!(actual.first(), expected.0.first().map(|entry| entry.range.start));
             prop_assert_eq!(actual.neutral(), expected.0.is_empty());
@@ -120,6 +122,7 @@ proptest! {
                         matched.opener.end -= count;
                         matched.closer.start += count;
                     }
+                    (0, 0)
                 });
             }
         }
@@ -198,8 +201,9 @@ fn measure(count: usize, scan: bool) -> (usize, usize) {
                 byte: b'*',
                 open: true,
                 close: false,
+                cursor: 0,
             },
-            |_| {},
+            |_| (0, 0),
         );
         position += 3;
     }
@@ -210,8 +214,9 @@ fn measure(count: usize, scan: bool) -> (usize, usize) {
                 byte: b'*',
                 open: true,
                 close: true,
+                cursor: 0,
             },
-            |_| {},
+            |_| (0, 0),
         );
         position += 4;
     }

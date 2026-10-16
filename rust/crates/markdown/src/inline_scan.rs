@@ -1,6 +1,8 @@
 use super::*;
 #[path = "inline_delimiters.rs"]
 mod delimiters;
+#[path = "inline_forest.rs"]
+mod forest;
 #[path = "inline_tokens.rs"]
 mod tokens;
 use delimiters::{Delimiters, Run};
@@ -15,6 +17,8 @@ pub(super) struct Scanner {
 #[derive(Default)]
 struct State {
     delimiter: Delimiters,
+    forest: forest::Forest,
+    invalid: bool,
     bracket: Vec<usize>,
     labels: Vec<Range<usize>>,
     opaque: Option<usize>,
@@ -69,7 +73,6 @@ struct Syntax {
 impl Syntax {
     fn new(source: &str, events: &[(Event<'_>, Range<usize>)]) -> Self {
         let mut syntax = Self::default();
-        let mut depth = 0usize;
         let mut links = Vec::<(Range<usize>, usize)>::new();
         for (event, range) in events {
             #[cfg(test)]
@@ -121,19 +124,12 @@ impl Syntax {
                 }
             }
             match event {
-                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => {}
-                Event::Start(_) => {
-                    if depth == 0 {
-                        push_range(&mut syntax.outer, consumed);
-                    }
-                    depth += 1;
+                Event::Start(Tag::Link { .. } | Tag::Image { .. }) => {
+                    push_range(&mut syntax.outer, consumed);
                 }
-                Event::End(_) => depth = depth.saturating_sub(1),
                 Event::Code(_) | Event::InlineHtml(_) => {
                     push_range(&mut syntax.opaque, range.clone());
-                    if depth == 0 {
-                        push_range(&mut syntax.outer, range.clone());
-                    }
+                    push_range(&mut syntax.outer, range.clone());
                 }
                 _ => {}
             }
@@ -235,11 +231,12 @@ impl Scanner {
             work::scan(1);
             let start = token.range.start.max(base).saturating_sub(base) + sentinel;
             let end = token.range.end.saturating_sub(base) + sentinel;
+            let cursor = state.forest.text(start..end);
             if inside(&syntax.opaque, &mut opaque, start) {
                 state.labels.clear();
             } else {
                 let linked = inside(&syntax.links, &mut link, start);
-                literal(start..end, token.kind, &mut state, linked);
+                literal(start..end, token.kind, &mut state, linked, cursor);
             }
             if state.neutral()
                 && (self.tokens.neutral() || pending.is_some_and(|start| start >= end))
@@ -247,16 +244,32 @@ impl Scanner {
                 frontier = end;
             }
         }
+        if state.invalid {
+            return sentinel;
+        }
         let candidate = frontier.max(state.earliest(pending.unwrap_or(source.len())));
-        self.forbid_splits(syntax.outer, base, sentinel);
+        self.forbid_splits(syntax.outer, state.forest.scopes(), base, sentinel);
         self.checkpoint(base + candidate.saturating_sub(sentinel))
             .saturating_sub(base)
             + sentinel
     }
 
-    fn forbid_splits(&mut self, ranges: Vec<Range<usize>>, base: usize, sentinel: usize) {
+    fn forbid_splits(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+        scopes: Vec<Range<usize>>,
+        base: usize,
+        sentinel: usize,
+    ) {
         self.atomic.clear();
         let mut syntax = ranges
+            .into_iter()
+            .map(|range| {
+                base + range.start.saturating_sub(sentinel)
+                    ..base + range.end.saturating_sub(sentinel)
+            })
+            .peekable();
+        let mut scopes = scopes
             .into_iter()
             .map(|range| {
                 base + range.start.saturating_sub(sentinel)
@@ -271,14 +284,21 @@ impl Scanner {
             .map(|token| token.range.clone())
             .chain(self.tokens.preview().map(|token| token.range))
             .peekable();
-        while syntax.peek().is_some() || tokens.peek().is_some() {
-            let next = if tokens.peek().is_none()
-                || syntax
-                    .peek()
-                    .zip(tokens.peek())
-                    .is_some_and(|(left, right)| left.start <= right.start)
-            {
+        loop {
+            let first = syntax
+                .peek()
+                .into_iter()
+                .chain(scopes.peek())
+                .chain(tokens.peek())
+                .map(|range| range.start)
+                .min();
+            let Some(first) = first else {
+                break;
+            };
+            let next = if syntax.peek().is_some_and(|range| range.start == first) {
                 syntax.next()
+            } else if scopes.peek().is_some_and(|range| range.start == first) {
+                scopes.next()
             } else {
                 tokens.next()
             };
@@ -307,7 +327,7 @@ impl Scanner {
     }
 }
 
-fn literal(range: Range<usize>, kind: Kind, state: &mut State, linked: bool) {
+fn literal(range: Range<usize>, kind: Kind, state: &mut State, linked: bool, cursor: usize) {
     if !matches!(kind, Kind::Open { .. } | Kind::Close | Kind::ParenOpen) {
         state.labels.clear();
     }
@@ -344,9 +364,19 @@ fn literal(range: Range<usize>, kind: Kind, state: &mut State, linked: bool) {
             before,
             after,
         } if !linked => {
-            state
-                .delimiter
-                .feed(Run::new(range, byte, before, after), |_| {});
+            let mut run = Run::new(range, byte, before, after);
+            run.cursor = cursor;
+            state.delimiter.feed(run, |matched| {
+                let wrapped = state.forest.wrap(matched);
+                debug_assert!(
+                    wrapped.is_some(),
+                    "delimiter cursors must belong to the active forest"
+                );
+                if wrapped.is_none() {
+                    state.invalid = true;
+                }
+                wrapped.unwrap_or_default()
+            });
         }
         _ => {}
     }

@@ -16,6 +16,7 @@ pub(super) struct Run {
     pub(super) byte: u8,
     pub(super) open: bool,
     pub(super) close: bool,
+    pub(super) cursor: usize,
 }
 
 impl Run {
@@ -36,6 +37,7 @@ impl Run {
             byte,
             open,
             close,
+            cursor: 0,
         }
     }
 }
@@ -45,6 +47,8 @@ pub(super) struct Matched {
     pub(super) opener: Range<usize>,
     pub(super) closer: Range<usize>,
     pub(super) byte: u8,
+    pub(super) opener_cursor: usize,
+    pub(super) closer_cursor: usize,
 }
 
 #[derive(Clone)]
@@ -55,6 +59,7 @@ struct Entry {
     original: usize,
     first: usize,
     both: bool,
+    cursor: usize,
     #[cfg(test)]
     byte: u8,
 }
@@ -101,7 +106,7 @@ impl Delimiters {
         id.checked_sub(1).and_then(|index| self.entries.get(index))
     }
 
-    fn push(&mut self, range: Range<usize>, original: usize, byte: u8, both: bool) {
+    fn push(&mut self, range: Range<usize>, original: usize, byte: u8, both: bool, cursor: usize) {
         let class = group(byte);
         let head = self.heads.heads.get(class).copied().unwrap_or_default();
         let mut candidates = self.entry(head).map_or([0; 4], |entry| entry.candidates);
@@ -134,6 +139,7 @@ impl Delimiters {
             original,
             first,
             both,
+            cursor,
             #[cfg(test)]
             byte,
         });
@@ -184,13 +190,14 @@ impl Delimiters {
         (latest != 0).then_some(latest)
     }
 
-    pub(super) fn feed(&mut self, run: Run, mut matched: impl FnMut(Matched)) {
+    pub(super) fn feed(&mut self, run: Run, mut matched: impl FnMut(Matched) -> (usize, usize)) {
         let original = run.range.len();
         if original == 0 || run.byte == b'~' && original > 2 {
             return;
         }
         let both = run.open && run.close;
         let mut remaining = run.range;
+        let mut cursor = run.cursor;
         while run.close && !remaining.is_empty() {
             let Some(id) = self.candidate(run.byte, original, both) else {
                 // The pinned parser shares this floor across both tilde lengths.
@@ -202,11 +209,12 @@ impl Delimiters {
             let Some(entry) = self.entry(id) else {
                 break;
             };
-            let (before, opener, opener_length, opener_both) = (
+            let (before, opener, opener_length, opener_both, opener_cursor) = (
                 entry.before,
                 entry.range.clone(),
                 entry.original,
                 entry.both,
+                entry.cursor,
             );
             let count = opener.len().min(remaining.len());
             let open = opener.end - count..opener.end;
@@ -214,23 +222,28 @@ impl Delimiters {
             let floor = self.heads.tilde_floor.min(before.depth);
             self.restore(before);
             self.heads.tilde_floor = floor;
-            if opener.start < open.start {
-                self.push(
-                    opener.start..open.start,
-                    opener_length,
-                    run.byte,
-                    opener_both,
-                );
-            }
             remaining.start += count;
-            matched(Matched {
+            let opener_end = open.start;
+            let (left, right) = matched(Matched {
                 opener: open,
                 closer: close,
                 byte: run.byte,
+                opener_cursor,
+                closer_cursor: cursor,
             });
+            if opener.start < opener_end {
+                self.push(
+                    opener.start..opener_end,
+                    opener_length,
+                    run.byte,
+                    opener_both,
+                    left,
+                );
+            }
+            cursor = right;
         }
         if run.open && !remaining.is_empty() {
-            self.push(remaining, original, run.byte, both);
+            self.push(remaining, original, run.byte, both, cursor);
         }
     }
 
