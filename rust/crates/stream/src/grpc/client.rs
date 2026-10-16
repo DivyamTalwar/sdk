@@ -1,6 +1,21 @@
 use super::*;
 
 impl Client {
+    async fn session(&self) -> Result<&crate::session::Client, StreamError> {
+        // Include callers waiting behind another initializer in the deadline.
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            self.sessions.get_or_try_init(|| {
+                crate::session::Client::open(
+                    self.channel.clone(),
+                    self.authorization.clone(),
+                    self.session_ca.clone(),
+                )
+            }),
+        )
+        .await
+        .map_err(|_| StreamError::Unavailable)?
+    }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
     pub fn without_delivery_acknowledgements(mut self) -> Self {
@@ -24,24 +39,6 @@ impl Client {
         .map_err(|_| StreamError::Unavailable)?
         .map_err(|error| status(&error))?;
         Ok(())
-    }
-
-    async fn open_children(
-        &self,
-        body: wire::ChildrenRequest,
-    ) -> Result<
-        (
-            futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>,
-            Completion,
-        ),
-        StreamError,
-    > {
-        let (response, completion) = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.children(request).await })
-            })
-            .await?;
-        Ok((completion.span.scope(response).boxed(), completion))
     }
 
     fn records(&self, path: StreamPath, from: u64, limit: Option<u32>) -> RecordStream {
@@ -172,67 +169,14 @@ impl StreamProvider for Client {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        Ok(self.records(path, from, None))
+        self.session()
+            .await?
+            .follow_with_ack(path, from, self.acknowledge_deliveries)
+            .await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let body = wire::ChildrenRequest {
-            parent: request.parent.map(|path| path.to_string()),
-            limit: request.limit,
-        };
-        let active = Some(self.open_children(body.clone()).await?);
-        Ok(stream::try_unfold(
-            (
-                self.clone(),
-                body,
-                active,
-                std::collections::BTreeSet::new(),
-            ),
-            |(client, body, mut active, mut seen)| async move {
-                loop {
-                    if active.is_none() {
-                        // Retry a closed transport; idle live subscriptions never poll.
-                        tokio::time::sleep(RETRY_DELAY).await;
-                        active = Some(client.open_children(body.clone()).await?);
-                    }
-                    let (response, completion) = active.as_mut().ok_or(StreamError::Unavailable)?;
-                    match response.next().await {
-                        Some(Ok(item)) => {
-                            let child = item
-                                .child
-                                .ok_or(StreamError::Unavailable)
-                                .and_then(|child| {
-                                    Ok(Child {
-                                        path: path(child.path)?,
-                                    })
-                                })
-                                .inspect_err(|_| completion.invalid_response())?;
-                            if child.path.parent().as_ref().map(StreamPath::as_str)
-                                != body.parent.as_deref()
-                            {
-                                completion.invalid_response();
-                                return Err(StreamError::Unavailable);
-                            }
-                            if seen.insert(child.path.clone()) {
-                                return Ok(Some((child, (client, body, active, seen))));
-                            }
-                        }
-                        Some(Err(error)) => {
-                            completion.status(&error);
-                            if !retryable(&error) {
-                                return Err(status(&error));
-                            }
-                            active = None;
-                        }
-                        None => {
-                            completion.ok();
-                            active = None;
-                        }
-                    }
-                }
-            },
-        )
-        .boxed())
+        self.session().await?.children(request).await
     }
 
     async fn children_page(
@@ -322,7 +266,7 @@ fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
     )
 }
 
-/// One logical read or follow; follow reopens after transport loss or a clean EOF.
+/// A finite read cursor resumes after retryable transport loss.
 struct RecordCursor {
     client: Client,
     path: StreamPath,
@@ -424,28 +368,18 @@ impl RecordCursor {
         StreamError,
     > {
         let path = self.path.to_string();
-        let (body, completion) = if let Some(limit) = self.remaining {
-            let body = wire::ReadRequest {
-                path,
-                from: self.next,
-                limit,
-            };
-            self.client
-                .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                    Box::pin(async move { service.read(request).await })
-                })
-                .await?
-        } else {
-            let body = wire::FollowRequest {
-                path,
-                from: self.next,
-            };
-            self.client
-                .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
-                    Box::pin(async move { service.follow(request).await })
-                })
-                .await?
+        let limit = self.remaining.ok_or(StreamError::InvalidArgument)?;
+        let body = wire::ReadRequest {
+            path,
+            from: self.next,
+            limit,
         };
+        let (body, completion) = self
+            .client
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.read(request).await })
+            })
+            .await?;
         Ok((completion.span.scope(body), completion))
     }
 }
