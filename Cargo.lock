@@ -325,6 +325,7 @@ dependencies = [
  "loom",
  "proptest",
  "prost",
+ "pulldown-cmark",
  "prost-build",
  "prost-reflect",
  "protoc-bin-vendored",
