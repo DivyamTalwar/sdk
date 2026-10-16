@@ -52,13 +52,15 @@ pub async fn run(
     client.replay().await?;
     renderer.update(client.session().views(), &authority);
     loop {
+        input.busy = renderer.is_busy();
         input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         terminal.draw(|frame| {
-            areas = renderer
-                .screen()
-                .render(frame, &input, &mut viewport, 0, now);
+            let screen = renderer.screen();
+            // TODO(#495): load the user's scroll override from the followed layout file.
+            let scroll = screen.tail_scroll(frame.area(), &input);
+            areas = screen.render(frame, &input, &mut viewport, scroll, now);
         })?;
         let Some(event) = client::next_tui_event(&mut client, &mut events).await? else {
             renderer.update(client.session().views(), &authority);

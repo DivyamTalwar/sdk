@@ -34,6 +34,7 @@ impl StreamText {
 #[derive(Default)]
 pub struct ClientRenderer {
     key: String,
+    busy: bool,
     seen: usize,
     stable: usize,
     turn: Option<crate::OperationId>,
@@ -129,9 +130,9 @@ impl ClientRenderer {
             self.plans.clear();
         }
         let task = views.tasks.get(&key);
-        let busy = task.is_some_and(|task| task.status == crate::core::LifecycleState::Active);
+        self.busy = task.is_some_and(|task| task.status == crate::core::LifecycleState::Active);
         self.header = Line::from(vec![
-            Span::raw(if busy { "● " } else { "○ " }),
+            Span::raw(if self.busy { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
         ]);
         self.status = Line::raw(format!(
@@ -145,6 +146,11 @@ impl ClientRenderer {
             .and_then(|task| task.reason.as_deref())
             .map(|text| vec![Line::raw(text.to_owned())])
             .unwrap_or_default();
+    }
+
+    /// Current followed lifecycle, used by the shared prompt's queue indicator.
+    pub fn is_busy(&self) -> bool {
+        self.busy
     }
 
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.

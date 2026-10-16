@@ -60,6 +60,13 @@ fn take_top(area: &mut Rect, height: u16) -> Rect {
 }
 
 impl Screen<'_> {
+    /// Default follow-tail position; a followed layout file may override it.
+    pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
+        self.transcript
+            .len()
+            .saturating_sub(usize::from(self.areas(area, input).transcript.height))
+    }
+
     /// Compute one layout for both painting and input routing. Prompt growth is
     /// bounded by half the screen; optional panels yield space at small sizes.
     pub fn areas(&self, area: Rect, input: &PromptInput) -> ScreenAreas {
@@ -154,7 +161,7 @@ impl Screen<'_> {
         frame: &mut Frame<'_>,
         input: &PromptInput,
         viewport: &mut Viewport,
-        transcript_scroll: u16,
+        transcript_scroll: usize,
         now_ms: u64,
     ) -> ScreenAreas {
         let areas = self.areas(frame.area(), input);
@@ -197,10 +204,10 @@ impl Screen<'_> {
         areas
     }
 }
-fn rows(frame: &mut Frame<'_>, lines: &[Line<'_>], area: Rect, scroll: u16) {
+fn rows(frame: &mut Frame<'_>, lines: &[Line<'_>], area: Rect, scroll: usize) {
     for (row, line) in lines
         .iter()
-        .skip(usize::from(scroll))
+        .skip(scroll)
         .take(usize::from(area.height))
         .enumerate()
     {

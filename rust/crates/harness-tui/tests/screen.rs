@@ -94,10 +94,12 @@ proptest! {
     #[test]
     fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100) {
         let rows = vec![Line::from("row"); count];
-        let screen = Screen { terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, completions: &rows, ..Screen::default() };
+        let screen = Screen { transcript: &rows, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, completions: &rows, ..Screen::default() };
         let input = PromptInput::new(Editor::new(&"line\n".repeat(count)));
         let outer = Rect::new(x, y, width, height);
         let areas = screen.areas(outer, &input);
+        let scroll = screen.tail_scroll(outer, &input);
+        prop_assert_eq!(scroll, count.saturating_sub(usize::from(areas.transcript.height)));
         let primary = [areas.header, areas.transcript, areas.side, areas.terminal, areas.notifications, areas.prompt, areas.status];
         for area in primary.into_iter().chain([areas.completions]) {
             prop_assert!(area.x >= outer.x && area.y >= outer.y);

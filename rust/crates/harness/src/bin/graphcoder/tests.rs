@@ -170,6 +170,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
     );
     let mut renderer = ClientRenderer::default();
     renderer.update(&views, &owner);
+    assert!(renderer.is_busy());
     let visible = picture(&renderer);
     for text in [
         "Finish rewrite",
@@ -215,4 +216,33 @@ fn tool_output_deltas_repaint_without_a_new_committed_message() {
     let visible = picture(&renderer);
     assert!(visible.contains("first chunk second chunk"));
     assert!(!visible.contains("Parts {"));
+}
+
+#[test]
+fn follow_tail_keeps_new_output_visible_after_the_screen_fills() {
+    use acyclic_harness::tui::{Screen, ratatui::text::Line};
+    let rows: Vec<_> = (0..100)
+        .map(|n| Line::from(format!("message {n}")))
+        .collect();
+    let screen = Screen {
+        transcript: &rows,
+        ..Screen::default()
+    };
+    let input = PromptInput::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            let scroll = screen.tail_scroll(frame.area(), &input);
+            screen.render(frame, &input, &mut Viewport::default(), scroll, 0);
+        })
+        .unwrap();
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(visible.contains("message 99"));
+    assert!(!visible.contains("message 0"));
 }
