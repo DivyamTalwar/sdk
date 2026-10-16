@@ -46,7 +46,7 @@ impl Table {
                         if index > 0 {
                             cell.push(" ↵ ", self.style, None);
                         }
-                        cell.spans.extend(line.spans);
+                        cell.spans.append_shared(line.spans);
                     }
                     row.push(cell);
                 }
@@ -91,17 +91,7 @@ impl Table {
             .iter()
             .enumerate()
             .skip(start)
-            .map(|(index, cells)| {
-                #[cfg(test)]
-                crate::work::copy(
-                    cells
-                        .iter()
-                        .flat_map(|cell| &cell.spans)
-                        .map(|_| std::mem::size_of::<crate::Span>())
-                        .sum(),
-                );
-                row(cells.clone(), index == 0, widths, &self.alignments)
-            })
+            .map(|(index, cells)| row(cells.clone(), index == 0, widths, &self.alignments))
             .collect()
     }
 
@@ -120,7 +110,10 @@ impl Table {
 }
 
 pub(super) fn width(line: &Line) -> usize {
-    if let [span] = line.spans.as_slice() {
+    let mut spans = line.spans.iter();
+    if let Some(span) = spans.next()
+        && spans.next().is_none()
+    {
         #[cfg(test)]
         crate::work::scan(span.text.len());
         UnicodeWidthStr::width(span.text.as_str().as_ref())
@@ -198,7 +191,8 @@ fn trim(mut cell: Line, size: usize) -> Line {
         remaining = offset + cluster.len();
     }
     let mut keep = 0;
-    for (index, span) in cell.spans.iter_mut().enumerate() {
+    let mut spans = cell.spans.to_vec();
+    for (index, span) in spans.iter_mut().enumerate() {
         let end = remaining.min(span.text.len());
         remaining -= end;
         let complete = end == span.text.len();
@@ -208,7 +202,8 @@ fn trim(mut cell: Line, size: usize) -> Line {
             break;
         }
     }
-    cell.spans.truncate(keep);
+    spans.truncate(keep);
+    cell.spans = spans.into();
     cell.push("…", Style::default(), None);
     cell
 }

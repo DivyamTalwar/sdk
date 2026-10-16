@@ -277,6 +277,7 @@ impl Stream {
         &self,
         targets: &mut HashSet<*const u8>,
         texts: &mut HashSet<usize>,
+        nodes: &mut HashSet<usize>,
     ) -> (usize, usize) {
         let mut payload = self.header.capacity();
         let mut metadata = (self.widths.capacity() + self.displayed.capacity())
@@ -286,17 +287,9 @@ impl Stream {
         for row in &self.table.rows {
             metadata += row.capacity() * std::mem::size_of::<Line>();
             for cell in row {
-                metadata += cell.spans.capacity() * std::mem::size_of::<Span>();
-                for span in &cell.spans {
-                    let (bytes, nodes) = span.text.retained(texts);
-                    payload += bytes;
-                    metadata += nodes;
-                    if let Some(target) = &span.link
-                        && targets.insert(std::sync::Arc::as_ptr(target).cast::<u8>())
-                    {
-                        payload += target.len();
-                    }
-                }
+                let (bytes, size) = cell.spans.retained(nodes, texts, targets);
+                payload += bytes;
+                metadata += size;
             }
         }
         (payload, metadata)

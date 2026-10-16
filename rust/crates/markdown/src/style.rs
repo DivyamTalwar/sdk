@@ -38,7 +38,7 @@ pub struct Span {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
     /// Ordered styled runs.
-    pub spans: Vec<Span>,
+    pub spans: crate::Spans,
 }
 
 impl Line {
@@ -56,16 +56,19 @@ impl Line {
         {
             last.text.push_str(text);
         } else {
-            self.push_new(text, style, link);
+            self.spans.push_content(
+                Span {
+                    text: text.into(),
+                    style,
+                    link: link.cloned(),
+                },
+                false,
+            );
         }
     }
 
     pub(crate) fn push_new(&mut self, text: &str, style: Style, link: Option<&Arc<str>>) {
         if !text.is_empty() {
-            #[cfg(test)]
-            if self.spans.len() == self.spans.capacity() {
-                crate::work::copy(self.spans.len() * std::mem::size_of::<Span>());
-            }
             self.spans.push(Span {
                 text: text.into(),
                 style,

@@ -1,11 +1,10 @@
 use super::*;
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct Mark {
     line: usize,
     visible: usize,
-    spans: usize,
-    bytes: usize,
+    spans: Spans,
 }
 
 #[derive(Default)]
@@ -25,11 +24,17 @@ pub(super) struct Inline {
 
 impl Inline {
     #[cfg(test)]
-    pub(super) fn retained(&self) -> usize {
-        self.scanner.retained()
+    pub(super) fn retained(
+        &self,
+        nodes: &mut HashSet<usize>,
+        texts: &mut HashSet<usize>,
+        links: &mut HashSet<*const u8>,
+    ) -> (usize, usize) {
+        let (payload, metadata) = self.checkpoint.mark.spans.retained(nodes, texts, links);
+        (payload, metadata + self.scanner.retained())
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
-        let mark = self.checkpoint.mark;
+        let mark = &self.checkpoint.mark;
         (
             stable + mark.line,
             if mark.visible == 0 {
@@ -47,7 +52,7 @@ impl Markdown {
         let checkpoint = &inline.checkpoint;
         let cost = checkpoint.cost;
         let base = checkpoint.offset;
-        let mark = checkpoint.mark;
+        let mark = &checkpoint.mark;
         let tail = self.source.get(base..).unwrap_or_default();
         let context = if base == inline.start {
             String::new()
@@ -101,18 +106,12 @@ impl Markdown {
             calls.iter().filter(|(end, _)| *end <= boundary),
         );
         let first = self.stable_lines + mark.line;
-        let mut line = self
-            .lines
-            .get_mut(first)
-            .map(std::mem::take)
-            .unwrap_or_default();
         self.lines.truncate(first);
-        line.spans.truncate(mark.spans);
-        if let Some(span) = line.spans.last_mut() {
-            span.text.truncate(mark.bytes);
-        }
+        let line = Line {
+            spans: mark.spans.clone(),
+        };
         let mut renderer = render::Renderer::inline(line);
-        let mut committed = mark;
+        let mut committed = None;
         let mut depth = 0usize;
         for (event, range) in &events {
             if range.end <= sentinel {
@@ -128,7 +127,7 @@ impl Markdown {
                             &Event::Text(text.get(start..cut).unwrap_or_default().into()),
                             Some(&self.references),
                         );
-                        committed = renderer.inline_mark(mark);
+                        committed = Some(renderer.inline_mark(mark));
                         renderer.event_in(
                             &Event::Text(text.get(cut..).unwrap_or_default().into()),
                             Some(&self.references),
@@ -152,7 +151,7 @@ impl Markdown {
                 _ => {}
             }
             if depth == 0 && range.end == boundary {
-                committed = renderer.inline_mark(mark);
+                committed = Some(renderer.inline_mark(mark));
             }
         }
         #[cfg(test)]
@@ -172,7 +171,7 @@ impl Markdown {
         self.inline = Some(Inline {
             checkpoint: Checkpoint {
                 offset: base + boundary.saturating_sub(sentinel),
-                mark: committed,
+                mark: committed.unwrap_or_else(|| mark.clone()),
                 cost,
                 valid,
             },
@@ -363,7 +362,8 @@ fn boundary(
 }
 
 impl render::Renderer {
-    fn inline_mark(&self, base: Mark) -> Mark {
+    fn inline_mark(&mut self, base: &Mark) -> Mark {
+        self.inline_line_mut().spans.freeze();
         let line = self.inline_line();
         let position = base.line + self.lines.len();
         let visible = if line.spans.is_empty() {
@@ -381,8 +381,7 @@ impl render::Renderer {
         Mark {
             line: position,
             visible,
-            spans: line.spans.len(),
-            bytes: line.spans.last().map_or(0, |span| span.text.len()),
+            spans: line.spans.clone(),
         }
     }
 }

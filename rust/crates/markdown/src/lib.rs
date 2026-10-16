@@ -9,6 +9,7 @@ mod inline_scan;
 mod reference_render;
 mod references;
 mod render;
+mod spans;
 mod stream_code;
 mod stream_table;
 mod style;
@@ -21,6 +22,7 @@ mod work;
 use context::{container, context_event, context_prefix};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use references::{Key, References, Template, normalize};
+pub use spans::{SpanRef, Spans, TextRef};
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,

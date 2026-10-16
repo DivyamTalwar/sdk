@@ -74,14 +74,15 @@ impl Renderer {
     }
     pub(super) fn reuse_line(&mut self, mut line: Line) {
         line.spans.clear();
-        #[cfg(test)]
-        crate::work::copy(self.line.spans.len() * std::mem::size_of::<crate::Span>());
-        line.spans.append(&mut self.line.spans);
+        line.spans = std::mem::take(&mut self.line.spans);
         self.line = line;
     }
 
     pub(super) fn inline_line(&self) -> &Line {
         &self.line
+    }
+    pub(super) fn inline_line_mut(&mut self) -> &mut Line {
+        &mut self.line
     }
     pub(super) fn into_inline(self) -> Line {
         self.line
@@ -90,8 +91,7 @@ impl Renderer {
     pub(crate) fn checkpoint(&self) -> Self {
         #[cfg(test)]
         crate::work::copy(
-            self.line.spans.len() * std::mem::size_of::<crate::Span>()
-                + self.styles.len() * std::mem::size_of::<(Style, Option<Arc<str>>)>()
+            self.styles.len() * std::mem::size_of::<(Style, Option<Arc<str>>)>()
                 + self.lists.len() * std::mem::size_of::<Option<u64>>()
                 + self.prefixes.len() * std::mem::size_of::<String>()
                 + self.prefixes.iter().map(String::len).sum::<usize>(),
@@ -112,16 +112,15 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn text_retained(
         &self,
-        seen: &mut std::collections::HashSet<usize>,
+        nodes: &mut std::collections::HashSet<usize>,
+        texts: &mut std::collections::HashSet<usize>,
+        links: &mut std::collections::HashSet<*const u8>,
     ) -> (usize, usize) {
         let (mut payload, mut metadata) = (0, self.lines.capacity() * std::mem::size_of::<Line>());
         for line in std::iter::once(&self.line).chain(&self.lines) {
-            metadata += line.spans.capacity() * std::mem::size_of::<crate::Span>();
-            for span in &line.spans {
-                let (bytes, nodes) = span.text.retained(seen);
-                payload += bytes;
-                metadata += nodes;
-            }
+            let (bytes, size) = line.spans.retained(nodes, texts, links);
+            payload += bytes;
+            metadata += size;
         }
         (payload, metadata)
     }
@@ -160,7 +159,7 @@ impl Renderer {
 
     pub(crate) fn block_line(&mut self, line: Line) {
         let mut prefixed = Line::plain(&self.prefix(), MUTED);
-        prefixed.spans.extend(line.spans);
+        prefixed.spans.append_shared(line.spans);
         self.lines.push(prefixed);
     }
 

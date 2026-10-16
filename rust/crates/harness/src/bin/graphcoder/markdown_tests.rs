@@ -20,7 +20,8 @@ fn adapter_maps_all_attributes_and_borrows_text() {
                 strikethrough: true,
             },
             link: Some("https://example.com".into()),
-        }],
+        }]
+        .into(),
     }];
     let converted: Vec<_> = lines(&source).collect();
     let span = converted.first().and_then(|line| line.spans.first());
@@ -53,7 +54,8 @@ fn shared_chunks_preserve_grapheme_display_width() {
             spans: vec![MarkdownSpan {
                 text,
                 ..MarkdownSpan::default()
-            }],
+            }]
+            .into(),
         }];
         let converted: Vec<_> = lines(&source).collect();
         let line = converted.first().expect("one line");
@@ -64,6 +66,34 @@ fn shared_chunks_preserve_grapheme_display_width() {
             Some(format!("{prefix}{suffix}").as_str())
         );
         assert_eq!(snapshot.as_str(), prefix);
+    }
+}
+
+#[test]
+fn shared_enclosing_styles_preserve_grapheme_display_width() {
+    for (prefix, suffix, width) in [
+        ("❤", "\u{fe0f}xx", 4),
+        ("👩", "\u{200d}💻xx", 4),
+        ("e", "\u{301}xx", 3),
+        ("👨", "\u{200d}👩\u{200d}👧\u{200d}👦xx", 4),
+    ] {
+        let mut markdown = Markdown::default();
+        markdown.push(&format!("{prefix}**{suffix}**"));
+        let original = markdown.lines().first().expect("one line");
+        let source = [Line {
+            spans: original.spans.clone().styled(Style {
+                bold: true,
+                ..Style::default()
+            }),
+        }];
+        let converted: Vec<_> = lines(&source).collect();
+        let line = converted.first().expect("one line");
+        assert_eq!(line.width(), width);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(
+            line.spans.first().map(|span| span.content.as_ref()),
+            Some(format!("{prefix}{suffix}").as_str())
+        );
     }
 }
 
