@@ -373,3 +373,39 @@ fn captured_diff_model_renders_text_binary_and_empty_file_changes() {
         assert!(visible.contains(expected), "missing {expected}: {visible}");
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Property: arbitrary agent tracking/snapshot order isolates each diff cut;
+    // a snapshot for an untracked agent leaves all projections unchanged.
+    #[test]
+    fn diff_snapshot_cuts_stay_with_their_tracked_agent(actions in proptest::collection::vec((0u8..4, proptest::bool::ANY, proptest::num::u8::ANY), 0..12)) {
+        use acyclic_harness::{AgentId, client::{ClientSession, MemoryClientState, DiffView}, conversation::{VolumeRef, VolumeClass, VolumeOwner}, resources::{ProviderRef, GenerationRef}};
+        let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None).unwrap();
+        let volume = VolumeRef::new(provider.clone(), "project".into(), VolumeClass::SessionShared, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
+        let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
+        let mut tracked = std::collections::BTreeSet::new();
+        let mut expected = std::collections::BTreeMap::new();
+        for (agent, track, generation) in actions {
+            let authority = wire::Authority { kind: wire::AggregateKind::Task as i32, id: agent.to_string() };
+            if track {
+                session.track(wire::ReplayCursor { authority: Some(authority.clone()), generation: "history".into(), revision: 0 }).unwrap();
+                tracked.insert(agent);
+            } else {
+                let cut = GenerationRef::new(&provider, &[generation], Some("1"), None).unwrap().0;
+                let view = DiffView::new(volume.clone(), cut).unwrap();
+                let before = session.views().clone();
+                let result = session.replace_diff(&authority, view);
+                if tracked.contains(&agent) {
+                    proptest::prop_assert!(result.is_ok());
+                    expected.insert(format!("{}:{agent}", wire::AggregateKind::Task.as_str_name()), generation);
+                } else {
+                    proptest::prop_assert!(result.is_err());
+                    proptest::prop_assert_eq!(session.views(), &before);
+                }
+            }
+            let actual: std::collections::BTreeMap<_,_> = session.views().diffs.iter().map(|(key, view)| (key.clone(), view.generation().as_resource().key()[0])).collect();
+            proptest::prop_assert_eq!(&actual, &expected);
+        }
+    }
+}
