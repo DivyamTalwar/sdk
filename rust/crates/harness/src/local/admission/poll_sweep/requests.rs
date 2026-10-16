@@ -47,7 +47,33 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
         let request = journal.staged_ref_with_io(operation, &key, None).await?;
         let bytes = journal.load(&request, None)?.await?;
         let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
-        check_prompt(prepared.request())?;
+        if matches!(fixture.scenario, Scenario::Compaction) {
+            use crate::conversation::ContentResidencyVerifier;
+            let prompt = prepared
+                .request()
+                .messages
+                .iter()
+                .filter(|message| message.role == ModelRole::User)
+                .flat_map(|message| message.content.file_refs())
+                .find(|file| file.path() == "history/2.txt")
+                .ok_or_else(|| Error::Invalid("root request lost canonical prompt".into()))?;
+            let reader = crate::filesystem::FilesystemContentVerifier::new(
+                harness.files.clone(),
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?;
+            assert_eq!(
+                reader
+                    .read(prompt, harness.limits.file_bytes, None)?
+                    .await?
+                    .as_ref(),
+                PROMPT.as_bytes()
+            );
+        } else {
+            check_prompt(prepared.request())?;
+        }
         assert_eq!(
             prepared.request_digest(),
             dispatch.request_digest,

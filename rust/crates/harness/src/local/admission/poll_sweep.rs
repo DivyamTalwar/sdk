@@ -1,8 +1,7 @@
 //! Replay the real run state machine over in-process filesystem/stream providers.
 use super::*;
 use crate::{
-    context::{CompactionPolicy, Context, ContextPlacement, SourceStage, ThresholdCompaction},
-    model::{ModelMessage, ModelRole},
+    context::{CompactionPolicy, ThresholdCompaction},
     resources::ProviderRef,
     test_support::ScriptedTurn,
     tool::{JsonToolProjection, ToolDefinition},
@@ -21,6 +20,7 @@ mod invariants;
 mod read_contention;
 mod requests;
 mod seed;
+mod selected_history;
 use seed::Seed;
 
 type Harness = LocalHarness;
@@ -50,6 +50,7 @@ struct Fixture {
     provider: Arc<ModelEffects>,
     effect: Arc<Effect>,
     scenario: Scenario,
+    history: RefCell<Option<crate::projection::SelectedModelContext>>,
 }
 
 impl Fixture {
@@ -130,6 +131,7 @@ impl Fixture {
                 calls: Default::default(),
             }),
             scenario,
+            history: RefCell::new(None),
         })
     }
 
@@ -175,7 +177,7 @@ impl Fixture {
                 None,
             )?;
         }
-        let (runtime, signed) = runtime::open(runtime::Configuration {
+        let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
             files: files.clone(),
             #[cfg(feature = "native-execution")]
             workspace: None,
@@ -206,39 +208,22 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
-        let task_files = Arc::new(
-            crate::task_volume::TaskFiles::open(
-                stream.clone(),
-                &self.volumes[3],
-                &verifier,
-                &signed,
-                Limits::default().file_bytes,
-            )
-            .await?,
-        );
         let compact = matches!(self.scenario, Scenario::Compaction);
-        let context = if compact {
-            ContextPipeline::new([Arc::new(SourceStage::new(
-                "history",
-                "1",
-                Arc::new(Context {
-                    messages: vec![
-                        ModelMessage {
-                            role: ModelRole::User,
-                            content: ModelContent::Text("old-user".into()),
-                        },
-                        ModelMessage {
-                            role: ModelRole::Assistant,
-                            content: ModelContent::Text("old-assistant".into()),
-                        },
-                    ],
-                    ..Default::default()
-                }),
-                ContextPlacement::Prepend,
-            )) as Arc<dyn crate::context::ContextStage>])
-        } else {
-            ContextPipeline::default()
-        };
+        let publisher = FilesystemContentPublisher::new(
+            files.clone(),
+            &self.volumes[2],
+            &verifier,
+            &signed,
+            Limits::default().file_bytes,
+            None,
+        )?;
+        let context_manifest = crate::local::turn::default_manifest(
+            publisher.as_ref(),
+            &tools,
+            Limits::default(),
+            None,
+        )
+        .await?;
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -255,7 +240,7 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context,
+            context_manifest,
             limits: Limits::default(),
             compaction: if compact {
                 CompactionPolicy::Threshold(ThresholdCompaction {
@@ -280,6 +265,10 @@ impl Fixture {
     }
 
     async fn initialize(&self, harness: &Harness) -> Result<()> {
+        if matches!(self.scenario, Scenario::Compaction) {
+            self.history
+                .replace(Some(selected_history::initialize(harness).await?));
+        }
         if matches!(self.scenario, Scenario::EffectAndContinuation) {
             FilesystemContentPublisher::new(
                 harness.files.clone(),
@@ -300,6 +289,14 @@ impl Fixture {
             .await?;
         }
         Ok(())
+    }
+
+    async fn run(&self, harness: &Harness) -> Result<crate::executor::TurnOutput> {
+        let history = self.history.borrow().clone();
+        match history {
+            Some(history) => selected_history::run(harness, history).await,
+            None => harness.run(PROMPT).await,
+        }
     }
 
     fn assert_effects(&self) {
@@ -343,7 +340,7 @@ async fn case(
         let schedule = &fixture.schedule;
         schedule.start();
         let (exit, hit) = drive(
-            harness.run(PROMPT),
+            fixture.run(&harness),
             cut,
             schedule,
             &mut fixture.events.borrow_mut(),
@@ -405,7 +402,7 @@ async fn case(
             let root = crate::runtime::task_id_for_admission(current.root);
             (root, reopened.resume(root).await?)
         } else {
-            let output = reopened.run(PROMPT).await?;
+            let output = fixture.run(&reopened).await?;
             (
                 crate::runtime::task_id_for_admission(
                     reopened.current_turn().await?.0.unwrap().root,

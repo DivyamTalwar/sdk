@@ -47,20 +47,32 @@ impl ModelEffects {
                     output_tokens: 64,
                 })
                 .with_token_counter(|request| {
-                    Ok(ModelTokenCount {
-                        request_digest: request.request_digest(),
-                        fixed_tokens: 10,
-                        message_tokens: request
+                    Ok(ModelTokenCount::from_upper_bounds(
+                        request.request_digest(),
+                        10,
+                        request
                             .request()
                             .messages
                             .iter()
                             .map(|m| match &m.content {
-                                ModelContent::Text(t) if t == "old-user" => 800,
-                                ModelContent::Text(t) if t == "old-assistant" || t == PROMPT => 100,
+                                _ if m
+                                    .content
+                                    .file_refs()
+                                    .any(|file| file.path() == "history/0.txt") =>
+                                {
+                                    800
+                                }
+                                _ if m
+                                    .content
+                                    .file_refs()
+                                    .any(|file| file.path().starts_with("history/")) =>
+                                {
+                                    100
+                                }
                                 _ => 10,
                             })
                             .collect(),
-                    })
+                    ))
                 });
         }
         Self {
@@ -77,7 +89,10 @@ impl ModelProvider for ModelEffects {
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.accounting.context_capacity(model)
     }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> BoxProviderFuture<'a, Result<ModelTokenCount>> {
         let mut summaries = self.summary_files.lock().unwrap();
         for file in request
             .request()

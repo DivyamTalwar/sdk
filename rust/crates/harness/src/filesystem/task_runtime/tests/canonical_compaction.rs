@@ -193,10 +193,10 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
             output_tokens: 64,
         })
         .with_token_counter(|request| {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 10,
-                message_tokens: request
+            Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                10,
+                request
                     .request()
                     .messages
                     .iter()
@@ -218,7 +218,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
                         }
                     })
                     .collect(),
-            })
+            ))
         })
         .with_reconciliations([ScriptedReconciliation {
             orphan: false,
@@ -257,6 +257,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
             model_identity.clone(),
             model.clone(),
             ContextPipeline::default(),
+            crate::tool::ToolRegistry::default(),
             None,
         )
         .await?
@@ -332,6 +333,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
                 model_identity.clone(),
                 model.clone(),
                 ContextPipeline::default(),
+                crate::tool::ToolRegistry::default(),
                 None,
             )
             .await?
