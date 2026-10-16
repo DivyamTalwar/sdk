@@ -189,7 +189,7 @@ impl TryFrom<String> for InputPath {
     fn try_from(path: String) -> Result<Self> {
         let mut parts = path.split('/');
         if path.len() > 4096
-            || !matches!(parts.next(), Some("commands" | "workspace"))
+            || !matches!(parts.next(), Some("commands" | "workspace" | "config"))
             || !path.contains('/')
             || parts.any(|p| {
                 p.is_empty()
@@ -300,7 +300,7 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
-            ["commands" | "workspace", ..] => {
+            ["commands" | "workspace" | "config", ..] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
@@ -378,6 +378,7 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
+            Self::Input(path) if path.0.starts_with("config/") => Owner::Caller,
             Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
@@ -412,6 +413,8 @@ pub enum Query {
     Root,
     /// Command definitions and workspace files used by the input UI.
     Inputs,
+    /// Declarative UI settings, keymap and theme files.
+    Config,
     /// Editable Markdown files in the private volume's plans folder.
     Plans,
     /// All task records.
@@ -502,6 +505,10 @@ impl Query {
             )
         };
         vec![match self {
+            Self::Config => (
+                Included(FileKey::Input(InputPath("config/".into()))),
+                Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
+            ),
             Self::Inputs => (
                 Included(FileKey::Input(InputPath(String::new()))),
                 Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
@@ -577,7 +584,11 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
-            (Self::Inputs, FileKey::Input(_)) => true,
+            (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
+            (Self::Config, FileKey::Input(path)) => matches!(
+                path.0.as_str(),
+                "config/settings.json" | "config/keymap.json" | "config/theme.json"
+            ),
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)
@@ -676,6 +687,7 @@ impl Query {
         Ok(match parts.as_slice() {
             [""] => Self::Root,
             ["plans"] => Self::Plans,
+            ["config"] => Self::Config,
             [".volumes", "agents"] => Self::Agents,
             [".tasks"] => Self::Tasks,
             [".tasks", t] => Self::Task(component(t)?),
