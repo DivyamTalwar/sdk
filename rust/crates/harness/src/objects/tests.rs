@@ -233,6 +233,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                     offset: 1,
                     length: 3
                 },
+                None,
                 None
             )?
             .await?

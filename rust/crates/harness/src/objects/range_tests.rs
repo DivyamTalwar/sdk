@@ -71,18 +71,18 @@ proptest! {
         runtime.block_on(async {
             let (_, store) = binding().await.unwrap();
             let file = store.stage(OperationId::new(), "data", &bytes,
-                "application/octet-stream", "data", None).unwrap().await.unwrap().0;
+                "application/octet-stream", "data", None, None).unwrap().await.unwrap().0;
             let encoded = serde_json::to_vec(&file).unwrap();
             let decoded: FileRef = serde_json::from_slice(&encoded).unwrap();
             prop_assert_eq!(&decoded, &file);
             let offset = u64::from(start) % (bytes.len() as u64 + 1);
             let length = u64::from(length) % (bytes.len() as u64 - offset + 1);
-            let selected = store.read_range(&file, acyclic_fs::ByteRange {offset,length}, None)
+            let selected = store.read_range(&file, acyclic_fs::ByteRange {offset,length}, None, None)
                 .unwrap().await.unwrap();
             prop_assert_eq!(selected.as_ref(), &bytes[offset as usize..(offset + length) as usize]);
             let forged = decoded.with_version(format!("wrong-{}", file.version())).unwrap();
             prop_assert!(store.read_range(&forged,
-                acyclic_fs::ByteRange {offset, length}, None).unwrap().await.is_err(),
+                acyclic_fs::ByteRange {offset, length}, None, None).unwrap().await.is_err(),
                 "a changed representation identity must refuse the interval");
             for range in [
                 acyclic_fs::ByteRange {offset: bytes.len() as u64 + 1, length: 0},
@@ -105,6 +105,7 @@ async fn replacing_even_identical_bytes_invalidates_the_pinned_range() -> Result
             b"original",
             "text/plain",
             "data",
+            None,
             None,
         )?
         .await?
