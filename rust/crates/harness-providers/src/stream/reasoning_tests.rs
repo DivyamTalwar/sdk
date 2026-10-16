@@ -188,6 +188,15 @@ fn signed_multiline_fixture_keeps_the_original_native_block_after_durable_replay
         })
         .expect("signed reasoning block");
     let native = block.continuity.clone();
+    let seed =
+        include_bytes!("../../fuzz/corpus/provider_stream/anthropic-multiline-reasoning.json");
+    let seeded: ReasoningBlock = serde_json::from_slice(&seed[1..]).unwrap();
+    assert_eq!(seeded.continuity, native);
+    assert!(
+        crate::projection::native_reasoning::validated(Adapter::Anthropic, &seeded.continuity)
+            .is_some()
+    );
+    crate::fuzzing::assert_stream_invariants(seed);
     assert!(String::from_utf8_lossy(&native).contains(r#"first\n\"quoted\"\\path"#));
     let replay = serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
     let body = projection(&provider, replay).unwrap();
