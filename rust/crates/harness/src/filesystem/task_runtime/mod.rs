@@ -497,7 +497,7 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        let owner = self.host.journal_owner(task, &(fence), None).await?;
+        let owner = Arc::new(self.host.journal_owner(task, &(fence), None).await?);
         let context = self
             .harness
             .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
@@ -506,10 +506,11 @@ where
             Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
         context.owned_mailbox = Some(Arc::new(TaskJournalMailbox {
             host: Arc::clone(&self.host),
-            owner: Arc::new(owner),
+            owner: Arc::clone(&owner),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
         }));
+        context.bind_ordinary_created_owner(owner)?;
         if context.scope().resource_proofs().is_empty()
             && context.scope().grants().contains(
                 &self

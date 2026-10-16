@@ -44,11 +44,25 @@ fn files() -> Arc<TaskFiles<MemoryStream>> {
 // when they cannot see one another's cache updates. Each index is still the
 // production mutex; the shared provider's real locks linearize both writers.
 fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
-    let inner = loom::future::block_on(Box::pin(TaskVolume::open(
-        files.inner.provider.clone(),
-        files.inner.path.clone(),
-    )))
-    .unwrap();
+    // Both views begin at the same real publication cut. Copy only this serial
+    // setup; competing refreshes, validation, locks and commits remain the
+    // production paths. Open/replay itself is covered by the handoff models.
+    let source = loom::future::block_on(Box::pin(files.inner.index.lock()));
+    let mut values = super::super::FileIndex::default();
+    for (key, value) in source.files.range(..) {
+        values.insert(key.clone(), value.clone());
+    }
+    let inner = TaskVolume {
+        provider: files.inner.provider.clone(),
+        path: files.inner.path.clone(),
+        index: crate::sync::Mutex::new(super::super::Index {
+            volume: source.volume,
+            epoch: source.epoch,
+            next: source.next,
+            commit: source.commit,
+            files: values,
+        }),
+    };
     Arc::new(TaskFiles {
         inner,
         volume: files.volume.clone(),

@@ -224,6 +224,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         })
     }
     pub(super) async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
+        if self.preparer.parent.authority().kind == crate::core::AggregateKind::Task
+            && self.task_preparation.is_none()
+        {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "task fork requires its original preparation lease",
+            ));
+        }
         if let Some(task) = self.task_preparation {
             task.verify(settlement, self.io)?.await?;
         }

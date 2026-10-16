@@ -1,6 +1,22 @@
 #![no_main]
 use acyclic_harness::task_volume::{ChildRequest, ChildStatus, Control, FileKey, Query};
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness::fork::ForkRequest>(bytes)
+        && request.validate(&mut None).is_ok()
+    {
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let decoded: acyclic_harness::fork::ForkRequest = serde_json::from_slice(&encoded).unwrap();
+        decoded.validate(&mut None).unwrap();
+        assert_eq!(decoded, request);
+    }
+    if let Ok(seed) = serde_json::from_slice::<acyclic_harness::fork::ForkSeed>(bytes)
+        && seed.validate(&mut None).is_ok()
+    {
+        let encoded = serde_json::to_vec(&seed).unwrap();
+        let decoded: acyclic_harness::fork::ForkSeed = serde_json::from_slice(&encoded).unwrap();
+        decoded.validate(&mut None).unwrap();
+        assert_eq!(decoded, seed);
+    }
     if let Ok(command) =
         serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(bytes)
     {

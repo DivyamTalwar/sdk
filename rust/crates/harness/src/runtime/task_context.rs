@@ -59,6 +59,38 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn bind_ordinary_created_owner<P: acyclic_stream::StreamProvider + 'static>(
+        &mut self,
+        owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.native_custody.is_some() {
+            return Err(Error::Unauthorized(
+                "ordinary publication owner requires an ordinary context".into(),
+            ));
+        }
+        if self.scope.created_access.is_none() {
+            return Ok(());
+        }
+        owner.require_task_context_binding(self, None)?;
+        if let Some(access) = self.scope.created_access.as_mut() {
+            let access = Arc::get_mut(access).ok_or_else(|| {
+                Error::Conflict("created task scope is not uniquely owned".into())
+            })?;
+            if access.operation.into_bytes() != owner.task_id().into_bytes()
+                || access.admission_digest
+                    != owner.admission().canonical_digest_with_work(&mut None)?
+            {
+                return Err(Error::Unauthorized(
+                    "created publication owner differs from the admission seal".into(),
+                ));
+            }
+            access.publication_lease = Some(owner);
+        }
+        Ok(())
+    }
+
     pub(super) fn copy_with_scope(&self, scope: RuntimeScope) -> Self {
         Self {
             harness: Arc::clone(&self.harness),
