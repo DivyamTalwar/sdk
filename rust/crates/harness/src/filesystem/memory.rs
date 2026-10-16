@@ -393,14 +393,6 @@ impl MemoryHarnessStorage {
 
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        if let Ok(bytes) = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .read(file)
-        {
-            return Ok(bytes.into());
-        }
         self.content_verifier
             .read(file, self.maximum_file_bytes, None, None)?
             .await
