@@ -1,0 +1,283 @@
+//! The durable branch catalog selects capture before the first reopened command.
+#[cfg(unix)]
+use super::*;
+
+#[cfg(unix)]
+async fn run(harness: &LocalHarness) -> Result<()> {
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
+        .submit(OperationId::new(), "exercise the selected checkout")
+        .await?
+    else {
+        return Err(Error::Conflict("checkout turn was not admitted".into()));
+    };
+    let commands = harness.commands()?;
+    harness
+        .advance(task, &super::checked_commands::Checked(&commands))
+        .await?;
+    assert_eq!(harness.resume(task).await?.text, "done");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn commands(commands: &[(&str, &str)]) -> Arc<ScriptedModelProvider> {
+    scripted(
+        commands
+            .iter()
+            .enumerate()
+            .map(|(index, (name, command))| super::checkout::call(index, name, command))
+            .chain([ScriptedTurn::Text("done".into())]),
+    )
+}
+
+#[cfg(unix)]
+async fn main_bytes(harness: &LocalHarness) -> Result<acyclic_stream::OwnedBytes> {
+    let view = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let head = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    Ok(head
+        .read(
+            "/note.txt",
+            1024,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_main() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
+    let first = commands(&[
+        ("bash", "printf main > note.txt"),
+        ("fs", "commit -m main"),
+        ("fs", "checkout -b agents/child"),
+        ("bash", "printf child > note.txt"),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, first.clone()),
+    ))
+    .await?;
+    run(&harness).await?;
+    assert_eq!(main_bytes(&harness).await?.as_ref(), b"main");
+    assert_eq!(
+        std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
+        b"child"
+    );
+    assert_eq!(first.requests().len(), 5);
+    drop(harness);
+
+    let resumed = commands(&[
+        ("fs", "status"),
+        ("bash", "printf after-reopen > note.txt"),
+        ("fs", "checkout main"),
+        ("fs", "status"),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, resumed.clone()),
+    ))
+    .await?;
+    assert_eq!(main_bytes(&harness).await?.as_ref(), b"main");
+    run(&harness).await?;
+    assert_eq!(main_bytes(&harness).await?.as_ref(), b"main");
+    assert_eq!(
+        std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
+        b"main"
+    );
+    assert_eq!(resumed.requests().len(), 5);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() -> Result<()> {
+    let _diagnostics = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_test_writer()
+            .finish(),
+    );
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
+    let write = |index: usize, text: &str| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall {
+                call_id: format!("write-{index}"),
+                name: "write".into(),
+                arguments: json!({"path":"from-write.txt","text":text,"media_type":"text/plain","display_name":"from-write.txt"}),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ])
+    };
+    let provider = scripted([
+        write(0, "main file"),
+        super::checkout::call(1, "bash", "cat from-write.txt"),
+        super::checkout::call(2, "fs", "commit -m initial"),
+        super::checkout::call(3, "fs", "checkout -b agents/child"),
+        write(4, "child file"),
+        super::checkout::call(5, "bash", "cat from-write.txt"),
+        super::checkout::call(6, "fs", "checkout main"),
+        super::checkout::call(7, "bash", "cat from-write.txt"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    run(&harness).await?;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 9);
+    for content in requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+    {
+        let result = serde_json::to_string(content).map_err(super::super::storage)?;
+        assert!(!result.contains("\"error\""), "{result}");
+    }
+    for (id, expected) in [
+        ("checkout-1", "main file"),
+        ("checkout-5", "child file"),
+        ("checkout-7", "main file"),
+    ] {
+        let result = requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                crate::model::ModelContentPart::ToolResult {
+                    call_id, content, ..
+                } if call_id == id => Some(content),
+                _ => None,
+            })
+            .expect("bash result");
+        assert!(
+            serde_json::to_string(result)
+                .map_err(super::super::storage)?
+                .contains(expected),
+            "{id}: {result:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(directory.path().join("from-write.txt")).map_err(super::super::storage)?,
+        b"main file"
+    );
+    assert!(!directory.path().join(".system").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let unread = directory.path().join("unread.txt");
+    std::fs::write(&unread, b"unrelated source bytes").map_err(super::super::storage)?;
+    std::fs::set_permissions(&unread, std::fs::Permissions::from_mode(0))
+        .map_err(super::super::storage)?;
+    let provider = commands(&[
+        ("bash", "echo first"),
+        ("bash", "echo second"),
+        ("bash", "echo third"),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    let view = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let before = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .id();
+    run(&harness).await?;
+    let after = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .id();
+    assert_eq!(
+        after, before,
+        "read-only shell commands authored the lazy source tree"
+    );
+    assert_eq!(provider.requests().len(), 4);
+    assert!(
+        !directory.path().join(".git").exists(),
+        "watch fencing changed the checkout"
+    );
+    assert_eq!(
+        std::fs::metadata(&unread)
+            .map_err(super::super::storage)?
+            .permissions()
+            .mode()
+            & 0o777,
+        0
+    );
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    // Missing catalogs select the root; persisted valid catalogs select exactly
+    // their current branch. Malformed catalogs never supply a capture target.
+    #[test]
+    fn selected_workspace_is_derived_only_from_a_valid_catalog(
+        root in proptest::prelude::any::<[u8; 16]>(),
+        child in proptest::prelude::any::<[u8; 16]>(),
+        branch in "[a-z]{1,16}",
+        persisted in proptest::prelude::any::<bool>(),
+        valid in proptest::prelude::any::<bool>(),
+        select_child in proptest::prelude::any::<bool>(),
+    ) {
+        use acyclic_fs::{GitBranch, GitCompatRepository, GitCompatState, GitCompatStore, MemoryGitCompatStore, WorkspaceId};
+        let root = WorkspaceId::from_bytes(root);
+        let child = WorkspaceId::from_bytes(child);
+        let store = MemoryGitCompatStore::default();
+        let result = futures::executor::block_on(async {
+            if persisted {
+                let branch = format!("agents/{branch}");
+                let mut state = GitCompatState::new("main", root);
+                state.revision = 1;
+                state.branches.insert(branch.clone(), GitBranch {
+                    name: branch.clone(), workspace_id: child, head: None, tracked_paths: Default::default(),
+                });
+                state.current_branch = if !valid { "missing".into() } else if select_child { branch } else { "main".into() };
+                assert!(store.compare_and_swap(root, 0, state).await.unwrap());
+            }
+            GitCompatRepository::new(root, store).selected_workspace().await
+        });
+        proptest::prop_assert_eq!(result.is_ok(), !persisted || valid);
+        if let Ok(selected) = result {
+            proptest::prop_assert_eq!(selected, if persisted && select_child { child } else { root });
+        }
+    }
+}

@@ -14,8 +14,8 @@ members = [
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
-  "rust/crates/harness/fuzz",
   "rust/crates/harness-conformance",
+  "rust/crates/harness-fuzz",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
@@ -29,6 +29,8 @@ members = [
   "rust/crates/stream-napi",
   "rust/crates/harness-tui",
   "rust/crates/workers",
+  "rust/fuzz",
+  "rust/crates/manifest",
   "plugin",
 ]
 exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2"]
@@ -133,7 +135,7 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(acyclic_fs_loom)", "cfg(acyclic_harness_loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_fs_loom)", "cfg(acyclic_harness_loom)", "cfg(acyclic_loom)"] }
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"

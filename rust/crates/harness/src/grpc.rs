@@ -3,7 +3,8 @@
 use crate::{
     Error, wire,
     wire_api::{
-        HarnessWireApi, cancel, observe, validate_admission, validate_command_protocol,
+        HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
+        validate_command_protocol, validate_observe_request, validate_operation_status,
         validate_resume_protocol,
     },
 };
@@ -101,7 +102,7 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
                 validate_resume_protocol(request.get_ref()).map_err(status)?;
                 let stream = self
                     .api
-                    .replay(request.into_inner())
+                    .replay(request.into_inner(), crate::wire_api::ReplayMode::Follow)
                     .await
                     .map_err(status)?
                     .map(|item| item.map_err(wire_status));
@@ -125,13 +126,44 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
     ) -> Result<Response<wire::OperationStatus>, Status> {
         traced(
             async {
-                let response = observe(self.api.as_ref(), request.into_inner())
+                let control = validate_observe_request(request.get_ref()).map_err(status)?;
+                self.api
+                    .authorize_operation_control(&control)
                     .await
+                    .map_err(status)?;
+                let request = request.into_inner();
+                let response = self.api.observe(request.clone()).await.map_err(status)?;
+                validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)
                     .map_err(status)?;
                 Ok(Response::new(response))
             }
             .await,
         )
+    }
+
+    type WatchOperationStream = BoxStream<'static, Result<wire::OperationStatus, Status>>;
+
+    async fn watch_operation(
+        &self,
+        request: Request<wire::ObserveRequest>,
+    ) -> Result<Response<Self::WatchOperationStream>, Status> {
+        let control = validate_observe_request(request.get_ref()).map_err(status)?;
+        self.api
+            .authorize_operation_control(&control)
+            .await
+            .map_err(status)?;
+        let request = request.into_inner();
+        let stream = self
+            .api
+            .watch_operation(request.clone())
+            .await
+            .map_err(status)?;
+        Ok(Response::new(Box::pin(stream.map(move |item| {
+            let response = item.map_err(wire_status)?;
+            validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)
+                .map_err(wire_status)?;
+            Ok(response)
+        }))))
     }
 
     #[cfg_attr(
@@ -148,9 +180,16 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
     ) -> Result<Response<wire::CancelResponse>, Status> {
         traced(
             async {
-                let response = cancel(self.api.as_ref(), request.into_inner())
+                let control = validate_cancel_request(request.get_ref())
+                    .map_err(status)?
+                    .control;
+                self.api
+                    .authorize_operation_control(&control)
                     .await
                     .map_err(status)?;
+                let request = request.into_inner();
+                let response = self.api.cancel(request.clone()).await.map_err(status)?;
+                validate_cancel_response(&request, &response).map_err(status)?;
                 Ok(Response::new(response))
             }
             .await,
@@ -208,6 +247,19 @@ mod tests {
     struct FakeApi;
 
     impl HarnessWireApi for FakeApi {
+        fn acknowledge<'a>(
+            &'a self,
+            _: wire::Acknowledge,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn authorize_operation_control<'a>(
+            &'a self,
+            _: &'a crate::wire_api::OperationControlRequest,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            async { Ok(()) }.boxed()
+        }
+
         fn handshake<'a>(
             &'a self,
             request: wire::HandshakeRequest,
@@ -232,6 +284,7 @@ mod tests {
         fn replay<'a>(
             &'a self,
             _: wire::ResumeRequest,
+            _: crate::wire_api::ReplayMode,
         ) -> futures::future::BoxFuture<
             'a,
             Result<futures::stream::BoxStream<'static, Result<wire::Delivery>>>,
@@ -267,9 +320,22 @@ mod tests {
                     owner: request.owner,
                     cancellation_requested: false,
                     revision: 1,
+                    replay_through: None,
                 })
             }
             .boxed()
+        }
+
+        fn watch_operation<'a>(
+            &'a self,
+            request: wire::ObserveRequest,
+        ) -> futures::future::BoxFuture<'a, Result<BoxStream<'static, Result<wire::OperationStatus>>>>
+        {
+            Box::pin(async move {
+                let status = self.observe(request).await?;
+                Ok(Box::pin(stream::iter([Ok(status)]))
+                    as BoxStream<'static, Result<wire::OperationStatus>>)
+            })
         }
 
         fn cancel<'a>(
@@ -295,6 +361,7 @@ mod tests {
                         owner: request.owner,
                         cancellation_requested: false,
                         revision: 2,
+                        replay_through: None,
                     }),
                     operation,
                 })
@@ -359,6 +426,26 @@ mod tests {
             observed.operation.map(|value| value.operation_id),
             Some(operation_id.clone())
         );
+
+        let update = service
+            .watch_operation(Request::new(wire::ObserveRequest {
+                protocol: Some(current_protocol()),
+                owner: Some(owner.clone()),
+                operation_id: operation_id.clone(),
+                scope: Some(scope.clone()),
+            }))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .into_inner()
+            .next()
+            .await
+            .ok_or_else(|| Error::Storage("missing operation update".into()))?
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            update.operation.as_ref().map(|value| &value.operation_id),
+            Some(&operation_id)
+        );
+        assert_eq!(update.owner.as_ref(), Some(&owner));
 
         let operation = wire::OperationIdentity {
             operation_id: operation_id.clone(),

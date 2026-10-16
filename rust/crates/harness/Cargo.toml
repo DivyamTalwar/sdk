@@ -27,6 +27,10 @@ path = "tests/default_tools.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
+
+[[test]]
 name = "mcp-loom"
 path = "tests/mcp_loom.rs"
 
@@ -51,6 +55,24 @@ path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "client_journal_model"
+path = "tests/client_journal_model.rs"
+required-features = ["model-checking"]
+
+[[test]]
+name = "client_session"
+path = "tests/client_session.rs"
+
+[[test]]
+name = "client_history"
+path = "tests/client_history.rs"
+
+[[test]]
+name = "client_terminal"
+path = "tests/client_terminal.rs"
+required-features = ["terminal"]
+
+[[test]]
 name = "mcp-durable"
 path = "tests/mcp_durable.rs"
 required-features = ["filesystem-local", "mcp-http"]
@@ -70,27 +92,13 @@ path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
 
 [[test]]
-name = "external_hooks"
-path = "tests/external_hooks.rs"
-
-[[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
 required-features = ["filesystem", "test-support"]
 
 [[test]]
-name = "service"
-path = "tests/service.rs"
-required-features = ["service", "test-support"]
-
-[[test]]
-name = "service-lifecycle-models"
-path = "tests/service_lifecycle_models.rs"
-required-features = ["service", "test-support"]
-
-[[test]]
-name = "task-volume"
-path = "tests/task_volume.rs"
+name = "external_hooks"
+path = "tests/external_hooks.rs"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -124,7 +132,6 @@ terminal = ["dep:hex"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-service = ["filesystem-local", "native-execution", "dep:fs2", "tokio/net", "tokio/io-util", "acyclic-native-runtime/named-pipe"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
@@ -157,6 +164,7 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9", optional = true }
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.2"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
@@ -182,7 +190,6 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-fs2 = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 loom = { version = "=0.7.2", optional = true }
@@ -200,8 +207,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
 proptest.workspace = true
-shuttle = "0.8.1"
-loom = { version = "0.7.2", features = ["futures"] }
+loom = "0.7.2"
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }

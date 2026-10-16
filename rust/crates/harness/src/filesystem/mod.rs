@@ -89,12 +89,18 @@ mod native_contract;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub mod native_paths;
+mod native_directory;
 pub use native_contract::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
     NativeVolumeNamespace,
 };
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use native_directory::NativeDirectory;
 mod configured_recursive_tools;
 mod default_tools;
 mod mailbox_machine;
@@ -309,3 +315,16 @@ mod stock_turn;
 pub use stock_turn::StockTurnMachine;
 
 use crate::executor::{stock_boundary, stock_string_copy};
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod workspace_policy;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use workspace_policy::{RESERVED_IGNORE_RULES, WorkspacePolicy};

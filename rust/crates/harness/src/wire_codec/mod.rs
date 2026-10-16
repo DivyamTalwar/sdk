@@ -28,7 +28,7 @@ mod command;
 pub(crate) use command::{decode_command, encode_apply_result};
 pub use command::{decode_command_envelope, encode_command_envelope};
 mod protocol;
-pub(crate) use protocol::{protocol_identity, validate_protocol};
+pub(crate) use protocol::{COMPILED_PROTOCOL, protocol_identity, validate_protocol};
 mod errors;
 pub use errors::encode_error;
 mod authority;
@@ -39,6 +39,8 @@ pub(crate) use authority::{decode_authority, decode_scope};
 use authority::{decode_reference, encode_reference, parse_scope_agent};
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod admission_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod command_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod protocol_tests;
 #[cfg(test)]

@@ -17,6 +17,7 @@
 )]
 #![doc = include_str!("../README.md")]
 
+mod sync;
 pub mod agent_loop;
 #[cfg(feature = "tui")]
 pub use acyclic_harness_tui as tui;
@@ -73,8 +74,6 @@ pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
-#[cfg(all(feature = "service", not(target_arch = "wasm32")))]
-pub mod service;
 pub mod source_authorization;
 pub mod store;
 pub mod task_volume;

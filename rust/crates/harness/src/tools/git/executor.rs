@@ -1,7 +1,7 @@
 use super::*;
 
 impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
-    type Error = GitError;
+    type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
         let Some(lease) = &self.lease else {
@@ -162,6 +162,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .fork(
                         &destination,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        self.permit,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await

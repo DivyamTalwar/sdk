@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{
     LazyWorkspace, LazyWorkspaceStore, LocalCoreStateStore, NativeMaterializationWork,
     demand::native::NativeDemandSource, kernel::KernelAccounting,
@@ -14,6 +15,7 @@ pub(super) type View = LazyWorkspace<
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
+    pub(super) fresh: bool,
     view: View,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
@@ -30,6 +32,35 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) async fn selected_view(&self) -> Result<Option<View>> {
+        let root = self.view.workspace().id();
+        let selected = acyclic_fs::GitCompatRepository::new(root, self.store.clone())
+            .selected_workspace()
+            .await
+            .map_err(storage)?;
+        if selected == root {
+            return Ok(None);
+        }
+        let selected = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                self.filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+            ),
+            selected,
+        )
+        .await
+        .map_err(storage)?;
+        self.view
+            .open_related(
+                selected,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new()),
+            )
+            .await
+            .map(Some)
+            .map_err(storage)
+    }
+
     /// Source-backed filesystem view. No checkout scan occurs during open.
     #[must_use]
     pub(crate) const fn view(
@@ -84,6 +115,7 @@ pub(super) async fn open(
         ));
     }
     let source = Arc::new(source);
+    let fresh = original.is_none();
     let view = match original {
         Some(_) => {
             let workspace = filesystem
@@ -115,6 +147,7 @@ pub(super) async fn open(
         .map_err(storage)?;
     Ok(LocalWorkspace {
         path,
+        fresh,
         view,
         filesystem: filesystem.clone(),
         store,

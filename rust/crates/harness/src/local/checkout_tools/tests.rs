@@ -33,7 +33,7 @@ fn complete<F: Future>(future: F) -> F::Output {
     }
 }
 
-// Both variants call the production serialization function and its cfg(loom)
+// Both variants call the production serialization function and its cfg(acyclic_harness_loom)
 // mutex shim. The negative control releases ownership before publication.
 fn publication(broken: bool) {
     let state = StateArc::new(AsyncMutex::new((0, Some(0))));
@@ -144,3 +144,6 @@ fn offloaded_cleanup(broken: bool) {
 fn cancelled_waiter_keeps_a_submitted_jobs_guard_until_cleanup() {
     checked_model(offloaded_cleanup, "cleanup escaped checkout ownership");
 }
+
+#[path = "tests/fencing.rs"]
+mod fencing;
