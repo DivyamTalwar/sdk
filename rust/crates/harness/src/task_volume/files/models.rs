@@ -34,7 +34,7 @@ fn files() -> Arc<TaskFiles<MemoryStream>> {
     // The immutable authorization boundary has no shared state. The production
     // methods below still enforce the file role and exact byte/generation bounds.
     Arc::new(TaskFiles {
-        inner,
+        inner: Arc::new(inner),
         volume,
         maximum_bytes: 4096,
     })
