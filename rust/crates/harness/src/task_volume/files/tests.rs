@@ -292,7 +292,19 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
             .unwrap()["diff_mode"],
         "unified"
     );
-    commands.submit("ordinary request", &NoFiles).await.unwrap();
+    crate::client::file_tui_input(
+        &mut commands,
+        &NoFiles,
+        crate::tui::InputEffect::Submit {
+            text: "ordinary request".into(),
+            queued: false,
+            edit: None,
+        },
+        10,
+        100,
+    )
+    .await
+    .unwrap();
     let request = commands.take_request().unwrap();
     let before = files.snapshot(&Query::Root, 64).await.unwrap().generation;
     let result = commands
