@@ -77,8 +77,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .access_view(
                 &workspace,
                 grant.policy_scope(),
-                generation.id(),
-                label,
+                Some(generation.id()),
+                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
                 ceiling,
                 io,
             )
@@ -208,8 +208,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .access_view(
                 &workspace,
                 grant.policy_scope(),
-                pinned.id(),
-                label,
+                Some(pinned.id()),
+                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
                 ceiling,
                 io,
             )

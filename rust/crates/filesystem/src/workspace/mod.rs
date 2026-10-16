@@ -128,3 +128,6 @@ fn item_work(items: u64) -> crate::WorkCounters {
 pub(crate) use reverse_traversal::{
     namespace_records_bytes, namespace_records_to_file_root_with_accounting,
 };
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod access_write_model;

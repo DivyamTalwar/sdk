@@ -261,6 +261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             None => {}
         }
+        let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let receipt_identity = if internal_class.is_some() {
             provisional.path()
         } else {
@@ -287,7 +288,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 expected_generation,
             ))?),
         };
-        let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let prior = crate::conversation::BoundedContentFuture::new(io, || async {
             let opened = match io {
                 Some(io) => (self).open(&workspace, Some(io)).await?,
@@ -344,6 +344,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })
         })?
         .await?;
+        let authorized_generation = self
+            .authorize_content_write(&workspace, grant, provisional.path(), prior.is_some(), io)
+            .await?;
+        let generation_hold = io
+            .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
+            .transpose()?;
+        let authorized_generation = (authorized_generation, generation_hold);
         if let Some(prior) = prior {
             let generation = (self).generation_ref_id(prior.id(), io)?;
             match io {
@@ -420,6 +427,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             return Ok(reference);
         }
+        if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "workspace generation changed",
+            ));
+        }
         let absolute = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
         })?;
@@ -457,7 +471,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let generation = self
             .apply_generation(
                 &workspace,
-                expected_generation,
+                Some(&authorized_generation.0),
                 &mutations,
                 IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                 io,

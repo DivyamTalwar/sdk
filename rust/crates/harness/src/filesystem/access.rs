@@ -11,6 +11,24 @@ use std::marker::PhantomData;
 // Reads never synthesize this record when it is missing from an existing volume.
 pub(in crate::filesystem) const INITIAL_POLICY: &[u8] = include_bytes!("access/initial.json");
 const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
+const LEGACY_WRITE: &[u8] = include_bytes!("access/legacy-write.json");
+
+pub(in crate::filesystem) fn capability_payload<'a>(
+    label: Option<&'a str>,
+    operation: VolumeOperation,
+    io: &PreparationIo,
+) -> Result<&'a [u8]> {
+    match label {
+        Some(label) => label
+            .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
+            .map(str::as_bytes)
+            .ok_or_else(|| io.invalid("filesystem capability label is invalid")),
+        None => Ok(match operation {
+            VolumeOperation::Read => LEGACY_READ,
+            VolumeOperation::Write => LEGACY_WRITE,
+        }),
+    }
+}
 
 pub(in crate::filesystem) fn access_now() -> u64 {
     acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000
@@ -127,7 +145,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
         let generation = GenerationId::new(Digest::from_bytes(generation));
         let compiled = self
-            .access_view(&workspace, scope, generation, label, ceiling, io)
+            .access_view(
+                &workspace,
+                scope,
+                Some(generation),
+                capability_payload(label, VolumeOperation::Read, io)?,
+                ceiling,
+                io,
+            )
             .await?;
         require(&compiled.0, Action::Read, reference.path(), io)?;
         drop(compiled);
@@ -155,19 +180,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         workspace: &Workspace<A, O>,
         scope: &Scope,
-        generation: GenerationId,
-        label: Option<&str>,
+        generation: Option<GenerationId>,
+        payload: &[u8],
         ceiling: Option<&crate::Capabilities>,
         io: &'a PreparationIo,
-    ) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 2])> {
-        let payload = if let Some(label) = label {
-            label
-                .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
-                .ok_or_else(|| io.invalid("filesystem capability label is invalid"))?
-                .as_bytes()
-        } else {
-            LEGACY_READ
-        };
+    ) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 2], GenerationId)> {
         let (capability, hold) =
             record::<Capability>(io, payload, crate::wire::ErrorCode::Unauthorized)?;
         let mut capability = (capability, [Some(hold), None, None]);
@@ -177,12 +194,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })
             .transpose()?
             .flatten();
-        if let Some(caller) = caller.filter(|caller| Some(*caller) != label) {
-            let payload = caller
-                .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
-                .ok_or_else(|| io.invalid("filesystem capability label is invalid"))?;
+        let caller = caller
+            .map(|label| capability_payload(Some(label), VolumeOperation::Read, io))
+            .transpose()?;
+        if let Some(caller) = caller.filter(|caller| *caller != payload) {
             let (mut additional, hold) =
-                record::<Capability>(io, payload.as_bytes(), crate::wire::ErrorCode::Unauthorized)?;
+                record::<Capability>(io, caller, crate::wire::ErrorCode::Unauthorized)?;
             capability.1[1] = Some(hold);
             let empty = capability.0.layers.is_empty() || additional.layers.is_empty();
             let count = capability
@@ -241,9 +258,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let bytes_hold = io.guard_bytes(&bytes.bytes)?;
         let bytes = (bytes, bytes_hold);
         let policy = record::<Policy>(io, &bytes.0.bytes, crate::wire::ErrorCode::Storage)?;
+        let policy_generation = head.0.generation_id();
         let (selected, latest) = io.sdk(
             head.0
-                .generation_position(generation, io, io.cancellation())
+                .generation_position(
+                    generation.unwrap_or(policy_generation),
+                    io,
+                    io.cancellation(),
+                )
                 .await,
         )?;
         let subject = crate::executor::with_history_io(Some(io), |work| match scope.agent() {
@@ -328,7 +350,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unauthorized,
-                    "filesystem policy compilation refused read",
+                    "filesystem policy compilation refused request",
                 )
             })?,
             holds,
@@ -348,6 +370,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(capability);
         drop(bytes);
         drop(head);
-        Ok(compiled)
+        Ok((compiled.0, compiled.1, policy_generation))
     }
 }
+
+mod writes;

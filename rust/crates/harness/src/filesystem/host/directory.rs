@@ -132,8 +132,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .access_view(
                 &workspace,
                 scope,
-                generation.id(),
-                label,
+                Some(generation.id()),
+                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
                 request.ceiling,
                 io,
             )

@@ -93,8 +93,8 @@ impl Fixture {
             4096,
             &mut None,
         )?;
-        let file = host
-            .put_content(
+        let file = if initialize {
+            host.put_content(
                 &volume,
                 &writer,
                 "secrets/key",
@@ -106,7 +106,43 @@ impl Fixture {
                 None,
                 None,
             )
-            .await?;
+            .await?
+        } else {
+            // Seed a deliberately policy-less volume through the low-level SDK
+            // owner; the content boundary itself must refuse all new writes.
+            let workspace = acyclic_harness::filesystem::workspace_ref(
+                volume.provider().clone(),
+                &volume.storage_name(&mut None)?,
+            )?;
+            let generation = host
+                .apply(
+                    &workspace,
+                    None,
+                    &[
+                        acyclic_harness::filesystem::WorkspaceMutation::CreateDirectory {
+                            path: "/secrets".into(),
+                        },
+                        acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                            path: "/secrets/key".into(),
+                            bytes: bytes::Bytes::from_static(b"private"),
+                        },
+                    ],
+                    &IdempotencyKey::new("raw-seed")?,
+                )
+                .await?;
+            FileRef::new(
+                volume.clone(),
+                "secrets/key".into(),
+                hex::encode(generation.as_resource().key()),
+                acyclic_harness::conversation::FileDescriptor::from_bytes(
+                    b"private",
+                    "text/plain",
+                    &mut None,
+                )?,
+                "key".into(),
+                &mut None,
+            )?
+        };
         Ok(Self {
             fs,
             host,
@@ -630,6 +666,13 @@ proptest! {
         name in "[a-zΣß]{1,12}",
         malformed in prop::collection::vec(any::<u8>(), 0..4096),
     ) {
+        for legacy in [
+            include_bytes!("../src/filesystem/access/legacy-read.json").as_slice(),
+            include_bytes!("../src/filesystem/access/legacy-write.json").as_slice(),
+        ] {
+            acyclic_harness::filesystem::check_access_record(legacy)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        }
         let mut policy: Policy = serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
         policy.layers[0][0].resource.path = path;
         policy.layers[0][0].conditions.expires_at = expiry;
@@ -654,3 +697,6 @@ mod listing;
 
 #[path = "filesystem_access_runtime.rs"]
 mod runtime;
+
+#[path = "filesystem_access_writes.rs"]
+mod writes;

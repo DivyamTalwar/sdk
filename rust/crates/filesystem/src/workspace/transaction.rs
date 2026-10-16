@@ -9,6 +9,12 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+    /// Whether this candidate was opened against the authorized generation.
+    #[must_use]
+    pub fn is_based_on(&self, generation: GenerationId) -> bool {
+        self.checkout.generation_id() == generation
+    }
+
     pub(crate) fn from_checkout(
         workspace: &Workspace<A, O>,
         mut checkout: Checkout<A, O>,
