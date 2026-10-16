@@ -78,3 +78,59 @@ proptest::proptest! {
         proptest::prop_assert_eq!(picture(&live), picture(&replayed));
     }
 }
+
+#[test]
+fn file_completions_render_in_the_composer_and_enter_only_accepts() {
+    use acyclic_harness::tui::{
+        Screen,
+        key_event::{KeyCode, KeyEvent, KeyModifiers},
+    };
+    let mut input = PromptInput::default();
+    input
+        .completion
+        .set_file(
+            "commands/tools.json",
+            Some(br#"[{"name":"read","description":"Read a file","tool":true}]"#),
+        )
+        .unwrap();
+    input.committed_text("/re", 0);
+    input.refresh_completions();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
+        })
+        .unwrap();
+    let visible: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(visible.contains("Completions"));
+    assert!(visible.contains("/read [tool]"));
+    assert!(visible.contains("Read a file"));
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 1, 78)
+            .is_empty()
+    );
+    assert_eq!(input.editor.text(), "/read ");
+    input.refresh_completions();
+    assert!(!input.completion.active(&input.editor));
+    input.committed_text("@rea", 2);
+    input
+        .completion
+        .set_file("workspace/read me.rs", Some(b"source"))
+        .unwrap();
+    input.refresh_completions();
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 3, 78)
+            .is_empty()
+    );
+    assert_eq!(input.editor.text(), "/read @\"read me.rs\" ");
+    input.editor.undo();
+    assert_eq!(input.editor.text(), "/read @rea");
+}

@@ -1,4 +1,4 @@
-use crate::{PromptBox, PromptInput, Viewport};
+use crate::{CompletionPopup, PromptBox, PromptInput, Viewport};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -126,12 +126,15 @@ impl Screen<'_> {
             .len()
             .min(12)
             .min(usize::from(prompt.y - area.y)) as u16;
-        let completions = Rect::new(
+        let mut completions = Rect::new(
             prompt.x,
             prompt.y - popup_height,
             prompt.width.min(60),
             popup_height,
         );
+        if input.completion.active(&input.editor) {
+            completions = CompletionPopup::new(&input.completion, &input.editor).area(prompt, area);
+        }
         ScreenAreas {
             header,
             transcript: remaining,
@@ -182,7 +185,12 @@ impl Screen<'_> {
         if let Some((x, y)) = viewport.cursor {
             frame.set_cursor_position((x, y));
         }
-        if !self.completions.is_empty() {
+        if input.completion.active(&input.editor) {
+            frame.render_widget(
+                CompletionPopup::new(&input.completion, &input.editor),
+                areas.completions,
+            );
+        } else if !self.completions.is_empty() {
             frame.render_widget(Clear, areas.completions);
             rows(frame, self.completions, areas.completions, 0);
         }

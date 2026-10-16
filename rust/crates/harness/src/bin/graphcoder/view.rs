@@ -44,12 +44,15 @@ pub async fn run(
         },
     ));
     let mut input = PromptInput::default();
+    // TODO(#495): feed command/workspace snapshot and follow files into
+    // input.completion.set_file; clear_files on query reset before its snapshot.
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
     client.replay().await?;
     renderer.update(client.session().views(), &authority);
     loop {
+        input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         terminal.draw(|frame| {

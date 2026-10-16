@@ -7,8 +7,8 @@ param(
     [int]$DeadlineMilliseconds = 90000
 )
 $ErrorActionPreference = 'Stop'
-if (-not [IO.Path]::IsPathRooted($Binary) -or -not [IO.Path]::IsPathRooted($Workspace)) {
-    throw 'ConPTY requires absolute installed binary and configuration paths'
+if (-not [IO.Path]::IsPathRooted($Binary) -or -not [IO.Path]::IsPathRooted($Workspace) -or -not [IO.Path]::IsPathRooted($Catalog)) {
+    throw 'ConPTY requires absolute binary, workspace and catalog paths'
 }
 if ($DeadlineMilliseconds -lt 1000 -or $DeadlineMilliseconds -gt 120000) {
     throw 'ConPTY deadline must be finite (1000..120000 ms)'

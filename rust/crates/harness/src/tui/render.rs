@@ -142,7 +142,6 @@ impl ClientRenderer {
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
         // TODO(#562): bind the captured-volume diff widget.
-        // TODO(#622): bind the completion provider and popup to the prompt cursor.
         Screen {
             header: self.header.clone(),
             transcript: &self.transcript,
