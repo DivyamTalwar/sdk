@@ -189,6 +189,10 @@ pub(crate) fn generate<'a>(
                 work,
             )
             .await?;
+            let origin_bytes =
+                crate::stream::family(provider.config.adapter).len() + provider.model.name.len();
+            let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
+            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             drop(auth);
             if !(200..300).contains(&response.status) {
                 let mut allocation = work.claim(64, 1, WorkCounters::UNCHARGED)?;
@@ -200,6 +204,8 @@ pub(crate) fn generate<'a>(
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
                     let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
+                    parser.allocation.absorb(&mut { origin_custody })?;
+                    parser.state.set_origin(Some(origin))?;
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
                     futures::pin_mut!(frames, cancelled);
@@ -233,7 +239,8 @@ pub(crate) fn generate<'a>(
                     let (bytes, nodes) = parser.state.arguments().map(|args| shape(args.as_bytes())).try_fold((0u64, 0u64), |(bytes, nodes), (b, n)| {
                         Ok::<_, Error>((bytes.checked_add(b).ok_or_else(|| invalid("tool batch size overflow"))?, nodes.checked_add(n).ok_or_else(|| invalid("tool batch size overflow"))?))
                     })?;
-                    let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
+                    let (reasoning_bytes, reasoning_nodes) = parser.state.reasoning_shape()?;
+                    let mut admission = reserve(work, bytes.checked_add(reasoning_bytes).ok_or_else(|| invalid("reasoning size overflow"))?, nodes.checked_add(reasoning_nodes).ok_or_else(|| invalid("reasoning size overflow"))?, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
                     let restored = parser.state.restore_names(&names, |length| {
                         let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;

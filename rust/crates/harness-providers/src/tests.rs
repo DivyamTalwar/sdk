@@ -93,28 +93,46 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
                 stream::events(adapter, chunks(fixture, width), 4096, parser_dispatch())
                     .try_collect()
                     .await?;
-            assert_eq!(events.len(), 4, "{adapter:?}");
+            let visible: Vec<_> = events
+                .iter()
+                .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
+                .collect();
+            assert_eq!(visible.len(), 4, "{adapter:?}");
             assert_eq!(
-                events[0],
+                *visible[0],
                 ModelEvent::Content {
                     delta: "hé".into()
                 }
             );
             assert_eq!(
-                events[1],
+                *visible[1],
                 ModelEvent::Reasoning {
                     delta: "think".into()
                 }
             );
             assert_eq!(
-                events[2],
+                *visible[2],
                 ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                    "call".into(), "echo".into(), json!({"value":1})
-                ).with_metadata(if adapter == Adapter::Anthropic {
-                    json!({"anthropic_thinking":[{"type":"thinking","thinking":"think","signature":""}]})
-                } else { serde_json::Value::Null }))
+                    "call".into(),
+                    "echo".into(),
+                    json!({"value":1})
+                ))
             );
-            let ModelEvent::Completed { metadata } = &events[3] else {
+            if matches!(
+                adapter,
+                Adapter::Anthropic | Adapter::Gemini | Adapter::Chat
+            ) {
+                let canonical = events
+                    .iter()
+                    .find_map(|event| match event {
+                        ModelEvent::ReasoningBlock { block } => Some(block),
+                        _ => None,
+                    })
+                    .expect("readable reasoning is durably retained");
+                assert_eq!(canonical.text.as_deref(), Some("think"));
+                assert!(!canonical.continuity.is_empty());
+            }
+            let ModelEvent::Completed { metadata } = visible[3] else {
                 return Err(invalid("missing completion"));
             };
             assert_eq!(metadata["id"], "run");

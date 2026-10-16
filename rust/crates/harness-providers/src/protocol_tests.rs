@@ -290,6 +290,22 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
         let events: Vec<ModelEvent> =
             serde_json::from_slice(&serde_json::to_vec(&events).expect("encode events"))
                 .expect("decode events");
+        let reasoning: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ReasoningBlock { block } => Some(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::Reasoning {
+                        block: block.clone(),
+                    }),
+                }),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !reasoning.is_empty(),
+            "signed native reasoning is a canonical event"
+        );
         let call = events
             .into_iter()
             .find(|event| matches!(event, ModelEvent::ToolCall(_)))
@@ -315,6 +331,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             output_schema: json!({}),
             projection_schema: json!({}),
         });
+        next.messages.extend(reasoning);
         next.messages.extend([
             ModelMessage {
                 role: ModelRole::Assistant,

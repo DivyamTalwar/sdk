@@ -23,6 +23,29 @@ impl ResolvedModel {
     pub fn model(&self) -> &Model {
         &self.model
     }
+    pub(crate) fn reasoning_origin(
+        &self,
+        key: Option<&str>,
+        account: Option<&str>,
+    ) -> acyclic_harness::model::ReasoningOrigin {
+        let family = crate::stream::family(self.config.adapter);
+        let mut scope = blake3::Hasher::new();
+        scope.update(b"harness-reasoning-scope-v1\0");
+        for value in [
+            family,
+            self.config.base_url.as_str(),
+            account.or(key).unwrap_or(""),
+        ] {
+            scope.update(&(value.len() as u64).to_be_bytes());
+            scope.update(value.as_bytes());
+        }
+        acyclic_harness::model::ReasoningOrigin {
+            provider: family.into(),
+            model: self.model.name.clone(),
+            credential_scope: Some(*scope.finalize().as_bytes()),
+        }
+    }
+
     pub(crate) fn context_output(&self) -> u32 {
         self.capacity.output_tokens
     }

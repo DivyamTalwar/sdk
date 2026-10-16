@@ -64,7 +64,9 @@ pub(crate) async fn count(
         .transpose()?;
     let prepared = (|| {
         let names = crate::tool_names::Names::new(request.request());
-        let generation = projection::body_named(provider, request.request(), &names)?;
+        let generation =
+            serde_json::to_value(projection::body_named(provider, request.request(), &names)?)
+                .map_err(|_| crate::invalid("cannot encode token count request"))?;
         let body = wire::body(generation, &provider.model.name, spec.adapter)?;
         let bytes =
             serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;

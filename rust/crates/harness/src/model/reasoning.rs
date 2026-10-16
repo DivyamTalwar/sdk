@@ -65,3 +65,47 @@ pub enum ReasoningOutcome {
     /// The target cannot accept this native shape.
     UnsupportedShape,
 }
+
+impl ReasoningBlock {
+    pub(crate) fn validate_limits(
+        &self,
+        limits: crate::conversation::Limits,
+        work: &mut Option<&mut dyn crate::executor::HistoryIo>,
+    ) -> crate::Result<()> {
+        super::preparation::history_step(work, self.continuity.len() as u64)?;
+        crate::executor::json::json_byte_length(self, limits.render_bytes, work).map(|_| ())
+    }
+
+    pub(crate) fn payload_bytes(&self) -> crate::Result<u64> {
+        [
+            self.origin.provider.capacity(),
+            self.origin.model.capacity(),
+            self.continuity.capacity(),
+            self.text.as_ref().map_or(0, String::capacity),
+        ]
+        .into_iter()
+        .try_fold(0u64, |bytes, capacity| {
+            bytes
+                .checked_add(capacity as u64)
+                .ok_or_else(super::inventory::overflow)
+        })
+    }
+}
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::UploadRecord for super::ModelEvent {
+    fn diagnostic_label_bytes() -> u64 {
+        super::preparation::MODEL_DIAGNOSTIC_LABEL_BYTES
+    }
+    fn logical_owned_bytes(&self) -> crate::Result<u64> {
+        match self {
+            Self::ReasoningBlock { block } => block.payload_bytes(),
+            _ => Err(crate::Error::Invalid(
+                "expected canonical reasoning artifact".into(),
+            )),
+        }
+    }
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ModelEvent
+    }
+}

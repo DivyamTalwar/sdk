@@ -48,6 +48,9 @@ impl ModelEventAdmission {
                 "model emitted an event after completion",
             ));
         }
+        if let ModelEvent::ReasoningBlock { block } = event {
+            with_history_io(io, |work| block.validate_limits(limits, work))?;
+        }
         let ModelEvent::ToolCall(crate::model::ToolCall { call_id, name, .. }) = event else {
             return Ok(None);
         };
@@ -143,7 +146,9 @@ impl ModelEventAdmission {
                 })?;
             }
             ModelEvent::Completed { .. } => self.completed = true,
-            ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
+            ModelEvent::Content { .. }
+            | ModelEvent::Reasoning { .. }
+            | ModelEvent::ReasoningBlock { .. } => {}
         }
         self.count += 1;
         Ok(())

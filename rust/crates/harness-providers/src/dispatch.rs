@@ -20,11 +20,12 @@ pub(crate) fn generate(
         let names = crate::tool_names::Names::new(request.request());
         let auth = authenticate(provider).await?;
         let (response, input_bytes) = send(provider, &request, &names, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
+        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         drop(auth);
         if !(200..300).contains(&response.status) {
             Err(crate::http_error(response.status))?;
         }
-        let mut events = crate::stream::events_named(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch, Some(&names));
+        let mut events = crate::stream::events_named(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
         while let Some(event) = events.next().await {
             let event = event?;
             if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }

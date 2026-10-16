@@ -61,6 +61,13 @@ pub fn assert_stream_invariants(input: &[u8]) {
             let replay: acyclic_harness::model::ReasoningBlock =
                 serde_json::from_slice(&encoded).unwrap();
             assert_eq!(block, replay);
+            for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
+                if let Some(raw) =
+                    crate::projection::native_reasoning::validated(adapter, &block.continuity)
+                {
+                    assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
+                }
+            }
             for family in ["anthropic", "responses", "gemini", "chat"] {
                 let mut target = block.origin.clone();
                 target.provider = family.into();

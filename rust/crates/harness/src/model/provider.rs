@@ -16,6 +16,11 @@ pub enum ModelEvent {
         /// Incremental reasoning.
         delta: String,
     },
+    /// Completed canonical reasoning, retained in transcript order.
+    ReasoningBlock {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
+    },
     /// Complete registered tool invocation.
     ToolCall(ToolCall),
     /// Completed model step.
@@ -92,6 +97,7 @@ impl ModelEvent {
     pub fn logical_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
+            Self::ReasoningBlock { block } => block.payload_bytes()?,
             Self::ToolCall(call) => call.payload_bytes()?,
             Self::Completed { metadata } => {
                 crate::executor::json::json_value_logical_owned_bytes(metadata)?
