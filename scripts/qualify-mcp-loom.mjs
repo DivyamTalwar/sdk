@@ -33,6 +33,16 @@ export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   });
 }
 
+export function qualifyMemoryAccountingLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-harness", "memory-accounting-model", [
+    "--features", "filesystem,acyclic-fs/model-checking",
+    "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
+  ], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom` },
+    targetCfg: ["--", "--cfg", "acyclic_harness_loom"],
+  });
+}
+
 function qualifyLoom(crate, target, features, run, options = {}) {
   const build = run("cargo", [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
@@ -67,6 +77,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
   else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
   else qualifyMcpLoom(features.length ? features : undefined);
 }

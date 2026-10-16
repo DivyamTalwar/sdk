@@ -80,16 +80,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let Some(original) = (self).operation_generation(&workspace, key, io).await? else {
             return Ok(None);
         };
-        let receipt_identity = if internal_class.is_some() {
-            expected_path.ok_or_else(|| {
+        let receipt_identity = match internal_class {
+            Some(_) => expected_path.ok_or_else(|| {
                 stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
-                    "internal upload recovery requires its exact path",
+                    "internal upload recovery requires its original path",
                 )
-            })?
-        } else {
-            key.as_str()
+            })?,
+            None => key.as_str(),
         };
         let receipt_path =
             content_identity_path_io(receipt_identity, true, ".system/harness-uploads/", io)?;
