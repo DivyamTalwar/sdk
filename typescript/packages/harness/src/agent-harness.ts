@@ -638,6 +638,7 @@ export class AgentHarness {
         if (!admission.completed) throw new Error("model attempt ended without completion");
         previousAdmission = admission;
         if (calls.length === 0) return { text };
+        messages.push({ role: "assistant", content: calls });
         for (const call of calls) {
           const toolOperationId = this.contracts.idFromDigest(this.contracts.digestCanonicalJson({
             domain: "harness:tool-call:v2", task_id: context.taskId, step,
@@ -654,7 +655,7 @@ export class AgentHarness {
           const result = { kind: "tool_result" as const, callId: call.callId, name: call.name, content: projection };
           validateModelContent(result, this.components.limits);
           receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
-          messages.push({ role: "assistant", content: call }, { role: "tool", content: result });
+          messages.push({ role: "tool", content: result });
         }
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);

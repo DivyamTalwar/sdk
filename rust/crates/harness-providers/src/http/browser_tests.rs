@@ -111,6 +111,10 @@ async fn dropping_response_body_aborts_fetch_without_waiting_for_eof()
             .is_some()
     );
     assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
+    let mut pending = response.body.next();
+    assert!(futures::poll!(&mut pending).is_pending());
+    drop(pending);
+    assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
     drop(response);
     assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
     Ok(())
