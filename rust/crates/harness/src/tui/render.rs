@@ -172,6 +172,33 @@ impl ClientRenderer {
         self.busy
     }
 
+    /// Compose the panel selected by the followed command layout file.
+    /// Unknown views retain the document overview until their widget is available.
+    pub fn screen_for<P: acyclic_stream::StreamProvider + ?Sized>(
+        &self,
+        files: &crate::client::CommandSession<P>,
+    ) -> crate::Result<Screen<'_>> {
+        use crate::client::CommandFileRoot;
+        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let mut screen = self.screen();
+        match layout
+            .as_ref()
+            .and_then(|value| value.get("open_view"))
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("goal") => {
+                screen.diff = &[];
+                screen.plans = &[];
+            }
+            Some("plan") => {
+                screen.diff = &[];
+                screen.goal = &[];
+            }
+            _ => {}
+        }
+        Ok(screen)
+    }
+
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
         // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.

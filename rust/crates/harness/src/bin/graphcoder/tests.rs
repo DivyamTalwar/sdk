@@ -591,3 +591,41 @@ proptest::proptest! {
         })?;
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: every accepted goal/plan layout publication selects only that
+    // document panel, without mutating or discarding the other query projection.
+    #[test]
+    fn followed_command_layout_selects_document_panels(sequence in proptest::collection::vec(proptest::bool::ANY, 1..8)) {
+        use acyclic_harness::{client::{CommandResolution, CommandQuery, CommandSession, DocumentViews}, task_volume::{Component, TaskVolume}};
+        use acyclic_stream::{MemoryStream, StreamPath};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
+            let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
+            let mut views = ClientViews::default();
+            let mut documents = DocumentViews { goal: Some("Goal contents".into()), ..DocumentViews::default() };
+            documents.plans.insert(Component::new("layout").unwrap(), "Plan contents".into());
+            views.documents.insert(key, documents);
+            let mut renderer = ClientRenderer::default();
+            renderer.update(&views, &owner);
+            let volume = std::sync::Arc::new(TaskVolume::open(std::sync::Arc::new(MemoryStream::default()), StreamPath::new("panels").unwrap()).await.unwrap());
+            let mut files = CommandSession::open(volume, OperationId::from_bytes([8;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
+            for goal in sequence {
+                files.publish_resolution(CommandResolution::Select { query: if goal { CommandQuery::Goal } else { CommandQuery::Plan } }).await.unwrap();
+                let screen = renderer.screen_for(&files).unwrap();
+                proptest::prop_assert_eq!(!screen.goal.is_empty(), goal);
+                proptest::prop_assert_eq!(!screen.plans.is_empty(), !goal);
+                let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+                terminal.draw(|frame| { screen.render(frame, &PromptInput::default(), &mut Viewport::default(), 0, 0); }).unwrap();
+                let text = screen_text(&terminal);
+                proptest::prop_assert_eq!(text.contains("Goal contents"), goal);
+                proptest::prop_assert_eq!(text.contains("Plan contents"), !goal);
+            }
+            proptest::prop_assert!(!renderer.screen().goal.is_empty());
+            proptest::prop_assert!(!renderer.screen().plans.is_empty());
+            Ok(())
+        })?;
+    }
+}
