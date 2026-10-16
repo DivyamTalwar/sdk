@@ -5,13 +5,13 @@ use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
-    // Packed segments are unchanged: a schema-2 header must retain its history,
+    // Packed segments are unchanged: every readable header must retain its history,
     // survive new writes, and decode identically through both public readers.
     #[test]
-    fn schema_two_histories_reopen_and_accept_current_records(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
+    fn readable_histories_reopen_and_accept_current_records(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
         runtime.block_on(async move {
-            for schema in [2, SCHEMA] {
+            for schema in 2..=SCHEMA {
               for key in [".tasks/t/status.json", "config/settings.json", "GOAL.md"] {
                 let provider = Arc::new(MemoryStream::default());
                 let path = StreamPath::new("schema-history")?;
