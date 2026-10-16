@@ -7,9 +7,8 @@ use super::{
 use acyclic_harness::{
     OperationId, TaskId,
     conversation::{BoundedContentFuture, ContentIo, FileRef},
-    distributed::{SchedulerPayloadStore, Worker},
-    filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
-    scheduler::ResourceRequest,
+    distributed::{SchedulerPayloadStore, WorkPull, Worker},
+    scheduler::{LeaseFence, ResourceRequest},
     task_volume::{Component, FileValue, Query},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -74,7 +73,8 @@ fn model(broken: bool) {
                     .accept(&folder, &file)
                     .await
                     .unwrap();
-                run(&fixture, task).await;
+                let fence = claim(&fixture, task).await;
+                suspend(&fixture, task, &fence, 2).await;
                 let payloads = Arc::new(Payloads {
                     inner: fixture.publisher.clone(),
                     alias_inputs: broken,
@@ -117,25 +117,24 @@ fn model(broken: bool) {
                     1,
                     "distinct requests shared one accepted input"
                 );
-                run(&fixture, task).await;
+                let fence = claim(&fixture, task).await;
+                let expected = requests
+                    .iter()
+                    .zip(&accepted)
+                    .find(|(_, admitted)| **admitted)
+                    .unwrap()
+                    .0;
+                let revision = assert_input(&fixture, task, &fence, &expected.0).await;
+                suspend(&fixture, task, &fence, revision + 1).await;
                 for ((native, file), admitted) in requests.iter().zip(accepted) {
                     if !admitted {
                         consumer(&fixture, fixture.publisher.as_ref())
                             .accept(&folder, file)
                             .await
                             .unwrap();
-                        run(&fixture, task).await;
+                        let fence = claim(&fixture, task).await;
+                        assert_input(&fixture, task, &fence, native).await;
                     }
-                    let result = fixture
-                        .results
-                        .snapshot(&Query::File(native.result_key(folder.clone()).unwrap()), 1)
-                        .await
-                        .unwrap();
-                    assert_eq!(
-                        result.files.len(),
-                        1,
-                        "distinct requests shared one accepted input"
-                    );
                 }
             }));
         },
@@ -176,23 +175,66 @@ async fn publish(fixture: &Fixture, folder: &Component, native: &ExternalRequest
     file
 }
 
-async fn run(fixture: &Fixture, task: TaskId) {
+// Model only intake and its retained slot. Full worker execution and result
+// publication are exercised by intake.rs and session_runtime.rs. Preparing the
+// real slot with the host's lease API introduces no competing worker effects.
+async fn claim(fixture: &Fixture, task: TaskId) -> LeaseFence {
     let worker = Worker {
         id: "native-model".into(),
         available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
-    let commands = RequestCommands::new(&fixture.runtime, &fixture.requests, &fixture.results);
-    let result = Box::pin(
-        fixture
-            .runtime
-            .run_operation(&worker, task, &commands, 8, None),
-    )
-    .await
-    .unwrap();
-    match result {
-        Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended { .. })) => {}
-        Some(TaskWorkerAttempt::Unresolved { error, .. }) => panic!("worker: {error}"),
-        _ => panic!("worker did not settle the accepted input"),
+    let WorkPull::Claimed(lease) = fixture
+        .runtime
+        .task_host()
+        .pull_work(
+            &worker,
+            Some(OperationId::from_bytes(task.into_bytes())),
+            &mut None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("input was not claimable")
+    };
+    fixture
+        .runtime
+        .task_host()
+        .start_task(&lease, &mut None)
+        .await
+        .unwrap();
+    LeaseFence {
+        reservation_id: lease.reservation.id,
+        placement: lease.reservation.placement,
     }
+}
+
+async fn suspend(fixture: &Fixture, task: TaskId, fence: &LeaseFence, revision: u64) {
+    fixture
+        .runtime
+        .task_host()
+        .suspend_workflow(task, fence, (revision, None), None, None, &mut None)
+        .await
+        .unwrap();
+}
+
+async fn assert_input(
+    fixture: &Fixture,
+    task: TaskId,
+    fence: &LeaseFence,
+    expected: &ExternalRequest,
+) -> u64 {
+    let (revision, input) = fixture
+        .runtime
+        .task_host()
+        .workflow_input(task, fence, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        input["command"]["operation_id"],
+        expected.operation_id.to_string(),
+        "distinct requests shared one accepted input"
+    );
+    revision
 }
