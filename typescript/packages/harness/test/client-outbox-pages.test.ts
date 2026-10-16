@@ -36,6 +36,10 @@ test("immutable array prefixes preserve every byte limit and failure boundary", 
 });
 
 test("appended values retain depth, cycle, accessor, binary and budget error precedence", () => {
+  for (const value of [undefined, { entry: undefined }, [undefined]]) for (const allowed of [false, true]) {
+    expect(outcome(() => retainedDataBytes(value, 100_000, allowed)))
+      .toEqual(outcome(() => legacyRetainedDataBytes(value, 100_000, allowed)));
+  }
   const accessor = Object.defineProperty({}, "entry", { enumerable: true, get() { throw new Error("getter ran"); } });
   const cycle: { self?: unknown } = {};
   cycle.self = cycle;
