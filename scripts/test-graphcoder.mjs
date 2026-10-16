@@ -6,18 +6,16 @@ import { isAbsolute } from "node:path";
 import { fixture } from "./graphcoder-fixture.mjs";
 const [binary] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute installed binary required");
+const deadline = AbortSignal.timeout(8000);
 const host = await fixture();
 async function run(args, input = "") {
-  const child = spawn(binary, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 8000);
+  const child = spawn(binary, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal: deadline, killSignal: "SIGKILL" });
   let stdout = "", stderr = "";
   child.stdout.on("data", bytes => { stdout += bytes; });
   child.stderr.on("data", bytes => { stderr += bytes; });
   child.stdin.end(input);
-  try {
-    const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`CLI terminated by ${signal}`)) : resolve(code)); });
-    return { code, stdout, stderr };
-  } finally { clearTimeout(timeout); }
+  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`CLI terminated by ${signal}`)) : resolve(code)); });
+  return { code, stdout, stderr };
 }
 try {
   const help = await run(["--help"]);
