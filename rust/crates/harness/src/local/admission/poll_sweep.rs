@@ -508,12 +508,14 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         schedules.push((scenario, baseline));
     }
     // Replays own independent filesystems, sharing one executor and blocking pool.
-    let cuts: Vec<_> = schedules
+    let mut cuts: Vec<_> = schedules
         .iter()
         .flat_map(|(scenario, baseline)| {
             (1..=baseline.len()).map(move |cut| (*scenario, baseline, cut))
         })
         .collect();
+    coverage::permute(&mut cuts, 711);
+    coverage::check_interleaved(cuts.iter().map(|(scenario, _, _)| *scenario))?;
     for (scenario, baseline) in &schedules {
         coverage::check_cuts(
             *scenario,

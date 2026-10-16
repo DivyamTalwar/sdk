@@ -55,11 +55,19 @@ pub(super) async fn check(
         let result = journal
             .append(operation, "context:0:compacted", publication, None)?
             .await;
-        assert_eq!(
-            result.is_ok(),
-            ignore_descriptor,
-            "real canonical validation must reject the forged summary; the broken validator must accept it: {result:?}"
-        );
+        if ignore_descriptor {
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_rejected(result);
+            }))
+            .expect_err("the broken validator must fail the same rejection assertion");
+            let message = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+            assert_eq!(message, Some("tampered summary was accepted"));
+        } else {
+            assert_rejected(result);
+        }
     }
     journal = journal.with_input_verifier(reader);
     assert_eq!(
@@ -67,6 +75,10 @@ pub(super) async fn check(
         records.len()
     );
     Ok(journal)
+}
+
+fn assert_rejected(result: Result<()>) {
+    assert!(result.is_err(), "tampered summary was accepted");
 }
 
 struct DescriptorFault {
