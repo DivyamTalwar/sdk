@@ -69,6 +69,9 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
 
     /// Writes a request or editable private file against an exact publication cut.
     pub async fn write(&self, expected: Generation, file: &FileValue) -> super::Result<Generation> {
+        if file.requester.is_some() {
+            return Err(Error::Unauthorized);
+        }
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
         self.inner.append(expected, file).await
     }
@@ -77,12 +80,26 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         &self,
         expected: Generation,
         file: &FileValue,
+        requester: crate::TaskId,
         condition: acyclic_stream::CommitCondition,
         deadline: Option<u64>,
     ) -> super::Result<Generation> {
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
+        if file.requester.is_some_and(|original| original != requester) {
+            return Err(Error::Unauthorized);
+        }
+        let mut file = file.clone();
+        if matches!(
+            file.key,
+            FileKey::Child {
+                file: super::ChildFile::Request,
+                ..
+            }
+        ) {
+            file.requester = Some(requester);
+        }
         self.inner
-            .append_if(expected, file, vec![condition], deadline, None)
+            .append_if(expected, &file, vec![condition], deadline, None)
             .await
     }
 

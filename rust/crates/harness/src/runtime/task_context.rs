@@ -3,6 +3,7 @@ use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
+    fn task_id(&self) -> TaskId;
     fn validate_scope(
         &self,
         scope: &RuntimeScope,

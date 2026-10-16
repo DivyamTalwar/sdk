@@ -5,6 +5,50 @@ use proptest::prelude::*;
 
 use super::fixtures::{authority, volume};
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // A request's original owner cannot be supplied by an unfenced writer or
+    // replaced by a different task, including an otherwise identical replay.
+    #[test]
+    fn request_owner_is_fenced_and_immutable(task in any::<[u8; 16]>()) {
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let volume = volume(AgentId::from_bytes([1; 16]));
+            let (verifier, scope) = authority(
+                Some(AgentId::from_bytes([1; 16])), &volume,
+                &[VolumeOperation::Read, VolumeOperation::Write],
+            );
+            let files = TaskFiles::open(provider.clone(), &volume, &verifier, &scope, 4096).await.unwrap();
+            let parent = StreamPath::new("request-parent").unwrap();
+            provider.append(acyclic_stream::AppendRequest {
+                path: parent.clone(), records: vec![b"running".to_vec().into()],
+                if_tail: Some(0), idempotency_key: None,
+            }).await.unwrap();
+            let condition = acyclic_stream::CommitCondition::Tail { path: parent, expected: 1 };
+            let cut = files.inner.head().await.unwrap();
+            let requester = crate::TaskId::from_bytes(task);
+            let request = FileValue::new(FileKey::parse("agents/worker/request.md").unwrap(), b"work".to_vec());
+            let mut forged = request.clone();
+            forged.requester = Some(requester);
+            prop_assert!(matches!(files.write(cut, &forged).await, Err(Error::Unauthorized)));
+            prop_assert_eq!(files.inner.head().await.unwrap(), cut);
+            let cut = files.write_if(cut, &request, requester, condition.clone(), None).await.unwrap();
+            let snapshot = files.inner.snapshot(&Query::Children, 8).await.unwrap();
+            prop_assert_eq!(snapshot.files[0].requester(), Some(requester));
+            prop_assert_eq!(&snapshot.files[0].bytes, &request.bytes);
+            prop_assert_eq!(files.write_if(cut, &request, requester, condition.clone(), None).await.unwrap(), cut);
+            let mut other = task;
+            other[0] ^= 1;
+            prop_assert!(matches!(
+                files.write_if(cut, &request, crate::TaskId::from_bytes(other), condition, None).await,
+                Err(Error::ImmutableConflict(_))
+            ));
+            prop_assert_eq!(files.inner.head().await.unwrap(), cut);
+            Ok(())
+        })?;
+    }
+}
+
 #[tokio::test]
 async fn opening_requires_the_exact_private_owner_and_both_volume_grants() {
     let agent = AgentId::from_bytes([1; 16]);

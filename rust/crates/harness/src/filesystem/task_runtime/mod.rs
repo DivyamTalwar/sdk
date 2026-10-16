@@ -303,6 +303,9 @@ impl TaskContext {
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
+    fn task_id(&self) -> TaskId {
+        self.owner.task_id()
+    }
     fn validate_scope(
         &self,
         scope: &RuntimeScope,

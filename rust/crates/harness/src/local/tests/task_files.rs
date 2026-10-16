@@ -113,10 +113,12 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
         ScriptedTurn::Text("request published".into()),
     ]);
     let harness = LocalHarness::open(volume_config(directory.path(), project, provider)?).await?;
-    assert_eq!(
-        harness.run("spawn a reader").await?.text,
-        "request published"
-    );
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(OperationId::new(), "spawn a reader").await?
+    else {
+        panic!("parent was not admitted");
+    };
+    assert_eq!(harness.resume(task_id).await?.text, "request published");
     let snapshot = harness
         .task_files()
         .observe(
@@ -130,6 +132,7 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
         .unwrap();
     assert_eq!(snapshot.files.len(), 1);
     assert_eq!(snapshot.files[0].key.path(), "agents/worker/request.md");
+    assert_eq!(snapshot.files[0].requester(), Some(task_id));
     assert!(
         std::str::from_utf8(&snapshot.files[0].bytes)
             .unwrap()
@@ -203,7 +206,13 @@ async fn cancelled_parent_cannot_publish_a_late_agent_file() -> Result<()> {
     );
     assert!(matches!(
         files
-            .write_if(snapshot.generation, &request, condition, deadline)
+            .write_if(
+                snapshot.generation,
+                &request,
+                owner.task_id(),
+                condition,
+                deadline
+            )
             .await,
         Err(crate::task_volume::Error::FenceConflict)
     ));
@@ -318,7 +327,7 @@ async fn agent_file_deadline_uses_the_admission_clock_at_commit() -> Result<()> 
     );
     assert!(matches!(
         files
-            .write_if(snapshot.generation, &request, condition, bound)
+            .write_if(snapshot.generation, &request, task_id, condition, bound)
             .await,
         Err(crate::task_volume::Error::Storage(
             acyclic_stream::StreamError::DeadlineElapsed

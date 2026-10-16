@@ -305,13 +305,22 @@ async fn access<P: StreamProvider + ?Sized>(
         if bytes.len() as u64 > limits.file_bytes {
             return Err(invalid("child file exceeds the calling scope"));
         }
-        let file = FileValue::new(
+        let mut file = FileValue::new(
             FileKey::Child {
                 reference: reference.clone(),
                 file,
             },
             bytes,
         );
+        if matches!(
+            file.key,
+            FileKey::Child {
+                file: ChildFile::Request,
+                ..
+            }
+        ) {
+            file.requester = owner.map(crate::runtime::OwnedTaskMailbox::task_id);
+        }
         if reconcile_only {
             // A newer lifecycle write must never be overwritten during replay.
             // Immutable request/inbox identities can be recognized exactly.
@@ -323,7 +332,13 @@ async fn access<P: StreamProvider + ?Sized>(
                 Some(owner) => {
                     let (condition, deadline) = owner.file_publication_condition().await?;
                     files
-                        .write_if(snapshot.generation, &file, condition, deadline)
+                        .write_if(
+                            snapshot.generation,
+                            &file,
+                            owner.task_id(),
+                            condition,
+                            deadline,
+                        )
                         .await
                 }
                 None => files.write(snapshot.generation, &file).await,

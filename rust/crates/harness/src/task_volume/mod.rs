@@ -122,6 +122,8 @@ pub struct FileValue {
     pub key: FileKey,
     /// Assistant channel discriminator, required only for assistant chunks.
     pub channel: Option<Channel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) requester: Option<crate::TaskId>,
     /// Zero-copy segment view, retaining original allocation custody.
     pub bytes: OwnedBytes,
 }
@@ -130,6 +132,11 @@ pub struct FileValue {
 pub type Write = FileValue;
 
 impl FileValue {
+    /// Original requesting task for an owner-published child request.
+    pub fn requester(&self) -> Option<crate::TaskId> {
+        self.requester
+    }
+
     /// Decodes a platform inbox/event record for an actor handler. The initial
     /// schema/volume declaration has no file event and returns `None`.
     pub fn from_record(record: &acyclic_stream::Record) -> Result<Option<Self>> {
@@ -150,11 +157,23 @@ impl FileValue {
         Self {
             key,
             channel: None,
+            requester: None,
             bytes: bytes.into(),
         }
     }
 
     fn validate(&self) -> Result<()> {
+        if self.requester.is_some()
+            && !matches!(
+                self.key,
+                FileKey::Child {
+                    file: ChildFile::Request,
+                    ..
+                }
+            )
+        {
+            return Err(Error::InvalidSegment);
+        }
         if matches!(
             self.key,
             FileKey::Task {

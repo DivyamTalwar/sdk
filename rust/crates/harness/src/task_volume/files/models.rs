@@ -517,13 +517,17 @@ fn parent_cancellation_race(broken: bool) {
             b"work".to_vec(),
         )
     };
-    let first = request("first");
+    let mut first = request("first");
+    if !broken {
+        first.requester = Some(crate::TaskId::from_bytes([6; 16]));
+    }
     let result = if broken {
         loom::future::block_on(Box::pin(files.write(snapshot.generation, &first)))
     } else {
         loom::future::block_on(Box::pin(files.write_if(
             snapshot.generation,
             &first,
+            crate::TaskId::from_bytes([6; 16]),
             condition.clone(),
             None,
         )))
@@ -545,6 +549,7 @@ fn parent_cancellation_race(broken: bool) {
         loom::future::block_on(Box::pin(files.write_if(
             snapshot.generation,
             &late,
+            crate::TaskId::from_bytes([6; 16]),
             condition,
             None,
         )))

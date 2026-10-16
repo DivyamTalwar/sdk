@@ -1,6 +1,16 @@
 #![no_main]
-use acyclic_harness::task_volume::{ChildRequest, ChildStatus, Control, FileKey, Query};
+use acyclic_harness::task_volume::{ChildRequest, ChildStatus, Control, FileKey, FileValue, Query};
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    let record = acyclic_stream::Record {
+        sequence: 1,
+        value: bytes.to_vec().into(),
+        commit_id: acyclic_stream::CommitId::from_bytes([0; 32]),
+        committed_at_micros: 0,
+    };
+    if let Ok(Some(file)) = FileValue::from_record(&record) {
+        let encoded = serde_json::to_vec(&file).unwrap();
+        assert_eq!(serde_json::from_slice::<FileValue>(&encoded).unwrap(), file);
+    }
     if let Ok(request) = serde_json::from_slice::<acyclic_harness::fork::ForkRequest>(bytes)
         && request.validate(&mut None).is_ok()
     {
