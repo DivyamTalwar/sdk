@@ -35,6 +35,8 @@ pub use pool::model::{
 };
 mod progress;
 use progress::Progress;
+#[cfg(acyclic_stream_loom)]
+pub use progress::verify_latest_progress;
 #[cfg(test)]
 mod tests;
 type Connect = std::sync::Arc<
@@ -76,7 +78,7 @@ struct Delivery {
     credit: Credit,
 }
 enum Received {
-    Record(crate::Record),
+    Data(wire::SessionData),
     Child(crate::Child),
 }
 enum Command {
@@ -263,17 +265,48 @@ impl Client {
         preceding: Option<crate::CommitId>,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
-        let kind = Kind::Follow(wire::SessionFollow {
+        let follow = wire::SessionFollow {
             path: path.to_string(),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-        });
+        };
         Ok(self
-            .open_kind(kind, from, acknowledge)
+            .follow_data_with_ack(follow, from, acknowledge)
+            .await?
+            .map(|data| match data?.item {
+                Some(Item::Record(record)) => wire_codec::record(record),
+                _ => Err(StreamError::Unavailable),
+            })
+            .boxed())
+    }
+    /// Follows ALL records or LATEST values on the shared per-node session,
+    /// retaining the exact data cursor and accepted/durable watermarks.
+    pub async fn follow_data(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+    ) -> Result<BoxStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
+        self.follow_data_with_ack(follow, from, true).await
+    }
+    pub(crate) async fn follow_data_with_ack(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+        acknowledge: bool,
+    ) -> Result<BoxStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
+        StreamPath::new(&follow.path)?;
+        if !matches!(
+            wire::SessionDelivery::try_from(follow.delivery),
+            Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
+        ) {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(self
+            .open_kind(Kind::Follow(follow), from, acknowledge)
             .await?
             .map(|item| match item? {
-                Received::Record(record) => Ok(record),
+                Received::Data(data) => Ok(data),
                 _ => Err(StreamError::Unavailable),
             })
             .boxed())
@@ -376,11 +409,21 @@ impl Client {
                     // Delivery disposal returns capacity on every exit, including
                     // stale-generation suppression and cancellation of the cursor.
                     let fresh = match &delivery.item {
-                        Received::Record(record) => cursor.progress.consume_record(
-                            delivery.generation,
-                            delivery.sequence,
-                            *record.commit_id.as_bytes(),
-                        )?,
+                        Received::Data(data) => match &data.item {
+                            Some(Item::Record(record)) => cursor.progress.consume_record(
+                                delivery.generation,
+                                delivery.sequence,
+                                record
+                                    .commit_id
+                                    .as_ref()
+                                    .try_into()
+                                    .map_err(|_| StreamError::Unavailable)?,
+                            )?,
+                            Some(Item::LatestValue(_)) => cursor
+                                .progress
+                                .consume_latest(delivery.generation, delivery.sequence)?,
+                            _ => return Err(StreamError::Unavailable),
+                        },
                         Received::Child(_) => cursor.progress.consume_opaque(
                             delivery.generation,
                             delivery.sequence,

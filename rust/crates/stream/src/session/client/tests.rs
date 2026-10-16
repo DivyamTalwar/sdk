@@ -11,6 +11,7 @@ mod checked;
 mod context;
 mod credentials;
 mod isolation;
+mod latest;
 mod lifecycle;
 mod outbound;
 
