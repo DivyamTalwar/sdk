@@ -44,8 +44,10 @@ pub(super) async fn verify_model_contents_scoped<'a>(
         Ok(())
     }
     .await;
+    #[cfg(feature = "filesystem")]
     let owned = (summaries.capacity() * std::mem::size_of::<&FileRef>()) as u64;
     drop(summaries);
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.release(owned)?;
     }

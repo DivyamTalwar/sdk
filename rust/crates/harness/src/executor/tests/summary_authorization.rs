@@ -65,10 +65,8 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         source_digest: [7; 32],
         output: file.clone(),
     };
-    runtime.block_on(stage_json(
+    runtime.block_on(super::super::summary::stage_summary_provenance(
         journal.as_ref(),
-        operation,
-        &file.read_capability(&mut None)?,
         &summary,
         None,
     ))?;

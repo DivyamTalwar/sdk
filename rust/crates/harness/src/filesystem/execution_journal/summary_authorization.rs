@@ -28,6 +28,16 @@ where
             else {
                 return Ok(false);
             };
+            crate::executor::with_history_io(io, |work| {
+                ContentGrant::authorize_volume(
+                    &self.verifier,
+                    &self.scope,
+                    &self.volume,
+                    VolumeOperation::Read,
+                    self.maximum_payload_bytes,
+                    work,
+                )
+            })?;
             let key = crate::executor::with_history_io(io, |work| file.read_capability(work))?;
             let key_hold = io
                 .map(|io| io.guard_owned(key.capacity() as u64))
