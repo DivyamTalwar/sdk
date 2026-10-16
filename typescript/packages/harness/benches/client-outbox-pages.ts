@@ -1,5 +1,6 @@
 import { outboxFixture } from "../test/client-outbox-page-fixture.js";
 import { IndexedDbClientStore } from "../src/client-store.js";
+import { estimateShallowMemoryUsageOf } from "bun:jsc";
 
 const baseline = process.env.HARNESS_OUTBOX_PAGE_BEFORE;
 if (!baseline) throw new Error("HARNESS_OUTBOX_PAGE_BEFORE must name an explicit baseline module");
@@ -44,14 +45,17 @@ if (mode === "timing") {
 } else {
   for (let index = 0; index < 2; index++) {
     const original = Object.getOwnPropertyDescriptor;
-    let reads = 0;
+    let reads = 0, descriptors = 0, estimatedDescriptorBytes = 0;
     Object.getOwnPropertyDescriptor = (value, key) => {
+      const descriptor = original(value, key);
       if (key === "operationId") reads++;
-      return original(value, key);
+      if (descriptor) { descriptors++; estimatedDescriptorBytes += estimateShallowMemoryUsageOf(descriptor); }
+      return descriptor;
     };
     try { await run(index); }
     finally { Object.getOwnPropertyDescriptor = original; }
-    console.log(JSON.stringify({ count, legacy: index === 0, commandCounterVisits: reads }));
+    console.log(JSON.stringify({ count, legacy: index === 0, commandCounterVisits: reads,
+      descriptors, estimatedDescriptorBytes }));
   }
 }
 console.log(JSON.stringify({ count, mode, checksum }));
