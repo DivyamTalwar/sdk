@@ -207,9 +207,6 @@ impl LocalHarness {
         task: TaskId,
         root: OperationId,
     ) -> Result<Option<TaskId>> {
-        let Some(policy) = self.goal_continuations else {
-            return Ok(None);
-        };
         serialized(&self.admission, async || {
             let (current, _) = self.current_turn().await?;
             let Some(current) = current else {
@@ -224,6 +221,9 @@ impl LocalHarness {
                 }
                 return Ok(None);
             }
+            let Some(policy) = self.goal_continuations else {
+                return Ok(None);
+            };
             if !can_admit(
                 Some(current.operation),
                 Some(settled),

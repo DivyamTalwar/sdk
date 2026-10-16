@@ -148,7 +148,11 @@ async fn run(case: Case) -> Result<()> {
     drop(followed);
     drop(stream);
     drop(harness);
-    let reopened = LocalHarness::open(config()?).await?;
+    let mut reopen_config = config()?;
+    // Disabling future automatic admissions does not discard an already
+    // published ordinary continuation or change the result of its replay.
+    reopen_config.goal_continuations = None;
+    let reopened = LocalHarness::open(reopen_config).await?;
     assert_eq!(
         reopened.resume(task_id).await?.text,
         output.text,
