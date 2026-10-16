@@ -12,6 +12,7 @@ mod bash;
 mod capture;
 mod git;
 pub(super) mod publisher;
+pub(super) mod reconciliation;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -60,6 +61,8 @@ impl CheckoutTools {
     ) -> Result<Self> {
         let active = workspace.selected_view().await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
+        let view = active.as_ref().unwrap_or_else(|| workspace.view());
+        reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await?;
         let watcher = if workspace.fresh {
             Some(capture::Cursor::initial(&workspace, &capture_policy)?)
         } else {
@@ -141,14 +144,19 @@ impl ToolExecutor for CheckoutTools {
                     Error::Unauthorized("checkout command has no execution owner".into())
                 })?;
                 owner.verify_owner(None)?.await?;
+                let view = state
+                    .active
+                    .as_ref()
+                    .unwrap_or_else(|| self.workspace.view());
+                if reconciliation::recover(&self.workspace, view, &|| async {
+                    owner.verify_owner(None)?.await
+                })
+                .await?
+                {
+                    state.watcher = None;
+                }
                 if invocation.name == "fs" {
-                    let State { active, watcher } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    let (result, switched) = self.fs(view, &command, context, watcher).await?;
-                    if let Some(switched) = switched {
-                        state.active = Some(switched);
-                    }
-                    Ok(result)
+                    self.fs(&command, context, &mut state).await
                 } else {
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());

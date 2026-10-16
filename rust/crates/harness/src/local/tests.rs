@@ -725,3 +725,12 @@ mod checkout;
 #[cfg(feature = "native-execution")]
 #[path = "tests/checkout_reopen.rs"]
 mod checkout_reopen;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout_reconciliation;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volume_tools;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod reconciliation_interruptions;

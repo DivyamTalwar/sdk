@@ -187,6 +187,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         self.generation_ref_id(generation.id(), None)
     }
 
+
     /// Resolves the current immutable head under the caller's work context.
     pub async fn resolve(
         &self,
@@ -468,3 +469,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bytes_tests;

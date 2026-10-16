@@ -18,8 +18,10 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
  "allocation-counter",
  "bytes",
@@ -49,6 +51,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -85,6 +88,7 @@ dependencies = [
  "acyclic-contract-derive",
  "allocation-counter",
  "ed25519-dalek",
+ "futures",
  "proptest",
  "prost",
  "prost-reflect",
@@ -95,6 +99,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "ts-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "acyclic-auth-wasm"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "ed25519-dalek",
+ "js-sys",
+ "proptest",
+ "prost",
+ "wasm-bindgen",
  "zeroize",
 ]
 
@@ -144,6 +161,7 @@ dependencies = [
 name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -284,6 +302,7 @@ dependencies = [
 name = "acyclic-harness"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-tui",
@@ -297,6 +316,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "diffy",
  "dirs",
  "futures",
  "getrandom 0.3.4",
@@ -355,15 +375,18 @@ dependencies = [
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fs",
  "acyclic-harness",
  "acyclic-stream",
  "bytes",
+ "diffy",
  "futures",
  "libfuzzer-sys",
  "prost",
  "rmcp",
  "serde",
  "serde_json",
+ "serde-saphyr",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -392,6 +415,8 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
+ "proptest",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -426,11 +451,13 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "async-trait",
  "futures",
  "hex",
  "hyper-util",
+ "proptest",
  "prost",
  "rcgen",
  "rustix 1.1.5",
@@ -531,6 +558,7 @@ dependencies = [
 name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -625,6 +653,7 @@ dependencies = [
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "async-trait",
@@ -719,6 +748,7 @@ dependencies = [
  "axum",
  "bytes",
  "hex",
+ "proptest",
  "prost",
  "prost-reflect",
  "serde_json",
@@ -5040,11 +5070,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
  "annotate-snippets",
+ "base64 0.22.1",
  "encoding_rs_io",
  "granit-parser",
+ "nohash-hasher",
  "num-traits",
  "serde_core",
  "smallvec",
+ "zmij",
 ]
 
 [[package]]
