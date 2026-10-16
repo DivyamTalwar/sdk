@@ -401,6 +401,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
  "which",
 ]
 
@@ -561,6 +562,7 @@ dependencies = [
  "pulldown-cmark",
  "syntect",
  "unicase",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
