@@ -14,7 +14,7 @@ use futures::StreamExt as _;
 use std::collections::BTreeMap;
 
 #[tokio::test]
-async fn native_request_files_admit_resume_and_close_the_same_session() -> Result<()> {
+async fn native_request_files_admit_detach_and_reconnect_the_same_session() -> Result<()> {
     Box::pin(async {
         for host in [ExternalHost::Codex, ExternalHost::ClaudeCode, ExternalHost::Pi] {
             let fixture = Fixture::new(VolumeBinding::Separate).await?;
@@ -22,7 +22,7 @@ async fn native_request_files_admit_resume_and_close_the_same_session() -> Resul
             let folder = Component::new(task.to_string()).map_err(storage)?;
             let start = request(host, if host == ExternalHost::Pi {"session_start"} else {"SessionStart"},
                 identity(host, json!({"cwd":"/project"})))?;
-            let attached = deliver(&fixture,&folder,&start,false).await?;
+            let attached = deliver(&fixture,&folder,&start).await?;
             assert_eq!(attached["task"], task.to_string());
             let arguments = json!({"path":"session.txt","text":"written through native requests",
                 "media_type":"text/plain","display_name":"session.txt"});
@@ -34,7 +34,7 @@ async fn native_request_files_admit_resume_and_close_the_same_session() -> Resul
                 ExternalHost::Codex=>json!({"tool_use_id":"write-call","tool_name":"write","tool_input":arguments}),
             };
             let write = request(host, if host == ExternalHost::Pi {"tool_call"} else {"PreToolUse"}, identity(host,input))?;
-            let written = deliver(&fixture,&folder,&write,false).await?;
+            let written = deliver(&fixture,&folder,&write).await?;
             let outcome: acyclic_harness::Outcome<acyclic_harness::tool::files::FileResult> =
                 serde_json::from_value(written).map_err(|error| invalid(&error))?;
             let acyclic_harness::Outcome::Succeeded(output) = outcome else {
@@ -47,16 +47,25 @@ async fn native_request_files_admit_resume_and_close_the_same_session() -> Resul
                 json!({"toolCallId":"write-call","isError":false,"content":[{"type":"text","text":"done"}]})
             } else {json!({"tool_use_id":"write-call","tool_response":{"ok":true}})};
             let completed=request(host,if host==ExternalHost::Pi {"tool_result"} else {"PostToolUse"},identity(host,completed_input))?;
-            deliver(&fixture,&folder,&completed,false).await?;
+            deliver(&fixture,&folder,&completed).await?;
             let foreign = request(host,if host==ExternalHost::Pi {"session_shutdown"} else {"SessionEnd"},
                 if host==ExternalHost::Pi {json!({"sessionId":"other"})} else {json!({"session_id":"other"})})?;
             let file=publish(&fixture,&folder,&foreign).await?;
             let consumer=RequestConsumer::new(&fixture.runtime,&fixture.requests,&fixture.results,fixture.publisher.as_ref(),"/project");
             assert!(matches!(consumer.accept(&folder,&file).await,Err(Error::Unauthorized(_))));
             let stop = request(host,if host == ExternalHost::Pi {"session_shutdown"} else {"SessionEnd"},identity(host,json!({})))?;
-            let detached = deliver(&fixture,&folder,&stop,true).await?;
+            let detached = deliver(&fixture,&folder,&stop).await?;
             assert_eq!(detached["task"],task.to_string());
-            assert_eq!(fixture.runtime.task_host().outcome(task).await?,Some(acyclic_harness::Outcome::Succeeded(Value::Null)));
+            assert_eq!(fixture.runtime.task_host().outcome(task).await?,None);
+            assert_eq!(start.send(&fixture.requests, &fixture.results, folder.clone()).await.map_err(storage)?, attached);
+            let next = request(host, if host == ExternalHost::Pi {"tool_call"} else {"PreToolUse"},
+                identity(host, json!({"tool_use_id":"reconnected", "tool_name":"write", "tool_input":{
+                    "path":"resumed.txt", "text":"after reconnect", "media_type":"text/plain", "display_name":"resumed.txt"
+                }})))?;
+            let answer = deliver(&fixture, &folder, &next).await?;
+            let result = tool_result(answer)?;
+            assert_eq!(result["isError"], false);
+            assert_eq!(fixture.runtime.task_host().outcome(task).await?,None);
         }
         Ok(())
     }).await
@@ -122,7 +131,7 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
             "SessionStart",
             identity(host, json!({"cwd":"/project"})),
         )?;
-        deliver(&fixture, &folder, &start, false).await?;
+        deliver(&fixture, &folder, &start).await?;
         for (event, input) in [
             (
                 "PreToolUse",
@@ -149,7 +158,7 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
             ("SubagentStop", json!({"agent_id":"child"})),
         ] {
             let rejected = request(host, event, identity(host, input))?;
-            let answer = deliver(&fixture, &folder, &rejected, false).await?;
+            let answer = deliver(&fixture, &folder, &rejected).await?;
             let outcome: acyclic_harness::Outcome<Value> =
                 serde_json::from_value(answer.clone()).map_err(|error| invalid(&error))?;
             assert!(
@@ -166,7 +175,7 @@ async fn rejected_native_actions_settle_without_blocking_the_next_request() -> R
             );
         }
         let stop = request(host, "SessionEnd", identity(host, json!({})))?;
-        deliver(&fixture, &folder, &stop, true).await?;
+        deliver(&fixture, &folder, &stop).await?;
         Ok(())
     })
     .await
@@ -183,7 +192,7 @@ async fn a_disconnected_hook_leaves_its_request_for_the_existing_worker() -> Res
             "session_start",
             json!({"sessionId":"session", "cwd":"/project"}),
         )?;
-        deliver(&fixture, &folder, &start, false).await?;
+        deliver(&fixture, &folder, &start).await?;
         let write = request(
             ExternalHost::Pi,
             "tool_call",
@@ -211,7 +220,7 @@ async fn a_disconnected_hook_leaves_its_request_for_the_existing_worker() -> Res
         )
         .accept(&folder, &file)
         .await?;
-        execute(&fixture, task, false).await?;
+        execute(&fixture, task).await?;
         let answer = write
             .send(&fixture.requests, &fixture.results, folder)
             .await
@@ -266,7 +275,6 @@ async fn deliver(
     fixture: &Fixture,
     folder: &Component,
     request: &ExternalRequest,
-    terminal: bool,
 ) -> Result<Value> {
     let file = request.to_file(folder.clone()).map_err(storage)?;
     let mut incoming = fixture
@@ -305,7 +313,7 @@ async fn deliver(
                 .map_err(|error| Error::Invalid(error.to_string()))?
                 .into_bytes(),
         );
-        execute(fixture, task, terminal).await?;
+        execute(fixture, task).await?;
         consumer.accept(folder, &delivered).await?;
         Ok::<_, Error>(())
     };
@@ -313,7 +321,7 @@ async fn deliver(
     Ok(answer)
 }
 
-async fn execute(fixture: &Fixture, task: TaskId, terminal: bool) -> Result<()> {
+async fn execute(fixture: &Fixture, task: TaskId) -> Result<()> {
     let worker = Worker {
         id: "native-session".into(),
         available: ResourceRequest::default(),
@@ -327,14 +335,9 @@ async fn execute(fixture: &Fixture, task: TaskId, terminal: bool) -> Result<()> 
     )
     .await?
     {
-        Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }))
-            if terminal =>
-        {
-            assert_eq!(completed, task)
-        }
         Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended {
             task: suspended, ..
-        })) if !terminal => assert_eq!(suspended, task),
+        })) => assert_eq!(suspended, task),
         Some(TaskWorkerAttempt::Unresolved { error, .. }) => return Err(error),
         _ => {
             return Err(Error::Storage(

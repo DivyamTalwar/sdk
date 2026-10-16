@@ -38,7 +38,7 @@ async fn native_sessions_execute_once_in_the_selected_checkout_after_reopen() ->
             std::mem::size_of_val(&future)
         );
         assert!(std::mem::size_of_val(&future) < 16 * 1024);
-        future.await?;
+        let attachment = future.await?;
         let result = harness.external_request(&write).await?;
         let native = tool_result(result.clone())?;
         assert_eq!(native["isError"], false);
@@ -90,8 +90,22 @@ async fn native_sessions_execute_once_in_the_selected_checkout_after_reopen() ->
         );
         let detach = request(host, detach_event, json!({"session_id":session}))?;
         reopened.external_request(&detach).await?;
+        drop(reopened);
+        let resumed = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
+        assert_eq!(resumed.external_request(&attach).await?, attachment);
+        let next = request(
+            host,
+            tool_event,
+            json!({"session_id":session,"tool_use_id":"after-reconnect",
+            "tool_name":"write","tool_input":{"path":"note.txt","text":"after reconnect","media_type":"text/plain","display_name":"note.txt"}}),
+        )?;
+        tool_result(resumed.external_request(&next).await?)?;
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("note.txt")).map_err(failure)?,
+            "after reconnect"
+        );
         assert!(
-            reopened
+            resumed
                 .submit(acyclic_harness::OperationId::new(), "no model bound")
                 .await
                 .is_err()

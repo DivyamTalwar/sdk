@@ -65,7 +65,8 @@ where
                 ));
             }
             let provider = self.runtime.task_host().workflow_stream();
-            if !self.requests.shares_provider(&provider) || !self.results.shares_provider(&provider) {
+            if !self.requests.shares_provider(&provider) || !self.results.shares_provider(&provider)
+            {
                 return Err(Error::Unauthorized(
                     "request volumes use another task provider".into(),
                 ));
@@ -157,8 +158,8 @@ where
                 return Ok(());
             }
             let command = self.command(&request).await?;
-            let terminal = matches!(request.action, ExternalAction::Detach);
-            let input = serde_json::json!({"command":command,"terminal":terminal});
+            // Detach closes a native connection, not its resumable task.
+            let input = serde_json::json!({"command":command,"terminal":false});
             let (phase, slot) = self
                 .runtime
                 .task_host()
