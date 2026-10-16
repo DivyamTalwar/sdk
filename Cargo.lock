@@ -583,6 +583,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-sdk-fuzz"
+version = "0.0.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness",
+ "libfuzzer-sys",
+ "serde_json",
+]
+
+[[package]]
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
