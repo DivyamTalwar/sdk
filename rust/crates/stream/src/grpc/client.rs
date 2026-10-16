@@ -5,13 +5,20 @@ impl Client {
         // Include callers waiting behind another initializer in the deadline.
         tokio::time::timeout(
             Duration::from_secs(4),
-            self.sessions.get_or_try_init(|| {
+            self.sessions.get_or_try_init(|| async {
+                let request = self.request(()).await.map_err(|error| status(&error))?;
+                let authorization = request
+                    .metadata()
+                    .get("authorization")
+                    .cloned()
+                    .ok_or(StreamError::AccessDenied)?;
                 crate::session::Client::open(
                     self.channel.clone(),
-                    self.authorization.clone(),
+                    authorization,
                     self.session_ca.clone(),
                     self.session_verifier.clone(),
                 )
+                .await
             }),
         )
         .await
@@ -30,12 +37,16 @@ impl Client {
             return Err(StreamError::InvalidArgument);
         }
         let mut service = self.service();
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            service.acknowledge_delivery(self.request(wire::AcknowledgeDeliveryRequest {
-                delivery_token: token,
-            })),
-        )
+        tokio::time::timeout(Duration::from_millis(500), async {
+            service
+                .acknowledge_delivery(
+                    self.request(wire::AcknowledgeDeliveryRequest {
+                        delivery_token: token,
+                    })
+                    .await?,
+                )
+                .await
+        })
         .await
         .map_err(|_| StreamError::Unavailable)?
         .map_err(|error| status(&error))?;
