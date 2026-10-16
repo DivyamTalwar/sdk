@@ -89,9 +89,21 @@ pub(super) fn configure_linker(command: &mut Command) {
         let [linker] = linkers.as_slice() else {
             panic!("the pinned compiler must provide exactly one host linker");
         };
-        let host = linker.parent().unwrap().parent().unwrap().file_name().unwrap();
+        let host = linker
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap();
         command.env(
-            format!("CARGO_TARGET_{}_LINKER", host.to_str().unwrap().replace('-', "_").to_ascii_uppercase()),
+            format!(
+                "CARGO_TARGET_{}_LINKER",
+                host.to_str()
+                    .unwrap()
+                    .replace('-', "_")
+                    .to_ascii_uppercase()
+            ),
             linker,
         );
     }
