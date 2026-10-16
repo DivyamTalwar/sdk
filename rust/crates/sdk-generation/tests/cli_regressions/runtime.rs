@@ -102,6 +102,11 @@ pub(super) fn rustc() -> PathBuf {
 }
 
 pub(super) fn configure(command: &mut Command) {
+    // These controls inspect API/source identity and execute unoptimized code.
+    // Debug symbol files and incremental compiler state are unused fixtures.
+    command
+        .env("CARGO_PROFILE_DEV_DEBUG", "0")
+        .env("CARGO_PROFILE_DEV_INCREMENTAL", "false");
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
@@ -133,8 +138,6 @@ pub(super) fn configure(command: &mut Command) {
             linker,
         );
     }
-    #[cfg(not(windows))]
-    let _ = command;
 }
 
 fn resolve_cargo() -> sync::Arc<PathBuf> {
