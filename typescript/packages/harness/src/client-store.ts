@@ -1,6 +1,6 @@
 import { type ClientCommand, type ReplayCursor, validateCursor, authorityKey } from "./client.js";
 import { type OperationId, type Authority } from "./index.js";
-import { retainedDataBytes, cloneStructuredValue, assertOutboxSafe } from "./client-data.js";
+import { retainedDataBytes, retainedArrayTailBytes, cloneStructuredValue, assertOutboxSafe } from "./client-data.js";
 import { requestBound } from "./client-requests.js";
 import { NativeContracts } from "./native-contracts.js";
 
@@ -147,15 +147,22 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
 
   async load(): Promise<readonly ClientCommand[]> {
     const commands: ClientCommand[] = [];
+    let bytes = 0;
+    let owned = true;
     let after = 0;
     let through: number | undefined;
     do {
-      const page = await this.loadPage(after, through);
+      const read = this.loadPage;
+      owned &&= read === readOwnedOutboxPage;
+      const page = await Reflect.apply(read, this, [after, through]);
       through = page.throughSequence;
       after = page.afterSequence;
+      const start = commands.length;
       commands.push(...page.commands);
       if (commands.length > this.#limits.maximumCommands) throw new RangeError("outbox capacity exceeded");
-      retainedDataBytes(commands, this.#limits.maximumResidentBytes);
+      // Only the built-in reader returns private clones that no caller can mutate.
+      bytes = owned ? retainedArrayTailBytes(commands, this.#limits.maximumResidentBytes, start, bytes)
+        : retainedDataBytes(commands, this.#limits.maximumResidentBytes);
     } while (after < through);
     return commands;
   }
@@ -326,6 +333,8 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     return checkpointVersion;
   }
 }
+
+const readOwnedOutboxPage = IndexedDbClientStore.prototype.loadPage;
 
 function openClientDatabase(
   factory: IDBFactory,

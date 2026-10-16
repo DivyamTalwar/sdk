@@ -3,7 +3,15 @@ import { isSafeAuthorityId } from "./rust-policy.js";
 import { NativeContracts } from "./native-contracts.js";
 
 export function retainedDataBytes(value: unknown, maximum: number, allowUndefined = false): number {
-  let bytes = 0;
+  return measureDataBytes(value, maximum, allowUndefined);
+}
+
+/** Extend a measured prefix of a private, dense array whose prefix cannot change. */
+export function retainedArrayTailBytes(value: readonly unknown[], maximum: number, start: number, bytes: number): number {
+  return start === 0 ? retainedDataBytes(value, maximum) : measureDataBytes(value, maximum, false, start, bytes);
+}
+
+function measureDataBytes(value: unknown, maximum: number, allowUndefined: boolean, start?: number, bytes = 0): number {
   const ancestors = new Set<object>();
   const charge = (amount: number): void => {
     if (amount > maximum - bytes) throw new RangeError("client command byte capacity exceeded");
@@ -35,7 +43,21 @@ export function retainedDataBytes(value: unknown, maximum: number, allowUndefine
       }
     } finally { ancestors.delete(data); }
   };
-  visit(value, 0);
+  if (start === undefined) visit(value, 0);
+  else {
+    const array = value as readonly unknown[];
+    charge((array.length - start) * 8);
+    ancestors.add(array);
+    try {
+      for (let index = start; index < array.length; index++) {
+        const key = String(index);
+        charge(32 + key.length * 2);
+        const descriptor = Object.getOwnPropertyDescriptor(array, key)!;
+        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
+        visit(descriptor.value, 1);
+      }
+    } finally { ancestors.delete(array); }
+  }
   return bytes;
 }
 
