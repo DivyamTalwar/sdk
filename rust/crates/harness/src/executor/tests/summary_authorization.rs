@@ -47,6 +47,10 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         "text/plain",
         None,
     )?)?;
+    assert_eq!(
+        super::super::summary_identity::summary_operation(file.path()),
+        Some(operation)
+    );
     let other = runtime.block_on(journal.stage(
         operation,
         "unrelated-private-file",
@@ -70,6 +74,10 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         &summary,
         None,
     ))?;
+    assert!(
+        runtime.block_on(journal.authenticate_summary(&file, None)?)?,
+        "published provenance was not found by exact output identity"
+    );
     let observe = |scope: &RuntimeScope| -> Result<[bool; 2]> {
         Ok([
             runtime.block_on(permitted(journal.as_ref(), scope, &file))?,
@@ -77,7 +85,11 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         ])
     };
     let exact = |observed| observed == [true, false];
-    assert!(exact(observe(&narrow)?));
+    let observed = observe(&narrow)?;
+    assert!(
+        exact(observed),
+        "unexpected exact-summary projection permissions: {observed:?}"
+    );
     // Deliberately broken grant: the same detector must reject a root-directory
     // grant, which admits unrelated private journal contents.
     let broad = RuntimeScope::new(
