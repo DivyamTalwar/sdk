@@ -25,8 +25,8 @@ impl CheckoutTools {
         for (_, mount) in self.mounts.mounts() {
             if let Some(source) = &mount.view.source {
                 owner.verify(false, &mut None).await?;
-                source.sync().await.map_err(Error::from)?;
-                source.advance_to_head().await.map_err(Error::from)?;
+                source.native.sync().await.map_err(Error::from)?;
+                source.native.advance_to_head().await.map_err(Error::from)?;
             }
         }
         let cancellation = CancellationToken::new();

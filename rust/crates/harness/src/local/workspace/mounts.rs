@@ -107,6 +107,10 @@ mod tests {
             }
             for (path, volume, mode, source) in before {
                 let (mounted, relative) = mounts.resolve(Path::new(&path)).unwrap();
+                let qualifier = if path.is_empty() { "project" } else { path.strip_prefix(".volumes/").unwrap() };
+                let (selected_path, selected) = mounts.named(Some(qualifier)).unwrap();
+                prop_assert_eq!(selected_path, path.as_str());
+                prop_assert_eq!(&selected.view.volume, &volume);
                 prop_assert!(relative.is_empty());
                 prop_assert_eq!(&mounted.view.volume, &volume);
                 prop_assert_eq!(mounted.mode, mode);
@@ -114,6 +118,9 @@ mod tests {
                 prop_assert!(mounted.check(Action::Read, "file", 0).is_ok());
                 prop_assert!(mounted.check(Action::Write, "file", 0).is_ok());
             }
+            prop_assert!(mounts.named(Some("journal")).is_err());
+            prop_assert!(mounts.named(Some("../data")).is_err());
+            prop_assert_eq!(&mounts.named(None).unwrap().1.view.volume, &volume("project"));
         }
     }
 }

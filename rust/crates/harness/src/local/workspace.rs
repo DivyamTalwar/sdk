@@ -7,7 +7,10 @@ use acyclic_fs::{
 mod mounts;
 pub(super) mod volumes;
 
-pub(super) type MountedVolume = acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>;
+pub(super) struct MountedVolume {
+    pub(super) workspace: crate::tools::git::OwnedView,
+    pub(super) native: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
+}
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
 pub(super) type View = LazyWorkspace<

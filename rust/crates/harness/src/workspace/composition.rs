@@ -59,6 +59,21 @@ pub struct MountTable<T> {
 }
 
 impl<T> MountTable<T> {
+    /// Resolves a qualifier through the visible namespace, never by opening a
+    /// model-supplied volume identity.
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    pub(crate) fn named(&self, name: Option<&str>) -> Result<(&str, &Mount<T>)> {
+        self.mounts()
+            .find(|(path, mount)| match name {
+                None => path.is_empty(),
+                Some(name) => {
+                    (path.is_empty() && mount.view.name == name)
+                        || path.strip_prefix(".volumes/") == Some(name)
+                }
+            })
+            .ok_or_else(|| Error::NotFound("volume is not mounted in this task view".into()))
+    }
+
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     pub(crate) fn mounts_mut(&mut self) -> impl Iterator<Item = (&str, &mut Mount<T>)> {
         self.entries

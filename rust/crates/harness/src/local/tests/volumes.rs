@@ -2,6 +2,91 @@
 use super::*;
 
 #[tokio::test]
+async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checkout::call(
+            0,
+            "bash",
+            "printf root > root-file; printf data > .volumes/scratch/data-file",
+        ),
+        super::checkout::call(1, "fs", "status --volume scratch"),
+        super::checkout::call(2, "fs", "git status --volume project"),
+        super::checkout::call(3, "fs", "diff --volume scratch"),
+        super::checkout::call(4, "fs", "status --volume journal"),
+        super::checkout::call(5, "fs", "status --volume ../scratch"),
+        ScriptedTurn::Text("inspected".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    assert_eq!(
+        harness.run("inspect the bound volumes").await?.text,
+        "inspected"
+    );
+    let workspace = harness.workspace().unwrap();
+    let scratch = workspace
+        .mounts
+        .named(Some("scratch"))?
+        .1
+        .view
+        .source
+        .as_ref()
+        .unwrap();
+    let requests = provider.requests();
+    let results: std::collections::BTreeMap<_, _> = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id,
+                content: crate::model::ToolResultContent::Json { value },
+                ..
+            } => Some((call_id.as_str(), value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 6);
+    for (call, expected) in [
+        ("checkout-1", scratch.workspace.workspace().id()),
+        ("checkout-2", workspace.view().workspace().id()),
+    ] {
+        let output: acyclic_fs::GitCommandOutput =
+            serde_json::from_value(results[call]["result"].clone())
+                .map_err(super::super::storage)?;
+        let acyclic_fs::GitCommandOutput::Status(status) = output else {
+            panic!("expected status")
+        };
+        assert_eq!(status.workspace.workspace_id(), expected);
+    }
+    let diff: acyclic_fs::GitCommandOutput =
+        serde_json::from_value(results["checkout-3"]["result"].clone())
+            .map_err(super::super::storage)?;
+    assert!(matches!(diff, acyclic_fs::GitCommandOutput::Filesystem(_)));
+    for call in ["checkout-4", "checkout-5"] {
+        assert!(
+            results[call].to_string().contains("volume is not mounted"),
+            "{}",
+            results[call]
+        );
+    }
+    assert_eq!(
+        std::fs::read(directory.path().join("root-file")).map_err(super::super::storage)?,
+        b"root"
+    );
+    assert_eq!(
+        std::fs::read(scratch.native.path().join("data-file")).map_err(super::super::storage)?,
+        b"data"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let first = scripted([

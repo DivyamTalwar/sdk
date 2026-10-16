@@ -45,7 +45,7 @@ pub(crate) fn bind_defaults(
             )?,
             "fs" => command(
                 name,
-                "Run one git facade command, including diff, merge and discard of agents/<ref>",
+                "Run one git facade command, including diff, merge and discard of agents/<ref>; --volume <name> selects a granted mount for diff, log, show, status, merge or discard",
             )?,
             "read" => crate::tool::files::read()?,
             "write" => crate::tool::files::write()?,

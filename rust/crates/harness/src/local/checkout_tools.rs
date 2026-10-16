@@ -172,7 +172,7 @@ impl ToolExecutor for CheckoutTools {
                         .active
                         .as_ref()
                         .unwrap_or_else(|| self.workspace.view());
-                    let (result, switched) = self.fs(view, &command).await?;
+                    let (result, switched) = self.fs(view, &command, context).await?;
                     if let Some(switched) = switched {
                         state.active = Some(switched);
                     }

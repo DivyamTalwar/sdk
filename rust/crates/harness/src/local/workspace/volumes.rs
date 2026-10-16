@@ -64,12 +64,17 @@ impl LocalWorkspace {
             } else {
                 MountOptions::read_write().publication(MountPublication::Manual)
             };
-            mount.view.source = Some(Arc::new(
-                source
-                    .mount(&destination, options)
-                    .await
-                    .map_err(Error::from)?,
-            ));
+            acyclic_fs::WorkspaceGraph::new(self.store.clone())
+                .register_root(&source)
+                .await?;
+            let native = source
+                .mount(&destination, options)
+                .await
+                .map_err(Error::from)?;
+            mount.view.source = Some(Arc::new(MountedVolume {
+                workspace: crate::tools::git::OwnedView::Volume(source),
+                native,
+            }));
         }
         self.mounts = Arc::new(mounts);
         Ok(self)
