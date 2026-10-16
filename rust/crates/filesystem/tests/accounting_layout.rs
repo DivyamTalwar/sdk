@@ -1,59 +1,11 @@
+//! Actual allocator requests and admission boundaries for the original ledger.
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
-#[derive(Clone, Copy, Default)]
-struct Allocations {
-    count: usize,
-    bytes: usize,
-}
-thread_local! {
-    static ACTIVE: Cell<bool> = const { Cell::new(false) };
-    static ALLOCATIONS: Cell<Allocations> = const { Cell::new(Allocations { count: 0, bytes: 0 }) };
-}
-
-struct CountingAllocator;
-
-fn record(bytes: usize) {
-    if ACTIVE.try_with(Cell::get).unwrap_or(false) {
-        ALLOCATIONS.with(|counter| {
-            let mut allocations = counter.get();
-            allocations.count += 1;
-            allocations.bytes += bytes;
-            counter.set(allocations);
-        });
-    }
-}
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        record(layout.size());
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        record(layout.size());
-        unsafe { System.alloc_zeroed(layout) }
-    }
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(pointer, layout) }
-    }
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        record(size);
-        unsafe { System.realloc(pointer, layout, size) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-fn measured<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
-    ALLOCATIONS.set(Allocations::default());
-    ACTIVE.set(true);
-    let result = operation();
-    ACTIVE.set(false);
-    (result, ALLOCATIONS.get())
+fn measured<T>(operation: impl FnOnce() -> T) -> (T, allocation_counter::AllocationInfo) {
+    let mut result = None;
+    let allocations = allocation_counter::measure(|| result = Some(operation()));
+    (result.unwrap(), allocations)
 }
 
 #[test]
@@ -63,15 +15,19 @@ fn original_ledger_records_the_actual_allocator_layout() {
         NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
             .unwrap()
     });
-    assert_eq!(allocations.count, 1);
+    assert_eq!(allocations.count_total, 1);
+    assert_eq!(allocations.count_current, 1);
+    assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
+    assert_eq!(allocations.bytes_max, allocations.bytes_total);
+    eprintln!("ledger allocator: {allocations:?}");
     assert_eq!(
-        allocations.bytes as u64,
+        allocations.bytes_total,
         NativeMaterializationWork::accounting_state_bytes()
     );
-    assert_eq!(work.live_allocation_bytes(), allocations.bytes as u64);
+    assert_eq!(work.live_allocation_bytes(), allocations.bytes_total);
     assert_eq!(
         work.receipt().peak_allocation_bytes,
-        allocations.bytes as u64
+        allocations.bytes_total
     );
     assert_eq!(work.receipt().allocation_operations, 1);
 }
@@ -83,7 +39,7 @@ fn denied_ledger_does_not_allocate_its_arc() {
         NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
             .unwrap()
     });
-    let required = allocations.bytes as u64;
+    let required = allocations.bytes_total;
     drop(probe);
     for ceiling in 0..=required {
         let (result, allocations) = measured(|| {
@@ -97,8 +53,8 @@ fn denied_ledger_does_not_allocate_its_arc() {
         });
         if ceiling == required {
             let work = result.unwrap();
-            assert_eq!(allocations.count, 1);
-            assert_eq!(allocations.bytes as u64, required);
+            assert_eq!(allocations.count_total, 1);
+            assert_eq!(allocations.bytes_total, required);
             assert_eq!(work.live_allocation_bytes(), required);
             assert_eq!(work.receipt().peak_allocation_bytes, required);
             assert_eq!(work.receipt().allocation_operations, 1);
@@ -107,7 +63,10 @@ fn denied_ledger_does_not_allocate_its_arc() {
         let (_, work) = result.unwrap_err();
         assert_eq!(*work, WorkCounters::UNCHARGED);
         // The typed error owns one receipt; the admitted ledger Arc is absent.
-        assert_eq!(allocations.count, 1);
-        assert_eq!(allocations.bytes, std::mem::size_of::<WorkCounters>());
+        assert_eq!(allocations.count_total, 1);
+        assert_eq!(
+            allocations.bytes_total,
+            std::mem::size_of::<WorkCounters>() as u64
+        );
     }
 }
