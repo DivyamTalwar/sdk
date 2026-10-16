@@ -17,20 +17,22 @@ impl CheckoutTools {
             cwd: workspace.path.clone(),
             environment: Default::default(),
             timeout_ms: 300_000,
-            control_timeout_ms: 1000,
+            control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             cancellation_poll_ms: 25,
-            maximum_output_bytes: u32::try_from(maximum_output)
-                .map_err(|cause| Error::Invalid(cause.to_string()))?,
+            maximum_output_bytes: maximum_output,
             standard_input: None,
             mcp_stdio: None,
         };
+        let invocation = native_process::bash::prepare(
+            input,
+            &state.mounts,
+            invocation,
+            self.clock.now_unix_millis() / 1000,
+        )?;
         let check_owner = Arc::clone(&files.owner);
         let runtime = tokio::runtime::Handle::current();
-        let (output, (state, files)) = native_process::bash::run_with_custody(
-            input,
-            &self.mounts,
+        let (output, (state, files)) = native_process::capture::capture_with_custody(
             invocation,
-            self.clock.now_unix_millis(),
             |(_, files): &mut (OwnedMutexGuard<State>, output::Output), chunk| files.observe(chunk),
             move || {
                 if acyclic_fs::capture_root_identity(&workspace.path)
@@ -44,12 +46,12 @@ impl CheckoutTools {
                 }
                 runtime.block_on(async {
                     tokio::time::timeout(
-                        std::time::Duration::from_secs(1),
+                        std::time::Duration::from_millis(u64::from(output::CONTROL_TIMEOUT_MS)),
                         check_owner.verify(false, &mut None),
                     )
                     .await
-                    .map_err(std::io::Error::other)?
-                    .map_err(std::io::Error::other)
+                    .map_err(native_process::capture::control_error)?
+                    .map_err(native_process::capture::control_error)
                 })
             },
             (state, files),

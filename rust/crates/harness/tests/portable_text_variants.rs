@@ -34,6 +34,38 @@ struct ReaderSpy {
 }
 
 impl ContentResidencyVerifier for ReaderSpy {
+    fn read_range<'a>(
+        &'a self,
+        file: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.corrupt.load(Ordering::SeqCst) {
+                // Inject a bad descriptor before the authenticated range
+                // boundary; slices cannot be rehashed as complete files.
+                let mut digest = *file.descriptor().sha256();
+                digest[0] ^= 1;
+                let corrupt = FileRef::new(
+                    file.volume().clone(),
+                    file.path().into(),
+                    file.version().into(),
+                    acyclic_harness::conversation::FileDescriptor::new(
+                        digest,
+                        file.descriptor().byte_length(),
+                        file.descriptor().media_type().into(),
+                    )?,
+                    file.display_name().into(),
+                    &mut None,
+                )?;
+                return self.inner.read_range(&corrupt, range, io)?.await;
+            }
+            self.inner.read_range(file, range, io)?.await
+        })
+    }
+
     fn read<'a>(
         &'a self,
         file: &'a FileRef,

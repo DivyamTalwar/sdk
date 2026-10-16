@@ -7,7 +7,7 @@ pub struct Workspace<'a> {
     /// Durable lineage and git state.
     pub store: &'a LocalCoreStateStore,
     /// Selected lazy workspace.
-    pub view: &'a LocalLazyWorkspace,
+    pub view: View<'a>,
     /// Physical view root, used to resolve patch paths.
     pub root: &'a Path,
     /// Repository identity shared by branches of this lineage.
@@ -27,7 +27,7 @@ pub struct Output {
     /// Absent when an earlier pending transition was recovered instead.
     pub command: Option<GitCommandOutput>,
     /// The newly selected view, if the command switched branches.
-    pub switched: Option<LocalLazyWorkspace>,
+    pub switched: Option<OwnedView>,
 }
 
 /// Runs one git-facade command against the task-selected workspace.
@@ -64,6 +64,12 @@ where
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
+    if let Some(branch) = crate::tools::command::agent_diff(args) {
+        before_effect().await?;
+        let output = executor.diff_agent(branch, tree).await?;
+        before_effect().await?;
+        return Ok(output);
+    }
     let command = if let Some(identity) = workspace.checkout {
         execute(
             &workspace,

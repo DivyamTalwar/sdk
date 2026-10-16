@@ -100,7 +100,7 @@ async fn run(
         git::Workspace {
             filesystem: fs,
             store,
-            view: lazy,
+            view: lazy.into(),
             root: std::path::Path::new("."),
             repository: repository_id,
             lease: None,
@@ -113,7 +113,10 @@ async fn run(
     .await?;
     Ok((
         output.command.ok_or("pending git transition")?,
-        output.switched,
+        output
+            .switched
+            .map(git::OwnedView::into_checkout)
+            .transpose()?,
     ))
 }
 
@@ -161,8 +164,58 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         .await
         .unwrap();
     run(&fs, &store, &child, repo, &["commit", "-m", "child edit"]).await?;
+    child
+        .write(
+            "/published.txt",
+            bytes::Bytes::from_static(b"without a git commit\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
     run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+    let difference = run(&fs, &store, &main, repo, &["diff", "agents/child"])
+        .await?
+        .0;
+    let acyclic_fs::GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+        kind,
+        value,
+    }) = difference
+    else {
+        return Err("expected a published agent diff".into());
+    };
+    assert_eq!(kind, "diff");
+    assert_eq!(value["fileChanges"], 2);
+    assert_eq!(
+        main.read("/file.txt", 64, &mut work).await?.bytes.as_ref(),
+        b"base\n"
+    );
+    assert!(matches!(
+        git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: std::path::Path::new("."),
+                repository: repo,
+                lease: None,
+                checkout: None,
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["diff".into(), "agents/absent".into()],
+        )
+        .await,
+        Err(acyclic_harness::Error::NotFound(_))
+    ));
     run(&fs, &store, &main, repo, &["merge", "agents/child"]).await?;
+    assert_eq!(
+        main.read("/published.txt", 64, &mut work)
+            .await?
+            .bytes
+            .as_ref(),
+        b"without a git commit\n",
+    );
     assert_eq!(
         main.read("/file.txt", 64, &mut work)
             .await
@@ -360,7 +413,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
             git::Workspace {
                 filesystem: &fs,
                 store: &store,
-                view: &main,
+                view: (&main).into(),
                 root: &root,
                 repository: repo,
                 lease: Some(lease.clone()),
@@ -375,6 +428,28 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
         .ok_or("expired lease created a tag")?;
         assert!(
             matches!(error, acyclic_harness::Error::Conflict(ref reason) if reason.contains("lease expired")),
+            "{error:?}"
+        );
+        let error = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository: repo,
+                lease: Some(lease.clone()),
+                checkout,
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["diff".into(), "agents/absent".into()],
+        )
+        .await
+        .err()
+        .ok_or("expired lease inspected an agent")?;
+        assert!(
+            matches!(error, acyclic_harness::Error::Conflict(ref reason)
+            if reason.contains("lease expired")),
             "{error:?}"
         );
     }

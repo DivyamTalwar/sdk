@@ -279,7 +279,7 @@ impl HarnessBuilder {
                 &mut bindings.tools,
                 &mut grants,
                 self.bound_scope.as_ref(),
-                bindings.content.is_some() || bindings.artifacts.is_some(),
+                bindings.content.is_some(),
                 bindings.workspace_tools.is_some(),
             )?;
         }

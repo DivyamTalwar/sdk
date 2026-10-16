@@ -15,7 +15,7 @@ const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub(super) struct Cursor {
+pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
     #[cfg(target_os = "macos")]
@@ -234,18 +234,16 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
         maximum_paths: MAXIMUM_PATHS,
         maximum_extent_spans: 65_536,
     };
-    let policy = CapturePolicy::excluding(
-        EXCLUDED
-            .iter()
-            .map(|name| {
-                let path =
-                    acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
-                        .map_err(storage)?;
-                NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
-                    .map_err(storage)
-            })
-            .collect::<Result<Vec<_>>>()?,
-    )
-    .map_err(storage)?;
+    let mut excluded = EXCLUDED
+        .iter()
+        .map(|name| {
+            let path = acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
+                .map_err(storage)?;
+            NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
+                .map_err(storage)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    excluded.extend(workspace::volumes::excluded(&workspace.path, config)?);
+    let policy = CapturePolicy::excluding(excluded).map_err(storage)?;
     Ok((options, policy))
 }

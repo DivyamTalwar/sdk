@@ -127,12 +127,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     }
                     GitTreeRef::Lazy(source) => {
                         self.lazy_current
-                            .snapshot(
-                                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                            )
+                            .tree(false, self.permit)
                             .await
                             .map_err(Error::from)?
-                            == *source
+                            == GitTreeRef::Lazy(*source)
                     }
                 };
                 if !source_matches {
@@ -159,15 +157,9 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .id();
                 let workspace = self
                     .lazy_current
-                    .fork(
-                        &destination,
-                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                        self.permit,
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                    )
+                    .fork(&destination, operation_id, self.permit)
                     .await
-                    .map_err(Error::from)?
-                    .0;
+                    .map_err(Error::from)?;
                 WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         self.lazy_current.workspace(),
@@ -190,18 +182,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 let workspace = self.workspace(*workspace_id).await?;
                 let lazy_workspace = self
                     .lazy_current
-                    .open_related(
-                        workspace.clone(),
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                    )
+                    .related(workspace)
                     .await
                     .map_err(Error::from)?;
-                let tree = GitTreeRef::Lazy(
-                    lazy_workspace
-                        .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
-                        .await
-                        .map_err(Error::from)?,
-                );
+                let tree = lazy_workspace.view().tree(false, self.permit).await?;
                 *self
                     .switched
                     .lock()

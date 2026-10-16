@@ -11,7 +11,6 @@ use acyclic_stream::BoxProviderFuture;
 mod bash;
 mod capture;
 mod git;
-mod mounts;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
@@ -25,7 +24,6 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    mounts: crate::workspace::MountTable<()>,
     task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
@@ -33,9 +31,11 @@ pub(super) struct CheckoutTools {
     state: StateArc<AsyncMutex<State>>,
 }
 
-struct State {
-    active: Option<workspace::View>,
-    watcher: Option<capture::Cursor>,
+pub(in crate::local) struct State {
+    pub(in crate::local) active: Option<workspace::View>,
+    pub(in crate::local) watcher: Option<capture::Cursor>,
+    pub(in crate::local) mounts: workspace::Mounts,
+    pub(in crate::local) initialized: bool,
 }
 
 // Keep the whole command, including its publication and cursor replacement,
@@ -57,33 +57,38 @@ impl CheckoutTools {
         if workspace
             .filesystem
             .workspace_id(&project.storage_name(&mut None)?)
-            .map_err(acyclic_fs::WorkspaceError::from)
-            .map_err(Error::from)?
+            .map_err(acyclic_fs::WorkspaceError::from)?
             != workspace.view().workspace().id()
         {
             return Err(Error::Unauthorized(
                 "workspace differs from the bound project volume".into(),
             ));
         }
-        let active = workspace.selected_view().await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
-        let view = active.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await?;
-        let watcher = if workspace.fresh {
-            Some(capture::Cursor::initial(&workspace, &capture_policy)?)
-        } else {
-            None
-        };
+        let shared = StateArc::clone(&workspace.state);
+        {
+            let mut state = lock_owned(StateArc::clone(&shared)).await;
+            if !state.initialized {
+                state.active = workspace.selected_view().await?;
+                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
+                reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await?;
+                state.watcher = if workspace.fresh {
+                    Some(capture::Cursor::initial(&workspace, &capture_policy)?)
+                } else {
+                    None
+                };
+                state.initialized = true;
+            }
+        }
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
             capture_policy,
-            mounts: mounts::owner(&workspace.path, project)?,
             workspace,
             clock,
             task_files,
-            state: StateArc::new(AsyncMutex::new(State { active, watcher })),
+            state: shared,
         })
     }
 }
@@ -130,7 +135,11 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            let request = serde_json::to_vec(&invocation).map_err(storage)?;
+            let request = if invocation.name == "bash" {
+                serde_json::to_vec(&invocation).map_err(storage)?
+            } else {
+                Vec::new()
+            };
             let bash = if invocation.name == "bash" {
                 let input: crate::tools::BashInput =
                     serde_json::from_value(std::mem::take(&mut invocation.arguments))
@@ -178,10 +187,13 @@ impl ToolExecutor for CheckoutTools {
                 {
                     state.watcher = None;
                 }
+                workspace::volumes::sync(&state.mounts).await?;
                 if let Some(command) = command {
                     self.fs(&command, context, &mut state).await
                 } else {
-                    let State { active, watcher } = &mut *state;
+                    let State {
+                        active, watcher, ..
+                    } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
                         view,
@@ -198,7 +210,10 @@ impl ToolExecutor for CheckoutTools {
                             .await?;
                     let (result, mut state, mut files) =
                         self.bash(input, maximum, state, files).await?;
-                    let State { active, watcher } = &mut *state;
+                    workspace::volumes::sync(&state.mounts).await?;
+                    let State {
+                        active, watcher, ..
+                    } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
                         view,

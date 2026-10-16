@@ -7,6 +7,8 @@ use crate::{
 use acyclic_native_runtime::ProcessOutput;
 use acyclic_stream::OwnedBytes;
 
+pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
+
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
     volume: Arc<TaskVolume<LocalStream>>,
@@ -27,7 +29,7 @@ impl Output {
         let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
         let task = Component::new(owner.task_id().to_string())?;
         // Runtime operation IDs are canonical and unique across model turns.
-        // The request retains the provider's unrestricted call_id unchanged.
+        // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
         let generation = volume
             .snapshot(
@@ -101,7 +103,7 @@ impl Output {
         let runtime = self.runtime.clone();
         runtime.block_on(async {
             tokio::time::timeout(
-                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(u64::from(CONTROL_TIMEOUT_MS)),
                 self.publish(file, bytes.to_vec().into()),
             )
             .await

@@ -16,8 +16,12 @@ impl WorkspaceGitExecutor<'_> {
                 .map_err(|failure| Error::from(failure.error).into()),
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
-                let lazy = self
-                    .lazy_current
+                let View::Checkout(current) = self.lazy_current else {
+                    return Err(Error::Unauthorized(
+                        "volume repository refers to a foreign native source".into(),
+                    ));
+                };
+                let lazy = current
                     .open_related(
                         workspace,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
@@ -65,7 +69,7 @@ impl WorkspaceGitExecutor<'_> {
     }
 
     /// Takes the workspace selected by a branch switch.
-    pub(crate) fn switched_workspace(&self) -> Result<Option<LocalLazyWorkspace>, Error> {
+    pub(crate) fn switched_workspace(&self) -> Result<Option<OwnedView>, Error> {
         self.switched
             .lock()
             .map_err(|_| Self::error("Git workspace switch lock is unavailable"))

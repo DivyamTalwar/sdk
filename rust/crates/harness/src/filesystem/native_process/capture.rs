@@ -24,14 +24,16 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
                 control_timeout,
                 check_owner.verify(false, &mut None),
             ))
-            .map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-            })?
-            .map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-            })
+            .map_err(control_error)?
+            .map_err(control_error)
     };
     capture_checked(invocation, observer, check).await
+}
+
+pub(crate) fn control_error(
+    cause: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, cause)
 }
 
 pub(crate) async fn capture_checked(
@@ -98,7 +100,7 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
                 Ok(())
             };
             let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
-            let maximum_output = invocation.maximum_output_bytes as usize;
+            let maximum_output = invocation.maximum_output_bytes;
             let exchange = invocation
                 .mcp_stdio
                 .as_ref()
@@ -156,6 +158,14 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
     })
     .await
     .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
+    Ok((result(output), custody))
+}
+
+fn result(
+    output: std::io::Result<
+        std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
+    >,
+) -> Option<NativeProcessResult> {
     let result = match output {
         Ok(Ok(output)) => NativeProcessResult {
             success: output.status.success(),
@@ -180,7 +190,10 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
                 cleanup_completed: failure.cleanup_completed,
             }),
         },
-        Err(_) => return Ok((None, custody)),
+        Err(_) => return None,
     };
-    Ok((Some(result), custody))
+    Some(result)
 }
+
+#[cfg(test)]
+mod tests;

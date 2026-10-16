@@ -50,8 +50,8 @@ pub(crate) type LocalTaskRuntime =
 /// A checkout or volume, durable authority, journals and stock executor.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     runtime: Arc<LocalTaskRuntime>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -76,6 +76,7 @@ impl LocalHarness {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
             let (model, provider) = config.model;
+            let context = config.context;
             model.validate()?;
             let mut tools = ToolRegistry::default();
             if config.default_tools {
@@ -121,49 +122,7 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?;
             let provider_ref = owner.project.provider();
-            #[cfg(feature = "native-execution")]
-            let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(Arc::new(
-                    workspace::open(
-                        &filesystem,
-                        &owner.project,
-                        path,
-                        &directory,
-                        owner.workspace_identity,
-                        workspace::attach_operation(owner.task),
-                        false,
-                    )
-                    .await?,
-                )),
-                LocalProject::Volume { .. } => Some(Arc::new(
-                    workspace::open_volume(
-                        &filesystem,
-                        &owner.project,
-                        &directory,
-                        workspace::attach_operation(owner.task),
-                    )
-                    .await?,
-                )),
-            };
-            let files = FilesystemHost::new(filesystem, provider_ref, None)?;
-            #[cfg(feature = "native-execution")]
-            let files = match &workspace {
-                Some(workspace) => files.with_project_family(
-                    workspace.view().workspace().id(),
-                    workspace.store.clone(),
-                )?,
-                None => files,
-            };
-            // A configured project is opened, never silently replaced by an empty volume.
-            files
-                .resolve(
-                    &crate::filesystem::workspace_ref(
-                        provider_ref.clone(),
-                        &owner.project.storage_name(&mut None)?,
-                    )?,
-                    None,
-                )
-                .await?;
+            let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
             let scratch = VolumeRef::new(
                 provider_ref.clone(),
                 format!("scratch-{}", owner.agent),
@@ -188,6 +147,57 @@ impl LocalHarness {
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = match &config.project {
+                LocalProject::Workspace(path) => Some(
+                    workspace::open(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        path,
+                        &directory,
+                        owner.workspace_identity,
+                        workspace::attach_operation(owner.task),
+                        false,
+                    )
+                    .await?,
+                ),
+                LocalProject::Volume { .. } => Some(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                ),
+            };
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
+            // A configured project is opened, never silently replaced by an empty volume.
+            files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        provider_ref.clone(),
+                        &owner.project.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = workspace.map(Arc::new);
+            #[cfg(feature = "native-execution")]
+            let context = match &workspace {
+                Some(workspace) => context.with(workspace.context_stage()),
+                None => context,
+            };
             let stream = Arc::new(
                 LocalStream::open(directory.join("stream"), Default::default())
                     .await
@@ -216,10 +226,10 @@ impl LocalHarness {
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),
                 task_files: Arc::clone(&task_files),
+                task_volume: &task_volume,
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
-                stream: stream.clone(),
-                task_volume: &task_volume,
+                stream,
                 issuer: &issuer,
                 verifier: &verifier,
                 agent: owner.agent,
@@ -243,8 +253,8 @@ impl LocalHarness {
             )?);
             Ok(Self {
                 files,
-                task_files,
                 runtime,
+                task_files,
                 project: owner.project.clone(),
                 scratch,
                 journal,
@@ -252,7 +262,7 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context: config.context,
+                context,
                 limits: config.limits,
                 compaction,
                 #[cfg(feature = "native-execution")]
@@ -261,15 +271,15 @@ impl LocalHarness {
         })
     }
 
+    /// Owner-authorized task-file writes and bounded live queries.
+    pub fn task_files(&self) -> &crate::task_volume::TaskFiles<LocalStream> {
+        &self.task_files
+    }
+
     /// Durable content and project host.
     #[must_use]
     pub const fn filesystem(&self) -> &Arc<LocalFilesystem> {
         &self.files
-    }
-    /// Ordinary private task-file writes and live queries under the owner grants.
-    #[must_use]
-    pub fn task_files(&self) -> &crate::task_volume::TaskFiles<LocalStream> {
-        &self.task_files
     }
     /// Selected project view.
     #[must_use]
@@ -303,8 +313,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub fn workspace(&self) -> Option<&LocalWorkspace> {
-        self.workspace.as_deref()
+    pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
+        self.workspace.as_ref()
     }
 }
 

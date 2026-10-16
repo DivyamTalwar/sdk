@@ -57,7 +57,7 @@ pub(crate) struct WorkspaceGitExecutor<'a> {
     /// Current workspace.
     pub current: LocalWorkspace,
     /// Demand-backed workspace view.
-    pub lazy_current: &'a LocalLazyWorkspace,
+    pub lazy_current: View<'a>,
     /// Compatibility repository identity.
     pub repository_id: acyclic_fs::WorkspaceId,
     /// Current ignore policy.
@@ -73,7 +73,7 @@ pub(crate) struct WorkspaceGitExecutor<'a> {
     /// Merge resolution cache.
     pub merge_cache: AsyncMutex<MemoryMergeResolutionCache>,
     /// Newly selected workspace after checkout.
-    pub switched: Mutex<Option<LocalLazyWorkspace>>,
+    pub switched: Mutex<Option<OwnedView>>,
 }
 
 fn committed(
@@ -105,6 +105,7 @@ fn committed(
     })
 }
 
+mod agents;
 mod commands;
 mod errors;
 mod failure;
@@ -115,9 +116,10 @@ mod resolve;
 mod restore;
 pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_git_command};
 pub(crate) use materialize::RootMaterializingGitExecutor;
+pub(crate) use materialize::publish_checkout_transition;
 
 mod run;
 pub(crate) use run::run_with_guard;
 pub use run::{Output, Workspace, run};
-
-pub(crate) use materialize::publish_checkout_transition;
+mod view;
+pub use view::{OwnedView, View};

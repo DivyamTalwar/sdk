@@ -725,6 +725,9 @@ mod checkout;
 #[path = "tests/task_files.rs"]
 mod task_files;
 
+#[cfg(all(feature = "native-execution", unix))]
+mod volumes;
+
 #[cfg(feature = "native-execution")]
 #[path = "tests/checkout_reopen.rs"]
 mod checkout_reopen;

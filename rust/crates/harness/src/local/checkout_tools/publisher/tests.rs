@@ -20,6 +20,7 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutPublisher
                 .clone(),
             &harness.project,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::clone(&harness.task_files),
         )
         .await?,
     );

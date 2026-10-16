@@ -71,7 +71,7 @@ impl CheckoutPublisher {
             if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
                 state.watcher = None;
             }
-            let State { active, watcher } = &mut *state;
+            let State { active, watcher, .. } = &mut *state;
             let view = active
                 .as_ref()
                 .unwrap_or_else(|| self.tools.workspace.view());
