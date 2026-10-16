@@ -2,6 +2,7 @@ use super::*;
 mod unindexed;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(test)]
     pub(in crate::filesystem) async fn read_pinned_range(
         &self,
         reference: &FileRef,
