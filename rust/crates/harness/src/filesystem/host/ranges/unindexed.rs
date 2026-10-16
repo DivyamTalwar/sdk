@@ -26,10 +26,8 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             selected
                 .read_range(
                     path,
-                    acyclic_fs::ByteRange {
-                        offset,
-                        length: (length - offset).min(64 * 1024),
-                    },
+                    offset,
+                    (length - offset).min(64 * 1024),
                     io,
                     io.cancellation(),
                 )
