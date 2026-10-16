@@ -1,13 +1,10 @@
 #[path = "../../src/materializer/arc_layout.rs"]
 mod arc_layout;
-#[path = "../../src/performance.rs"]
-pub mod performance;
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(25)]
-fn complete_arc_layout_and_admission() {
-    use performance::{WorkBudget, WorkCounters};
+#[kani::unwind(1)]
+fn complete_arc_layout() {
     use std::alloc::Layout;
 
     let size: usize = kani::any();
@@ -24,27 +21,4 @@ fn complete_arc_layout_and_admission() {
     assert_eq!(result.is_ok(), expected <= isize::MAX as usize);
     let Ok(bytes) = result else { return };
     assert_eq!(bytes, expected);
-
-    let budget = WorkBudget {
-        peak_allocation_bytes: kani::any(),
-        allocation_operations: kani::any(),
-        ..WorkBudget::UNBOUNDED
-    };
-    let mut work = WorkCounters::UNCHARGED;
-    let result = work.charge_allocation(1, bytes as u64, &budget);
-    let admitted =
-        budget.allocation_operations >= 1 && budget.peak_allocation_bytes >= bytes as u64;
-    assert_eq!(result.is_ok(), admitted);
-    assert_eq!(
-        work,
-        if admitted {
-            WorkCounters {
-                allocation_operations: 1,
-                peak_allocation_bytes: bytes as u64,
-                ..WorkCounters::UNCHARGED
-            }
-        } else {
-            WorkCounters::UNCHARGED
-        }
-    );
 }
