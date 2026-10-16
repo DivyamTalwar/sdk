@@ -22,7 +22,8 @@ try {
   assert.equal(help.code, 0);
   for (const option of ["--prompt", "--input-format", "--workspace", "--model"]) assert.ok(help.stdout.includes(option), option);
   for (const removed of ["--fixture", "--session", "--prepare-scenario"]) assert.notEqual((await run([removed, "unused"])).code, 0);
-  const prompt = await run([...host.args, "-p", "say hello"]);
+  const operation = "00000000-0000-0000-0000-000000000001";
+  const prompt = await run([...host.args, "--operation", operation, "-p", "say hello"]);
   assert.equal(prompt.code, 0, prompt.stderr);
   const frames = prompt.stdout.trim().split("\n").map(line => JSON.parse(line));
   assert.ok(frames.some(frame => frame.handshake), "client handshake missing");
@@ -30,8 +31,14 @@ try {
   assert.ok(frames.some(frame => frame.delivery), "client replay missing");
   assert.ok(frames.some(frame => frame.status), "client settlement missing");
   assert.ok(frames.every(frame => !Object.keys(frame).some(key => key.includes("scenario"))));
+  const resumed = await run([...host.args, "--input-format", "jsonl", "--operation", operation]);
+  assert.equal(resumed.code, 0, resumed.stderr);
+  const replay = resumed.stdout.trim().split("\n").map(line => JSON.parse(line));
+  assert.ok(replay.some(frame => frame.handshake), "JSONL runner handshake missing");
+  assert.ok(replay.some(frame => frame.status), "JSONL EOF must preserve the settled operation");
   const malformed = await run([...host.args, "--input-format", "jsonl", "--operation", "00000000-0000-0000-0000-000000000001"], "not JSON\n");
   assert.notEqual(malformed.code, 0, "malformed wire stdin must fail");
+  assert.match(malformed.stderr, /invalid wire JSON/, "stdin must reach the shared wire decoder");
   host.fail();
   assert.notEqual((await run([...host.args, "-p", "provider failure"])).code, 0);
 } finally { await host.close(); }
