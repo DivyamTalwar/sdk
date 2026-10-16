@@ -585,7 +585,13 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.task()
-            .read_bound_range(file, range, self.effective_scope(), io)
+            .read_bound_range(
+                file,
+                range,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                io,
+            )
             .await
     }
 }

@@ -88,7 +88,7 @@ proptest! {
                 acyclic_fs::ByteRange {offset: bytes.len() as u64 + 1, length: 0},
                 acyclic_fs::ByteRange {offset: u64::MAX, length: 1},
             ] {
-                prop_assert!(store.read_range(&file, range, None).unwrap().await.is_err());
+                prop_assert!(store.read_range(&file, range, None, None).unwrap().await.is_err());
             }
             Ok(())
         })?;
@@ -139,7 +139,7 @@ async fn replacing_even_identical_bytes_invalidates_the_pinned_range() -> Result
         },
     ] {
         assert!(matches!(
-            store.read_range(&file, range, None)?.await,
+            store.read_range(&file, range, None, None)?.await,
             Err(Error::Conflict(_))
         ));
     }

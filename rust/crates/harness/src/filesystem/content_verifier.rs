@@ -133,30 +133,57 @@ where
         &'a self,
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_creation(reference.volume(), Some(reference), io)
                 .await?;
-            if reference.descriptor().byte_length() > self.maximum_bytes {
+            if reference.descriptor().byte_length() > self.maximum_bytes
+                || range
+                    .offset
+                    .checked_add(range.length)
+                    .is_none_or(|end| end > reference.descriptor().byte_length())
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "range source exceeds provider limit",
                 ));
             }
-            if self.exact_file.is_none() {
-                let owned;
-                let authority_io = if let Some(io) = io {
-                    io
-                } else {
-                    self.verifier.verify(&self.scope, &mut None)?;
-                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &owned
-                };
-                require_file_read(&self.scope, reference, authority_io)?;
-            }
-            self.host.read_pinned_range(reference, range, io).await
+            let owned;
+            let authority_io = if let Some(io) = io {
+                io
+            } else {
+                self.verifier.verify(&self.scope, &mut None)?;
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
+            };
+            let (workspace, generation) = self
+                .host
+                .read_selection_with_access(
+                    &self.scope,
+                    reference,
+                    self.maximum_bytes,
+                    self.exact_file.is_some(),
+                    ceiling,
+                    authority_io,
+                )
+                .await?;
+            let selected = authority_io.sdk(
+                workspace
+                    .generation(generation, authority_io, authority_io.cancellation())
+                    .await,
+            )?;
+            fork_preparer_io::retain(&selected, Some(authority_io)).await?;
+            FilesystemHost::read_selected_range(
+                &workspace,
+                &selected,
+                reference,
+                range,
+                authority_io,
+            )
+            .await
         })
     }
 

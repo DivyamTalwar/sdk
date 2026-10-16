@@ -117,6 +117,7 @@ where
         &'a self,
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -129,7 +130,13 @@ where
             self.owner.verify_read_access(&mut history).await?;
             let bytes = self
                 .context
-                .read_bound_range(reference, range, self.context.scope(), io)
+                .read_bound_range(
+                    reference,
+                    range,
+                    self.context.scope(),
+                    ceiling.unwrap_or(self.context.scope().grants()),
+                    io,
+                )
                 .await?;
             self.owner.validate_input_file(reference, io)?;
             self.owner.verify_read_access(&mut history).await?;
@@ -171,6 +178,7 @@ impl TaskContext {
         file: &FileRef,
         range: acyclic_fs::ByteRange,
         scope: &RuntimeScope,
+        grants: &crate::Capabilities,
         io: Option<&ContentIo>,
     ) -> Result<OwnedBytes> {
         #[cfg(feature = "filesystem")]
@@ -181,7 +189,7 @@ impl TaskContext {
         };
         #[cfg(feature = "filesystem")]
         let io = io.or(original.as_ref());
-        self.authorize_file_read(file, scope, scope.grants(), io)?;
+        self.authorize_file_read(file, scope, grants, io)?;
         if range
             .offset
             .checked_add(range.length)
@@ -206,7 +214,7 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let bytes = reader.read_range(file, range, io)?.await?;
+        let bytes = reader.read_range(file, range, Some(grants), io)?.await?;
         if bytes.len() as u64 != range.length {
             return Err(content_error(
                 io,

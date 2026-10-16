@@ -125,7 +125,7 @@ mod verification;
 pub use verification::check_access_record;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    pub(in crate::filesystem) async fn read_file_with_access(
+    pub(in crate::filesystem) async fn read_selection_with_access(
         &self,
         scope: &Scope,
         reference: &FileRef,
@@ -133,7 +133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         inherited_reference: bool,
         ceiling: Option<&crate::Capabilities>,
         io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<(Workspace<A, O>, GenerationId)> {
         reference.validate(&mut Some(&mut io.history_io()))?;
         if reference.volume().provider() != &self.provider
             || maximum_bytes == 0
@@ -188,6 +188,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         require(&compiled.0, Action::Read, reference.path(), io)?;
         drop(compiled);
+        Ok((workspace, generation))
+    }
+    pub(in crate::filesystem) async fn read_file_with_access(
+        &self,
+        scope: &Scope,
+        reference: &FileRef,
+        maximum_bytes: u64,
+        inherited_reference: bool,
+        ceiling: Option<&crate::Capabilities>,
+        io: &PreparationIo,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        let (workspace, generation) = self
+            .read_selection_with_access(
+                scope,
+                reference,
+                maximum_bytes,
+                inherited_reference,
+                ceiling,
+                io,
+            )
+            .await?;
         let pinned = io.sdk(
             workspace
                 .generation(generation, io, io.cancellation())

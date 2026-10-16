@@ -14,6 +14,9 @@ use acyclic_harness::{
 use proptest::prelude::*;
 use std::{error::Error, sync::Arc};
 
+#[path = "filesystem_access_ranges.rs"]
+mod ranges;
+
 #[path = "support/content_context.rs"]
 mod context;
 

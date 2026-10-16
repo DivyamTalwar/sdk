@@ -131,6 +131,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         &'a self,
         _reference: &'a FileRef,
         _range: acyclic_fs::ByteRange,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(content_error(
@@ -435,12 +436,13 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         &'a self,
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() || self.volumes.contains_key(reference.volume()) {
             return self
                 .bound_reader(reference.volume(), io)?
-                .read_range(reference, range, io);
+                .read_range(reference, range, ceiling, io);
         }
         reference.validate(&mut None)?;
         let mount = self
@@ -450,7 +452,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         BoundedContentFuture::new(io, || async move {
             let (grant, reader) = mount.mount(reference).await?;
             grant.require_file_read(reference, None)?;
-            reader.read_range(reference, range, io)?.await
+            reader.read_range(reference, range, ceiling, io)?.await
         })
     }
 

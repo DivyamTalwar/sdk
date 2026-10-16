@@ -38,6 +38,7 @@ impl ContentResidencyVerifier for ReaderSpy {
         &'a self,
         file: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
@@ -60,9 +61,9 @@ impl ContentResidencyVerifier for ReaderSpy {
                     file.display_name().into(),
                     &mut None,
                 )?;
-                return self.inner.read_range(&corrupt, range, io)?.await;
+                return self.inner.read_range(&corrupt, range, ceiling, io)?.await;
             }
-            self.inner.read_range(file, range, io)?.await
+            self.inner.read_range(file, range, ceiling, io)?.await
         })
     }
 
