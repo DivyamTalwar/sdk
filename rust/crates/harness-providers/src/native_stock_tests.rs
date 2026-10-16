@@ -350,6 +350,11 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         );
         assert!(custody.work().shares_allocation_context(&work));
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
+        eprintln!(
+            "{adapter:?} total_items={} remaining_items={}",
+            work.receipt().items_examined,
+            work.remaining()?.items_examined,
+        );
     }
     Ok(())
 }

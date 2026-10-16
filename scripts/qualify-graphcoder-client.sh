@@ -2,7 +2,7 @@
 set -euo pipefail
 artifact_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http --test client_session --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py documents:: views:: jsonl_tests::
+python3 scripts/qualify-graphcoder-artifact.py documents:: views:: jsonl_tests:: headless::
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http --test client-commands --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py client_command_session::
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http --test context-discovery manifest::

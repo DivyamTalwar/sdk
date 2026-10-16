@@ -17,6 +17,10 @@ pub(super) enum Message<'a> {
         role: &'static str,
         content: Vec<Item<'a>>,
     },
+    Gemini {
+        role: &'static str,
+        parts: Vec<Item<'a>>,
+    },
 }
 
 pub(crate) struct Body<'a> {

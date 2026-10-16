@@ -118,6 +118,9 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let whole = parse(adapter, input, input.len().max(1));
     assert_eq!(whole, parse(adapter, input, 1));
     if let Ok(events) = whole {
+        if adapter == Adapter::Gemini {
+            crate::projection::gemini::assert_visible_replay(&events);
+        }
         // Identical provider bytes in a different turn must never reuse canonical
         // IDs. Bindings remain byte-for-byte equal, independently of chunking.
         let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
@@ -251,6 +254,7 @@ mod properties {
             include_bytes!("../fuzz/corpus/provider_stream/chat.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/chat-reused-id.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/gemini.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse").as_slice(),
         ] {
             assert_stream_invariants(input);
             let (&kind, body) = input.split_first().unwrap();

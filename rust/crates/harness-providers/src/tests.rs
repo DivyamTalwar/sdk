@@ -28,6 +28,8 @@ mod catalog_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "chat_batch_tests.rs"]
 mod chat_batch_tests;
+#[path = "gemini_replay_tests.rs"]
+mod gemini_replay_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -92,10 +94,9 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
     for (adapter, fixture) in fixtures() {
         let dispatch = parser_dispatch();
         for width in [1, 7, 1024] {
-            let events: Vec<_> =
-                stream::events(adapter, chunks(fixture, width), 4096, dispatch)
-                    .try_collect()
-                    .await?;
+            let events: Vec<_> = stream::events(adapter, chunks(fixture, width), 4096, dispatch)
+                .try_collect()
+                .await?;
             let visible: Vec<_> = events
                 .iter()
                 .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
@@ -133,7 +134,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
                 let canonical = events
                     .iter()
                     .find_map(|event| match event {
-                        ModelEvent::ReasoningBlock { block } => Some(block),
+                        ModelEvent::ReasoningBlock { block } if block.text.is_some() => Some(block),
                         _ => None,
                     })
                     .expect("readable reasoning is durably retained");
@@ -355,12 +356,30 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                     _ => None,
                 })
                 .collect();
-            assert_eq!(blocks.len(), 1);
-            assert_eq!(blocks[0].text.as_deref(), Some("think"));
-            assert_eq!(
-                blocks[0].origin,
-                provider.reasoning_origin(provider.key.as_deref(), None)
-            );
+            let thinking = if adapter == Adapter::Gemini {
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[0].text, None);
+                assert_eq!(
+                    blocks[0].kind,
+                    acyclic_harness::model::ReasoningKind::Opaque
+                );
+                assert_eq!(
+                    blocks[0].outcome,
+                    acyclic_harness::model::ReasoningOutcome::SuppressedDisplay
+                );
+                assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hé"}));
+                blocks[1]
+            } else {
+                assert_eq!(blocks.len(), 1);
+                blocks[0]
+            };
+            assert_eq!(thinking.text.as_deref(), Some("think"));
+            for block in blocks {
+                assert_eq!(
+                    block.origin,
+                    provider.reasoning_origin(provider.key.as_deref(), None)
+                );
+            }
         }
         let sent = script
             .sent
