@@ -4,12 +4,20 @@ pub(super) struct Progress {
     // Lock order: this is the only cursor lock. Never nest it with another
     // lock or hold it across an await; position and opaque cursor move together.
     state: Mutex<(u64, u64, Vec<u8>)>,
+    cancelled: AtomicU64,
 }
 impl Progress {
     pub(super) fn new(from: u64) -> Self {
         Self {
             state: Mutex::new((from, 1, Vec::new())),
+            cancelled: AtomicU64::new(0),
         }
+    }
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(1, Ordering::Release);
+    }
+    pub(super) fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire) != 0
     }
     pub(super) fn next(&self) -> Result<u64, StreamError> {
         Ok(self.state.lock().map_err(|_| StreamError::Unavailable)?.0)

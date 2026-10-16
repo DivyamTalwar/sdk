@@ -6,6 +6,7 @@ use std::{
 };
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
+mod outbound;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 #[derive(Default)]

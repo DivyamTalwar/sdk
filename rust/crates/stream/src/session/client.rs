@@ -10,7 +10,9 @@ use tonic::{
 };
 
 mod credit;
+mod outbound;
 use credit::{Credit, Released};
+use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
@@ -30,6 +32,7 @@ type Read = BoxFuture<
     'static,
     (
         String,
+        u64,
         Response,
         Option<Result<wire::SessionFrame, tonic::Status>>,
     ),
@@ -84,7 +87,7 @@ struct Link {
     epoch: u64,
     credit: wire::SessionWindow,
     channel: TransportChannel,
-    sender: mpsc::Sender<wire::SessionFrame>,
+    sender: Arc<Outbound<wire::SessionFrame>>,
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
@@ -106,6 +109,11 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
+}
+impl Drop for Link {
+    fn drop(&mut self) {
+        let _ = self.sender.close();
+    }
 }
 impl Client {
     pub(crate) async fn open(
@@ -279,6 +287,8 @@ struct Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
+        self.progress.cancel();
+        self.receiver.close();
         let _ = self.client.removed.send(self.id);
     }
 }

@@ -4,9 +4,9 @@ impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
             tokio::select! {
-                command = self.commands.recv() => match command { Some(command) => self.command(command).await?, None => return Ok(()) },
-                released = self.released.next() => { self.released(released?).await?; },
-                id = self.removed.next() => self.remove(id?).await?,
+                command = self.commands.recv() => match command { Some(command) => self.command(command)?, None => return Ok(()) },
+                released = self.released.next() => { self.released(released?)?; },
+                id = self.removed.next() => self.remove(id?)?,
                 ready = self.dials.next(), if !self.dials.is_empty() => {
                     let (node,result) = ready.ok_or(StreamError::Unavailable)?;
                     self.connecting.remove(&node);
@@ -20,19 +20,24 @@ impl Pool {
                 }
                 () = future::ready(()), if !self.pending.is_empty() => {
                     if let Some((id,generation)) = self.pending.pop_front()
-                        && self.routes.get(&id).is_some_and(|route| route.generation == generation && self.links.contains_key(&route.node)) { self.subscribe(id).await?; }
+                        && self.routes.get(&id).is_some_and(|route| route.generation == generation && self.links.contains_key(&route.node)) { self.subscribe(id)?; }
                 }
                 next = self.reads.next(), if !self.reads.is_empty() => match next {
-                    Some((node,response,Some(Ok(value)))) => { self.receive(&node,value).await?; self.read(node,response); }
-                    Some((node,_,Some(Err(error)))) if grpc::retryable(&error) => self.reconnect(&node)?,
-                    Some((node,_,Some(Err(error)))) => { self.links.remove(&node); self.fail_node(&node,&grpc::status(&error)); }
-                    Some((node,_,None)) => self.reconnect(&node)?,
+                    Some((node,epoch,response,value)) => {
+                        if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
+                        match value {
+                            Some(Ok(value)) => { self.receive(&node,value)?; self.read(node,response); }
+                            Some(Err(error)) if grpc::retryable(&error) => self.reconnect(&node)?,
+                            Some(Err(error)) => { self.links.remove(&node); self.fail_node(&node,&grpc::status(&error)); }
+                            None => self.reconnect(&node)?,
+                        }
+                    }
                     None => return Err(StreamError::Unavailable),
                 }
             }
         }
     }
-    async fn command(&mut self, command: Command) -> Result<(), StreamError> {
+    fn command(&mut self, command: Command) -> Result<(), StreamError> {
         match command {
             Command::Open {
                 id,
@@ -46,7 +51,7 @@ impl Pool {
                     let _ = ready.send(Err(StreamError::Capacity));
                     return Ok(());
                 }
-                if records.is_closed() {
+                if records.is_closed() || progress.cancelled() {
                     return Ok(());
                 }
                 let from = progress.next()?;
@@ -69,7 +74,7 @@ impl Pool {
                     },
                 );
                 if self.links.contains_key(&self.home) {
-                    self.subscribe(id).await
+                    self.subscribe(id)
                 } else {
                     self.dial(
                         wire::SessionNode {
@@ -84,7 +89,7 @@ impl Pool {
             }
         }
     }
-    async fn released(&mut self, released: Released) -> Result<(), StreamError> {
+    fn released(&mut self, released: Released) -> Result<(), StreamError> {
         let Released {
             id,
             node,
@@ -92,7 +97,7 @@ impl Pool {
             epoch,
             generation,
         } = released;
-        self.release(&node, epoch, bytes).await?;
+        self.release(&node, epoch, bytes)?;
         let Some(route) = self.routes.get_mut(&id) else {
             return Ok(());
         };
@@ -101,7 +106,7 @@ impl Pool {
         if node == owner && generation == current && route.acknowledge && route.credit.frames == 0 {
             let (applied, opaque) = route.progress.position()?;
             if applied <= route.acknowledged {
-                return self.grant(id).await;
+                return self.grant(id);
             }
             route.acknowledged = applied;
             self.send(
@@ -116,12 +121,11 @@ impl Pool {
                         }),
                     }),
                 ),
-            )
-            .await?;
+            )?;
         }
-        self.grant(id).await
+        self.grant(id)
     }
-    async fn receive(&mut self, node: &str, input: wire::SessionFrame) -> Result<(), StreamError> {
+    fn receive(&mut self, node: &str, input: wire::SessionFrame) -> Result<(), StreamError> {
         let id = input.channel_id;
         if id == 0 {
             return self.control(node, input.generation, input.body.as_ref());
@@ -139,7 +143,7 @@ impl Pool {
         else {
             // Return aggregate credit for fenced data without touching its successor.
             if matches!(input.body, Some(Body::Data(_))) {
-                self.release(node, epoch, length).await?;
+                self.release(node, epoch, length)?;
             }
             return Ok(());
         };
@@ -157,12 +161,9 @@ impl Pool {
                     let _ = ready.send(Ok(id));
                 }
                 route.opened = true;
-                self.grant(id).await
+                self.grant(id)
             }
-            Some(Body::Data(data)) => {
-                self.data(node, id, input.generation, data, length, epoch)
-                    .await
-            }
+            Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
             Some(Body::Closed(closed)) => {
                 let error =
                     StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
@@ -188,7 +189,7 @@ impl Pool {
                 route.node = destination.node_id.clone();
                 route.opened = false;
                 if self.links.contains_key(&destination.node_id) {
-                    self.subscribe(id).await
+                    self.subscribe(id)
                 } else {
                     self.dial(destination, None);
                     Ok(())
@@ -220,7 +221,7 @@ impl Pool {
             _ => Err(StreamError::Unavailable),
         }
     }
-    async fn data(
+    fn data(
         &mut self,
         node: &str,
         id: u64,
@@ -273,12 +274,22 @@ impl Pool {
         };
         match route.records.try_send(Ok(delivery)) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id).await,
+            Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id),
             Err(mpsc::error::TrySendError::Full(_)) => Err(StreamError::Capacity),
         }
     }
 
-    fn fail_node(&mut self, node: &str, error: &StreamError) {
+    pub(super) fn reject(&mut self, id: u64, error: StreamError) {
+        if let Some(mut route) = self.routes.remove(&id) {
+            if let Some(ready) = route.ready.take() {
+                let _ = ready.send(Err(error.clone()));
+            }
+            tokio::spawn(async move {
+                let _ = route.records.send(Err(error)).await;
+            });
+        }
+    }
+    pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
         let ids = self
             .routes
             .iter()
