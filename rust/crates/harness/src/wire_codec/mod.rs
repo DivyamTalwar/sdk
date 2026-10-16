@@ -24,9 +24,9 @@ mod event;
 pub(crate) use event::{decode_event, encode_event};
 pub use event::{decode_event_payload, encode_event_envelope};
 mod command;
+pub use command::decode_command_envelope;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use command::{decode_command, encode_apply_result};
-pub use command::{decode_command_envelope, encode_command_envelope};
 mod protocol;
 pub(crate) use protocol::{COMPILED_PROTOCOL, protocol_identity, validate_protocol};
 mod errors;

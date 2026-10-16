@@ -94,10 +94,13 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod future_sizes;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;
 mod keys;
 mod reads;
+mod uploads;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;

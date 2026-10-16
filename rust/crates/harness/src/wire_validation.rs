@@ -106,24 +106,11 @@ pub fn validate_cancel_response(
     request: &wire::CancelRequest,
     response: &wire::CancelResponse,
 ) -> Result<()> {
-    validate_cancel_identity(
-        &request.operation_id,
-        &request.idempotency_key,
-        request.owner.as_ref(),
-        response,
-    )
-}
-
-pub(crate) fn validate_cancel_identity(
-    operation_id: &str,
-    idempotency_key: &str,
-    owner: Option<&wire::Authority>,
-    response: &wire::CancelResponse,
-) -> Result<()> {
-    if operation_id.is_empty()
-        || idempotency_key.is_empty()
+    if request.operation_id.is_empty()
+        || request.idempotency_key.is_empty()
         || response.operation.as_ref().is_none_or(|operation| {
-            operation.operation_id != operation_id || operation.idempotency_key != idempotency_key
+            operation.operation_id != request.operation_id
+                || operation.idempotency_key != request.idempotency_key
         })
     {
         return Err(Error::Conflict("cancellation identity mismatch".into()));
@@ -132,7 +119,7 @@ pub(crate) fn validate_cancel_identity(
         .status
         .as_ref()
         .ok_or_else(|| Error::Conflict("cancellation status is missing".into()))?;
-    validate_operation_status(operation_id, owner, status)
+    validate_operation_status(&request.operation_id, request.owner.as_ref(), status)
 }
 
 /// Validates a protobuf-encoded handshake request and response.

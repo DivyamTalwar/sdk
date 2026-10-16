@@ -38,7 +38,7 @@ pub fn validate_wire_observe(request: Vec<u8>) -> Vec<u8> {
     validate_wire(|| {
         let request = crate::wire::ObserveRequest::decode(request.as_slice())
             .map_err(|error| crate::Error::Invalid(format!("invalid observe request: {error}")))?;
-        crate::wire_api::validate_observe_request(request).map(|_| ())
+        crate::wire_api::validate_observe_request(&request).map(|_| ())
     })
 }
 
@@ -48,7 +48,7 @@ pub fn validate_wire_cancel(request: Vec<u8>) -> Vec<u8> {
     validate_wire(|| {
         let request = crate::wire::CancelRequest::decode(request.as_slice())
             .map_err(|error| crate::Error::Invalid(format!("invalid cancel request: {error}")))?;
-        crate::wire_api::validate_cancel_request(request).map(|_| ())
+        crate::wire_api::validate_cancel_request(&request).map(|_| ())
     })
 }
 

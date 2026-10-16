@@ -56,19 +56,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         })
     }
 
-    pub(crate) async fn observe_operation_fresh(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<&OperationState> {
-        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
-        self.refresh(work).await?;
-        self.authorize_owner(owner, verifier, operation_id, work)
-    }
-
     pub(crate) fn observe_operation(
         &self,
         owner: &Authority,

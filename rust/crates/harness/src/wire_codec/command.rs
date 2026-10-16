@@ -1,29 +1,4 @@
 use super::*;
-/// Encodes a typed command with its canonical action and exact retry identity.
-pub fn encode_command_envelope(
-    authority: &Authority,
-    command: &Command,
-) -> Result<wire::CommandEnvelope> {
-    Ok(wire::CommandEnvelope {
-        protocol: Some(protocol_identity()),
-        authority: Some(encode_authority(authority)),
-        operation: Some(wire::OperationIdentity {
-            operation_id: command.operation_id.to_string(),
-            idempotency_key: command.idempotency_key.0.clone(),
-        }),
-        expected_revision: command.expected_revision,
-        scope: Some(wire::Scope::from(&command.scope)),
-        causal_parent: command.causal_parent.as_ref().map(encode_reference),
-        action_type: command.action.tag().into(),
-        canonical_action_json: canonical_json_bytes(&command.action)?,
-        intent_digest: crate::executor::json::canonical_json_digest(
-            command,
-            crate::store::default_projection_read_limits().maximum_bytes,
-            &mut None,
-        )?
-        .to_vec(),
-    })
-}
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use prost::Message as _;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

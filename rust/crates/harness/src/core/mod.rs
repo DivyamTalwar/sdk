@@ -20,8 +20,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 mod authority;
-#[cfg(test)]
-pub(crate) mod authority_probe;
 mod copying;
 mod effects;
 mod extension_types;
