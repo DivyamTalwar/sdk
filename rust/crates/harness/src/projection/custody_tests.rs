@@ -39,8 +39,7 @@ fn reference(bytes: &[u8]) -> FileRef {
     .unwrap()
 }
 
-fn check_rejected(value: Value) {
-    let bytes = serde_json::to_vec(&value).unwrap();
+fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
     let reference = reference(&bytes);
     let resolver = Resolver(bytes);
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -56,11 +55,42 @@ fn check_rejected(value: Value) {
         4096,
         Some(&io),
     ));
-    assert!(result.is_err());
-    drop(result);
+    if must_reject {
+        assert!(result.is_err());
+    }
+    match result {
+        Ok(call) => {
+            let custody = io
+                .take_native_custody(call.payload_bytes().unwrap())
+                .unwrap();
+            drop(call);
+            drop(custody);
+        }
+        Err(error) => drop(error),
+    }
     // Check while the I/O scope is still alive: scope destruction must not hide a leak.
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(io.owned_bytes().unwrap(), 0);
+}
+
+fn check_rejected(value: Value) {
+    check_bytes(serde_json::to_vec(&value).unwrap(), true);
+}
+
+fn arbitrary_value() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        Just(Value::Null),
+        any::<bool>().prop_map(Value::Bool),
+        any::<i64>().prop_map(|n| json!(n)),
+        ".{0,32}".prop_map(Value::String)
+    ]
+    .prop_recursive(4, 32, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+            prop::collection::btree_map(".{0,16}", inner, 0..4)
+                .prop_map(|map| Value::Object(map.into_iter().collect())),
+        ]
+    })
 }
 
 proptest! {
@@ -137,4 +167,31 @@ fn premature_retention_negative_control_is_visible_before_io_scope_drop() {
     assert_ne!(work.live_allocation_bytes(), baseline);
     io.release(io.owned_bytes().unwrap()).unwrap();
     assert_eq!(work.live_allocation_bytes(), baseline);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn arbitrary_wire_inputs_leave_no_custody_after_their_final_reader(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+        check_bytes(bytes, false);
+    }
+
+    #[test]
+    fn arbitrary_saved_field_trees_conserve_custody_on_success_or_rejection(
+        arguments in arbitrary_value(), metadata in arbitrary_value(),
+        field in prop::option::of(0usize..6),
+    ) {
+        let mut value = json!({"invocation":{"call_id":"call", "name":"echo", "arguments":arguments}, "metadata":metadata});
+        if let Some(field) = field {
+            match field {
+                0 => {value["invocation"]["call_id"] = value["metadata"].clone();},
+                1 => {value["invocation"]["name"] = value["metadata"].clone();},
+                2 => {value["invocation"].as_object_mut().unwrap().remove("arguments");},
+                3 => {value["invocation"] = value["metadata"].clone();},
+                4 => {value.as_object_mut().unwrap().remove("metadata");},
+                _ => {value = json!([value]);},
+            }
+        }
+        check_bytes(serde_json::to_vec(&value).unwrap(), false);
+    }
 }
