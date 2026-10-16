@@ -7,7 +7,6 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
     {
-        use acyclic_fs::facade::FsWork as _;
         let files = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
             directory.path().join("filesystem"),
         ))
@@ -20,7 +19,8 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
                 &CancellationToken::new(),
             )
             .await
-            .map_err(super::super::storage)?;
+            .map_err(super::super::storage)?
+            .value;
         workspace
             .write_text("/existing.txt", "preexisting")
             .await

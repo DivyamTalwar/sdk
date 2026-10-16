@@ -194,7 +194,8 @@ pub(super) async fn open_volume(
         let workspace = filesystem
             .open_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(storage)?;
+            .map_err(storage)?
+            .value;
         let generation = workspace
             .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
