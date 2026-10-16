@@ -449,12 +449,31 @@ impl PathTrie {
                 symbols.len(),
                 std::mem::size_of::<State>(),
             )?)?;
-            let states = determinize(
-                &nfa,
-                starts,
-                &symbols,
-                other,
-                |subset| {
+            let uniform = policy
+                .layers
+                .iter()
+                .flatten()
+                .all(|rule| rule.resource.path == "**")
+                && capability
+                    .layers
+                    .iter()
+                    .flatten()
+                    .all(|grant| grant.resource.path == "**");
+            let states = if uniform {
+                // Every active pattern accepts every canonical path, including
+                // root. One terminal state replaces subset construction.
+                spend(&mut available, nfa.nodes.len())?;
+                spend(
+                    &mut available,
+                    (policy.layers.len()
+                        + capability.layers.len()
+                        + policy.layers.iter().map(Vec::len).sum::<usize>()
+                        + capability.layers.iter().map(Vec::len).sum::<usize>())
+                        * 24,
+                )?;
+                let subset: Vec<_> = (0..nfa.nodes.len()).collect();
+                vec![terminal(
+                    vec![0; symbols.len() + 1],
                     outcomes(
                         policy,
                         capability,
@@ -462,15 +481,33 @@ impl PathTrie {
                         resource.generation != resource.head,
                         &rules,
                         &grants,
-                        subset,
-                    )
-                },
-                policy.layers.len()
-                    + capability.layers.len()
-                    + policy.layers.iter().map(Vec::len).sum::<usize>()
-                    + capability.layers.iter().map(Vec::len).sum::<usize>(),
-                &mut available,
-            )?;
+                        &subset,
+                    ),
+                )]
+            } else {
+                determinize(
+                    &nfa,
+                    starts,
+                    &symbols,
+                    other,
+                    |subset| {
+                        outcomes(
+                            policy,
+                            capability,
+                            context,
+                            resource.generation != resource.head,
+                            &rules,
+                            &grants,
+                            subset,
+                        )
+                    },
+                    policy.layers.len()
+                        + capability.layers.len()
+                        + policy.layers.iter().map(Vec::len).sum::<usize>()
+                        + capability.layers.iter().map(Vec::len).sum::<usize>(),
+                    &mut available,
+                )?
+            };
             // Moving head turns a pinned current read/list into history, even
             // when every selector says All. Preserve the same ReadHistory gate.
             let history_sensitive = states.iter().any(|state| {
@@ -707,21 +744,25 @@ fn determinize(
             };
             transitions.push(id);
         }
-        states.push(State {
-            transitions,
-            actions: decisions
-                .iter()
-                .enumerate()
-                .fold(0, |mask, (bit, outcome)| {
-                    mask | if outcome.denial.is_none() {
-                        1 << bit
-                    } else {
-                        0
-                    }
-                }),
-            decisions,
-        });
+        states.push(terminal(transitions, decisions));
     }
 
     Ok(states)
+}
+
+fn terminal(transitions: Vec<usize>, decisions: [Outcome; 12]) -> State {
+    State {
+        transitions,
+        actions: decisions
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (bit, outcome)| {
+                mask | if outcome.denial.is_none() {
+                    1 << bit
+                } else {
+                    0
+                }
+            }),
+        decisions,
+    }
 }

@@ -57,10 +57,12 @@ fn replayed_intent_does_not_decode_the_event_again()
     io.receipt().verify(budget)?;
     assert_eq!(io.owned_bytes()?, 0);
 
-    let full = crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?;
+    let mut replay_budget = budget;
+    replay_budget.items_examined = io.receipt().items_examined;
+    let full = crate::filesystem::PreparationIo::from_budget(replay_budget, &cancellation)?;
     let mut history = full.history_io();
     assert!(decode(&record, &mut Some(&mut history as &mut dyn HistoryIo)).is_err());
-    full.receipt().verify(budget)?;
+    full.receipt().verify(replay_budget)?;
     Ok(())
 }
 

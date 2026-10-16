@@ -9,6 +9,9 @@ mod review;
 #[path = "access_roundtrip.rs"]
 mod roundtrip;
 
+#[path = "access_uniform.rs"]
+mod uniform;
+
 fn principal() -> Principal {
     Principal {
         kind: PrincipalKind::Agent,
