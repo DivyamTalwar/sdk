@@ -1445,6 +1445,24 @@ export interface ContextDiscovery {
 }
 
 /**
+ * Pinned instructions, available skills, selected invocations and exact tool schemas.
+ */
+export interface ContextManifest {
+    /**
+     * Instructions are ordered from broad to specific scope; later entries take precedence.
+     */
+    discovery: DiscoveredContext;
+    /**
+     * Names in invocation order, resolving only through this manifest's pinned skill catalog.
+     */
+    selected_skills: string[];
+    /**
+     * Complete selected tool catalog before caller attenuation, with exact executor revisions.
+     */
+    tools: ToolDefinition[];
+}
+
+/**
  * Pinned logical resource allocation and worker placement.
  */
 export interface Reservation {
@@ -2874,9 +2892,6 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly __wbg_wasmmodelstream_free: (a: number, b: number) => void;
-    readonly wasmmodelstream_cancel: (a: number) => void;
-    readonly wasmmodelstream_next: (a: number) => any;
     readonly __wbg_wasmmodelprovider_free: (a: number, b: number) => void;
     readonly __wbg_wasmproviderregistry_free: (a: number, b: number) => void;
     readonly wasmmodelprovider_contextCapacity: (a: number, b: any) => [number, number, number];
@@ -2887,9 +2902,53 @@ export interface InitOutput {
     readonly wasmproviderregistry_new: (a: any, b: any, c: number, d: number) => [number, number, number];
     readonly wasmproviderregistry_register: (a: number, b: number, c: number, d: any) => [number, number];
     readonly wasmproviderregistry_resolve: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly __wbg_wasmmodelstream_free: (a: number, b: number) => void;
+    readonly wasmmodelstream_cancel: (a: number) => void;
+    readonly wasmmodelstream_next: (a: number) => any;
+    readonly decodeAttachmentManifest: (a: any, b: number, c: number, d: number) => [number, number, number];
+    readonly encodeAttachmentManifest: (a: any) => [number, number, number, number];
+    readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
+    readonly validateTaskChildrenPage: (a: any) => [number, number, number];
+    readonly validateToolValue: (a: any, b: any) => [number, number, number];
+    readonly validateWorkflowAdmission: (a: any) => [number, number, number];
+    readonly verifyFileBytes: (a: any, b: number, c: number) => [number, number];
+    readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
+    readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
+    readonly applyContextProjection: (a: any, b: any, c: any, d: any, e: any) => [number, number, number];
+    readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
+    readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
+    readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
+    readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
+    readonly validateContextSelection: (a: any, b: any) => [number, number];
+    readonly validateModelContextSelection: (a: any, b: any) => [number, number];
+    readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+    readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_restore: (a: number, b: any) => [number, number];
+    readonly wasmclientviews_sequence: (a: number) => bigint;
+    readonly __wbg_wasmclientviews_free: (a: number, b: number) => void;
+    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];
+    readonly decodeAggregateKind: (a: number) => [number, number, number];
+    readonly decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly validateWireAdmission: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireCancel: (a: number, b: number) => [number, number];
+    readonly validateWireCancellation: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireCommand: (a: number, b: number) => [number, number];
+    readonly validateWireCommandProtocol: (a: number, b: number) => [number, number];
+    readonly validateWireHandshake: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireObserve: (a: number, b: number) => [number, number];
+    readonly validateWireResume: (a: number, b: number) => [number, number];
+    readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
+    readonly wasmclientviews_release: (a: number, b: any) => [number, number];
+    readonly wasmclientviews_residency: (a: number) => [number, number, number];
+    readonly wasmclientviews_status: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_view: (a: number, b: any, c: any) => [number, number, number];
     readonly __wbg_wasmbrowseraggregate_free: (a: number, b: number) => void;
     readonly __wbg_wasmbrowserhistoryreader_free: (a: number, b: number) => void;
-    readonly __wbg_wasmclientviews_free: (a: number, b: number) => void;
     readonly wasmbrowseraggregate_execute: (a: number, b: any) => any;
     readonly wasmbrowseraggregate_head: (a: number) => [number, number, number];
     readonly wasmbrowseraggregate_historyReader: (a: number) => [number, number, number];
@@ -2902,21 +2961,32 @@ export interface InitOutput {
     readonly wasmbrowserhistoryreader_operationEvent: (a: number, b: any) => any;
     readonly wasmbrowserhistoryreader_pin: (a: number, b: bigint) => any;
     readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
-    readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];
-    readonly applyContextProjection: (a: any, b: any, c: any, d: any, e: any) => [number, number, number];
-    readonly parseSkillMetadata: (a: number, b: number, c: any) => [number, number, number];
-    readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
-    readonly projectDiscoveredContext: (a: any, b: any, c: any, d: any) => [number, number, number];
-    readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
-    readonly validateContextSelection: (a: any, b: any) => [number, number];
-    readonly validateModelContextSelection: (a: any, b: any) => [number, number];
-    readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_observe: (a: number, b: any, c: any) => [number, number, number];
-    readonly wasmclientviews_release: (a: number, b: any) => [number, number];
-    readonly wasmclientviews_residency: (a: number) => [number, number, number];
-    readonly wasmclientviews_status: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_view: (a: number, b: any, c: any) => [number, number, number];
+    readonly admitBatch: (a: any) => [number, number, number];
+    readonly admitBatchRequest: (a: any) => [number, number, number];
+    readonly admitTask: (a: any) => [number, number, number];
+    readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly taskAdmissionIdentities: (a: any) => [number, number, number];
+    readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
+    readonly validateTaskRequirements: (a: any) => [number, number];
+    readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
+    readonly captureDiscoveredContext: (a: any, b: any) => any;
+    readonly contextForRequest: (a: any, b: any, c: any, d: any) => any;
+    readonly defaultCompactionPolicy: () => [number, number, number];
+    readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number];
+    readonly modelContentInventory: (a: any, b: any) => [number, number, number];
+    readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
+    readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
+    readonly validateModelContent: (a: any, b: any) => [number, number];
+    readonly validateModelMessages: (a: any, b: any) => [number, number];
+    readonly validateModelTokenCount: (a: any, b: any, c: any) => [bigint, number, number];
+    readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
+    readonly validateThresholdCompaction: (a: any, b: any, c: any) => [number, number, number];
+    readonly validateUserInput: (a: any) => [number, number];
+    readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
+    readonly validateToolDefinition: (a: any) => [number, number];
+    readonly validateToolInvocation: (a: any, b: any) => [number, number];
+    readonly validateToolProjection: (a: any, b: any, c: any) => [number, number];
+    readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly wasmcontentstore_generation: (a: number) => [number, number, number];
     readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
     readonly wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
@@ -2925,26 +2995,29 @@ export interface InitOutput {
     readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
     readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+    readonly decodeCanonicalJson: (a: number, b: number) => [number, number, number];
+    readonly decodeExecutionEventJson: (a: number, b: number) => [number, number, number];
+    readonly decodeJson: (a: number, b: number) => [number, number, number];
+    readonly digestCanonicalJson: (a: any) => [number, number, number, number];
+    readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
+    readonly __wbg_wasmtaskregistry_free: (a: number, b: number) => void;
+    readonly wasmtaskregistry_new: () => number;
+    readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
+    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
+    readonly deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly validateAuthorityPathSegment: (a: any) => [number, number, number, number];
+    readonly validateComponentLabel: (a: any) => [number, number, number, number];
+    readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
+    readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly __wbg_wasmtaskruntime_free: (a: number, b: number) => void;
     readonly mcpCallbackOperation: (a: any) => [number, number, number, number];
     readonly mcpModelDefinitions: (a: any, b: any, c: any) => [number, number, number];
     readonly searchMcpCatalog: (a: any, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
     readonly validateMcpCallbackRequest: (a: any) => [number, number];
     readonly validateMcpCatalog: (a: any, b: any, c: any) => [number, number];
     readonly validateMcpStdioRequest: (a: any) => [number, number];
-    readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
-    readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
-    readonly wasmclientviews_restore: (a: number, b: any) => [number, number];
-    readonly wasmclientviews_sequence: (a: number) => bigint;
-    readonly captureDiscoveredContext: (a: any, b: any) => any;
-    readonly contextForRequest: (a: any, b: any, c: any, d: any) => any;
-    readonly readPinnedContextPath: (a: any, b: any, c: number) => any;
-    readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
-    readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
-    readonly jsonToolProjectionSchema: (a: any) => [number, number, number];
-    readonly validateToolDefinition: (a: any) => [number, number];
-    readonly validateToolInvocation: (a: any, b: any) => [number, number];
-    readonly validateToolProjection: (a: any, b: any, c: any) => [number, number];
-    readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];
@@ -2970,73 +3043,6 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
-    readonly deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly validateAuthorityPathSegment: (a: any) => [number, number, number, number];
-    readonly validateComponentLabel: (a: any) => [number, number, number, number];
-    readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
-    readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly __wbg_wasmtaskregistry_free: (a: number, b: number) => void;
-    readonly wasmtaskregistry_new: () => number;
-    readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
-    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
-    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
-    readonly decodeCanonicalJson: (a: number, b: number) => [number, number, number];
-    readonly decodeExecutionEventJson: (a: number, b: number) => [number, number, number];
-    readonly decodeJson: (a: number, b: number) => [number, number, number];
-    readonly digestCanonicalJson: (a: any) => [number, number, number, number];
-    readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
-    readonly admitBatch: (a: any) => [number, number, number];
-    readonly admitBatchRequest: (a: any) => [number, number, number];
-    readonly admitTask: (a: any) => [number, number, number];
-    readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly taskAdmissionIdentities: (a: any) => [number, number, number];
-    readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
-    readonly validateTaskRequirements: (a: any) => [number, number];
-    readonly decodeAttachmentManifest: (a: any, b: number, c: number, d: number) => [number, number, number];
-    readonly encodeAttachmentManifest: (a: any) => [number, number, number, number];
-    readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
-    readonly forkSeedFromReport: (a: any) => [number, number, number];
-    readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
-    readonly validateTaskChildrenPage: (a: any) => [number, number, number];
-    readonly validateToolValue: (a: any, b: any) => [number, number, number];
-    readonly validateWorkflowAdmission: (a: any) => [number, number, number];
-    readonly verifyFileBytes: (a: any, b: number, c: number) => [number, number];
-    readonly __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
-    readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
-    readonly wasmmcphttpinitialization_initializedRequest: (a: number) => [number, number, number];
-    readonly wasmmcphttpinitialization_intoTransport: (a: number) => number;
-    readonly wasmmcphttpinitialization_resultJson: (a: number) => [number, number, number, number];
-    readonly wasmmcphttptransport_acceptInitialization: (a: number, b: number, c: number, d: any, e: any) => any;
-    readonly wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
-    readonly wasmmcphttptransport_initializationRequest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
-    readonly wasmmcphttptransport_listToolsJson: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: any, g: any) => [number, number, number];
-    readonly wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
-    readonly wasmmcphttptransport_serviceJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
-    readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
-    readonly decodeAggregateKind: (a: number) => [number, number, number];
-    readonly decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
-    readonly defaultCompactionPolicy: () => [number, number, number];
-    readonly encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number];
-    readonly modelContentInventory: (a: any, b: any) => [number, number, number];
-    readonly prepareModelRequest: (a: any, b: any) => [number, number, number, number];
-    readonly validateModelContent: (a: any, b: any) => [number, number];
-    readonly validateModelMessages: (a: any, b: any) => [number, number];
-    readonly validateModelTokenCount: (a: any, b: any, c: any) => [bigint, number, number];
-    readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
-    readonly validateThresholdCompaction: (a: any, b: any, c: any) => [number, number, number];
-    readonly validateUserInput: (a: any) => [number, number];
-    readonly validateWireAdmission: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly validateWireCancel: (a: number, b: number) => [number, number];
-    readonly validateWireCancellation: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly validateWireCommand: (a: number, b: number) => [number, number];
-    readonly validateWireCommandProtocol: (a: number, b: number) => [number, number];
-    readonly validateWireHandshake: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly validateWireObserve: (a: number, b: number) => [number, number];
-    readonly validateWireResume: (a: number, b: number) => [number, number];
-    readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly __wbg_wasmtaskruntime_free: (a: number, b: number) => void;
     readonly wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
     readonly wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;
     readonly wasmtaskruntime_configureModel: (a: number, b: any, c: any, d: any, e: number, f: number, g: any) => [number, number];
@@ -3051,6 +3057,18 @@ export interface InitOutput {
     readonly wasmtaskruntime_send: (a: number, b: any, c: number, d: number, e: number, f: number, g: any) => any;
     readonly wasmtaskruntime_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly wasmtaskruntime_workerTick: (a: number, b: any, c: any, d: number, e: number) => any;
+    readonly __wbg_wasmmcphttpinitialization_free: (a: number, b: number) => void;
+    readonly __wbg_wasmmcphttptransport_free: (a: number, b: number) => void;
+    readonly wasmmcphttpinitialization_initializedRequest: (a: number) => [number, number, number];
+    readonly wasmmcphttpinitialization_intoTransport: (a: number) => number;
+    readonly wasmmcphttpinitialization_resultJson: (a: number) => [number, number, number, number];
+    readonly wasmmcphttptransport_acceptInitialization: (a: number, b: number, c: number, d: any, e: any) => any;
+    readonly wasmmcphttptransport_callJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+    readonly wasmmcphttptransport_initializationRequest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmmcphttptransport_listToolsJson: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly wasmmcphttptransport_new: (a: any, b: number, c: number, d: number, e: number, f: any, g: any) => [number, number, number];
+    readonly wasmmcphttptransport_reconcileJson: (a: number, b: number, c: number) => any;
+    readonly wasmmcphttptransport_serviceJson: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
     readonly __streamErrorCodeContract: (a: any) => any;
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
     readonly __wbg_wasmstream_free: (a: number, b: number) => void;
