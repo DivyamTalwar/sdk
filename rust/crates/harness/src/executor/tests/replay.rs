@@ -416,17 +416,18 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     )
     .with_tool_authority(scope, None)?;
     let journal = Journal::default();
-    let mut messages = Vec::new();
+    let mut messages = vec![call_message(&invocation)];
+    let before = messages.clone();
     assert!(matches!(
         StockExecution::ordinary(&base)
-            .settle_tool_call(&journal, operation, 0, invocation.clone(), &mut messages)
+            .settle_tool_call(&journal, operation, 0, invocation.clone(), 0, &mut messages)
             .await,
         Err(Error::Unauthorized(_))
     ));
     let contextual = base.with_task_context(&context, operation)?;
     assert!(matches!(
         StockExecution::ordinary(&contextual)
-            .settle_tool_call(&journal, operation, 0, invocation, &mut messages)
+            .settle_tool_call(&journal, operation, 0, invocation, 0, &mut messages)
             .await,
         Err(Error::Unsupported(_))
     ));
@@ -434,6 +435,6 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     assert!(journal.0.lock().unwrap().is_empty());
     assert!(journal.1.lock().unwrap().is_empty());
-    assert!(messages.is_empty());
+    assert_eq!(messages, before);
     Ok(())
 }

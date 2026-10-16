@@ -32,6 +32,7 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
+            let batch_start = prior_messages.len();
             let mut calls = calls;
             // Preserve the model's complete batch before appending any tool results.
             for (invocation, metadata) in &mut calls {
@@ -51,13 +52,15 @@ impl StockExecution<'_> {
                 })?;
                 stock_vec_push(&mut prior_messages, message, self.io)?;
             }
-            for (invocation, _) in calls {
+            for (offset, (invocation, _)) in calls.into_iter().enumerate() {
+                let invocation_index = batch_start + offset;
                 match self
                     .resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
                         invocation,
+                        invocation_index,
                         &mut prior_messages,
                     )
                     .await?

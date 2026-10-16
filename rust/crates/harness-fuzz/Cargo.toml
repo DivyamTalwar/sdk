@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "grpc", "native-execution", "test-support"] }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "grpc", "native-execution", "test-support", "search-http"] }
 acyclic-fs = { path = "../filesystem", default-features = false, features = ["local"] }
 diffy.workspace = true
 libfuzzer-sys = "0.4"
@@ -20,6 +20,7 @@ tempfile = "3.27.0"
 bytes.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde.workspace = true
+uuid.workspace = true
 serde-saphyr = { version = "=1.3.0", features = ["serialize"] }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
@@ -30,6 +31,20 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
 
 [features]
 notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+
+[[bin]]
+name = "search_http_codec"
+path = "fuzz_targets/search_http_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "search_request"
+path = "fuzz_targets/search_request.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "client_recovery"
@@ -162,6 +177,13 @@ bench = false
 [[bin]]
 name = "task_query_case"
 path = "fuzz_targets/task_query_case.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recorded_invocation"
+path = "fuzz_targets/recorded_invocation.rs"
 test = false
 doc = false
 bench = false
