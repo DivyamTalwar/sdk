@@ -176,7 +176,7 @@ impl CheckoutTools {
                     .ok_or_else(|| {
                         Error::Unauthorized("git command has no execution owner".into())
                     })?
-                    .verify_owner(None)
+                    .verify_owner(None)?
                     .await
             },
         )
