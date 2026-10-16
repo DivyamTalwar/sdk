@@ -209,15 +209,30 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .payloads
             .stage(operation, &text, b"null", io.as_ref())?
             .await?;
-        self.resume_workflow(
-            task,
-            revision,
-            input,
-            IdempotencyKey::new(text)?,
-            Some(waiting),
-            work,
-        )
-        .await
+        let admission = self.admission(operation, work).await?;
+        admission.limits.validate_file(&input, work)?;
+        if !self.read_json(&input, io.as_ref()).await?.is_null() {
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "host command wake is not null",
+            ));
+        }
+        self.coordinator
+            .lock()
+            .await
+            .resume_workflow(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation,
+                revision,
+                input,
+                IdempotencyKey::new(text)?,
+                Some(waiting),
+                work,
+            )
+            .await
     }
 
     /// Delivers owner-authorized input into the exact retained workflow slot.
@@ -314,6 +329,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?,
         )?;
         admission.limits.validate_file(&input, quota.work())?;
+        if slot.waiting_command.is_some() {
+            // A command wake carries no user input into the workflow reducer.
+            self.verify_owner(task, fence, false, quota.work()).await?;
+            return Ok(Some((slot.revision, Value::Null)));
+        }
         if !read_granted(&admission.grants, &input)? {
             return Err(crate::scheduler::diagnostic(
                 quota.work(),

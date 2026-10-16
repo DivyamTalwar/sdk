@@ -95,6 +95,31 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
             harness.advance(child, &harness.commands()?).await?;
             assert_eq!(provider.requests().len(), index);
             assert!(host.outcome(child).await?.is_none());
+            if index == 1 {
+                let (hidden, _) = publisher
+                    .stage_once(
+                        OperationId::new(),
+                        "private/unreadable.json",
+                        b"1",
+                        "application/json",
+                        "private.json",
+                        None,
+                    )?
+                    .await?;
+                let slot = host.workflow_suspension(child, &mut None).await?.unwrap();
+                assert!(matches!(
+                    host.resume_workflow(
+                        child,
+                        slot.revision,
+                        hidden,
+                        crate::IdempotencyKey::new("unreadable-wake")?,
+                        slot.waiting_command,
+                        &mut None,
+                    )
+                    .await,
+                    Err(crate::Error::Unauthorized(_))
+                ));
+            }
             harness.advance(child, &harness.commands()?).await?;
             assert_eq!(provider.requests().len(), index);
         }
