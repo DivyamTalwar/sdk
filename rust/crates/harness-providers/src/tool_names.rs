@@ -1,6 +1,6 @@
 use acyclic_harness::{
     Result,
-    model::{ModelContentPart, ModelEvent, ModelRequest},
+    model::{ModelContentPart, ModelRequest},
 };
 use std::borrow::Cow;
 
@@ -35,7 +35,7 @@ fn unchanged(name: &str) -> bool {
 }
 
 impl<'a> Names<'a> {
-    #[cfg(any(test, feature = "fuzzing"))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
     pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
         let table = Self::new(request);
         let mut seen = std::collections::BTreeSet::new();
@@ -51,13 +51,15 @@ impl<'a> Names<'a> {
                 seen.insert(wire.to_string()),
                 "distinct canonical names collided"
             );
-            let mut event = ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                "call".into(),
-                wire.into_owned(),
-                serde_json::json!({}),
-            ));
+            let mut event = acyclic_harness::model::ModelEvent::ToolCall(
+                acyclic_harness::model::ToolCall::new(
+                    "call".into(),
+                    wire.into_owned(),
+                    serde_json::json!({}),
+                ),
+            );
             table.restore(&mut event).unwrap();
-            let ModelEvent::ToolCall(call) = event else {
+            let acyclic_harness::model::ModelEvent::ToolCall(call) = event else {
                 unreachable!()
             };
             assert_eq!(call.name, name);
@@ -84,7 +86,7 @@ impl<'a> Names<'a> {
         Ok(Cow::Owned(format!("{PREFIX}{index}")))
     }
 
-    fn canonical(&self, wire: &str) -> Result<Option<&'a str>> {
+    pub(crate) fn canonical(&self, wire: &str) -> Result<Option<&'a str>> {
         let Some(index) = wire.strip_prefix(PREFIX) else {
             return Ok(None);
         };
@@ -106,8 +108,9 @@ impl<'a> Names<'a> {
         Ok(Some(name))
     }
 
-    pub(crate) fn restore(&self, event: &mut ModelEvent) -> Result<()> {
-        if let ModelEvent::ToolCall(call) = event {
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+    pub(crate) fn restore(&self, event: &mut acyclic_harness::model::ModelEvent) -> Result<()> {
+        if let acyclic_harness::model::ModelEvent::ToolCall(call) = event {
             if let Some(name) = self.canonical(&call.name)? {
                 call.name = name.into();
             }
@@ -134,29 +137,5 @@ impl<'a> Names<'a> {
             },
         )?;
         Ok((Self::new(request), custody))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn restore_native(
-        &self,
-        event: &mut ModelEvent,
-        allocation: &mut acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        if let ModelEvent::ToolCall(call) = event {
-            if let Some(name) = self.canonical(&call.name)? {
-                let mut custody = work.claim(
-                    name.len() as u64,
-                    1,
-                    acyclic_fs::WorkCounters {
-                        bytes_copied: name.len() as u64,
-                        ..acyclic_fs::WorkCounters::UNCHARGED
-                    },
-                )?;
-                allocation.absorb(&mut custody)?;
-                call.name = name.into();
-            }
-        }
-        Ok(())
     }
 }

@@ -284,3 +284,32 @@ async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Res
     assert!(native.next().await.is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<()> {
+    const BODY: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"first\",\"function\":{\"name\":\"harness_tool_0\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"second\",\"function\":{\"name\":\"harness_tool_1\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+    let (mut provider, _) = provider(Adapter::Chat, 200);
+    Arc::make_mut(&mut provider.config).max_event_bytes = 512;
+    provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(BODY)));
+    let (prepared, _) = request(&provider)?;
+    let mut request = prepared.request().clone();
+    request.tools = ['a', 'b']
+        .into_iter()
+        .map(|letter| definition(format!("namespace.{}", letter.to_string().repeat(200))))
+        .collect();
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+    let dispatch = ModelDispatch {
+        request_digest: prepared.request_digest(),
+        ..parser_dispatch()
+    };
+    let mut ordinary = provider.generate(prepared.clone(), dispatch);
+    let error = ordinary.next().await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("aggregate"));
+    let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
+    let mut native = provider
+        .generate_with_native_work(&prepared, dispatch, &work)?
+        .await?;
+    let error = native.next().await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("aggregate"));
+    Ok(())
+}

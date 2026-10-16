@@ -55,13 +55,12 @@ pub(crate) fn events_named<'a>(
         let mut state = State::new(maximum);
         while let Some(data) = input.next().await {
             let data = data?;
-            let mut deltas = parse(&mut state, adapter, &data, dispatch)?;
-            if let Some(names) = names { for event in &mut deltas { names.restore(event)?; } }
+            let deltas = parse(&mut state, adapter, &data, dispatch)?;
             for event in deltas { yield event; }
             if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
-        let mut events = finish(state, adapter)?;
-        if let Some(names) = names { for event in &mut events { names.restore(event)?; } }
+        if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
+        let events = finish(state, adapter)?;
         for event in events { yield event; }
     })
 }
@@ -157,6 +156,27 @@ pub(crate) fn finish(mut state: State, adapter: Adapter) -> Result<Vec<ModelEven
 }
 
 impl<'work> State<'work> {
+    pub(crate) fn restore_names(
+        &mut self,
+        names: &crate::tool_names::Names,
+        mut fund: impl FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        if self
+            .metadata
+            .get("finish_reason")
+            .is_some_and(|reason| reason == "length")
+        {
+            return Ok(());
+        }
+        for call in self.calls.values_mut() {
+            if let Some(name) = names.canonical(&call.name)? {
+                fund(name.len())?;
+                self.budget.string(&mut call.name, name)?;
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         use acyclic_harness::model::json_value_logical_owned_bytes as owned;
