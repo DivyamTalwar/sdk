@@ -99,10 +99,24 @@ pub(super) async fn open(
         .load_lazy_workspace(id, &mut accounting)
         .await
         .map_err(storage)?;
+    let selected = if original.is_some() || existing {
+        Some(
+            filesystem
+                .open_workspace(&name, &work, &cancellation)
+                .await
+                .map_err(storage)?,
+        )
+    } else {
+        None
+    };
+    let config = selected.as_ref().map_or_else(
+        || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        |workspace| workspace.volume_config(),
+    );
     let source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(&path),
-        acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable).profile,
-        acyclic_fs::VolumeLimits::default(),
+        config.profile,
+        config.limits,
         original.as_ref().map(|state| state.source),
         None,
         &work,
@@ -117,25 +131,15 @@ pub(super) async fn open(
     }
     let source = Arc::new(source);
     let fresh = original.is_none();
-    let view = match original {
-        Some(_) => {
-            let workspace = filesystem
-                .open_workspace(&name, &work, &cancellation)
-                .await
-                .map_err(storage)?;
+    let view = match selected {
+        Some(workspace) if original.is_some() => {
             LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
                 .await
                 .map_err(storage)?
         }
-        None if existing => {
-            let workspace = filesystem
-                .open_workspace(&name, &work, &cancellation)
-                .await
-                .map_err(storage)?;
-            LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
-                .await
-                .map_err(storage)?
-        }
+        Some(workspace) => LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
+            .await
+            .map_err(storage)?,
         None => {
             LazyWorkspace::attach(
                 filesystem,
