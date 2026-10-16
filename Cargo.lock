@@ -738,6 +738,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "proptest",
  "prost",
  "rcgen",
  "rustls",
