@@ -2,7 +2,10 @@ use super::*;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, OperationId,
     context::{CompactionPolicy, ContextPipeline},
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{
+        BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileRef, VolumeClass,
+        VolumeOperation, VolumeOwner, VolumeRef,
+    },
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{SchedulerPayloadStore, WorkPull, Worker},
     durable_tool::ResumableToolRegistry,
@@ -130,15 +133,64 @@ impl ResumableMachine for OneCommand {
 
 #[tokio::test]
 async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<()> {
-    stock_turn(false).await
+    stock_turn(None).await
+}
+
+#[derive(serde::Deserialize)]
+struct ImageCase {
+    name: String,
+    supports_images: bool,
+    replace_after_yield: bool,
+    expected_images: usize,
+    expected_image_reads: usize,
+    expected_fallbacks: usize,
+}
+
+fn image_cases() -> Result<Vec<ImageCase>> {
+    serde_json::from_str(include_str!("fixtures/native-images.json"))
+        .map_err(|error| invalid(error.to_string()))
+}
+
+struct ImageReads {
+    reader: Arc<dyn ContentResidencyVerifier>,
+    calls: AtomicUsize,
+}
+
+impl ContentResidencyVerifier for ImageReads {
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+        maximum: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if file.descriptor().media_type().starts_with("image/") {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        self.reader.read(file, maximum, io)
+    }
 }
 
 #[tokio::test]
 async fn image_attach_and_paste_run_on_the_issued_native_task() -> Result<()> {
-    stock_turn(true).await
+    let cases = image_cases()?;
+    stock_turn(Some(
+        cases
+            .first()
+            .ok_or_else(|| invalid("missing image baseline"))?,
+    ))
+    .await
 }
 
-async fn stock_turn(with_images: bool) -> Result<()> {
+#[tokio::test]
+async fn image_versions_and_fallback_survive_native_task_recovery() -> Result<()> {
+    for case in image_cases()?.iter().skip(1) {
+        stock_turn(Some(case)).await?;
+    }
+    Ok(())
+}
+
+async fn stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
+    let with_images = image_case.is_some();
     for (adapter, response) in [
         (
             Adapter::Chat,
@@ -229,7 +281,8 @@ async fn stock_turn(with_images: bool) -> Result<()> {
             65_536,
             None,
         )?;
-        let input = if with_images {
+        let mut images = None;
+        let input = if let Some(case) = image_case {
             use acyclic_harness::{
                 client::{attach_image, paste_image},
                 conversation::ContentPublisher,
@@ -264,19 +317,30 @@ async fn stock_turn(with_images: bool) -> Result<()> {
                 Some(&io),
             )?;
             let attached = attach_image(selected, reader.as_ref(), 4096).await?;
-            let pasted =
-                paste_image(payloads.as_ref(), OperationId::new(), &clipboard, 4096).await?;
-            provider = provider.with_content_reader(reader);
-            Arc::make_mut(&mut provider.config).images.insert(
-                model.name.clone(),
-                crate::ImageInput {
-                    maximum_bytes: 4096,
-                    maximum_total_bytes: 8192,
-                    maximum_images: 4,
-                    maximum_dimension: 1024,
-                    maximum_tokens: 1024,
-                },
-            );
+            let paste_operation = OperationId::new();
+            let pasted = paste_image(payloads.as_ref(), paste_operation, &clipboard, 4096).await?;
+            let pinned = [attached.file.clone(), pasted.file.clone()];
+            let reads = Arc::new(ImageReads {
+                reader,
+                calls: AtomicUsize::new(0),
+            });
+            provider = provider.with_content_reader(reads.clone());
+            if case.supports_images {
+                Arc::make_mut(&mut provider.config).images.insert(
+                    model.name.clone(),
+                    crate::ImageInput {
+                        maximum_bytes: 4096,
+                        maximum_total_bytes: 8192,
+                        maximum_images: 4,
+                        maximum_dimension: 1024,
+                        maximum_tokens: 1024,
+                    },
+                );
+            } else {
+                Arc::make_mut(&mut provider.config)
+                    .images
+                    .remove(&model.name);
+            }
             transport
                 .expected_images
                 .lock()
@@ -285,8 +349,13 @@ async fn stock_turn(with_images: bool) -> Result<()> {
                     base64::engine::general_purpose::STANDARD
                         .encode(jpeg)
                         .into_bytes(),
-                    2,
+                    case.expected_images,
                 ));
+            transport
+                .expected_images
+                .lock()
+                .expect("fallback expectations")
+                .push((b"omitted".to_vec(), case.expected_fallbacks));
             let mut parts = vec![ModelContentPart::Text {
                 text: "question".into(),
             }];
@@ -303,6 +372,7 @@ async fn stock_turn(with_images: bool) -> Result<()> {
                     })),
                 });
             }
+            images = Some((reads, pinned, paste_operation, clipboard));
             ModelContent::Parts(parts)
         } else {
             ModelContent::Text("question".into())
@@ -429,6 +499,55 @@ async fn stock_turn(with_images: bool) -> Result<()> {
                 panic!("image task must yield at its transition boundary");
             };
             assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+            if let Some(case) = image_case.filter(|case| case.replace_after_yield) {
+                use acyclic_harness::{
+                    client::paste_image,
+                    conversation::ContentPublisher,
+                    tui::{ClipboardContent, prepare_image},
+                };
+                use base64::Engine as _;
+                let (_, pinned, paste_operation, clipboard) =
+                    images.as_ref().expect("pinned images");
+                let replacement =
+                    prepare_image(2, 2, [0, 0, 0, 255].repeat(4)).expect("replacement image");
+                let ClipboardContent::Image { jpeg, .. } = &replacement else {
+                    unreachable!()
+                };
+                for file in pinned {
+                    let (updated, hold) = payloads
+                        .stage_once(
+                            OperationId::new(),
+                            file.path(),
+                            jpeg,
+                            "image/jpeg",
+                            "replacement.jpg",
+                            None,
+                        )?
+                        .await?;
+                    assert_ne!(
+                        updated, *file,
+                        "{} replaces the draft, not the submitted version",
+                        case.name
+                    );
+                    drop(hold);
+                }
+                assert_eq!(
+                    paste_image(payloads.as_ref(), *paste_operation, clipboard, 4096)
+                        .await?
+                        .file,
+                    pinned[1]
+                );
+                transport
+                    .expected_images
+                    .lock()
+                    .expect("replacement expectations")
+                    .push((
+                        base64::engine::general_purpose::STANDARD
+                            .encode(jpeg)
+                            .into_bytes(),
+                        0,
+                    ));
+            }
             // A second caller invocation recovers the same durable reservation;
             // it does not replenish the first invocation's original ledger.
             let next = super::work(&CancellationToken::new())?;
@@ -489,6 +608,14 @@ async fn stock_turn(with_images: bool) -> Result<()> {
             "{adapter:?}"
         );
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
+        if let (Some(case), Some((reads, _, _, _))) = (image_case, images) {
+            assert_eq!(
+                reads.calls.load(Ordering::SeqCst),
+                case.expected_image_reads,
+                "{adapter:?} {}",
+                case.name
+            );
+        }
     }
     Ok(())
 }
