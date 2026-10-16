@@ -33,7 +33,7 @@ impl AccessView {
     #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn publish_unfenced(&self, view: PathTrie) -> Result<(), InvalidPolicy> {
         let current = self.current()?;
-        if !view.same_binding(&current) || view.policy_version() < current.policy_version() {
+        if !can_replace(&current, &view) {
             return Err(InvalidPolicy("access view binding or revision changed"));
         }
         let view = Arc::new(view);
@@ -49,14 +49,14 @@ impl AccessView {
     }
 
     /// Publish a revision after the owner authorizes and commits its policy edit.
-    /// Binding changes and older policy revisions fail closed.
+    /// Binding changes and older policy or volume revisions fail closed.
     pub fn publish(&self, view: PathTrie) -> Result<(), InvalidPolicy> {
         let view = Arc::new(view);
         let mut current = self
             .current
             .write()
             .map_err(|_| InvalidPolicy("access view publication failed"))?;
-        if !view.same_binding(&current) || view.policy_version() < current.policy_version() {
+        if !can_replace(&current, &view) {
             return Err(InvalidPolicy("access view binding or revision changed"));
         }
         let previous = std::mem::replace(&mut *current, view);
@@ -64,4 +64,10 @@ impl AccessView {
         drop(previous);
         Ok(())
     }
+}
+
+fn can_replace(current: &PathTrie, next: &PathTrie) -> bool {
+    next.same_binding(current)
+        && next.policy_version() >= current.policy_version()
+        && next.head_position() >= current.head_position()
 }

@@ -28,6 +28,7 @@ pub struct PathTrie {
     states: Vec<State>,
     rules: Vec<String>,
     version: u64,
+    head: u64,
     valid_from: u64,
     valid_until: Option<u64>,
     config: crate::VolumeConfig,
@@ -277,6 +278,12 @@ impl PathTrie {
         self.version
     }
 
+    /// Latest authenticated volume position used to compile this view.
+    #[must_use]
+    pub const fn head_position(&self) -> u64 {
+        self.head
+    }
+
     /// Prepare exact encoded names instead of a potentially lossy path projection.
     pub fn prepare_namespace(
         &self,
@@ -440,6 +447,7 @@ impl PathTrie {
                 states,
                 rules: rule_ids,
                 version: policy.version,
+                head: resource.head,
                 valid_from: context.now,
                 valid_until,
                 config: resource.config,

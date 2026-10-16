@@ -4,7 +4,7 @@ use acyclic_fs::kernel::NamespacePath;
 #[path = "../../src/access/view.rs"]
 mod published;
 
-fn compiled(version: u64, allow: bool, volume: &str) -> PathTrie {
+fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
     let principal = Principal {
         kind: PrincipalKind::Service,
         id: "owner".into(),
@@ -40,7 +40,7 @@ fn compiled(version: u64, allow: bool, volume: &str) -> PathTrie {
             lineage: &[],
             volume,
             generation: 1,
-            head: 1,
+            head,
             path: "",
         },
         Context {
@@ -61,6 +61,37 @@ fn compiled(version: u64, allow: bool, volume: &str) -> PathTrie {
 type Publish = fn(&published::AccessView, PathTrie) -> Result<(), InvalidPolicy>;
 
 #[test]
+fn a_racing_volume_head_cannot_restore_head_only_access() {
+    head_model(published::AccessView::publish);
+}
+
+#[test]
+#[should_panic(expected = "volume head rolled back")]
+fn unfenced_head_publication_reproduces_restored_access() {
+    head_model(published::AccessView::publish_unfenced);
+}
+
+fn head_model(publish: Publish) {
+    loom::model(move || {
+        let views =
+            loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project", 1)));
+        let initial = views.current().expect("initial view");
+        let root = NamespacePath::new(Vec::new(), initial.config().limits).expect("root");
+        let pinned = initial.pin(&root).expect("pinned handle");
+        let older = loom::sync::Arc::clone(&views);
+        let writer = loom::thread::spawn(move || {
+            let _stale_or_installed = publish(&older, compiled(1, true, "project", 1));
+        });
+        publish(&views, compiled(1, true, "project", 2)).expect("new volume head");
+        writer.join().expect("publisher finishes without deadlock");
+        let current = views.current().expect("new open");
+        assert_eq!(current.head_position(), 2, "volume head rolled back");
+        assert!(!current.decide(Action::Read, "", 0).allowed);
+        assert!(pinned.decide(Action::Read, 0).allowed);
+    });
+}
+
+#[test]
 fn publication_is_atomic_and_pinned_handles_retain_their_view() {
     publication_model(published::AccessView::publish);
 }
@@ -73,17 +104,18 @@ fn unfenced_publication_reproduces_lost_revocation() {
 
 fn publication_model(publish: Publish) {
     loom::model(move || {
-        let views = loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project")));
+        let views =
+            loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project", 1)));
         let initial = views.current().expect("initial view");
         let root = NamespacePath::new(Vec::new(), initial.config().limits).expect("root");
         let pinned = initial.pin(&root).expect("pinned handle");
         let older = loom::sync::Arc::clone(&views);
         let writer = loom::thread::spawn(move || {
-            let _stale_or_installed = publish(&older, compiled(2, true, "project"));
+            let _stale_or_installed = publish(&older, compiled(2, true, "project", 1));
         });
         let newer = loom::sync::Arc::clone(&views);
         let revoker = loom::thread::spawn(move || {
-            publish(&newer, compiled(3, false, "project")).expect("publish revocation");
+            publish(&newer, compiled(3, false, "project", 1)).expect("publish revocation");
         });
         let observed = views.current().expect("concurrent open");
         assert!(matches!(
@@ -120,13 +152,14 @@ fn unfenced_publication_reproduces_a_revision_rollback() {
 
 fn revision_model(publish: Publish) {
     loom::model(move || {
-        let views = loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project")));
+        let views =
+            loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project", 1)));
         let publisher = loom::sync::Arc::clone(&views);
         let writer = loom::thread::spawn(move || {
-            let _stale_or_installed = publish(&publisher, compiled(2, true, "project"));
-            assert!(publish(&publisher, compiled(4, true, "other-volume")).is_err());
+            let _stale_or_installed = publish(&publisher, compiled(2, true, "project", 1));
+            assert!(publish(&publisher, compiled(4, true, "other-volume", 1)).is_err());
         });
-        publish(&views, compiled(3, false, "project")).expect("latest revision");
+        publish(&views, compiled(3, false, "project", 1)).expect("latest revision");
         writer.join().expect("publisher finishes without deadlock");
         let current = views.current().expect("current view");
         assert_eq!(current.policy_version(), 3, "policy revision rolled back");

@@ -3,6 +3,80 @@ use acyclic_fs::kernel::{LogicalName, NameEncoding};
 use acyclic_fs::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
 
 #[test]
+fn a_later_head_revokes_head_only_reads_without_a_policy_edit() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let policy = super::policy(vec![rule("read", Effect::Allow, &[Action::Read], "**")]);
+    let cap = capability();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let selected = Resource {
+        head: 1,
+        ..resource(&caller.lineage, "", 1)
+    };
+    let old = PathTrie::compile(&policy, &caller, selected, context, &cap)?;
+    let view = AccessView::new(old);
+    let initial = view.current()?;
+    assert!(initial.decide(Action::Read, "key", 100).allowed);
+    let advanced = Resource {
+        head: 2,
+        ..selected
+    };
+    view.publish(PathTrie::compile(
+        &policy, &caller, advanced, context, &cap,
+    )?)?;
+    let expected = decide(
+        &policy,
+        &caller,
+        Action::Read,
+        Resource {
+            path: "key",
+            ..advanced
+        },
+        context,
+        &cap,
+    );
+    assert!(!expected.allowed);
+    assert_eq!(view.current()?.decide(Action::Read, "key", 100), expected);
+    assert!(
+        view.publish(PathTrie::compile(
+            &policy, &caller, selected, context, &cap
+        )?)
+        .is_err()
+    );
+    assert_eq!(view.current()?.head_position(), 2);
+    assert!(initial.decide(Action::Read, "key", 100).allowed);
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn publication_never_rewinds_either_policy_or_volume_head(
+        publications in prop::collection::vec((any::<u64>(), any::<u64>()), 1..8),
+    ) {
+        let caller = principal();
+        let mut policy = super::policy(vec![rule("read", Effect::Allow, &Action::ALL, "**")]);
+        let cap = capability();
+        let context = Context { now: 100, approvals: 0 };
+        let mut res = Resource { head: 1, ..resource(&caller.lineage, "", 1) };
+        let view = AccessView::new(PathTrie::compile(&policy, &caller, res, context, &cap)?);
+        let (mut revision, mut head) = (1, 1);
+        for (next_revision, next_head) in publications {
+            policy.version = next_revision.max(1);
+            res.head = next_head.max(1);
+            let expected = policy.version >= revision && res.head >= head;
+            prop_assert_eq!(view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?).is_ok(), expected);
+            if expected { revision = policy.version; head = res.head; }
+            let current = view.current()?;
+            prop_assert_eq!(current.policy_version(), revision);
+            prop_assert_eq!(current.head_position(), head);
+        }
+    }
+}
+
+#[test]
 fn read_does_not_authorize_name_or_metadata_disclosure() -> Result<(), InvalidPolicy> {
     let caller = principal();
     let context = Context {
