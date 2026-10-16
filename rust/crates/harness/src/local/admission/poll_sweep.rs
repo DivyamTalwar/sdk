@@ -177,6 +177,14 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
+        // The continuation's ordinary GOAL.md path must be reachable through
+        // its selected writer. This scenario selects the private goal volume.
+        let runtime = match self.scenario {
+            Scenario::EffectAndContinuation => {
+                runtime.with_output_volume(&self.volumes[1], None)?
+            }
+            Scenario::Text => runtime,
+        };
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
                 self.stream.clone(),
