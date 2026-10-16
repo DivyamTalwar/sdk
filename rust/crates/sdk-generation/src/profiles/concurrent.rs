@@ -43,7 +43,7 @@ pub(super) fn execute_default_profiles(
         rustc_host()?;
         crate::parallel::map(
             jobs,
-            sdk_docs::rustdoc_worker(move |owner| {
+            sdk_docs::rustdoc_worker(move |owner: String| {
                 compile_default_profiles(
                     &root,
                     &output,
