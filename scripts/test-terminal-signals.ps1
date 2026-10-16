@@ -31,6 +31,7 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
     [DllImport("kernel32.dll")] static extern bool ReadFile(IntPtr handle,byte[] bytes,uint size,out uint read,IntPtr overlapped);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool WriteFile(IntPtr handle,byte[] bytes,uint size,out uint written,IntPtr overlapped);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint exit);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int kind);
@@ -40,6 +41,7 @@ public static class TerminalSignalConPty {
     public static void Run(string binary,string scenario,string report) {
         IntPtr ir=IntPtr.Zero,iw=IntPtr.Zero,orr=IntPtr.Zero,ow=IntPtr.Zero,console=IntPtr.Zero,attributes=IntPtr.Zero;
         ProcessInfo process=new ProcessInfo(); bool initialized=false; Thread drain=null,close=null;
+        var draining=new ManualResetEvent(scenario!="blocked");
         try {
             Require(CreatePipe(out ir,out iw,IntPtr.Zero,0),"input pipe");
             Require(CreatePipe(out orr,out ow,IntPtr.Zero,0),"output pipe");
@@ -60,16 +62,29 @@ public static class TerminalSignalConPty {
             }
             CloseHandle(ir);ir=IntPtr.Zero;CloseHandle(ow);ow=IntPtr.Zero;
             IntPtr outputHandle=orr;
-            drain=new Thread(()=>{ byte[] bytes=new byte[4096];uint count;while(ReadFile(outputHandle,bytes,(uint)bytes.Length,out count,IntPtr.Zero)&&count>0){} });
+            drain=new Thread(()=>{ draining.WaitOne();using(var log=File.Create(Path.ChangeExtension(report,"output"))) { byte[] bytes=new byte[4096];uint count;while(ReadFile(outputHandle,bytes,(uint)bytes.Length,out count,IntPtr.Zero)&&count>0) log.Write(bytes,0,(int)count); } });
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
             var timer=Stopwatch.StartNew();
+            string inputReady=Path.ChangeExtension(report,"input-ready");
+            while(!File.Exists(inputReady)&&timer.ElapsedMilliseconds<1500) {
+                if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before input fixture");
+                Thread.Sleep(1);
+            }
+            Require(File.Exists(inputReady),"native input setup deadline");
+            byte[] fixture=Encoding.ASCII.GetBytes(string.Concat(System.Linq.Enumerable.Repeat("0123456789",10)));
+            uint written;
+            Require(WriteFile(iw,fixture,(uint)fixture.Length,out written,IntPtr.Zero)&&written==fixture.Length,"native input fixture write");
             string ready=Path.ChangeExtension(report,"ready");
             while(!File.Exists(ready)&&timer.ElapsedMilliseconds<1500) {
                 if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before terminal setup");
                 Thread.Sleep(1);
             }
             Require(File.Exists(ready),"terminal setup deadline");
+            if(scenario=="blocked") {
+                draining.Set();
+                File.WriteAllText(Path.ChangeExtension(report,"draining"),"draining");
+            }
             if(scenario=="close") {
                 IntPtr closing=console;console=IntPtr.Zero;
                 close=new Thread(()=>ClosePseudoConsole(closing));close.IsBackground=true;close.Start();
@@ -79,11 +94,12 @@ public static class TerminalSignalConPty {
             Require(File.Exists(report),"synchronous restoration callback");
             string[] fields=File.ReadAllText(report).Split(' ');
             Require(fields.Length==9,"console snapshot fields");
-            Require(fields[0]==(scenario=="break"?"1":"2"),"real OS control event type");
+            Require(fields[0]==(scenario=="close"?"2":"1"),"real OS control event type");
             for(int i=1;i<=4;i++) Require(fields[i]==fields[i+4],"exact original console state field "+i);
             Require(fields[3]=="437"&&fields[4]=="437","non-UTF8 original code pages");
             Console.WriteLine("ConPTY "+scenario+": original input/output modes and code pages restored");
         } finally {
+            draining.Set();
             if(process.process!=IntPtr.Zero) TerminateProcess(process.process,125);
             if(console!=IntPtr.Zero) ClosePseudoConsole(console);
             if(initialized) DeleteProcThreadAttributeList(attributes);
@@ -97,7 +113,7 @@ public static class TerminalSignalConPty {
 $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 try {
-    foreach ($scenario in @('break','close')) {
+    foreach ($scenario in @('break','close','blocked')) {
         $report = Join-Path $artifactRoot ($scenario + '.txt')
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report
         $env:ACYCLIC_TERMINAL_WINDOWS_EVENT = $scenario

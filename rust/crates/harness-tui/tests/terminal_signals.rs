@@ -49,15 +49,27 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tty.write_all(b"READY\n")?;
     }
-    if mode != "read" && mode != "handoff" && mode != "escape" {
+    if mode != "read" && mode != "handoff" && mode != "escape" && mode != "rejected-paste" {
         loop {
             std::thread::park();
         }
     }
     let mut received = Vec::new();
+    let mut rejected = false;
     loop {
-        for event in tty.read_events(Instant::now() + Duration::from_millis(20))? {
-            if mode == "handoff" || mode == "escape" {
+        let events = match tty.read_events(Instant::now() + Duration::from_millis(20)) {
+            Err(error)
+                if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
+            {
+                assert!(!rejected);
+                rejected = true;
+                tty.write_all(b"REJECTED\n")?;
+                continue;
+            }
+            events => events?,
+        };
+        for event in events {
+            if mode == "handoff" || mode == "escape" || mode == "rejected-paste" {
                 received.push(event.clone());
             }
             if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc)
@@ -65,6 +77,19 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
                 tty.write_all(b"ESC\n")?;
             }
             if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
+                if mode == "rejected-paste" {
+                    assert!(rejected);
+                    assert_eq!(
+                        received,
+                        vec![
+                            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                            InputEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+                            InputEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+                            InputEvent::Key(KeyEvent::new(KeyCode::F(5), KeyModifiers::CONTROL)),
+                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                        ]
+                    );
+                }
                 if mode == "handoff" {
                     assert_eq!(
                         received,
@@ -93,6 +118,37 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+}
+
+#[test]
+fn oversized_paste_rejection_preserves_following_numbered_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut process = Process::start("rejected-paste")?;
+    let mut bytes = b"\x1b[200~".to_vec();
+    bytes.resize(bytes.len() + 17 * 1024, b'p');
+    bytes.extend_from_slice(b"\x1b[201~x\x1b[1~\x1b[4~\x1b[15;5~q");
+    let mut offset = 0;
+    process.until(|process| {
+        if offset == bytes.len() {
+            return Ok(true);
+        }
+        let end = (offset + 1024).min(bytes.len());
+        match process.master.write(&bytes[offset..end]) {
+            Ok(count) => offset += count,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+        Ok(offset == bytes.len())
+    })?;
+    let mut status = None;
+    process.until(|process| {
+        status = process.child.try_wait()?;
+        Ok(status.is_some())
+    })?;
+    assert!(status.is_some_and(|status| status.success()));
+    assert!(process.bytes.windows(8).any(|bytes| bytes == b"REJECTED"));
+    process.restored()?;
+    Ok(())
 }
 
 #[test]

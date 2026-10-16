@@ -19,6 +19,11 @@ mod ffi {
         /// Output encoding page.
         output_page: u32,
     }
+    #[derive(Clone, Copy)]
+    struct ConsoleWriteResult {
+        written: u32,
+        error: u32,
+    }
     unsafe extern "C++" {
         include!("src/windows.h");
         /// Read console modes and encoding pages from validated OS handles.
@@ -29,7 +34,17 @@ mod ffi {
         /// Generate a real CTRL_BREAK event in the current console.
         fn console_break() -> Result<()>;
         /// Read available VT bytes before the bounded timeout expires.
-        fn console_read(input: usize, timeout: u32) -> Result<Vec<u8>>;
+        fn console_read(input: usize, capacity: usize, timeout: u32) -> Result<Vec<u8>>;
+        /// Native operation retaining its owned bytes until OS completion.
+        type ConsoleWrite;
+        /// Submit one bounded overlapped write without waiting for completion.
+        fn console_write_start(output: usize, bytes: &[u8]) -> Result<SharedPtr<ConsoleWrite>>;
+        /// Wait outside the lifecycle lock; cancel this operation on timeout.
+        fn console_write_wait(write: &SharedPtr<ConsoleWrite>, timeout: u32) -> ConsoleWriteResult;
+        /// Fence an operation and cancel both submission and pending driver I/O.
+        fn console_write_cancel(write: &SharedPtr<ConsoleWrite>);
+        /// Cancel outstanding output before restoring the console.
+        fn console_cancel(output: usize) -> Result<()>;
     }
     extern "Rust" {
         fn console_control(event: u32) -> bool;
@@ -37,6 +52,18 @@ mod ffi {
 }
 
 pub use ffi::{ConsoleState, console_apply, console_break, console_read, console_state};
+pub use ffi::{
+    ConsoleWrite, console_cancel, console_write_cancel, console_write_start, console_write_wait,
+};
+/// Shared ownership across the bounded waiter and native worker.
+pub type PendingWrite = cxx::SharedPtr<ConsoleWrite>;
+
+// SAFETY: native operations own their buffers and OVERLAPPED storage. The
+// cancellation flag is atomic; the worker publishes results through its Win32
+// completion event before wait reads them. Handle/event fields are immutable
+// after publication, and shared_ptr keeps storage alive across cancellation.
+unsafe impl Send for ConsoleWrite {}
+unsafe impl Sync for ConsoleWrite {}
 
 static HANDLER: OnceLock<Box<dyn Fn(u32) -> bool + Send + Sync>> = OnceLock::new();
 
