@@ -18,6 +18,20 @@ mod command_parse;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../src/context/discovery/frontmatter.rs"]
 mod frontmatter;
+mod client_command_files;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_parity;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_session;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/name_index.rs"]
+mod command_name_index;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../fuzz/command_oracle.rs"]
+mod command_oracle;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/syntax.rs"]
+mod command_syntax;
 
 #[path = "support/client_files.rs"]
 mod client_files;

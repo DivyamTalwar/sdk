@@ -9,45 +9,9 @@ mod tests;
 /// Task namespace and packed-segment format revision.
 pub const SCHEMA: u32 = 2;
 
-/// A portable, canonical namespace component.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Component(Arc<str>);
-
-impl Component {
-    /// Validates a task, request, tool, principal or mount identity.
-    pub fn new(value: impl AsRef<str>) -> Result<Self> {
-        let value = value.as_ref();
-        if value.is_empty()
-            || value.len() > 255
-            || value == "."
-            || value == ".."
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-        {
-            return Err(Error::InvalidPath);
-        }
-        Ok(Self(Arc::from(value)))
-    }
-
-    /// Canonical component text.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for Component {
-    type Error = Error;
-    fn try_from(value: String) -> Result<Self> {
-        Self::new(value)
-    }
-}
-impl From<Component> for String {
-    fn from(value: Component) -> Self {
-        value.0.to_string()
-    }
-}
+#[path = "component.rs"]
+mod component;
+pub use component::Component;
 
 /// Authorization subject; the host applies its volume policy before publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,6 +48,10 @@ pub enum TaskFile {
     Request(Component),
     /// Current task status.
     Status,
+    /// Immutable dispatch marker for one submitted command request.
+    ExecutionClaim(Component),
+    /// Immutable outcome of that dispatch (absence after a claim is uncertain).
+    ExecutionResult(Component),
     /// Immutable model turn input; turn numbers include retries/attempts.
     TurnRequest(u64),
     /// One immutable stream chunk.
@@ -141,6 +109,8 @@ impl TaskFile {
         match self {
             Self::Request(id) => format!("requests/{}.json", id.as_str()),
             Self::Status => "status.json".into(),
+            Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
+            Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
             Self::TextHead { turn, channel } => format!(
@@ -173,39 +143,27 @@ impl TaskFile {
     }
 }
 
-/// Canonical logical input source path, fenced to commands/ or workspace/.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct InputPath(String);
-
-impl TryFrom<String> for InputPath {
-    type Error = Error;
-    fn try_from(path: String) -> Result<Self> {
-        let mut parts = path.split('/');
-        if path.len() > 4096
-            || !matches!(parts.next(), Some("commands" | "workspace"))
-            || !path.contains('/')
-            || parts.any(|p| {
-                p.is_empty()
-                    || p == "."
-                    || p == ".."
-                    || p.chars().any(|c| c.is_control() || matches!(c, '\\' | ':'))
-            })
-        {
-            return Err(Error::InvalidPath);
-        }
-        Ok(Self(path))
-    }
-}
-impl From<InputPath> for String {
-    fn from(path: InputPath) -> Self {
-        path.0
-    }
-}
+#[path = "input_path.rs"]
+mod input_path;
+pub use input_path::InputPath;
 
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
+    /// UI-session requests and their immutable execution files.
+    Session {
+        /// Client-selected session identity, distinct from a task identity.
+        session: Component,
+        /// Request, claim or result file in this session.
+        file: TaskFile,
+    },
+    /// Ordinary user/config/session files, authorized by their containing volume.
+    Ui {
+        /// Caller-bound config, session or task settings directory.
+        directory: Component,
+        /// Bounded canonical file name, such as commands.json or layout.json.
+        name: Component,
+    },
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
     /// Editable command definitions and workspace files followed by UI queries.
@@ -294,6 +252,12 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            [".ui", directory, name] => {
+                return Ok(Self::Ui {
+                    directory: id(directory)?,
+                    name: id(name)?,
+                });
+            }
             ["commands" | "workspace", ..] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
@@ -306,12 +270,16 @@ impl FileKey {
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
         }
-        let [".tasks", task, rest @ ..] = parts.as_slice() else {
-            return Err(Error::InvalidPath);
+        let (session, task, rest) = match parts.as_slice() {
+            [".tasks", task, rest @ ..] => (false, task, rest),
+            [".sessions", session, rest @ ..] => (true, session, rest),
+            _ => return Err(Error::InvalidPath),
         };
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
             ["status.json"] => TaskFile::Status,
+            ["executions", request, "claim.json"] => TaskFile::ExecutionClaim(id(request)?),
+            ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
@@ -350,6 +318,18 @@ impl FileKey {
             ["context", revision, "manifest.json"] => TaskFile::Context(id(revision)?),
             _ => return Err(Error::InvalidPath),
         };
+        if session {
+            if !matches!(
+                file,
+                TaskFile::Request(_) | TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_)
+            ) {
+                return Err(Error::InvalidPath);
+            }
+            return Ok(Self::Session {
+                session: id(task)?,
+                file,
+            });
+        }
         Ok(Self::Task {
             task: id(task)?,
             file,
@@ -359,6 +339,10 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::Session { session, file } => {
+                format!(".sessions/{}/{}", session.as_str(), file.path())
+            }
+            Self::Ui { directory, name } => format!(".ui/{}/{}", directory.as_str(), name.as_str()),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
@@ -370,6 +354,11 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
+            Self::Ui { .. } => Owner::Caller,
+            Self::Session {
+                file: TaskFile::Request(_),
+                ..
+            } => Owner::Caller,
             Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
@@ -386,7 +375,8 @@ impl FileKey {
     pub(super) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Goal
+            Self::Ui { .. }
+                | Self::Goal
                 | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {
@@ -400,6 +390,15 @@ impl FileKey {
 /// Folder selectors have bounded matching cost and allocate no per-chunk paths.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Query {
+    /// One UI session's requests and immutable execution records.
+    Session(Component),
+    /// One request/execution folder in a UI session.
+    SessionFiles {
+        /// UI session identity.
+        session: Component,
+        /// Select execution files; otherwise select inbox request files.
+        executions: bool,
+    },
     /// Entire private task volume.
     Root,
     /// Command definitions and workspace files used by the input UI.
@@ -412,6 +411,8 @@ pub enum Query {
     Task(Component),
     /// Immutable task requests.
     Requests(Component),
+    /// Immutable dispatch claims and outcomes for submitted requests.
+    Executions(Component),
     /// All model turns and their tool subtrees.
     Turns(Component),
     /// One model turn, including its tools.
@@ -494,6 +495,39 @@ impl Query {
             )
         };
         vec![match self {
+            Self::SessionFiles {
+                session,
+                executions,
+            } => {
+                let (first, last) = if *executions {
+                    (
+                        TaskFile::ExecutionClaim(minimum),
+                        TaskFile::ExecutionResult(maximum),
+                    )
+                } else {
+                    (TaskFile::Request(minimum), TaskFile::Request(maximum))
+                };
+                (
+                    Included(FileKey::Session {
+                        session: session.clone(),
+                        file: first,
+                    }),
+                    Included(FileKey::Session {
+                        session: session.clone(),
+                        file: last,
+                    }),
+                )
+            }
+            Self::Session(session) => (
+                Included(FileKey::Session {
+                    session: session.clone(),
+                    file: TaskFile::Request(minimum),
+                }),
+                Included(FileKey::Session {
+                    session: session.clone(),
+                    file: TaskFile::ExecutionResult(maximum),
+                }),
+            ),
             Self::Inputs => (
                 Included(FileKey::Input(InputPath(String::new()))),
                 Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
@@ -532,6 +566,11 @@ impl Query {
             Self::Requests(task) => {
                 range(task, TaskFile::Request(minimum), TaskFile::Request(maximum))
             }
+            Self::Executions(task) => range(
+                task,
+                TaskFile::ExecutionClaim(minimum),
+                TaskFile::ExecutionResult(maximum),
+            ),
             Self::Turns(task) => range(
                 task,
                 TaskFile::TurnRequest(0),
@@ -563,6 +602,24 @@ impl Query {
     /// Matches typed keys without rendering paths or decoding payload bytes.
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
+            (
+                Self::SessionFiles {
+                    session: selected,
+                    executions,
+                },
+                FileKey::Session { session, file },
+            ) => {
+                selected == session
+                    && if *executions {
+                        matches!(
+                            file,
+                            TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_)
+                        )
+                    } else {
+                        matches!(file, TaskFile::Request(_))
+                    }
+            }
+            (Self::Session(selected), FileKey::Session { session, .. }) => selected == session,
             (Self::Root, _)
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
@@ -611,6 +668,13 @@ impl Query {
                 },
             ) => t == task && turn == n && call == c,
             (Self::Task(t), FileKey::Task { task, .. })
+            | (
+                Self::Executions(t),
+                FileKey::Task {
+                    task,
+                    file: TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_),
+                },
+            )
             | (
                 Self::Requests(t),
                 FileKey::Task {
@@ -665,10 +729,18 @@ impl Query {
         Ok(match parts.as_slice() {
             [""] => Self::Root,
             ["plans"] => Self::Plans,
+            [".sessions", session] => Self::Session(component(session)?),
+            [".sessions", session, folder] if matches!(*folder, "requests" | "executions") => {
+                Self::SessionFiles {
+                    session: component(session)?,
+                    executions: *folder == "executions",
+                }
+            }
             [".volumes", "agents"] => Self::Agents,
             [".tasks"] => Self::Tasks,
             [".tasks", t] => Self::Task(component(t)?),
             [".tasks", t, "requests"] => Self::Requests(component(t)?),
+            [".tasks", t, "executions"] => Self::Executions(component(t)?),
             [".tasks", t, "turns"] => Self::Turns(component(t)?),
             [".tasks", t, "approvals"] => Self::Approvals(component(t)?),
             [".tasks", t, "notifications"] => Self::Notifications(component(t)?),

@@ -297,13 +297,34 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self,
         expected: Generation,
         write: &Write,
+        conditions: Vec<CommitCondition>,
+        deadline_unix_millis: Option<u64>,
+    ) -> Result<Generation> {
+        self.publish(expected, write, conditions, deadline_unix_millis, false)
+            .await
+    }
+
+    /// Creates one file only if absent at the exact query generation. Unlike an
+    /// idempotent append, an existing identical file is still a failed creation.
+    pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
+        self.publish(expected, write, Vec::new(), None, true).await
+    }
+
+    async fn publish(
+        &self,
+        expected: Generation,
+        write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
+        create_only: bool,
     ) -> Result<Generation> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
+        }
+        if create_only && index.files.contains_key(&write.key) {
+            return Err(Error::ImmutableConflict(write.key.clone()));
         }
         validate_file(&index, write)?;
         if index.files.get(&write.key) == Some(write) {

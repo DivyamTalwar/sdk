@@ -34,7 +34,10 @@ impl CompletionMenu {
                     self.work.candidates += 1;
                     let score = match request.kind {
                         CompletionKind::Command => {
-                            entry.item.value.starts_with(&request.query).then_some(0)
+                            super::prefix(&entry.item.value, &request.query).then_some(0)
+                        }
+                        CompletionKind::Theme => {
+                            super::theme_prefix(&entry.item.value, &request.query).then_some(0)
                         }
                         CompletionKind::Mention => {
                             super::fuzzy_score(&request.query, &entry.item.value)
@@ -105,6 +108,24 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
     if !path.ends_with(".json") {
         return Ok(vec![]);
     }
+    if path == "themes.json" {
+        let themes: Vec<String> = serde_json::from_slice(bytes)?;
+        return themes
+            .into_iter()
+            .map(|name| {
+                if name.trim() != name || name.is_empty() || name.chars().any(char::is_control) {
+                    return Err(io::Error::other("invalid theme name"));
+                }
+                Ok(make(
+                    CompletionKind::Theme,
+                    name,
+                    String::new(),
+                    false,
+                    false,
+                ))
+            })
+            .collect();
+    }
     let definitions: Vec<serde_json::Value> = serde_json::from_slice(bytes)?;
     definitions
         .into_iter()
@@ -120,21 +141,42 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let tool = definition
-                .get("tool")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let append = definition
-                .get("append_space")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            Ok(make(
-                CompletionKind::Command,
-                name.into(),
-                description.into(),
-                tool,
-                append,
-            ))
+            let action = definition.pointer("/action/kind").and_then(|v| v.as_str());
+            let tool = action == Some("tool")
+                || definition
+                    .get("tool")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            let append = tool
+                || action == Some("theme")
+                || definition
+                    .get("append_space")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            let aliases: Vec<String> = definition
+                .get("aliases")
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()?
+                .unwrap_or_default();
+            let mut names = vec![name.to_owned()];
+            names.extend(aliases);
+            names
+                .into_iter()
+                .map(|name| {
+                    if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control())
+                    {
+                        return Err(io::Error::other("invalid command alias"));
+                    }
+                    Ok(make(
+                        CompletionKind::Command,
+                        name,
+                        description.into(),
+                        tool,
+                        append,
+                    ))
+                })
+                .collect::<io::Result<Vec<_>>>()
         })
-        .collect()
+        .collect::<io::Result<Vec<_>>>()
+        .map(|groups| groups.into_iter().flatten().collect())
 }

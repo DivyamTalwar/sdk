@@ -1,0 +1,16 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "theme"
+    },
+    "file_values": {
+      "session/layout.json": {
+        "open_view": "theme",
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
+      }
+    }
+  },
+  "prompt": "/theme unknown"
+}
