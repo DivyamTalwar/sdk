@@ -83,7 +83,8 @@ mod tests {
         fn probe_records_round_trip_and_bind_key_and_every_output_byte(key in ".{0,32}", value in ".{0,512}") {
             let encoded = encode(&key, &value);
             prop_assert_eq!(decode(&encoded, &key), Some(value.clone()));
-            prop_assert!(decode(&encoded, &format!("{key}! ")).is_none());
+            let other_key = format!("{key}!");
+            prop_assert!(decode(&encoded, &other_key).is_none());
             let corrupted = serde_json::to_vec(&(&key, format!("{value}!"), digest(value.as_bytes()))).unwrap();
             prop_assert!(decode(&corrupted, &key).is_none());
         }
