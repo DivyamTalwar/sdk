@@ -209,6 +209,7 @@ impl FileRef {
     }
 
     /// Binds verified staged metadata to its authenticated storage generation.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn pin_version(
         &mut self,
         version: String,

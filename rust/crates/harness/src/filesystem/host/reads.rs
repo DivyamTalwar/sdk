@@ -23,203 +23,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
     }
 
-    /// Discovers a granted private directory at the owner's current head, or continues at the immutable generation returned by a prior page.
-    pub async fn list_private_directory(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        expected_generation: Option<&GenerationRef>,
-        after: Option<&LogicalName>,
-        maximum_entries: u32,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
-        self.require_private_directory(volume, grant, path, None)?;
-        if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
-            return Err(Error::Invalid(
-                "private directory page limit is invalid".into(),
-            ));
-        }
-        let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let observation = self.resolve(&workspace, None).await?;
-        let generation = expected_generation.unwrap_or(&observation.generation);
-        self.retain_generation(&workspace, generation).await?;
-        let requested = if path.is_empty() {
-            "/".to_owned()
-        } else {
-            format!("/{path}")
-        };
-        let mut page = self
-            .list_after(
-                &workspace,
-                Some(generation),
-                &requested,
-                after,
-                maximum_entries + u32::from(path.is_empty()),
-            )
-            .await?;
-        if path.is_empty() {
-            page.entries.retain(|entry| {
-                entry
-                    .name
-                    .unicode_text(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .ok()
-                    .map(|receipt| receipt.value)
-                    .as_deref()
-                    != Some(".system")
-            });
-            if page.entries.len() > maximum_entries as usize {
-                page.entries.truncate(maximum_entries as usize);
-                page.has_more = true;
-            }
-        }
-        Ok((generation.clone(), page))
-    }
-
-    /// Uses the ordinary immutable list engine, with a fresh owner check around each SDK logical action.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exact subtree and guarded pinned pagination"
-    )]
-    pub(in crate::filesystem) async fn list_private_directory_guarded_with_native_work<F, Fut>(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        expected_generation: Option<&GenerationRef>,
-        after: Option<&LogicalName>,
-        maximum_entries: u32,
-        work: &acyclic_fs::NativeMaterializationWork,
-        mut guard: F,
-    ) -> Result<((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>
-    where
-        F: FnMut() -> Fut + acyclic_stream::ProviderTask,
-        Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
-    {
-        volume.validate(&mut Some(&mut crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        )))?;
-        if volume.provider() != &self.provider {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "private directory belongs to another provider",
-            });
-        }
-        if !path.is_empty() {
-            crate::conversation::validate_content_path(
-                path,
-                &mut Some(&mut crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                )),
-            )?;
-        }
-        grant.require_directory_path(
-            volume,
-            path,
-            Some(&PreparationIo::from_native_work(work)?),
-        )?;
-        if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "private directory page limit is invalid",
-            });
-        }
-        let scratch = PreparationIo::from_native_work(work)?;
-        let output = PreparationIo::from_native_work(work)?;
-        output.retain_owned(std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64)?;
-        let workspace_ref =
-            fork_preparer_io::content_workspace(&self.provider, volume, Some(&scratch))?;
-        guard().await?;
-        let workspace = (self).open(&workspace_ref, Some(&scratch)).await?;
-        guard().await?;
-        let generation = if let Some(expected) = expected_generation {
-            (self)
-                .generation(&workspace, expected, Some(&scratch))
-                .await?
-        } else {
-            workspace
-                .head(work, work.cancellation())
-                .await
-                .map_err(|error| (error, None))
-                .map_err(|(source, custody)| Error::NativeWorkspace {
-                    source: Box::new(source),
-                    custody,
-                })?
-        };
-        guard().await?;
-        fork_preparer_io::retain(&generation, Some(&scratch)).await?;
-        guard().await?;
-        let (requested, requested_custody) = work
-            .display(&format_args!("/{path}"))
-            .map_err(Error::from)?;
-        scratch.absorb_native_custody(requested_custody)?;
-        let page_custody;
-        let mut page;
-        (page, page_custody) = generation
-            .list_directory(
-                &requested,
-                after,
-                maximum_entries
-                    .checked_add(u32::from(path.is_empty()))
-                    .ok_or_else(|| Error::NativeWorkspace {
-                        source: Box::new(acyclic_fs::WorkspaceError::Work(
-                            acyclic_fs::WorkError::Overflow,
-                        )),
-                        custody: None,
-                    })?,
-                work,
-                work.cancellation(),
-            )
-            .await
-            .map_err(|source| Error::NativeWorkspace {
-                source: Box::new(source),
-                custody: None,
-            })?;
-        output
-            .absorb_native_custody(page_custody.ok_or_else(|| {
-                output.invalid("native directory page has no allocation custody")
-            })?)?;
-        guard().await?;
-        if path.is_empty() {
-            work.charge(acyclic_fs::WorkCounters {
-                items_examined: page.entries.len() as u64,
-                ..Default::default()
-            })
-            .map_err(Error::from)?;
-            let mut removed_bytes = 0;
-            page.entries.retain(|entry| {
-                let name = &entry.name;
-                let internal = match name.encoding() {
-                    NameEncoding::Utf8 | NameEncoding::PosixBytes => name.as_bytes() == b".system",
-                    NameEncoding::WindowsUtf16Le => name.as_bytes() == b".\0s\0y\0s\0t\0e\0m\0",
-                };
-                if internal {
-                    removed_bytes += name.logical_owned_bytes();
-                }
-                !internal
-            });
-            output.release(removed_bytes)?;
-            while page.entries.len() > maximum_entries as usize {
-                let removed = page
-                    .entries
-                    .pop()
-                    .ok_or_else(|| output.invalid("overscanned directory page is empty"))?;
-                let bytes = removed.name.logical_owned_bytes();
-                drop(removed);
-                output.release(bytes)?;
-                page.has_more = true;
-            }
-        }
-        let reference =
-            fork_preparer_io::generation_ref(&self.provider, generation.id(), Some(&output))?;
-        let retained = output.owned_bytes()?;
-        let custody = output.into_native_custody(retained)?;
-        Ok(((reference, page), custody))
-    }
-
     /// Resolves a private file and verifies its bytes with optional original IO.
     pub async fn read_private_path(
         &self,
@@ -264,6 +67,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let view = self
             .access_view(&workspace, grant.policy_scope(), generation.id(), label, io)
             .await?;
+        super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         drop(view);
         fork_preparer_io::retain(&generation, Some(io)).await?;
@@ -295,7 +99,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     crate::wire::ErrorCode::Storage,
                 )?)
             }
-            Err(Error::NotFound(_)) => None,
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
             Err(error) => return Err(error),
         };
         let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;

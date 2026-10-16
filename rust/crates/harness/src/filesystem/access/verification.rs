@@ -4,9 +4,15 @@ fn roundtrip<T: PreparationRecord + serde::Serialize + std::fmt::Debug + Partial
     io: &PreparationIo,
     bytes: &[u8],
 ) -> Result<()> {
-    let Ok(decoded) = record::<T>(io, bytes, crate::wire::ErrorCode::Storage) else {
-        return Ok(());
+    let expected = serde_json::from_slice::<T>(bytes);
+    let decoded = record::<T>(io, bytes, crate::wire::ErrorCode::Storage);
+    let (expected, decoded) = match (expected, decoded) {
+        (Err(_), Err(_)) => return Ok(()),
+        (Ok(expected), Ok(decoded)) => (expected, decoded),
+        (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Ok(_)) => panic!("bounded decoder accepted an invalid record: {error}"),
     };
+    assert_eq!(expected, decoded.0);
     let encoded = io.encode(
         &decoded.0,
         acyclic_fs::access::MAXIMUM_POLICY_RECORD_BYTES,
@@ -30,6 +36,7 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     )?;
     roundtrip::<Policy>(&io, bytes)?;
     roundtrip::<Capability>(&io, bytes)?;
+    roundtrip::<FileRef>(&io, bytes)?;
     assert_eq!(io.owned_bytes()?, 0);
     Ok(())
 }

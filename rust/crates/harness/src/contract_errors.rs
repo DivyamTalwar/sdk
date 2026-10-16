@@ -334,6 +334,18 @@ impl Error {
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWorkspace { source, .. }
+                if matches!(
+                    source.as_ref(),
+                    acyclic_fs::WorkspaceError::NotFound
+                        | acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
+                            acyclic_fs::AuthorityStoreError::Missing,
+                        ))
+                ) =>
+            {
+                ErrorCode::NotFound
+            }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }

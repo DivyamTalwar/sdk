@@ -523,12 +523,14 @@ where
             let result = self
                 .host
                 .list_private_directory_guarded_with_native_work(
-                    volume,
-                    &grant,
-                    path,
-                    expected_generation,
-                    cursor.as_ref(),
-                    maximum_entries,
+                    host::DirectoryListing {
+                        volume,
+                        grant: &grant,
+                        path,
+                        generation: expected_generation,
+                        after: cursor.as_ref(),
+                        maximum_entries,
+                    },
                     work,
                     || async {
                         self.supports_native_directory_list(volume, work)?;

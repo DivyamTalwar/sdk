@@ -150,6 +150,10 @@ impl Fixture {
             rule.resource.path = "secrets/**".into();
             policy.layers[0].push(rule);
         }
+        self.publish_policy(policy).await
+    }
+
+    async fn publish_policy(&self, policy: Policy) -> Result<(), Box<dyn Error>> {
         let cancellation = CancellationToken::new();
         let workspace = self
             .fs
@@ -200,9 +204,18 @@ impl Fixture {
     }
 
     fn narrowed(&self, grants_path: bool, expired: bool) -> Result<Scope, Box<dyn Error>> {
+        self.narrowed_for(&[Action::Read, Action::ReadHistory], grants_path, expired)
+    }
+
+    fn narrowed_for(
+        &self,
+        actions: &[Action],
+        grants_path: bool,
+        expired: bool,
+    ) -> Result<Scope, Box<dyn Error>> {
         let capability = Capability {
             layers: vec![vec![Grant {
-                actions: [Action::Read, Action::ReadHistory].into_iter().collect(),
+                actions: actions.iter().copied().collect(),
                 resource: ResourcePattern {
                     lineage_root: None,
                     volume: None,
@@ -369,6 +382,146 @@ async fn content_reads_fail_closed_without_a_persisted_policy() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let verifier = fixture.issuer.verifier(&mut None)?;
+    for explicit_deny in [false, true] {
+        let scope = if explicit_deny {
+            let mut policy: Policy =
+                serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+            policy.version = 2;
+            let mut deny = policy.layers[0][0].clone();
+            deny.id = "no-reference-disclosure".into();
+            deny.effect = Effect::Deny;
+            deny.actions = [Action::List].into_iter().collect();
+            deny.resource.path = "secrets/**".into();
+            policy.layers[0].push(deny);
+            fixture.publish_policy(policy).await?;
+            fixture.scope.clone()
+        } else {
+            fixture.narrowed(true, false)?
+        };
+        let grant = ContentGrant::verify_directory_read(
+            &verifier,
+            &scope,
+            &fixture.volume,
+            "secrets",
+            &mut None,
+        )?;
+        let generation = fixture.generation()?;
+        assert_eq!(
+            fixture
+                .host
+                .read_content(&fixture.file, &grant, 4096, None)
+                .await?
+                .as_ref(),
+            b"private"
+        );
+        assert_eq!(
+            fixture
+                .host
+                .read_private_prefix(
+                    &fixture.volume,
+                    &grant,
+                    fixture.file.path(),
+                    &generation,
+                    3,
+                    None
+                )
+                .await?
+                .as_ref(),
+            b"pri"
+        );
+        assert!(matches!(
+            fixture
+                .host
+                .read_private_path(
+                    &fixture.volume,
+                    &grant,
+                    fixture.file.path(),
+                    Some(&generation),
+                    4096,
+                    None
+                )
+                .await,
+            Err(acyclic_harness::Error::Unauthorized(_))
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    let workspace = acyclic_harness::filesystem::workspace_ref(
+        fixture.volume.provider().clone(),
+        &fixture.volume.storage_name(&mut None)?,
+    )?;
+    let generation = fixture
+        .host
+        .apply(
+            &workspace,
+            None,
+            &[acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                path: "/raw".into(),
+                bytes: b"raw bytes".to_vec().into(),
+            }],
+            &IdempotencyKey::new("raw")?,
+        )
+        .await?;
+    let grant = ContentGrant::verify_directory_read(
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope,
+        &fixture.volume,
+        "",
+        &mut None,
+    )?;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+    let (reference, bytes) = fixture
+        .host
+        .read_private_path(
+            &fixture.volume,
+            &grant,
+            "raw",
+            Some(&generation),
+            4096,
+            Some(&io),
+        )
+        .await?;
+    assert_eq!(bytes.as_ref(), b"raw bytes");
+    assert_eq!(reference.path(), "raw");
+    assert_eq!(
+        reference.descriptor().media_type(),
+        "application/octet-stream"
+    );
+    assert_eq!(reference.descriptor().byte_length(), 9);
+    assert!(
+        fixture
+            .host
+            .read_private_path(
+                &fixture.volume,
+                &grant,
+                "raw",
+                Some(&generation),
+                3,
+                Some(&io),
+            )
+            .await
+            .is_err()
+    );
+    assert!(work.receipt().backend_read_operations > 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
 -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new().await?;
@@ -448,6 +601,10 @@ proptest! {
                 &fixture.volume, &grant, fixture.file.path(), &fixture.generation()?, 3, None,
             ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
+            let scope = fixture.narrowed_for(&[Action::List, Action::Read, Action::ReadHistory], grants_path, expired)?;
+            let grant = ContentGrant::verify_directory_read(
+                &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
+            )?;
             let allowed = fixture.host.read_private_path(
                 &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), 4096, None,
             ).await.is_ok();
@@ -464,6 +621,7 @@ proptest! {
     fn bounded_access_records_roundtrip(
         path in "[a-zΣß?*]{1,12}",
         expiry in prop::option::of(any::<u64>()),
+        name in "[a-zΣß]{1,12}",
         malformed in prop::collection::vec(any::<u8>(), 0..4096),
     ) {
         let mut policy: Policy = serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
@@ -471,7 +629,15 @@ proptest! {
         policy.layers[0][0].conditions.expires_at = expiry;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&policy)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let mut file: serde_json::Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/filesystem_access/file-ref"))?;
+        file["path"] = format!("notes/{name}").into();
+        let file: FileRef = serde_json::from_value(file)?;
+        acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&file)?)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         acyclic_harness::filesystem::check_access_record(&malformed)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
+
+#[path = "filesystem_access_listing.rs"]
+mod listing;

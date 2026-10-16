@@ -48,8 +48,10 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+mod directory;
 mod keys;
 mod reads;
+pub(in crate::filesystem) use directory::DirectoryListing;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;
