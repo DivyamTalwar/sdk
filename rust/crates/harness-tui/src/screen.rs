@@ -161,16 +161,17 @@ impl Screen<'_> {
         rows(frame, self.notifications, areas.notifications, 0);
         frame.render_widget(Paragraph::new(self.status.clone()), areas.status);
         let mut side = areas.side;
-        let panels: Vec<_> = [
+        let panels = [
             ("Diff", self.diff),
             ("GOAL.md", self.goal),
             ("plans/", self.plans),
-        ]
-        .into_iter()
-        .filter(|(_, lines)| !lines.is_empty())
-        .collect();
-        let count = panels.len();
-        for (index, (title, lines)) in panels.into_iter().enumerate() {
+        ];
+        let count = panels.iter().filter(|(_, lines)| !lines.is_empty()).count();
+        for (index, (title, lines)) in panels
+            .into_iter()
+            .filter(|(_, lines)| !lines.is_empty())
+            .enumerate()
+        {
             let height = side.height / (count - index) as u16;
             let panel = take_top(&mut side, height);
             let block = Block::default().borders(Borders::ALL).title(title);
