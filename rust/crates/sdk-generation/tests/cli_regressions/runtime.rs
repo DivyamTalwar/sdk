@@ -72,10 +72,6 @@ pub(super) fn path() -> std::ffi::OsString {
 
 // Leaf slot: release it before any Cargo work or fixture locks.
 static CARGO: sync::Mutex<Option<sync::Arc<PathBuf>>> = sync::Mutex::new(None);
-// Leaf slot, entered after releasing CARGO. Cargo owns the files and validates
-// compiler-info fingerprints; profile builds override this metadata directory.
-#[cfg(windows)]
-static PROBE_TARGET: sync::Mutex<Option<sync::Arc<PathBuf>>> = sync::Mutex::new(None);
 // Independent leaf slots: constructors do not acquire another fixture slot.
 static FIXTURES: [sync::Mutex<Option<sync::Arc<Fixture>>>; 3] =
     [const { sync::Mutex::new(None) }; 3];
@@ -112,16 +108,6 @@ pub(super) fn configure(command: &mut Command) {
         let cargo = cargo();
         let sysroot = cargo.parent().unwrap().parent().unwrap();
         command.env("RUSTUP_TOOLCHAIN", sysroot.file_name().unwrap());
-        let probes = sync::get_or_try_init(&PROBE_TARGET, || {
-            Ok::<_, std::io::Error>(
-                tempfile::Builder::new()
-                    .prefix("compiler-info-")
-                    .tempdir_in(temp_dir())?
-                    .keep(),
-            )
-        })
-        .unwrap();
-        command.env("CARGO_TARGET_DIR", &*probes);
         let linkers = fs::read_dir(sysroot.join("lib/rustlib"))
             .unwrap()
             .map(|entry| entry.unwrap().path().join("bin/rust-lld.exe"))

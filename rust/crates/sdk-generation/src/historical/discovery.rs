@@ -440,7 +440,7 @@ fn owner_metadata(
     let context =
         owner_metadata_context(root, source, sdk_docs::command_environment(), &workspace)?;
     let mut queried = None;
-    let encoded = crate::file_cache::get(cargo, &context, || {
+    let encoded = crate::file_cache::owner_metadata(cargo, &context, || {
         let metadata = checked_query().map_err(crate::CliError)?;
         let encoded =
             serde_json::to_string(&metadata).map_err(|error| crate::CliError(error.to_string()))?;

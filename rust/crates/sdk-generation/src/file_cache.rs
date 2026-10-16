@@ -10,6 +10,9 @@ thread_local! {
     // Calling-thread ownership; every public command starts with empty state.
     static VALUES: Values<Stamp> = const { RefCell::new(BTreeMap::new()) };
     static CONCRETE: RefCell<BTreeSet<PathBuf>> = const { RefCell::new(BTreeSet::new()) };
+    // Only complete, closed owner inventories reach this cache. Both concrete
+    // executables and every source/config/environment input remain in its key.
+    static METADATA: Values<(Stamp, Stamp)> = const { RefCell::new(BTreeMap::new()) };
 }
 
 fn clear<S>(values: &Values<S>) {
@@ -56,6 +59,44 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
     get(path, "sha256", || {
         let bytes = sdk_docs::read_rustdoc(path).map_err(crate::docs_error)?;
         Ok(crate::sha256_bytes(&bytes))
+    })
+}
+
+pub(super) fn owner_metadata(
+    cargo: &Path,
+    context: &str,
+    query: impl FnOnce() -> Result<String, CliError>,
+) -> Result<String, CliError> {
+    let compiler = cargo
+        .parent()
+        .unwrap()
+        .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+    let compiler = compiler.canonicalize().ok();
+    let configured =
+        crate::command_var_os("RUSTC").and_then(|path| PathBuf::from(path).canonicalize().ok());
+    if !is_resolved_cargo(cargo)
+        || compiler.is_none()
+        || configured.is_none()
+        || configured != compiler
+        || ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"]
+            .iter()
+            .any(|key| crate::command_var_os(key).is_some_and(|value| !value.is_empty()))
+    {
+        return get(cargo, context, query);
+    }
+    let compiler = compiler.unwrap();
+    METADATA.with(|values| {
+        observed(
+            values,
+            (cargo.to_owned(), context.to_owned()),
+            || {
+                Ok((
+                    stamp(cargo).map_err(io_error)?,
+                    stamp(&compiler).map_err(io_error)?,
+                ))
+            },
+            query,
+        )
     })
 }
 

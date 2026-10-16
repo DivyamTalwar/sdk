@@ -92,6 +92,59 @@ fn cargo_probe_key_frames_environment_names_and_values() {
 }
 
 #[test]
+fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
+    let directory = tempfile::tempdir().unwrap();
+    let cargo = directory.path().join("cargo");
+    let rustc = directory
+        .path()
+        .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+    fs::write(&cargo, "concrete Cargo").unwrap();
+    fs::write(&rustc, "concrete compiler").unwrap();
+    let mut command = std::process::Command::new(&cargo);
+    command
+        .env("RUSTC", &rustc)
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER");
+    let calls = Cell::new(0);
+    sdk_docs::with_command_environment(&command, || {
+        let query = |context: &str| {
+            begin_run();
+            resolved_cargo(&cargo);
+            owner_metadata(&cargo, context, || {
+                calls.set(calls.get() + 1);
+                Ok(calls.get().to_string())
+            })
+            .unwrap()
+        };
+        assert_eq!(query("source/config/environment-a"), "1");
+        assert_eq!(query("source/config/environment-a"), "1");
+        fs::write(&rustc, "changed compiler").unwrap();
+        assert_eq!(query("source/config/environment-a"), "2");
+        fs::write(&cargo, "changed Cargo").unwrap();
+        assert_eq!(query("source/config/environment-a"), "3");
+        assert_eq!(query("source/config/environment-b"), "4");
+        for compiler in [
+            directory.path().join("missing-wrapper"),
+            directory.path().to_owned(),
+        ] {
+            let mut command = std::process::Command::new(&cargo);
+            command.env("RUSTC", compiler);
+            sdk_docs::with_command_environment(&command, || {
+                assert_eq!(query("source/config/environment-a"), "5");
+                assert_eq!(query("source/config/environment-a"), "6");
+            });
+            calls.set(4);
+        }
+        let mut command = std::process::Command::new(&cargo);
+        command.env("RUSTC_WRAPPER", "external-wrapper");
+        sdk_docs::with_command_environment(&command, || {
+            assert_eq!(query("source/config/environment-a"), "5");
+            assert_eq!(query("source/config/environment-a"), "6");
+        });
+    });
+}
+
+#[test]
 fn artifact_hashes_share_receipt_bytes_and_detect_same_length_rewrites() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("receipt.json");
