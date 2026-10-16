@@ -26,7 +26,8 @@ proptest::proptest! {
         let encoded_revision = format!("{revision}\n");
         proptest::prop_assert_eq!(fixed_revision(head, encoded_revision.as_bytes()), Some(revision.as_str()));
         if other_head != head { proptest::prop_assert!(fixed_revision(&other_head, revision.as_bytes()).is_none()); }
-        proptest::prop_assert!(fixed_revision(head, format!("{revision}!").as_bytes()).is_none());
+        let malformed_revision = format!("{revision}!");
+        proptest::prop_assert!(fixed_revision(head, malformed_revision.as_bytes()).is_none());
         let drive = char::from(drive);
         for (old, variants, new) in [
             (format!("{drive}:\\old\\{directory}"), vec![
