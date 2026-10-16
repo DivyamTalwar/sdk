@@ -112,13 +112,17 @@ impl Client {
         channel: TransportChannel,
         authorization: MetadataValue<Ascii>,
         ca: Option<Arc<[u8]>>,
+        verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     ) -> Result<Self, StreamError> {
         let connect: Connect = Arc::new(move |node| {
             let ca = ca.clone();
+            let verifier = verifier.clone();
             Box::pin(async move {
-                grpc::channel_tls(&node.endpoint, ca.as_deref())
-                    .await
-                    .map_err(|_| StreamError::Unavailable)
+                match verifier {
+                    Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
+                    None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,
+                }
+                .map_err(|_| StreamError::Unavailable)
             })
         });
         Self::with_connector(channel, authorization, connect).await

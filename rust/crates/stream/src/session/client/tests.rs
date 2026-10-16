@@ -66,7 +66,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                 {
                     for subscription in &interest.upsert {
                         match subscription.kind {
-                            Some(Kind::Follow(_)) => {
+                            Some(Kind::Follow(_) | Kind::Children(_)) => {
                                 counts.follows.fetch_add(1, Ordering::Relaxed);
                                 if let (Some(channel), Some(resume)) =
                                     (subscription.channel, subscription.resume.as_ref())
@@ -479,7 +479,13 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
-    let client = Client::open(fixture.channel.clone(), "Bearer fixture".parse()?, None).await?;
+    let client = Client::open(
+        fixture.channel.clone(),
+        "Bearer fixture".parse()?,
+        None,
+        None,
+    )
+    .await?;
     let mut cancelled = Box::pin(client.follow(StreamPath::new("a")?, 1));
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
@@ -610,5 +616,133 @@ async fn child_replay_and_records_share_the_native_node_session() -> TestResult 
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn largest_child_path_fits_its_channel_credit() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let path = "a".repeat(crate::MAX_PATH_BYTES);
+    append(&provider, &path, 1).await?;
+    let fixture = Fixture::open(Arc::clone(&provider), "large-child").await?;
+    let client = fixture.client()?;
+    let mut children = client
+        .children(crate::ChildrenRequest {
+            parent: None,
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("maximum child stalled")??
+            .path
+            .as_str(),
+        path
+    );
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    for path in ["agents/m", "agents/a", "healthy"] {
+        append(&provider, path, 1).await?;
+    }
+    let old = Fixture::open(Arc::clone(&provider), "old").await?;
+    let new = Fixture::open(Arc::clone(&provider), "new").await?;
+    let channel = new.channel.clone();
+    let connect: Connect = Arc::new(move |_| {
+        let channel = channel.clone();
+        Box::pin(async move { Ok(channel) })
+    });
+    let client =
+        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let mut children = client
+        .children(crate::ChildrenRequest {
+            parent: Some(StreamPath::new("agents")?),
+            limit: 1,
+        })
+        .await?;
+    let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
+    assert_eq!(
+        children.next().await.ok_or("missing child")??.path.as_str(),
+        "agents/m"
+    );
+    old.controls.send(Ok(frame(
+        1,
+        1,
+        Body::Moved(wire::SessionMoved {
+            node: Some(wire::SessionNode {
+                node_id: "new".into(),
+                endpoint: "https://new.invalid".into(),
+                placement_epoch: 1,
+            }),
+            resume: Some(cursor(999)),
+        }),
+    )))?;
+    tokio::time::timeout(Duration::from_secs(1), new.counts.changed.notified()).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("missing resumed child")??
+            .path
+            .as_str(),
+        "agents/a"
+    );
+    append(&provider, "agents/0", 1).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("discovery ended")??
+            .path
+            .as_str(),
+        "agents/0"
+    );
+    new.controls
+        .send(Err(Status::unavailable("disconnect child session")))?;
+    loop {
+        let changed = new.counts.changed.notified();
+        if new
+            .counts
+            .resumes
+            .lock()
+            .map_err(|_| "resumes poisoned")?
+            .contains(&(1, 3, 3))
+        {
+            break;
+        }
+        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+    }
+    append(&provider, "agents/b", 1).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("reconnect ended")??
+            .path
+            .as_str(),
+        "agents/b"
+    );
+    assert!(
+        new.counts
+            .resumes
+            .lock()
+            .map_err(|_| "resumes poisoned")?
+            .contains(&(1, 2, 1))
+    );
+    assert!(
+        new.counts
+            .resumes
+            .lock()
+            .map_err(|_| "resumes poisoned")?
+            .contains(&(1, 3, 3))
+    );
+    append(&provider, "healthy", 1).await?;
+    assert_eq!(next(&mut healthy).await?.sequence, 1);
+    for fixture in [&old, &new] {
+        assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+        assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
+    }
     Ok(())
 }

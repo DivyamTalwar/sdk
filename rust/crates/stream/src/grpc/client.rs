@@ -10,6 +10,7 @@ impl Client {
                     self.channel.clone(),
                     self.authorization.clone(),
                     self.session_ca.clone(),
+                    self.session_verifier.clone(),
                 )
             }),
         )

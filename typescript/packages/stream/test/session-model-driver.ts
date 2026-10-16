@@ -13,8 +13,15 @@ const occupancy = { active: 0, minimum: 0 };
 if (fault || scenario === "reservation") {
   const { plugin } = await import("bun");
   plugin({ name: "session-negative-control", setup(build) {
+    if (fault === "childSelect") build.onLoad({ filter: /[\\/]src[\\/]default\.ts$/ }, async args => {
+      const source = await Bun.file(args.path).text();
+      const old = "this.acquireProvider(request.signal)";
+      if (!source.includes(old)) throw new Error("child selection negative control no longer matches");
+      return { contents: source.replace(old, "this.acquireProvider(undefined)"), loader: "ts" };
+    });
     build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
       let source = await Bun.file(args.path).text();
+      if (fault === "childSelect") return { contents: source, loader: "ts" };
       if (scenario === "reservation") {
         // Observe the actual private counter without adding a production API.
         for (const operator of ["+=", "-="]) {
@@ -67,11 +74,18 @@ const sessions = new StreamSessions(async (node, signal) => {
   } };
 });
 const controller = new AbortController();
+const { DefaultStreamProvider } = await import("../src/default.js");
+const facade = new DefaultStreamProvider({ endpoint: "https://home", token: "model" });
+let releaseSelection: (() => void) | undefined;
+Reflect.set(facade, "select", async () => {
+  if (scenario === "childSelect") await new Promise<void>(resolve => { releaseSelection = resolve; });
+  return { children: (request: Parameters<StreamSessions["children"]>[0]) => sessions.children(request) };
+});
 if (scenario === "drop") peer.append("events", 2);
 if (["immediate", "ack", "reject", "reservation"].includes(scenario)) peer.append("events");
 if (scenario === "children") { peer.append("agents/m"); peer.append("agents/a"); }
-const records = scenario === "children"
-  ? sessions.children({ parent: "agents", limit: 1, signal: controller.signal })
+const records = scenario === "children" || scenario === "childSelect"
+  ? facade.children({ parent: "agents", limit: 1, signal: controller.signal })
   : sessions.follow("events", { from: 0n, signal: controller.signal });
 const seen: number[] = [];
 let settled = false;
@@ -92,6 +106,7 @@ async function command(action: string, hex?: string, path?: string): Promise<unk
       return command("decode", Buffer.from(toBinary(wire.SessionFrameSchema, value)).toString("hex"));
     }
     case "ready": break;
+    case "releaseSelection": releaseSelection?.(); break;
     case "finishChildren": if (seen.length === 2) receive(); break;
     case "append": peer.append(scenario === "children" ? "agents/0" : "events"); break;
     case "consume": receive(); break;

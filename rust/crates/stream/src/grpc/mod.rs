@@ -32,9 +32,9 @@ pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 #[cfg(test)]
 mod children_tests;
+mod client;
 #[cfg(test)]
 mod latency_tests;
-mod client;
 mod server;
 #[cfg(test)]
 mod tests;
@@ -71,6 +71,7 @@ pub struct Client {
     acknowledge_deliveries: bool,
     sessions: Arc<tokio::sync::OnceCell<crate::session::Client>>,
     session_ca: Option<Arc<[u8]>>,
+    session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -143,7 +144,17 @@ impl Client {
             acknowledge_deliveries: true,
             sessions: Arc::new(tokio::sync::OnceCell::new()),
             session_ca: None,
+            session_verifier: None,
         }
+    }
+
+    #[cfg(feature = "http")]
+    pub(crate) fn with_session_verifier(
+        mut self,
+        verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    ) -> Self {
+        self.session_verifier = Some(verifier);
+        self
     }
 
     fn service(&self) -> wire::stream_service_client::StreamServiceClient<Channel> {
@@ -234,6 +245,21 @@ pub(crate) async fn channel_tls(
         endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
     };
     Ok(endpoint.tcp_nodelay(true).connect().await?)
+}
+
+pub(crate) async fn channel_with_verifier(
+    endpoint: &str,
+    verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+) -> Result<Channel, ConnectError> {
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    if endpoint.uri().scheme_str() != Some("https") {
+        return Err(ConnectError::InsecureEndpoint);
+    }
+    Ok(endpoint
+        .tls_config_with_verifier(ClientTlsConfig::new(), verifier)?
+        .tcp_nodelay(true)
+        .connect()
+        .await?)
 }
 
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {

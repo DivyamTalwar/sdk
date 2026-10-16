@@ -5,12 +5,18 @@ mod error {
 pub use error::StreamError;
 #[path = "../src/change.rs"]
 mod change;
-mod probe;
 #[path = "../src/interest.rs"]
 mod interest;
+mod probe;
 pub use acyclic_stream::query_sync;
 #[path = "../src/wasm/follow_state.rs"]
 mod cursor;
+#[path = "../src/http/shared.rs"]
+mod shared;
+mod shared_models {
+    use super::shared::*;
+    include!("shared.rs");
+}
 
 use acyclic_stream::discovery_verification as discovery;
 

@@ -4,8 +4,6 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
 #[cfg(test)]

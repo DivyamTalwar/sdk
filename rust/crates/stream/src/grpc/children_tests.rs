@@ -35,7 +35,7 @@ async fn children_pushes_before_eof_on_the_shared_channel() -> TestResult {
 }
 
 #[tokio::test]
-async fn children_reopens_after_eof_and_transport_error_without_duplicate_replay() -> TestResult {
+async fn children_replay_remains_live_without_duplicate_creations() -> TestResult {
     let provider = crate::MemoryStream::default();
     for name in ["a", "b"] {
         provider
@@ -47,11 +47,7 @@ async fn children_reopens_after_eof_and_transport_error_without_duplicate_replay
             })
             .await?;
     }
-    let transport = client(super::tests::EndingFollow {
-        inner: provider.clone(),
-        follows: std::sync::atomic::AtomicUsize::new(0),
-        deny: false,
-    })?;
+    let transport = client(provider.clone())?;
     let mut children = transport
         .children(ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),
@@ -89,6 +85,7 @@ async fn children_reports_terminal_reopen_denial_once() -> TestResult {
         inner: crate::MemoryStream::default(),
         follows: std::sync::atomic::AtomicUsize::new(0),
         deny: true,
+        finite: false,
     })?;
     let mut children = transport
         .children(ChildrenRequest {

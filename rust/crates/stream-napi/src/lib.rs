@@ -285,8 +285,8 @@ where
     })
 }
 
-#[derive(Clone)]
 type FollowFrames = futures::stream::BoxStream<'static, std::result::Result<Vec<u8>, StreamError>>;
+#[derive(Clone)]
 struct FollowState {
     // Lock order: cursor -> provider cursor; cancellation never acquires this lock.
     records: Arc<Mutex<Option<FollowFrames>>>,
@@ -337,7 +337,7 @@ pub struct NativeStreamFollow {
 
 #[napi]
 impl NativeStreamFollow {
-    /// Returns the next canonical `ReadResponse`, or an empty result at end/close.
+    /// Returns the next canonical response for this cursor, or an empty result at end/close.
     ///
     /// Transient `Unavailable` items remain owned by the Rust cursor and are
     /// retried here. Terminal stream errors are returned in the result envelope.

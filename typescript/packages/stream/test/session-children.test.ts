@@ -1,6 +1,17 @@
 import { expect, test } from "bun:test";
 import { StreamSessions } from "../src/session.js";
 import { SessionNode, checkpoint } from "./session-node.js";
+import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+
+test("a maximum-size child and its opaque cursor fit the advertised credit", async () => {
+  const peer = new SessionNode();
+  const path = "a".repeat(StreamLimit.MAX_PATH_BYTES);
+  peer.append(path);
+  const client = new StreamSessions(peer.connect);
+  const children = client.children({ limit: 1 });
+  try { expect((await children.next()).value?.path).toBe(path); }
+  finally { await children.return(undefined); }
+});
 
 test("children replay and creation share the record follow session", async () => {
   const peer = new SessionNode();

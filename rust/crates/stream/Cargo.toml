@@ -23,7 +23,7 @@ required-features = ["http"]
 [features]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
-http = ["dep:reqwest"]
+http = ["grpc", "dep:reqwest"]
 local = ["dep:fs2", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]

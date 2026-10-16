@@ -295,8 +295,9 @@ export class StreamSessions {
   }
   async #grant(route: Route): Promise<void> {
     if (!route.opened || this.#routes.get(route.id) !== route) return;
+    const frameBytes = route.kind.case === "children" ? BigInt(2 * StreamLimit.MAX_PATH_BYTES + 128) : RECORD_BYTES;
     const grant = { frames: Math.max(0, route.queue.available - route.credit.frames),
-      bytes: BigInt(route.queue.available) * RECORD_BYTES > route.credit.bytes ? BigInt(route.queue.available) * RECORD_BYTES - route.credit.bytes : 0n };
+      bytes: BigInt(route.queue.available) * frameBytes > route.credit.bytes ? BigInt(route.queue.available) * frameBytes - route.credit.bytes : 0n };
     if (grant.frames === 0 && grant.bytes === 0n) return;
     add(route.credit, grant);
     await this.#write(route.link, frame(route.id, route.generation, { case: "window", value: create(wire.SessionWindowSchema, grant) }), route.controller.signal);
