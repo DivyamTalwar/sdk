@@ -8,6 +8,49 @@ use loom::sync::{
 };
 use sdk_fixture_verification::get_or_try_init;
 
+#[path = "../../crates/sdk-generation/src/parallel.rs"]
+mod parallel;
+
+fn joined_workers(broken: bool) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(move || {
+        let completed = Arc::new(AtomicUsize::new(0));
+        let state = Arc::clone(&completed);
+        let operation = move |index| {
+            state.fetch_or(1 << index, Ordering::SeqCst);
+            if index == 0 {
+                Err(index)
+            } else {
+                Ok(index)
+            }
+        };
+        if broken {
+            // A failed worker must never detach the remaining compiler.
+            completed.fetch_or(1, Ordering::SeqCst);
+            drop(loom::thread::spawn(move || operation(1)));
+        } else {
+            assert_eq!(parallel::map(vec![0, 1], operation), vec![Err(0), Ok(1)]);
+        }
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            3,
+            "worker escaped publication barrier"
+        );
+    });
+}
+
+#[test]
+fn all_owner_compilers_join_before_errors_or_publication() {
+    joined_workers(false);
+}
+
+#[test]
+#[should_panic(expected = "worker escaped publication barrier")]
+fn negative_control_detects_detached_owner_compiler() {
+    joined_workers(true);
+}
+
 #[path = "../../crates/sdk-generation/src/shared_cache.rs"]
 mod shared_cache;
 

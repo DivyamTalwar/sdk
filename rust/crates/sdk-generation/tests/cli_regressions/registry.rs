@@ -390,6 +390,11 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     runtime::phase("generated");
     assert!(generated.status.success(), "{}", output_message(&generated));
     let output = fixture.output.join("releases/1.0.0");
+    assert_executed_profiles(
+        &output,
+        &output.join(".rustdoc"),
+        &[("demo-a", 4), ("demo-b", 4), ("demo-c", 4)],
+    );
     let data: Value =
         serde_json::from_slice(&fs::read(output.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
     assert_eq!(
