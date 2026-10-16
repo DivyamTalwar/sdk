@@ -35,6 +35,58 @@ fn unchanged(name: &str) -> bool {
 }
 
 impl<'a> Names<'a> {
+    pub(crate) fn controls(
+        &self,
+        adapter: crate::Adapter,
+        options: &mut serde_json::Value,
+    ) -> Result<()> {
+        let pointer = match adapter {
+            crate::Adapter::Anthropic | crate::Adapter::Responses => "/tool_choice/name",
+            crate::Adapter::Chat => "/tool_choice/function/name",
+            crate::Adapter::Gemini => "/toolConfig/functionCallingConfig/allowedFunctionNames",
+        };
+        if let Some(value) = options.pointer_mut(pointer) {
+            if adapter == crate::Adapter::Gemini {
+                for name in value
+                    .as_array_mut()
+                    .ok_or_else(|| crate::invalid("allowed tool names must be an array"))?
+                {
+                    self.control_name(name)?;
+                }
+            } else {
+                self.control_name(value)?;
+            }
+        }
+        if matches!(adapter, crate::Adapter::Responses | crate::Adapter::Chat) {
+            if let Some(tools) = options.pointer_mut("/tool_choice/tools") {
+                for tool in tools
+                    .as_array_mut()
+                    .ok_or_else(|| crate::invalid("allowed tools must be an array"))?
+                {
+                    let pointer = if adapter == crate::Adapter::Chat {
+                        "/function/name"
+                    } else {
+                        "/name"
+                    };
+                    if let Some(name) = tool.pointer_mut(pointer) {
+                        self.control_name(name)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn control_name(&self, value: &mut serde_json::Value) -> Result<()> {
+        let name = value
+            .as_str()
+            .ok_or_else(|| crate::invalid("selected tool name must be a string"))?;
+        if let Cow::Owned(alias) = self.wire(name)? {
+            *value = alias.into();
+        }
+        Ok(())
+    }
+
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
     pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
         let table = Self::new(request);
