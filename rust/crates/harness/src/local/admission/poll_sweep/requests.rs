@@ -1,11 +1,13 @@
 //! Verify the retained request bound to every root-model effect, including orphans.
 use super::*;
 use crate::{
-    executor::ExecutionJournal,
+    core::SchemaRegistry,
+    executor::{ExecutionEvent, ExecutionJournal, ModelPurpose},
+    filesystem::{FilesystemExecutionJournal, FilesystemJournalBinding},
     model::{ModelRequest, ModelRole, PreparedModelRequest},
 };
 
-pub(super) async fn check(harness: &Harness, fixture: &Fixture, root: TaskId) -> Result<()> {
+pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
     let dispatches = fixture.provider.dispatches();
     let turn = harness
         .current_turn()
@@ -13,34 +15,47 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture, root: TaskId) ->
         .0
         .expect("retained root turn")
         .root;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let (journal, operation) = harness
-        .runtime
-        .readonly_execution_journal_with_native_work(root, turn, &work)
-        .await?;
+    let operation = dispatches
+        .first()
+        .expect("root model reservation")
+        .operation_id;
+    let journal = FilesystemExecutionJournal::new(
+        harness.runtime.task_host().workflow_stream(),
+        harness.files.clone(),
+        &SchemaRegistry::new(),
+        FilesystemJournalBinding {
+            volume: &harness.journal,
+            verifier: &harness.verifier,
+            scope: &harness.signed,
+            maximum_bytes: harness.limits.file_bytes,
+            io: None,
+        },
+    )?
+    .with_turn(operation, turn);
+    let records = journal.replay(operation, 0, 128, None)?.await?;
     let mut checked = 0;
-    for dispatch in dispatches
-        .iter()
-        .filter(|dispatch| dispatch.operation_id == operation)
-    {
-        let key = format!("model:{}:request", dispatch.step);
-        let (request, _custody) = journal
-            .staged_ref_with_native_work(operation, &key, &work)?
-            .await?;
-        let bytes = journal.load(&request, None)?.await?;
-        let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
-        check_prompt(prepared.request())?;
-        assert_eq!(
-            prepared.request_digest(),
-            dispatch.request_digest,
-            "retained prompt differs from the actual generated/reconciled reservation"
-        );
-        checked += 1;
+    for record in records {
+        if let ExecutionEvent::ModelStarted {
+            step,
+            purpose: ModelPurpose::Response,
+            request_digest,
+            request,
+        } = record.event
+        {
+            let bytes = journal.load(&request, None)?.await?;
+            let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
+            check_prompt(prepared.request())?;
+            assert_eq!(prepared.request_digest(), request_digest);
+            assert!(
+                dispatches
+                    .iter()
+                    .any(|dispatch| dispatch.operation_id == operation
+                        && dispatch.step == step
+                        && dispatch.request_digest == request_digest),
+                "retained prompt differs from the actual generated/reconciled reservation"
+            );
+            checked += 1;
+        }
     }
     assert_eq!(
         checked,

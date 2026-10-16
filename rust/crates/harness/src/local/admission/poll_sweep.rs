@@ -376,7 +376,7 @@ async fn case(
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
         let observations = invariants::observe(&reopened, &fixture, root).await?;
-        requests::check(&reopened, &fixture, root).await?;
+        requests::check(&reopened, &fixture).await?;
         observations
             .check(scenario)
             .map_err(|reason| Error::Invalid(reason.into()))?;
