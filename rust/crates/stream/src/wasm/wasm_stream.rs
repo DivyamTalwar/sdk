@@ -1,16 +1,25 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: Box<dyn StreamProvider>,
+    provider: Arc<dyn StreamProvider>,
+}
+
+impl WasmStream {
+    /// Shares the caller's platform provider with other Rust WASM packages.
+    #[must_use]
+    pub fn provider(&self) -> Arc<dyn StreamProvider> {
+        Arc::clone(&self.provider)
+    }
 }
 
 #[wasm_bindgen]
 impl WasmStream {
+    /// Creates a process-local memory provider.
     #[wasm_bindgen(constructor)]
     #[must_use]
     pub fn new() -> Self {
         Self {
-            provider: Box::new(MemoryStream::default()),
+            provider: Arc::new(MemoryStream::default()),
         }
     }
 
@@ -27,7 +36,7 @@ impl WasmStream {
             ..Default::default()
         };
         Ok(Self {
-            provider: Box::new(
+            provider: Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
                     .map_err(js_error)?,
@@ -56,10 +65,15 @@ impl WasmStream {
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
-                let tail = self.provider.tail(path).await.map_err(js_error)?;
+                let (tail, durable) = if request.accepted {
+                    let watermarks = self.provider.watermarks(path).await.map_err(js_error)?;
+                    (watermarks.accepted, Some(watermarks.durable))
+                } else {
+                    (self.provider.tail(path).await.map_err(js_error)?, None)
+                };
                 wire::TailResponse {
                     tail,
-                    ..Default::default()
+                    durable,
                 }
                 .encode_to_vec()
             }

@@ -5,7 +5,7 @@ use js_sys::{Array, BigInt, Date, Object, Reflect, Uint8Array};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 use tsify::{Ts, Tsify};
 use wasm_bindgen::{JsCast, prelude::*};
 
