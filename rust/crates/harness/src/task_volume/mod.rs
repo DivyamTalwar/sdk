@@ -251,6 +251,17 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         Ok(self.generation(&index))
     }
 
+    /// Current query cut without copying the materialized files.
+    pub async fn cut(&self, query: &Query) -> Result<Cursor> {
+        let mut index = self.index.lock().await;
+        self.refresh(&mut index).await?;
+        self.cursor(
+            query,
+            self.generation(&index),
+            self.provider.watermarks(self.path.clone()).await?,
+        )
+    }
+
     fn generation(&self, index: &Index) -> Generation {
         Generation {
             volume: index.volume,

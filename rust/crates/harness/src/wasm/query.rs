@@ -24,7 +24,7 @@ fn busy() -> JsValue {
 /// A logical volume on the caller's existing platform Streams provider.
 #[wasm_bindgen]
 pub struct WasmTaskVolume {
-    volume: Arc<TaskVolume<dyn StreamProvider>>,
+    pub(super) volume: Arc<TaskVolume<dyn StreamProvider>>,
 }
 
 #[wasm_bindgen]

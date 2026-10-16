@@ -64,6 +64,8 @@ use reducer::schema_registry;
 mod tool;
 use tool::*;
 #[cfg(target_arch = "wasm32")]
+mod file_client;
+#[cfg(target_arch = "wasm32")]
 mod query;
 mod wire;
 
