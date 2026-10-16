@@ -7,8 +7,17 @@ impl CheckoutTools {
         command: &str,
         scope: &RuntimeScope,
     ) -> Result<crate::tools::FsCommand> {
-        use acyclic_fs::access::Action;
         let parsed = crate::tools::parse_fs_command(command)?;
+        self.fs_source(&parsed, scope)?;
+        Ok(parsed)
+    }
+
+    fn fs_source(
+        &self,
+        parsed: &crate::tools::FsCommand,
+        scope: &RuntimeScope,
+    ) -> Result<&Option<Arc<workspace::MountedVolume>>> {
+        use acyclic_fs::access::Action;
         let (relative, mount) = self.workspace.mounts.named(parsed.volume.as_deref())?;
         let read_only = matches!(
             parsed.arguments[0].as_str(),
@@ -32,24 +41,26 @@ impl CheckoutTools {
                 "--volume supports diff, log, show, status and merge".into(),
             ));
         }
-        Ok(parsed)
+        if !relative.is_empty()
+            && mount
+                .view
+                .source
+                .as_ref()
+                .and_then(|source| source.native.as_ref())
+                .is_none()
+        {
+            return Err(Error::NotFound("volume mount is not bound".into()));
+        }
+        Ok(&mount.view.source)
     }
 
     pub(super) async fn fs(
         &self,
-        command: &str,
+        parsed: crate::tools::FsCommand,
         context: &ToolContext,
         state: &mut State,
     ) -> Result<ToolResult> {
-        let parsed = self.fs_arguments(command, context.effective_scope())?;
-        let source = self
-            .workspace
-            .mounts
-            .named(parsed.volume.as_deref())?
-            .1
-            .view
-            .source
-            .clone();
+        let source = self.fs_source(&parsed, context.effective_scope())?.clone();
         let native = source.as_ref().and_then(|source| source.native.as_ref());
         let State {
             active, watcher, ..

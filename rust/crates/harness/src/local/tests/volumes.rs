@@ -185,11 +185,11 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         .map_err(super::super::storage)?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "seed".into(),
-                name: "write".into(),
-                arguments: json!({"path":"seed", "text":"from tool\n", "media_type":"text/plain", "display_name":"seed"}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "seed".into(),
+                "write".into(),
+                json!({"path":"seed", "text":"from tool\n", "media_type":"text/plain", "display_name":"seed"}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),
@@ -336,11 +336,11 @@ async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Resu
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "mounted-write".into(),
-                name: "write".into(),
-                arguments: json!({"path":".volumes/scratch/note", "text":"scratch bytes", "media_type":"text/plain", "display_name":"note"}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "mounted-write".into(),
+                "write".into(),
+                json!({"path":".volumes/scratch/note", "text":"scratch bytes", "media_type":"text/plain", "display_name":"note"}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),

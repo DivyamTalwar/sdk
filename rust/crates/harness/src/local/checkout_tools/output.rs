@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     durable_host::TaskJournalOwner,
-    task_volume::{Component, FileKey, Generation, Query, TaskFile, TaskVolume, ToolFile, Write},
+    task_volume::{Component, FileKey, Generation, Query, TaskFile, TaskFiles, ToolFile, Write},
 };
 use acyclic_native_runtime::ProcessOutput;
 use acyclic_stream::OwnedBytes;
@@ -11,7 +11,7 @@ pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
 
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
-    volume: Arc<TaskVolume<LocalStream>>,
+    volume: Arc<TaskFiles<LocalStream>>,
     generation: Generation,
     task: Component,
     call: Component,
@@ -23,7 +23,7 @@ pub(super) struct Output {
 impl Output {
     pub(super) async fn open(
         context: &ToolContext,
-        volume: Arc<TaskVolume<LocalStream>>,
+        volume: Arc<TaskFiles<LocalStream>>,
         request: Vec<u8>,
     ) -> Result<Self> {
         let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
@@ -32,6 +32,7 @@ impl Output {
         // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
         let generation = volume
+            .inner
             .snapshot(
                 &Query::Tool {
                     task: task.clone(),
@@ -74,6 +75,7 @@ impl Output {
         );
         self.generation = self
             .volume
+            .inner
             .append_if(
                 self.generation,
                 &write,

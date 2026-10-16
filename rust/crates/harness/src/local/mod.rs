@@ -54,7 +54,7 @@ pub(crate) type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
-    task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -156,6 +156,14 @@ impl LocalHarness {
                 VolumeOwner::Agent(owner.agent),
                 &mut None,
             )?;
+            let task_volume = VolumeRef::new(
+                provider_ref.clone(),
+                format!("tasks-{}", owner.agent),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(owner.agent),
+                &mut None,
+            )?;
+            files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
             #[cfg(feature = "native-execution")]
@@ -223,19 +231,12 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
-            let task_files = Arc::new(
-                crate::task_volume::TaskVolume::open(
-                    Arc::clone(&stream),
-                    acyclic_stream::StreamPath::new("task-files").map_err(storage)?,
-                )
-                .await?,
-            );
-            let (runtime, signed) = runtime::open(runtime::Configuration {
+            let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
-                task_files: Arc::clone(&task_files),
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
                 stream,
+                task_volume: &task_volume,
                 issuer: &issuer,
                 verifier: &verifier,
                 agent: owner.agent,
@@ -277,7 +278,7 @@ impl LocalHarness {
     }
 
     /// Trusted host's task-file volume; clients render its bounded live queries.
-    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskVolume<LocalStream>> {
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<LocalStream>> {
         &self.task_files
     }
 
