@@ -1,3 +1,4 @@
+//! Wrapping invariants, included in the focused screen test target.
 use acyclic_harness_tui::ratatui::{
     Terminal,
     backend::TestBackend,

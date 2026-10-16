@@ -4,7 +4,7 @@ use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, layout::Rect,
 use acyclic_harness_tui::{Editor, PromptInput, Screen, Viewport};
 use proptest::prelude::*;
 
-#[path = "screen_wrapping.rs"]
+#[path = "screen/wrapping.rs"]
 mod wrapping;
 
 fn visible(terminal: &Terminal<TestBackend>) -> String {
