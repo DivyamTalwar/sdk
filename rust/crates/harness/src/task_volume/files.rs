@@ -8,6 +8,9 @@ use crate::{
 use acyclic_stream::{StreamPath, StreamProvider};
 use std::sync::Arc;
 
+#[cfg(feature = "filesystem")]
+mod created;
+
 /// The caller's file writer and live queries for one private task volume.
 /// Execution and approval records can only be published by their internal owners.
 pub struct TaskFiles<P: ?Sized> {

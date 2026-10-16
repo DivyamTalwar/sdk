@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
+mod binding;
+
 /// File operations accepted by the default agent tool.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "command", rename_all = "lowercase", deny_unknown_fields)]
@@ -138,19 +140,14 @@ impl ToolExecutor for AgentExecutor {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             let context =
                 context.ok_or_else(|| Error::Unauthorized("agent context is absent".into()))?;
-            let files = context
-                .task()
-                .harness
-                .task_files
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("agent files are absent".into()))?;
             let command: AgentCommand =
                 serde_json::from_value(invocation.arguments).map_err(invalid)?;
             if let AgentCommand::Spawn { tools, .. } = &command {
                 crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
             }
+            let files = binding::files(&context).await?;
             access(
-                files,
+                files.as_ref(),
                 command,
                 invocation.operation_id,
                 context.effective_scope().limits(),
@@ -175,18 +172,13 @@ impl ToolExecutor for AgentExecutor {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             let context =
                 context.ok_or_else(|| Error::Unauthorized("agent context is absent".into()))?;
-            let files = context
-                .task()
-                .harness
-                .task_files
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("agent files are absent".into()))?;
             let command = serde_json::from_value(invocation.arguments).map_err(invalid)?;
             if let AgentCommand::Spawn { tools, .. } = &command {
                 crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
             }
+            let files = binding::files(&context).await?;
             access(
-                files,
+                files.as_ref(),
                 command,
                 invocation.operation_id,
                 context.effective_scope().limits(),
