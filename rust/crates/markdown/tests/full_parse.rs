@@ -1,6 +1,9 @@
 use super::*;
 use proptest::prelude::*;
 
+#[path = "inline_chunks.rs"]
+mod inline_chunks;
+
 #[path = "sequence_work.rs"]
 mod sequence_work;
 
