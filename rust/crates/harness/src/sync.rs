@@ -11,10 +11,13 @@ pub(crate) use primitives::{Arc, atomic};
 #[path = "sync/owned.rs"]
 pub(crate) mod owned;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
 #[test]
 fn ordinary_build_uses_standard_synchronization() {
     assert!(!cfg!(acyclic_harness_loom));
-    let value: std::sync::Arc<atomic::AtomicUsize> = Arc::new(atomic::AtomicUsize::new(0));
-    assert_eq!(value.load(atomic::Ordering::Relaxed), 0);
+    #[cfg(not(acyclic_harness_loom))]
+    {
+        let value: std::sync::Arc<atomic::AtomicUsize> = Arc::new(atomic::AtomicUsize::new(0));
+        assert_eq!(value.load(atomic::Ordering::Relaxed), 0);
+    }
 }
