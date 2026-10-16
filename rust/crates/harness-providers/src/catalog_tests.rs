@@ -9,6 +9,12 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
+        token_counter: Some(crate::TokenCounterSpec {
+            path: "count_tokens".into(),
+            adapter: Adapter::Chat,
+            response_field: crate::TokenCountField::InputTokens,
+            framing_tokens: 0,
+        }),
         max_event_bytes: 4096,
         models: BTreeMap::from([(
             "m".into(),
@@ -119,7 +125,7 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
         let mut changed = provider.model().clone();
         changed.options = json!({});
         assert!(provider.context_capacity(&changed).is_err());
-        assert!(provider.count_tokens(&prepared).is_ok());
+        assert!(futures::executor::block_on(provider.count_tokens(&prepared)).is_ok());
     }
     assert!(
         registry

@@ -1,9 +1,8 @@
 //! Original-ledger admission for the shared wire projections and parsers.
-use crate::{Adapter, ResolvedModel, dispatch, projection, sse, stream};
+use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness::{
     Error, NativeFutureBundle, Result,
-    context::ModelTokenCount,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
@@ -139,30 +138,12 @@ pub(crate) fn reserve(
     )?)
 }
 
-fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
+pub(crate) fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
     if bytes > allocation.bytes() {
         return Err(invalid("provider exceeded admitted allocation"));
     }
     allocation.resize(bytes)?;
     Ok(())
-}
-
-pub(crate) fn count(
-    provider: &ResolvedModel,
-    request: &PreparedModelRequest,
-    work: &NativeMaterializationWork,
-) -> Result<(ModelTokenCount, NativeAllocation)> {
-    work.remaining()?;
-    provider.context_capacity_with_native_work(&request.request().model, work)?;
-    let (bytes, nodes) = shape(request.bytes());
-    let mut allocation = reserve(work, bytes, nodes, 0)?;
-    let count = diagnostic(projection::count(provider, request), &mut allocation)?;
-    retain(
-        &mut allocation,
-        (std::mem::size_of::<ModelTokenCount>()
-            + count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64,
-    )?;
-    Ok((count, allocation))
 }
 
 pub(crate) fn generate<'a>(
@@ -183,7 +164,7 @@ pub(crate) fn generate<'a>(
         let exchange = async move {
             let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
-            let auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
+            let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
             work.remaining()?;
             let (response, input_bytes) = send(
                 provider,
@@ -204,13 +185,14 @@ pub(crate) fn generate<'a>(
                             Some(&mut auth_custody),
                         )
                         .await?;
+                    auth = (Some(std::borrow::Cow::Owned(key)), account);
                     work.remaining()?;
                     send(
                         provider,
                         request,
                         &names,
                         dispatch_id,
-                        (Some(&key), account.as_deref()),
+                        (auth.0.as_deref(), auth.1.as_deref()),
                         work,
                     )
                     .await?
@@ -220,6 +202,10 @@ pub(crate) fn generate<'a>(
             } else {
                 (response, input_bytes)
             };
+            let origin_bytes =
+                crate::stream::family(provider.config.adapter).len() + provider.model.name.len();
+            let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
+            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             drop(auth);
             drop(auth_custody);
             if !(200..300).contains(&response.status) {
@@ -232,6 +218,8 @@ pub(crate) fn generate<'a>(
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
                     let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
+                    parser.allocation.absorb(&mut { origin_custody })?;
+                    parser.state.set_origin(Some(origin))?;
                     let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
                     let cancelled = work.cancellation_wait()?;
                     futures::pin_mut!(frames, cancelled);
@@ -264,7 +252,8 @@ pub(crate) fn generate<'a>(
                     let (bytes, nodes) = parser.state.arguments().map(|args| shape(args.as_bytes())).try_fold((0u64, 0u64), |(bytes, nodes), (b, n)| {
                         Ok::<_, Error>((bytes.checked_add(b).ok_or_else(|| invalid("tool batch size overflow"))?, nodes.checked_add(n).ok_or_else(|| invalid("tool batch size overflow"))?))
                     })?;
-                    let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
+                    let (reasoning_bytes, reasoning_nodes) = parser.state.reasoning_shape()?;
+                    let mut admission = reserve(work, bytes.checked_add(reasoning_bytes).ok_or_else(|| invalid("reasoning size overflow"))?, nodes.checked_add(reasoning_nodes).ok_or_else(|| invalid("reasoning size overflow"))?, parser.allocation.bytes())?;
                     parser.allocation.absorb(&mut admission)?;
                     let restored = parser.state.restore_names(&names, |length| {
                         let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;

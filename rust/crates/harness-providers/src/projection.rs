@@ -1,3 +1,5 @@
+pub(crate) mod native_reasoning;
+mod wire;
 use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
 use acyclic_harness::{
     Result,
@@ -8,6 +10,7 @@ use acyclic_harness::{
     },
 };
 use serde_json::{Value, json};
+use wire::{Body, Item, Message};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
     let mut base = validate_url(&provider.config.base_url)?;
@@ -31,66 +34,41 @@ pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
         .map_err(|_| invalid("invalid model endpoint"))
 }
 
-pub(crate) fn count(
+pub(crate) fn plan(
     provider: &ResolvedModel,
     prepared: &PreparedModelRequest,
+    input_tokens: u64,
 ) -> Result<ModelTokenCount> {
-    let request = prepared.request();
-    let names = crate::tool_names::Names::new(request);
-    let mut fixed = body_named(provider, request, &names)?;
-    let body_bytes = encoded_len(&fixed)?;
-    let field = match provider.config.adapter {
-        Adapter::Responses => "input",
-        Adapter::Gemini => "contents",
-        _ => "messages",
-    };
-    fixed[field] = json!([]);
-    if let Some(map) = fixed.as_object_mut() {
-        #[cfg(not(target_arch = "wasm32"))]
-        if provider.codex_login.is_some() {
-            map.remove("instructions");
-        }
-        match provider.config.adapter {
-            Adapter::Anthropic => {
-                map.remove("system");
-            }
-            Adapter::Gemini => {
-                map.remove("systemInstruction");
-            }
-            _ => {}
-        }
-    }
-    // Include protocol escaping/framing and calibrate the selected model from actual usage.
-    let message_bytes = request
-        .messages
-        .iter()
-        .map(|message| {
-            encoded_len(&Value::Array(project_message(
-                provider.config.adapter,
-                message,
-                &names,
-            )?))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let total_messages: usize = message_bytes.iter().sum();
-    let fixed_bytes = encoded_len(&fixed)?.max(body_bytes.saturating_sub(total_messages));
+    // These weights only choose a compaction cut. Admission always uses the
+    // independently verified total, never a usage-calibrated ratio.
     let tokens = |bytes| {
         provider
             .estimator
             .tokens(bytes)
-            .ok_or_else(|| invalid("token count exceeds u32"))
+            .ok_or_else(|| invalid("token planning weight exceeds u32"))
     };
+    let mut message_bytes = 0usize;
+    let message_tokens = prepared
+        .request()
+        .messages
+        .iter()
+        .map(|message| {
+            let bytes = encoded_len(message)?;
+            message_bytes = message_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| invalid("token planning size overflow"))?;
+            tokens(bytes)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(ModelTokenCount {
         request_digest: prepared.request_digest(),
-        fixed_tokens: tokens(fixed_bytes)?,
-        message_tokens: message_bytes
-            .into_iter()
-            .map(tokens)
-            .collect::<Result<_>>()?,
+        input_tokens,
+        fixed_tokens: tokens(prepared.bytes().len().saturating_sub(message_bytes))?,
+        message_tokens,
     })
 }
 
-pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
+pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -111,17 +89,25 @@ pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
 
 #[cfg(test)]
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
-    body_named(provider, request, &crate::tool_names::Names::new(request))
+    serde_json::to_value(body_named(
+        provider,
+        request,
+        &crate::tool_names::Names::new(request),
+        &provider.reasoning_origin(provider.key.as_deref(), None),
+    )?)
+    .map_err(|_| invalid("cannot encode projected request"))
 }
 
-pub(crate) fn body_named(
+pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
-    request: &ModelRequest,
+    request: &'a ModelRequest,
     names: &crate::tool_names::Names,
-) -> Result<Value> {
+    target: &acyclic_harness::model::ReasoningOrigin,
+) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
-    let mut messages = Vec::new();
+    let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
+    let mut gemini_signature = None;
     for message in &request.messages {
         #[cfg(not(target_arch = "wasm32"))]
         if provider.codex_login.is_some() && message.role == ModelRole::System {
@@ -133,42 +119,67 @@ pub(crate) fn body_named(
         {
             system.push(text_content(&message.content)?);
         } else {
-            for mut projected in project_message(adapter, message, names)? {
-                // A tool batch is one model turn, followed by one result turn.
-                if adapter == Adapter::Gemini
-                    && messages
-                        .last()
-                        .is_some_and(|last: &Value| last["role"] == projected["role"])
-                {
-                    if let (Some(previous), Some(parts)) =
-                        (messages.last_mut(), projected["parts"].as_array_mut())
-                    {
+            for mut projected in
+                project_message(adapter, message, names, target, &mut gemini_signature)?
+            {
+                match (messages.last_mut(), &mut projected) {
+                    (
+                        Some(Message::Item(Item::Json(previous))),
+                        Message::Item(Item::Json(next)),
+                    ) if adapter == Adapter::Gemini && previous["role"] == next["role"] => {
                         previous["parts"]
                             .as_array_mut()
-                            .ok_or_else(|| invalid("invalid projected Gemini parts"))?
-                            .append(parts);
+                            .ok_or_else(|| invalid("invalid Gemini parts"))?
+                            .append(
+                                next["parts"]
+                                    .as_array_mut()
+                                    .ok_or_else(|| invalid("invalid Gemini parts"))?,
+                            );
                     }
-                } else if adapter == Adapter::Chat
-                    && projected["role"] == "assistant"
-                    && projected["tool_calls"].is_array()
-                    && messages.last().is_some_and(|last| {
-                        last["role"] == "assistant" && last["tool_calls"].is_array()
-                    })
-                {
-                    let previous = messages
-                        .last_mut()
-                        .ok_or_else(|| invalid("missing tool batch"))?;
-                    previous["tool_calls"]
-                        .as_array_mut()
-                        .ok_or_else(|| invalid("invalid Chat calls"))?
-                        .append(
-                            projected["tool_calls"]
+                    (
+                        Some(Message::Anthropic {
+                            role: previous_role,
+                            content: previous,
+                        }),
+                        Message::Anthropic { role, content },
+                    ) if previous_role == role => {
+                        previous.append(content);
+                    }
+                    (
+                        Some(Message::Item(Item::Json(previous))),
+                        Message::Item(Item::Json(next)),
+                    ) if adapter == Adapter::Chat
+                        && previous["role"] == "assistant"
+                        && next["role"] == "assistant" =>
+                    {
+                        if next["tool_calls"].is_array() {
+                            let calls = previous
+                                .as_object_mut()
+                                .ok_or_else(|| invalid("invalid Chat turn"))?
+                                .entry("tool_calls")
+                                .or_insert_with(|| json!([]));
+                            calls
                                 .as_array_mut()
-                                .ok_or_else(|| invalid("invalid Chat calls"))?,
-                        );
-                    merge_chat_text(&mut previous["content"], projected["content"].take())?;
-                } else {
-                    messages.push(projected);
+                                .ok_or_else(|| invalid("invalid Chat calls"))?
+                                .append(
+                                    next["tool_calls"]
+                                        .as_array_mut()
+                                        .ok_or_else(|| invalid("invalid Chat calls"))?,
+                                );
+                        }
+                        if let Some(reasoning) = next["reasoning_content"].as_str() {
+                            let previous = previous
+                                .as_object_mut()
+                                .ok_or_else(|| invalid("invalid Chat turn"))?
+                                .entry("reasoning_content")
+                                .or_insert_with(|| json!(""));
+                            let mut text = previous.as_str().unwrap_or_default().to_owned();
+                            text.push_str(reasoning);
+                            *previous = json!(text);
+                        }
+                        merge_chat_text(&mut previous["content"], next["content"].take())?;
+                    }
+                    _ => messages.push(projected),
                 }
             }
         }
@@ -195,7 +206,6 @@ pub(crate) fn body_named(
     map.insert("model".into(), json!(request.model.name));
     match adapter {
         Adapter::Chat => {
-            map.insert("messages".into(), json!(messages));
             map.insert("stream".into(), json!(true));
             map.insert("stream_options".into(), json!({"include_usage":true}));
             map.insert("max_completion_tokens".into(), json!(max));
@@ -215,7 +225,7 @@ pub(crate) fn body_named(
             {
                 include.push(json!("reasoning.encrypted_content"));
             }
-            map.insert("input".into(), json!(messages));
+
             map.insert("stream".into(), json!(true));
             map.insert("store".into(), json!(false));
             map.insert("max_output_tokens".into(), json!(max));
@@ -233,7 +243,6 @@ pub(crate) fn body_named(
             }
         }
         Adapter::Anthropic => {
-            map.insert("messages".into(), json!(messages));
             map.insert("stream".into(), json!(true));
             map.insert("max_tokens".into(), json!(max));
             if !system.is_empty() {
@@ -245,7 +254,7 @@ pub(crate) fn body_named(
         }
         Adapter::Gemini => {
             map.remove("model");
-            map.insert("contents".into(), json!(messages));
+
             map.entry("generationConfig")
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
@@ -262,7 +271,23 @@ pub(crate) fn body_named(
             }
         }
     }
-    Ok(body)
+    let fields = body
+        .as_object_mut()
+        .ok_or_else(|| invalid("invalid request body"))?;
+    let messages_field = match adapter {
+        Adapter::Responses => "input",
+        Adapter::Gemini => "contents",
+        _ => "messages",
+    };
+    // Options cannot override transcript projection or inject a second input path.
+    for name in ["messages", "input", "contents"] {
+        fields.remove(name);
+    }
+    Ok(Body {
+        fields: std::mem::take(fields),
+        messages_field,
+        messages,
+    })
 }
 
 fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
@@ -287,12 +312,14 @@ fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
     Ok(())
 }
 
-fn project_message(
+fn project_message<'a>(
     adapter: Adapter,
-    message: &ModelMessage,
+    message: &'a ModelMessage,
     names: &crate::tool_names::Names,
-) -> Result<Vec<Value>> {
-    let role = match message.role {
+    target: &acyclic_harness::model::ReasoningOrigin,
+    gemini_signature: &mut Option<Value>,
+) -> Result<Vec<Message<'a>>> {
+    let role: &'static str = match message.role {
         ModelRole::System => "system",
         ModelRole::User => "user",
         ModelRole::Assistant => "assistant",
@@ -302,6 +329,10 @@ fn project_message(
     let mut calls = Vec::new();
     let mut results = Vec::new();
     let mut ordered = Vec::new();
+    if message.role != ModelRole::Assistant {
+        *gemini_signature = None;
+    }
+    let mut chat_reasoning = String::new();
     if let ModelContent::Text(text) = &message.content {
         project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
     }
@@ -323,17 +354,9 @@ fn project_message(
                 call_id,
                 name,
                 arguments,
-                metadata,
+                metadata: _,
             }) => {
                 let name = names.wire(name)?;
-                let continuation = match adapter {
-                    Adapter::Anthropic => metadata["anthropic_thinking"].as_array(),
-                    Adapter::Responses => metadata["openai_reasoning"].as_array(),
-                    _ => None,
-                };
-                if let Some(continuation) = continuation {
-                    ordered.extend(continuation.iter().cloned());
-                }
                 let mut call = match adapter {
                     Adapter::Anthropic => {
                         json!({"type":"tool_use","id":call_id,"name":name,"input":arguments})
@@ -349,14 +372,59 @@ fn project_message(
                     }
                 };
                 if adapter == Adapter::Gemini {
-                    if let Some(signature) = metadata.get("gemini_thought_signature") {
-                        call["thoughtSignature"] = signature.clone();
+                    if let Some(signature) = gemini_signature.take() {
+                        call["thoughtSignature"] = signature;
                     }
                 }
                 if adapter == Adapter::Chat {
                     calls.push(call);
                 } else {
-                    ordered.push(call);
+                    ordered.push(Item::Json(call));
+                }
+            }
+            ModelContentPart::Reasoning { block } => {
+                use crate::ProjectedReasoning;
+                match crate::project_reasoning(block, target) {
+                    ProjectedReasoning::Native { continuity, .. }
+                        if matches!(adapter, Adapter::Responses | Adapter::Anthropic) =>
+                    {
+                        // Invalid native shapes fall back to ordinary readable context.
+                        if let Some(raw) = native_reasoning::validated(adapter, continuity) {
+                            ordered.push(Item::Native(raw));
+                        } else if let Some(text) = block.text.as_deref() {
+                            project_text(
+                                adapter,
+                                role,
+                                foreign_text(&block.origin, text),
+                                &mut texts,
+                                &mut ordered,
+                            );
+                        }
+                    }
+                    ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
+                        if let Ok(value) = crate::json(continuity) {
+                            *gemini_signature = value.get("thoughtSignature").cloned();
+                            if value.get("functionCall").is_none() && value.get("text").is_some() {
+                                ordered.push(Item::Json(value));
+                                *gemini_signature = None;
+                            }
+                        }
+                    }
+                    ProjectedReasoning::Native { .. } => {
+                        if let Some(text) = &block.text {
+                            chat_reasoning.push_str(text);
+                        }
+                    }
+                    ProjectedReasoning::Readable { text, origin, .. } => {
+                        project_text(
+                            adapter,
+                            role,
+                            foreign_text(origin, text),
+                            &mut texts,
+                            &mut ordered,
+                        );
+                    }
+                    ProjectedReasoning::Dropped { .. } => {}
                 }
             }
             ModelContentPart::ToolResult {
@@ -381,7 +449,7 @@ fn project_message(
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
-                    ordered.push(result);
+                    ordered.push(Item::Json(result));
                 }
             }
         }
@@ -394,18 +462,34 @@ fn project_message(
                 if !calls.is_empty() {
                     value["tool_calls"] = json!(calls);
                 }
-                output.push(value);
+                if !chat_reasoning.is_empty() {
+                    value["reasoning_content"] = json!(chat_reasoning);
+                }
+                output.push(Message::Item(Item::Json(value)));
             }
-            output.extend(results);
+            output.extend(
+                results
+                    .into_iter()
+                    .map(|value| Message::Item(Item::Json(value))),
+            );
             Ok(output)
         }
-        Adapter::Responses => Ok(ordered),
-        Adapter::Anthropic => Ok(vec![
-            json!({"role":if role == "tool" {"user"} else {role},"content":ordered}),
-        ]),
-        Adapter::Gemini => Ok(vec![
-            json!({"role":if role == "assistant" {"model"} else {"user"},"parts":ordered}),
-        ]),
+        Adapter::Responses => Ok(ordered.into_iter().map(Message::Item).collect()),
+        Adapter::Anthropic => Ok(if ordered.is_empty() {
+            Vec::new()
+        } else {
+            vec![Message::Anthropic {
+                role: if role == "tool" { "user" } else { role },
+                content: ordered,
+            }]
+        }),
+        Adapter::Gemini => Ok(if ordered.is_empty() {
+            Vec::new()
+        } else {
+            vec![Message::Item(Item::Json(
+                json!({"role":if role == "assistant" {"model"} else {"user"},"parts":ordered}),
+            ))]
+        }),
     }
 }
 
@@ -414,13 +498,13 @@ fn project_text(
     role: &str,
     text: String,
     texts: &mut Vec<String>,
-    ordered: &mut Vec<Value>,
+    ordered: &mut Vec<Item<'_>>,
 ) {
     match adapter {
         Adapter::Chat => texts.push(text),
-        Adapter::Responses => ordered.push(json!({"role":role,"content":text})),
-        Adapter::Anthropic => ordered.push(json!({"type":"text","text":text})),
-        Adapter::Gemini => ordered.push(json!({"text":text})),
+        Adapter::Responses => ordered.push(Item::Json(json!({"role":role,"content":text}))),
+        Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
+        Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),
     }
 }
 
@@ -467,4 +551,11 @@ fn file_text(
     }
     let value = serde_json::to_string(file).map_err(|e| invalid(e.to_string()))?;
     Ok(format!("[file: {value}]"))
+}
+
+fn foreign_text(origin: &acyclic_harness::model::ReasoningOrigin, text: &str) -> String {
+    format!(
+        "<prior-reasoning provider={:?} model={:?}>\n{text}\n</prior-reasoning>",
+        origin.provider, origin.model
+    )
 }

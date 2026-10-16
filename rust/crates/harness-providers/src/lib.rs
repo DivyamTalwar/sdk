@@ -11,6 +11,7 @@ mod refresh;
 pub use codex::CodexLogin;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;
+mod counting;
 mod credentials;
 mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -19,6 +20,7 @@ mod http;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
+mod reasoning;
 mod registry;
 mod resolved;
 mod spec;
@@ -30,12 +32,14 @@ mod tool_names;
 
 pub use adapter::Adapter;
 pub use catalog::default_catalog;
+pub use counting::wire::{TokenCountField, TokenCounterSpec};
 pub use credentials::Credentials;
 #[cfg(target_arch = "wasm32")]
 pub use http::BrowserTransport;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
+pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec};

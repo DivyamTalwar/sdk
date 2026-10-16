@@ -1,4 +1,4 @@
-use crate::{Adapter, Authentication, ProviderSpec};
+use crate::{Adapter, Authentication, ProviderSpec, TokenCountField, TokenCounterSpec};
 use acyclic_harness::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
@@ -47,6 +47,27 @@ const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     ),
 ];
 
+const COUNTERS: &[(&str, &str, Adapter, TokenCountField)] = &[
+    (
+        "openai",
+        "responses/input_tokens",
+        Adapter::Responses,
+        TokenCountField::InputTokens,
+    ),
+    (
+        "anthropic",
+        "messages/count_tokens",
+        Adapter::Anthropic,
+        TokenCountField::InputTokens,
+    ),
+    (
+        "gemini",
+        "models/{model}:countTokens",
+        Adapter::Gemini,
+        TokenCountField::TotalTokens,
+    ),
+];
+
 const MODELS: &[(&str, &str, u32, u32)] = &[
     ("anthropic", "claude-sonnet-4-5", 200_000, 64_000),
     ("anthropic", "claude-sonnet-4-5-20250929", 200_000, 64_000),
@@ -83,6 +104,14 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     authentication,
                     base_url: base_url.into(),
                     models,
+                    token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(
+                        |&(_, path, adapter, response_field)| TokenCounterSpec {
+                            path: path.into(),
+                            adapter,
+                            response_field,
+                            framing_tokens: 0,
+                        },
+                    ),
                     max_event_bytes: 1024 * 1024,
                 },
             )

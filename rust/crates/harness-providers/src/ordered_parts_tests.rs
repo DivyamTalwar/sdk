@@ -4,11 +4,13 @@ use proptest::prelude::*;
 
 fn labels(adapter: Adapter, body: &Value) -> Vec<String> {
     let items = match adapter {
-        Adapter::Responses => body["input"].as_array().unwrap(),
-        Adapter::Anthropic => body["messages"][0]["content"].as_array().unwrap(),
-        Adapter::Gemini => body["contents"][0]["parts"].as_array().unwrap(),
+        Adapter::Responses => body["input"].as_array(),
+        Adapter::Anthropic => body["messages"][0]["content"].as_array(),
+        Adapter::Gemini => body["contents"][0]["parts"].as_array(),
         Adapter::Chat => unreachable!(),
-    };
+    }
+    .map(Vec::as_slice)
+    .unwrap_or_default();
     items
         .iter()
         .map(|item| {
@@ -74,6 +76,15 @@ proptest! {
             let (actual, expected) = project(adapter, &pattern, &text);
             prop_assert_eq!(actual, expected);
         }
+    }
+}
+
+#[test]
+fn empty_parts_do_not_fabricate_ordered_content() {
+    for adapter in [Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
+        let (actual, expected) = project(adapter, &[], "");
+        assert_eq!(actual, expected);
+        assert!(actual.is_empty());
     }
 }
 

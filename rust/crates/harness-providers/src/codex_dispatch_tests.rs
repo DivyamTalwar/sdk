@@ -54,6 +54,8 @@ impl HttpTransport for Server {
 mod controls;
 #[path = "codex_native_tests.rs"]
 mod native;
+#[path = "codex_reasoning_tests.rs"]
+mod reasoning;
 
 fn fixture(
     replies: Vec<(u16, String)>,

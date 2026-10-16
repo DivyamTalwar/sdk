@@ -97,6 +97,11 @@ impl Registry {
         let capacity = config.models.get(name).copied().ok_or_else(|| {
             invalid("register the exact selected model context and output capacities")
         })?;
+        if config.token_counter.is_none() {
+            return Err(acyclic_harness::Error::Unsupported(
+                "configure a verified input token counter for this endpoint".into(),
+            ));
+        }
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -165,6 +170,14 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    if let Some(counter) = &config.token_counter {
+        if counter.adapter != config.adapter {
+            return Err(invalid(
+                "count endpoint must accept the provider input dialect",
+            ));
+        }
+        crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
+    }
     for capacity in config.models.values() {
         capacity.validate()?;
     }

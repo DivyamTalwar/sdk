@@ -39,7 +39,7 @@ type _CapacityFacadeUsesRustCounts = Assert<Equal<
 >>;
 type _AccountingFacadeUsesRustCounts = Assert<Equal<
   ModelTokenCount,
-  Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
+  Readonly<{ requestDigest: Uint8Array; inputTokens: RustModelTokenCount["input_tokens"]; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
 >>;
 
 type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelRoleWire,

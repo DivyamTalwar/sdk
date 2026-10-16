@@ -29,7 +29,7 @@ fn small_events_cannot_accumulate_unbounded_calls_or_thinking() -> Result<()> {
     for index in 0..10_000 {
         let event = json!({"type":"content_block_start","index":index,"content_block":{"type":"thinking","thinking":"","signature":""}});
         assert!(event.to_string().len() < 256);
-        if anthropic::parse(&mut state, &event).is_err() {
+        if anthropic::parse(&mut state, &event, &event.to_string()).is_err() {
             rejected = true;
             break;
         }
@@ -113,11 +113,17 @@ mod accounting {
             .values()
             .map(|v| {
                 visits += 1;
-                std::mem::size_of::<(u64, Value)>() as u64 + owned(v).unwrap()
+                (std::mem::size_of::<(u64, reasoning::Thinking)>() + v.bytes()) as u64
             })
             .sum();
         (
-            std::mem::size_of::<State>() as u64 + calls + metadata + thinking,
+            std::mem::size_of::<State>() as u64
+                + calls
+                + metadata
+                + thinking
+                + state.origin.as_ref().map_or(0, |origin| {
+                    (origin.provider.capacity() + origin.model.capacity()) as u64
+                }),
             visits,
         )
     }

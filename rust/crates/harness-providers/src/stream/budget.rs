@@ -103,6 +103,9 @@ impl<'work> Budget<'work> {
         let delta = value
             .as_str()
             .ok_or_else(|| invalid("tool delta must be a string"))?;
+        self.append_str(target, delta)
+    }
+    pub fn append_str(&mut self, target: &mut String, delta: &str) -> Result<()> {
         let required = target
             .len()
             .checked_add(delta.len())
@@ -185,7 +188,7 @@ impl<'work> Budget<'work> {
         }
         Ok(())
     }
-    pub fn encoded(&mut self, target: &mut String, value: &Value) -> Result<()> {
+    pub fn encoded<T: serde::Serialize>(&mut self, target: &mut String, value: &T) -> Result<()> {
         let length = crate::projection::encoded_len(value)?;
         self.replace(
             Size {
