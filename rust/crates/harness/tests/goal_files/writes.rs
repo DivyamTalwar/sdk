@@ -54,7 +54,7 @@ async fn run(case: Case) -> Result<()> {
         turns.push(ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall {
                 call_id: format!("write-{index}"),
-                name: "acyclic.write_file".into(),
+                name: "write".into(),
                 arguments: json!({
                     "path":"GOAL.md", "text":text,
                     "media_type":"text/markdown", "display_name":"GOAL.md",
@@ -74,8 +74,8 @@ async fn run(case: Case) -> Result<()> {
             provider.clone(),
         )
         .grant("model:generate")
-        .tool(files::write_file()?)?
-        .grant("tool:call:acyclic.write_file")
+        .tool(files::write()?)?
+        .grant("tool:call:write")
         .compaction(CompactionPolicy::Disabled)
         .build()?;
     let output = storage

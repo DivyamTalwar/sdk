@@ -15,6 +15,7 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 
 [dependencies]
 libfuzzer-sys = "0.4"
+prost.workspace = true
 bytes.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde.workspace = true
@@ -34,6 +35,20 @@ bench = false
 [[bin]]
 name = "records"
 path = "fuzz_targets/records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_identity"
+path = "fuzz_targets/protocol_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_output"
+path = "fuzz_targets/hook_output.rs"
 test = false
 doc = false
 bench = false
