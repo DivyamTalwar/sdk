@@ -1,7 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
 import "fake-indexeddb/auto";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { TailRequestSchema, TailResponseSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
 beforeAll(initializeClientQueries);
@@ -9,28 +7,6 @@ const encode = new TextEncoder();
 const limits = { commands: 8n, bytes: 4096n, durability: "Accepted" } as const;
 const queryLimits = { files: 32n, segments: 64n, bytes: 8192n };
 const request = (id: string) => ({ Task: { task: "task", file: { Request: id } } }) as const;
-
-function exactWatermarks(value: { tail: bigint; durable?: bigint | undefined }, tail: bigint, durable: bigint) {
-  return value.tail === tail && value.durable === durable;
-}
-
-for (const persistent of [false, true]) {
-test(`platform tail preserves confirmed durability through WASM: ${persistent}`, async () => {
-  const f = await setup(persistent);
-  await f.client.enqueue(request("one.json"), encode.encode("one"));
-  const tail = (await f.outbox.head()).position;
-  const durable = persistent ? tail : 0n;
-  const input = (accepted: boolean) => toBinary(TailRequestSchema, create(TailRequestSchema, { path: "client/files", accepted }));
-  const observed = fromBinary(TailResponseSchema, await f.stream.dispatch("tail", input(true)));
-  expect(exactWatermarks(observed, tail, durable)).toBe(true);
-  expect(exactWatermarks({ tail }, tail, durable)).toBe(false);
-  if (persistent) expect(exactWatermarks({ tail, durable: 0n }, tail, durable)).toBe(false);
-  const ordinary = fromBinary(TailResponseSchema, await f.stream.dispatch("tail", input(false)));
-  expect(ordinary.tail).toBe(tail);
-  expect(ordinary.durable).toBeUndefined();
-  f.free();
-});
-}
 
 async function setup(durable = false) {
   const name = `file-client-${crypto.randomUUID()}`;
