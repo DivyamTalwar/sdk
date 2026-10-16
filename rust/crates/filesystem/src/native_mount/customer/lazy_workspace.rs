@@ -17,6 +17,11 @@ where
         permit: PublicationPermit,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         mount.require_access_view()?;
+        if mount.publication != MountPublication::Manual {
+            return Err(MountLifecycleError::NativePolicy(
+                "prepared native working sets require manual publication",
+            ));
+        }
         let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
         if !options.destination.is_absolute() {

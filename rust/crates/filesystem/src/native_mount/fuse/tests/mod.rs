@@ -57,6 +57,7 @@ mod cache;
 mod disclosure;
 mod folded;
 mod folded_property;
+mod inbox;
 mod mount;
 mod native;
 

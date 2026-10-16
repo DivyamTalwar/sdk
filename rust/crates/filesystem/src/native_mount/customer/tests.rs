@@ -455,6 +455,33 @@ async fn lazy_working_set_requires_authority_before_exactifying()
             "native mounts require an authenticated policy and capability view"
         ))
     ));
+    for publication in [
+        MountPublication::CloseAndSync,
+        MountPublication::PerMutation,
+    ] {
+        let mount = fixture_options(
+            lazy.workspace(),
+            MountOptions::read_write()
+                .subdirectory("/hot")
+                .publication(publication),
+        )
+        .await?;
+        assert!(matches!(
+            lazy.prepare_native_working_set(
+                mount,
+                &crate::MaterializeOptions::native(destination.path()),
+                crate::WorkBudget::UNBOUNDED,
+                &cancel,
+                PublicationPermit::Unrestricted,
+            )
+            .await,
+            Err(MountLifecycleError::NativePolicy(
+                "prepared native working sets require manual publication"
+            ))
+        ));
+        assert_eq!(head(lazy.workspace(), &work).await?, before);
+        assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    }
     assert_eq!(head(lazy.workspace(), &work).await?, before);
     assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
     Ok(())
