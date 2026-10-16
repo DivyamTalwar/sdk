@@ -19,6 +19,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
         );
         let (_root, login, server, _) = fixture(vec![
             (200, first),
+            (200, json!({"input_tokens":512}).to_string()),
             (401, String::new()),
             (
                 200,
@@ -42,9 +43,17 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
         } else {
             server.clone()
         };
-        let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
-            .with_codex_login(login)
-            .resolve("openai/gpt-5")?;
+        let mut registry =
+            Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+                .with_codex_login(login);
+        let mut spec = registry.catalog()["openai"].as_ref().clone();
+        // A scripted contract, not an assertion about real backend endpoint support.
+        spec.token_counter
+            .as_mut()
+            .expect("configured counter")
+            .path = "fixture-count".into();
+        registry.register("openai".into(), spec)?;
+        let provider = registry.resolve("openai/gpt-5")?;
         let (prepared, initial) = crate::tests::request(&provider)?;
         let mut request = prepared.request().clone();
         request.tools.push(acyclic_harness::tool::ToolDefinition {
@@ -66,6 +75,19 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 request_digest: prepared.request_digest(),
                 ..initial
             };
+            if step == 1 {
+                let count = if native {
+                    let (count, hold) = provider
+                        .count_tokens_with_native_work(&prepared, &work)?
+                        .await?;
+                    assert!(hold.work().shares_allocation_context(&work));
+                    drop(hold);
+                    count
+                } else {
+                    provider.count_tokens(&prepared).await?
+                };
+                assert_eq!(count.input_tokens, 512);
+            }
             let mut events = Vec::new();
             let mut holds = Vec::new();
             if native {
@@ -122,8 +144,14 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
             drop(holds);
         }
         let mut requests = server.requests.lock().expect("recorded requests");
-        assert_eq!(requests.len(), 4);
-        for index in [1, 3] {
+        assert_eq!(requests.len(), 5);
+        assert!(requests[1].url.ends_with("/fixture-count"));
+        assert_eq!(requests[1].headers["chatgpt-account-id"], "account");
+        assert_eq!(
+            crate::json(&requests[1].body)?["input"][1],
+            crate::json(NATIVE.as_bytes())?
+        );
+        for index in [2, 4] {
             assert!(
                 requests[index]
                     .url
@@ -144,9 +172,9 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
             assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
             assert_eq!(body["store"], false);
         }
-        assert_eq!(requests[1].body, requests[3].body);
+        assert_eq!(requests[2].body, requests[4].body);
         assert_eq!(
-            requests[3].headers["authorization"],
+            requests[4].headers["authorization"],
             "Bearer rotated-access"
         );
         requests.clear();

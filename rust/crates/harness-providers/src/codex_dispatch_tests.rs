@@ -232,9 +232,16 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
                 },
             )]),
             max_event_bytes: 4096,
+            token_counter: default_catalog()["openai"].token_counter.clone(),
         },
     )?;
-    assert!(registry.resolve("openai/gpt-5").is_err());
+    let error = registry
+        .resolve("openai/gpt-5")
+        .err()
+        .expect("foreign route refused");
+    assert!(
+        matches!(error, Error::Invalid(reason) if reason == "Codex CLI credentials require the built-in Responses route")
+    );
     Ok(())
 }
 
