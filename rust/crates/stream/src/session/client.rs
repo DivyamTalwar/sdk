@@ -287,14 +287,17 @@ impl Client {
         follow: wire::SessionFollow,
         from: u64,
     ) -> Result<BoxStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
-        self.follow_data_with_ack(follow, from, true).await
+        Ok(self.follow_data_with_ack(follow, from, true).await?.boxed())
     }
     pub(crate) async fn follow_data_with_ack(
         &self,
         follow: wire::SessionFollow,
         from: u64,
         acknowledge: bool,
-    ) -> Result<BoxStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + Send + 'static + use<>,
+        StreamError,
+    > {
         StreamPath::new(&follow.path)?;
         if !matches!(
             wire::SessionDelivery::try_from(follow.delivery),
@@ -308,8 +311,7 @@ impl Client {
             .map(|item| match item? {
                 Received::Data(data) => Ok(data),
                 _ => Err(StreamError::Unavailable),
-            })
-            .boxed())
+            }))
     }
     /// Discovers direct children on the same per-node session as record follows.
     pub async fn children(
@@ -335,7 +337,10 @@ impl Client {
         kind: Kind,
         from: u64,
         acknowledge: bool,
-    ) -> Result<BoxStream<'static, Result<Received, StreamError>>, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<Received, StreamError>> + Send + 'static + use<>,
+        StreamError,
+    > {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
         let preceding = match &kind {
@@ -391,8 +396,8 @@ impl Client {
             return Err(error);
         }
         operation.record("registration", "opened");
-        Ok(operation
-            .scope(stream::try_unfold(cursor, |mut cursor| async move {
+        Ok(
+            operation.scope(stream::try_unfold(cursor, |mut cursor| async move {
                 loop {
                     let delivery = match cursor
                         .receiver
@@ -435,8 +440,8 @@ impl Client {
                         return Ok(Some((delivery.item, cursor)));
                     }
                 }
-            }))
-            .boxed())
+            })),
+        )
     }
     fn cursor(
         &self,

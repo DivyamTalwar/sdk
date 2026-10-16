@@ -26,9 +26,11 @@ impl Client {
         futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
         StreamError,
     > {
-        self.session()?
+        Ok(self
+            .session()?
             .follow_data_with_ack(follow, from, self.acknowledge_deliveries)
-            .await
+            .await?
+            .boxed())
     }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
