@@ -328,14 +328,32 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
             provider.context_capacity(&provider.model)?.context_tokens,
             8192
         );
+        let events = provider
+            .generate(request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
         assert_eq!(
-            provider
-                .generate(request, dispatch)
-                .try_collect::<Vec<_>>()
-                .await?
-                .len(),
+            events
+                .iter()
+                .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
+                .count(),
             4
         );
+        if adapter != Adapter::Responses {
+            let blocks: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::ReasoningBlock { block } => Some(block),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].text.as_deref(), Some("think"));
+            assert_eq!(
+                blocks[0].origin,
+                provider.reasoning_origin(provider.key.as_deref(), None)
+            );
+        }
         let sent = script
             .sent
             .lock()

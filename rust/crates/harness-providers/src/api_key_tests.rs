@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolCall, ToolResultContent};
+use acyclic_harness::model::{ModelContentPart, ToolResultContent};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const FIRST: &str = concat!(
@@ -172,19 +172,30 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                     .await?
             };
             if step == 0 {
-                let call = events
+                let parts: Vec<_> = events
                     .into_iter()
-                    .find_map(|event| match event {
-                        ModelEvent::ToolCall(call) => Some(call),
+                    .filter_map(|event| match event {
+                        ModelEvent::ToolCall(call) => Some(ModelContentPart::ToolCall(call)),
+                        ModelEvent::ReasoningBlock { block } => {
+                            Some(ModelContentPart::Reasoning { block })
+                        }
                         _ => None,
                     })
-                    .expect("tool call");
-                let saved: ToolCall =
-                    serde_json::from_slice(&serde_json::to_vec(&call).expect("serialized call"))
-                        .expect("replayed call");
+                    .collect();
+                assert!(matches!(
+                    &parts[..],
+                    [
+                        ModelContentPart::Reasoning { .. },
+                        ModelContentPart::ToolCall(_)
+                    ]
+                ));
+                let saved = serde_json::from_slice(
+                    &serde_json::to_vec(&parts).expect("serialized assistant parts"),
+                )
+                .expect("replayed assistant parts");
                 request.messages.push(ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall(saved)),
+                    content: ModelContent::Parts(saved),
                 });
                 request.messages.push(ModelMessage {
                     role: ModelRole::Tool,
