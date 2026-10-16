@@ -20,12 +20,13 @@ pub(super) struct Checkpoint {
 pub(super) struct Inline {
     pub(super) checkpoint: Checkpoint,
     start: usize,
+    scanner: inline_scan::Scanner,
 }
 
 impl Inline {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        0
+        self.scanner.retained()
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         let mark = self.checkpoint.mark;
@@ -42,7 +43,7 @@ impl Inline {
 
 impl Markdown {
     pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
-        let inline = self.inline.as_ref()?;
+        let mut inline = self.inline.take()?;
         let checkpoint = &inline.checkpoint;
         let cost = checkpoint.cost;
         let base = checkpoint.offset;
@@ -85,7 +86,10 @@ impl Markdown {
         {
             return None;
         }
-        let boundary = boundary(&source, &events, sentinel);
+        let frontier = inline
+            .scanner
+            .frontier(&self.source, base, &source, &events, sentinel);
+        let boundary = boundary(&source, &events, sentinel, frontier);
         let (cost, valid) = references::extend_expansion(
             cost,
             &checkpoint.valid,
@@ -154,6 +158,9 @@ impl Markdown {
         self.lines.reserve(renderer.lines.len() + 1);
         self.lines.append(&mut renderer.lines);
         self.lines.push(renderer.into_inline());
+        inline
+            .scanner
+            .discard_before(base + boundary.saturating_sub(sentinel));
         self.inline = Some(Inline {
             checkpoint: Checkpoint {
                 offset: base + boundary.saturating_sub(sentinel),
@@ -162,6 +169,7 @@ impl Markdown {
                 valid,
             },
             start: inline.start,
+            scanner: inline.scanner,
         });
         let fallback = if mark.visible == 0 {
             self.visibility.end
@@ -206,6 +214,10 @@ impl Markdown {
                 valid: 0..usize::MAX,
             },
             start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
+            scanner: inline_scan::Scanner::new(
+                &self.source,
+                base + source.len() - source.trim_start_matches([' ', '\t']).len(),
+            ),
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
@@ -301,9 +313,14 @@ fn possible_definition(source: &str) -> bool {
             .is_none_or(|(_, rest)| rest.starts_with(':') || rest.chars().all(char::is_whitespace))
 }
 
-fn boundary(source: &str, events: &[(Event<'_>, Range<usize>)], sentinel: usize) -> usize {
+fn boundary(
+    source: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    sentinel: usize,
+    frontier: usize,
+) -> usize {
     let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
-    let mut limit = super::inline_scan::frontier(source, events, sentinel);
+    let mut limit = frontier;
     if block_pending(row) {
         limit = limit.min(prefix.len());
     }

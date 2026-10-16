@@ -12,18 +12,23 @@ proptest! {
     ) {
         let mut prefix = String::new();
         let mut streamed = Tokens::default();
-        let before = crate::work::current();
+        let mut used = 0;
         for character in characters {
             prefix.push(character);
+            let before = crate::work::current();
             streamed.push(&prefix);
+            used += crate::work::current() - before;
             if let Some(token) = streamed.preview() {
                 prop_assert!(!streamed.neutral());
                 prop_assert_eq!(token.range.end, prefix.len());
             } else {
                 prop_assert!(streamed.neutral());
             }
+            let mut full = Tokens::default();
+            full.push(&prefix);
+            prop_assert_eq!(&streamed.ready, &full.ready);
+            prop_assert_eq!(streamed.preview(), full.preview());
         }
-        let used = crate::work::current() - before;
         let token_bytes = streamed.ready.len() * std::mem::size_of::<Token>();
         prop_assert!(used <= prefix.len() + 4 * token_bytes);
         let mut full = Tokens::default();
@@ -38,4 +43,22 @@ proptest! {
         }
         prop_assert_eq!(next, prefix.len());
     }
+}
+
+#[test]
+#[should_panic(expected = "EOF changed tokenization")]
+fn token_property_detects_finalizing_eof() {
+    let mut streamed = Tokens::default();
+    streamed.push("\\");
+    // Deliberately commit the provisional EOF token, as the old checkpoint did.
+    let token = streamed.preview().expect("pending escape");
+    streamed.pending = Pending::None;
+    streamed.emit(token.range, token.kind);
+    streamed.push("\\*");
+    let mut full = Tokens::default();
+    full.push("\\*");
+    assert!(
+        streamed.ready == full.ready && streamed.preview() == full.preview(),
+        "EOF changed tokenization"
+    );
 }

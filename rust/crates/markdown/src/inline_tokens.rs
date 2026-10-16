@@ -33,6 +33,7 @@ enum Pending {
         start: usize,
         byte: u8,
         before: char,
+        escaped: bool,
     },
 }
 
@@ -45,6 +46,32 @@ pub(super) struct Tokens {
 }
 
 impl Tokens {
+    pub(super) fn at(offset: usize, previous: Option<char>) -> Self {
+        Self {
+            offset,
+            previous,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn discard_before(&mut self, offset: usize) {
+        while self
+            .ready
+            .front()
+            .is_some_and(|token| token.range.end <= offset)
+        {
+            self.ready.pop_front();
+        }
+        if let Some(token) = self.ready.front_mut() {
+            token.range.start = token.range.start.max(offset);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained(&self) -> usize {
+        self.ready.capacity() * std::mem::size_of::<Token>()
+    }
+
     pub(super) fn push(&mut self, source: &str) {
         let base = self.offset;
         for (relative, character) in source
@@ -70,6 +97,7 @@ impl Tokens {
                 start,
                 byte,
                 before,
+                ..
             } => (
                 start,
                 Kind::Run {
@@ -96,6 +124,15 @@ impl Tokens {
         let end = position + character.len_utf8();
         match std::mem::take(&mut self.pending) {
             Pending::Escape(start) => {
+                if matches!(character, '*' | '_' | '~' | '`') {
+                    self.pending = Pending::Run {
+                        start,
+                        byte: character as u8,
+                        before: '\\',
+                        escaped: true,
+                    };
+                    return;
+                }
                 if character.is_ascii_punctuation() || character == '\n' {
                     self.emit(start..end, Kind::Escape(character));
                     return;
@@ -113,23 +150,33 @@ impl Tokens {
                 start,
                 byte,
                 before,
+                escaped,
             } => {
                 if character == char::from(byte) {
                     self.pending = Pending::Run {
                         start,
                         byte,
                         before,
+                        escaped,
                     };
                     return;
                 }
-                self.emit(
-                    start..position,
-                    Kind::Run {
-                        byte,
-                        before,
-                        after: character,
-                    },
-                );
+                let end = if escaped {
+                    self.emit(start..start + 2, Kind::Escape(char::from(byte)));
+                    start + 2
+                } else {
+                    start
+                };
+                if end < position {
+                    self.emit(
+                        end..position,
+                        Kind::Run {
+                            byte,
+                            before: if escaped { char::from(byte) } else { before },
+                            after: character,
+                        },
+                    );
+                }
             }
             Pending::Entity(start) => {
                 if character == ';' {
@@ -166,6 +213,7 @@ impl Tokens {
                     start: position,
                     byte: character as u8,
                     before: self.previous.unwrap_or(' '),
+                    escaped: false,
                 };
                 return;
             }
