@@ -301,13 +301,24 @@ fn project_message(
     let mut texts = Vec::new();
     let mut calls = Vec::new();
     let mut results = Vec::new();
+    let mut ordered = Vec::new();
     if let ModelContent::Text(text) = &message.content {
-        texts.push(text.clone());
+        project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
     }
     for part in message.content.parts() {
         match part {
-            ModelContentPart::Text { text } => texts.push(text.clone()),
-            ModelContentPart::File { file, policy } => texts.push(file_text(file, policy)?),
+            ModelContentPart::Text { text } => {
+                project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
+            }
+            ModelContentPart::File { file, policy } => {
+                project_text(
+                    adapter,
+                    role,
+                    file_text(file, policy)?,
+                    &mut texts,
+                    &mut ordered,
+                );
+            }
             ModelContentPart::ToolCall(acyclic_harness::model::ToolCall {
                 call_id,
                 name,
@@ -315,15 +326,13 @@ fn project_message(
                 metadata,
             }) => {
                 let name = names.wire(name)?;
-                if adapter == Adapter::Anthropic {
-                    if let Some(thinking) = metadata["anthropic_thinking"].as_array() {
-                        calls.extend(thinking.iter().cloned());
-                    }
-                }
-                if adapter == Adapter::Responses {
-                    if let Some(reasoning) = metadata["openai_reasoning"].as_array() {
-                        calls.extend(reasoning.iter().cloned());
-                    }
+                let continuation = match adapter {
+                    Adapter::Anthropic => metadata["anthropic_thinking"].as_array(),
+                    Adapter::Responses => metadata["openai_reasoning"].as_array(),
+                    _ => None,
+                };
+                if let Some(continuation) = continuation {
+                    ordered.extend(continuation.iter().cloned());
                 }
                 let mut call = match adapter {
                     Adapter::Anthropic => {
@@ -331,10 +340,10 @@ fn project_message(
                     }
                     Adapter::Responses => {
                         json!({"type":"function_call","call_id":call_id,"name":name,
-                    "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?})
+                        "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?})
                     }
                     Adapter::Chat => json!({"id":call_id,"type":"function","function":{"name":name,
-                    "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}}),
+                        "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}}),
                     Adapter::Gemini => {
                         json!({"functionCall":{"id":call_id,"name":name,"args":arguments}})
                     }
@@ -344,7 +353,11 @@ fn project_message(
                         call["thoughtSignature"] = signature.clone();
                     }
                 }
-                calls.push(call);
+                if adapter == Adapter::Chat {
+                    calls.push(call);
+                } else {
+                    ordered.push(call);
+                }
             }
             ModelContentPart::ToolResult {
                 call_id,
@@ -353,18 +366,29 @@ fn project_message(
             } => {
                 let name = names.wire(name)?;
                 let text = result_text(content)?;
-                results.push(match adapter {
-                    Adapter::Anthropic => json!({"type":"tool_result","tool_use_id":call_id,"content":text}),
-                    Adapter::Responses => json!({"type":"function_call_output","call_id":call_id,"output":text}),
+                let result = match adapter {
+                    Adapter::Anthropic => {
+                        json!({"type":"tool_result","tool_use_id":call_id,"content":text})
+                    }
+                    Adapter::Responses => {
+                        json!({"type":"function_call_output","call_id":call_id,"output":text})
+                    }
                     Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}}),
-                });
+                    Adapter::Gemini => {
+                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
+                    }
+                };
+                if adapter == Adapter::Chat {
+                    results.push(result);
+                } else {
+                    ordered.push(result);
+                }
             }
         }
     }
-    let mut output = Vec::new();
     match adapter {
         Adapter::Chat => {
+            let mut output = Vec::new();
             if !texts.is_empty() || !calls.is_empty() || results.is_empty() {
                 let mut value = json!({"role":role,"content":if texts.is_empty() {Value::Null} else {json!(texts.join("\n"))}});
                 if !calls.is_empty() {
@@ -373,44 +397,31 @@ fn project_message(
                 output.push(value);
             }
             output.extend(results);
+            Ok(output)
         }
-        Adapter::Responses => {
-            if !texts.is_empty() {
-                let kind = if message.role == ModelRole::Assistant {
-                    "output_text"
-                } else {
-                    "input_text"
-                };
-                let content: Vec<_> = texts
-                    .into_iter()
-                    .map(|text| json!({"type":kind,"text":text}))
-                    .collect();
-                output.push(json!({"type":"message","role":role,"content":content}));
-            }
-            output.extend(calls);
-            output.extend(results);
-        }
-        Adapter::Anthropic | Adapter::Gemini => {
-            let mut parts: Vec<_> = texts
-                .into_iter()
-                .map(|text| {
-                    if adapter == Adapter::Anthropic {
-                        json!({"type":"text","text":text})
-                    } else {
-                        json!({"text":text})
-                    }
-                })
-                .collect();
-            parts.extend(calls);
-            parts.extend(results);
-            output.push(if adapter == Adapter::Anthropic {
-                json!({"role":if role == "tool" {"user"} else {role},"content":parts})
-            } else {
-                json!({"role":if role == "assistant" {"model"} else {"user"},"parts":parts})
-            });
-        }
+        Adapter::Responses => Ok(ordered),
+        Adapter::Anthropic => Ok(vec![
+            json!({"role":if role == "tool" {"user"} else {role},"content":ordered}),
+        ]),
+        Adapter::Gemini => Ok(vec![
+            json!({"role":if role == "assistant" {"model"} else {"user"},"parts":ordered}),
+        ]),
     }
-    Ok(output)
+}
+
+fn project_text(
+    adapter: Adapter,
+    role: &str,
+    text: String,
+    texts: &mut Vec<String>,
+    ordered: &mut Vec<Value>,
+) {
+    match adapter {
+        Adapter::Chat => texts.push(text),
+        Adapter::Responses => ordered.push(json!({"role":role,"content":text})),
+        Adapter::Anthropic => ordered.push(json!({"type":"text","text":text})),
+        Adapter::Gemini => ordered.push(json!({"text":text})),
+    }
 }
 
 fn result_text(content: &ToolResultContent) -> Result<String> {

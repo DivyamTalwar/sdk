@@ -32,6 +32,9 @@ mod native_tests;
 #[path = "tool_name_tests.rs"]
 mod tool_name_tests;
 
+#[path = "ordered_parts_tests.rs"]
+mod ordered_parts_tests;
+
 const CHAT: &str = concat!(
     "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"hé\",\"reasoning_content\":\"think\",\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",

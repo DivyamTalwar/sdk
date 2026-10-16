@@ -1,6 +1,7 @@
 mod anthropic;
 mod budget;
 mod chat;
+mod error;
 mod gemini;
 #[cfg(test)]
 mod limits_tests;
@@ -85,7 +86,7 @@ pub(crate) fn parse(
     if value.get("error").is_some_and(|error| !error.is_null())
         || matches!(value["type"].as_str(), Some("error" | "response.failed"))
     {
-        return Err(invalid("model provider reported a stream error"));
+        return Err(error::classify(adapter, &value));
     }
     match adapter {
         Adapter::Chat => chat::parse(state, &value),
@@ -179,24 +180,9 @@ impl<'work> State<'work> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        use acyclic_harness::model::json_value_logical_owned_bytes as owned;
-        let mut bytes = std::mem::size_of::<Self>() as u64;
-        for call in self.calls.values() {
-            bytes += std::mem::size_of::<(u64, Call)>() as u64
-                + call.id.capacity() as u64
-                + call.name.capacity() as u64
-                + call.arguments.capacity() as u64
-                + owned(&call.metadata)?;
-        }
-        for (key, value) in &self.metadata {
-            bytes += std::mem::size_of::<(String, Value)>() as u64
-                + key.capacity() as u64
-                + owned(value)?;
-        }
-        for value in self.thinking.values() {
-            bytes += std::mem::size_of::<(u64, Value)>() as u64 + owned(value)?;
-        }
-        Ok(bytes)
+        (std::mem::size_of::<Self>() as u64)
+            .checked_add(self.budget.bytes()? as u64)
+            .ok_or_else(|| invalid("provider retained capacity overflow"))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

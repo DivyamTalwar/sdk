@@ -33,6 +33,7 @@ impl StockExecution<'_> {
                 }));
             }
             let mut calls = calls;
+            let call_start = prior_messages.len();
             // Preserve the model's complete batch before appending any tool results.
             for (invocation, metadata) in &mut calls {
                 let message = ModelMessage {
@@ -51,13 +52,21 @@ impl StockExecution<'_> {
                 })?;
                 stock_vec_push(&mut prior_messages, message, self.io)?;
             }
-            for (invocation, _) in calls {
+            for (offset, (invocation, _)) in calls.into_iter().enumerate() {
+                let invocation_index = call_start.checked_add(offset).ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "tool call index overflow",
+                    )
+                })?;
                 match self
                     .resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
                         invocation,
+                        invocation_index,
                         &mut prior_messages,
                     )
                     .await?

@@ -692,6 +692,8 @@ mod content;
 mod invocation_bounds;
 mod recovery;
 mod replay;
+#[cfg(not(target_arch = "wasm32"))]
+mod tool_metadata;
 mod tools_1;
 mod tools_2;
 fn echo_tools(
@@ -722,4 +724,15 @@ fn echo_tools(
         None,
     )?;
     Ok(tools)
+}
+
+fn call_message(invocation: &ToolInvocation) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+            invocation.call_id.clone(),
+            invocation.name.clone(),
+            invocation.arguments.clone(),
+        ))),
+    }
 }

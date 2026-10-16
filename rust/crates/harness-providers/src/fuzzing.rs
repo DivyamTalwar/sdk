@@ -134,6 +134,18 @@ mod properties {
     }
 
     #[test]
+    fn checked_in_stream_error_corpus_obeys_the_properties() {
+        for seed in [
+            include_bytes!("../fuzz/corpus/provider_stream/anthropic-error.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-error.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-error.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/gemini-error.sse").as_slice(),
+        ] {
+            assert_stream_invariants(seed);
+        }
+    }
+
+    #[test]
     fn checked_in_stream_corpus_obeys_the_properties() {
         assert!(catalog_round_trip(
             &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
