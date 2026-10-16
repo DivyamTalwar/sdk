@@ -85,7 +85,25 @@ where
             "checkout root changed before publication".into(),
         ));
     }
+    let mut from = from;
     if let Some(journal) = &journal {
+        // A git action can commit its logical generation before its native
+        // publication is acknowledged. Its retry then observes the target as
+        // the current head; resume the original journal's source generation.
+        if from.id() == to
+            && let acyclic_fs::MaterializationIntent::GenerationTransition {
+                from: original,
+                to: target,
+            } = journal.plan.intent
+            && target == to
+        {
+            from = from
+                .workspace()
+                .generation(original, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(display)?
+                .value;
+        }
         if completed(journal, source_root_identity, from.id(), to)? {
             // The durable journal is also the completion marker. A retry must
             // not overwrite edits made after an acknowledged publication.

@@ -175,6 +175,34 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
         b"later user edit"
     );
+    // Git recovery may enter with the already-committed target as both
+    // heads. It must use the saved source and retain later checkout edits too.
+    let head = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    let digest = blake3::derive_key(
+        "acyclic.local.checkout-publication/v1",
+        &operation.into_bytes(),
+    );
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&digest[..16]);
+    crate::tools::git::publish_checkout_transition(
+        directory.path(),
+        publisher.tools.workspace.identity,
+        &publisher.tools.workspace.store,
+        acyclic_fs::OperationId::from_bytes(identity),
+        head.clone(),
+        head,
+        &|| std::future::ready(Ok(())),
+    )
+    .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
+        b"later user edit"
+    );
     let after = view
         .workspace()
         .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
