@@ -482,8 +482,10 @@ impl FuseProjection {
                     if stream.emitted >= offset {
                         return Ok(());
                     }
-                    stream.entry_position += 1;
-                    stream.emitted += 1;
+                    if next_visible_child(source, stream, work)?.is_some() {
+                        stream.entry_position += 1;
+                        stream.emitted += 1;
+                    }
                     continue;
                 }
                 if page.next_cursor().is_none() {

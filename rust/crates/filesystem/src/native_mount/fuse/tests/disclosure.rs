@@ -5,7 +5,11 @@ use proptest::prelude::*;
 
 // A parked source page must disclose exactly the current List decisions, even
 // when revocation leaves every namespace/cache stamp unchanged.
-fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cached_disclosure(
+    hidden: &[bool],
+    deny_parent: bool,
+    skip: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;
     let source = Arc::new(source);
     let work = fuse_fixture_work();
@@ -62,7 +66,8 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
         ));
         return Ok(());
     }
-    projection.position_directory_stream(&mut stream, 0, &work)?;
+    let skip = skip.min(hidden.iter().filter(|hidden| !**hidden).count());
+    projection.position_directory_stream(&mut stream, 2 + skip as u64, &work)?;
     let mut actual = Vec::new();
     while let Some(child) =
         crate::native_mount::fuse::dir::next_visible_child(source.as_ref(), &mut stream, &work)?
@@ -78,6 +83,7 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
         .iter()
         .enumerate()
         .filter(|(_, hidden)| !**hidden)
+        .skip(skip)
         .map(|(index, _)| format!("file{index:02}"))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -87,8 +93,9 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> Result<(), Box<dyn s
 #[test]
 fn native_access_fuse_parked_rows_obey_disclosure_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    cached_disclosure(&[true, false, true], false)?;
-    cached_disclosure(&[false, false], true)
+    cached_disclosure(&[true, false, true], false, 0)?;
+    cached_disclosure(&[true, false, false], false, 1)?;
+    cached_disclosure(&[false, false], true, 0)
 }
 
 proptest! {
@@ -97,7 +104,8 @@ proptest! {
     fn native_access_fuse_cached_rows_equal_current_list_decisions(
         hidden in prop::collection::vec(any::<bool>(), 0..12),
         deny_parent in any::<bool>(),
+        skip in 0..12usize,
     ) {
-        cached_disclosure(&hidden, deny_parent).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        cached_disclosure(&hidden, deny_parent, skip).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
