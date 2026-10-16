@@ -34,10 +34,10 @@ async fn send(
     request: &PreparedModelRequest,
     names: &crate::tool_names::Names<'_>,
     dispatch_id: ModelDispatch,
-    key: Option<&str>,
-    account: Option<&str>,
+    auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
 ) -> Result<(crate::HttpResponse, usize)> {
+    let (key, account) = auth;
     let (bytes, nodes) = shape(request.bytes());
     let mut allocation = reserve(
         work,
@@ -204,8 +204,7 @@ pub(crate) fn generate<'a>(
                 request,
                 &names,
                 dispatch_id,
-                auth.0.as_deref(),
-                auth.1.as_deref(),
+                (auth.0.as_deref(), auth.1.as_deref()),
                 work,
             )
             .await?;
@@ -236,7 +235,10 @@ pub(crate) fn generate<'a>(
                         parser.allocation.absorb(&mut admission)?;
                         work.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::UNCHARGED })?;
                         let mut events = diagnostic(stream::parse(&mut parser.state, adapter, &frame.data, dispatch_id), &mut parser.allocation)?;
-                        for event in &mut events { names.restore_native(event, &mut parser.allocation, work)?; }
+                        for event in &mut events {
+                            let restored = names.restore_native(event, &mut parser.allocation, work);
+                            diagnostic(restored, &mut parser.allocation)?;
+                        }
                         let terminal = parser.state.terminal && (frame.data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                         drop(frame);
                         let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
@@ -258,7 +260,10 @@ pub(crate) fn generate<'a>(
                     parser.allocation.absorb(&mut admission)?;
                     let Parser { state, mut allocation } = parser;
                     let mut events = diagnostic(stream::finish(state, adapter), &mut allocation)?;
-                    for event in &mut events { names.restore_native(event, &mut allocation, work)?; }
+                    for event in &mut events {
+                        let restored = names.restore_native(event, &mut allocation, work);
+                        diagnostic(restored, &mut allocation)?;
+                    }
                     let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                     let retained = events.iter().try_fold(slots, |bytes, event| {
                         bytes.checked_add(event.logical_owned_bytes()?).ok_or_else(|| invalid("provider retained capacity overflow"))

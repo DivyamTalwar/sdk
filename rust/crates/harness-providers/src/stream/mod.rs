@@ -33,6 +33,7 @@ pub(crate) struct State<'work> {
     budget: budget::Budget<'work>,
 }
 
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn events<'a>(
     adapter: Adapter,
     body: BoxProviderStream<'a, Result<Bytes>>,
@@ -47,7 +48,7 @@ pub(crate) fn events_named<'a>(
     body: BoxProviderStream<'a, Result<Bytes>>,
     maximum: usize,
     dispatch: ModelDispatch,
-    names: Option<&'a crate::tool_names::Names<'_>>,
+    names: Option<&'a crate::tool_names::Names<'a>>,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
