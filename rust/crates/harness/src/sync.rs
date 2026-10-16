@@ -1,8 +1,7 @@
 //! Synchronization selected only by the dedicated model command's cfg.
-#[cfg(acyclic_harness_loom)]
-pub(crate) use loom::sync::{Arc, atomic};
-#[cfg(not(acyclic_harness_loom))]
-pub(crate) use std::sync::{Arc, atomic};
+#[path = "sync/primitives.rs"]
+mod primitives;
+pub(crate) use primitives::{Arc, atomic};
 
 #[cfg(all(
     feature = "native-execution",

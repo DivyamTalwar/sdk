@@ -114,9 +114,15 @@ impl CheckoutTools {
                 // during the scan before committing the captured generation.
                 watcher.begin_rescan().map_err(storage)?;
                 watcher.watch_tree(EXCLUDED).map_err(storage)?;
-                capture_baseline(&mut checkout, options, policy, work, &cancellation)
-                    .await
-                    .map_err(storage)?;
+                capture_baseline(
+                    &mut checkout,
+                    options,
+                    policy,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?;
                 watcher.finish_rescan().map_err(storage)?
             }
         };
