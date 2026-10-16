@@ -8,8 +8,6 @@ mod driver;
 mod io;
 mod service;
 pub use io::hard_link_count;
-#[cfg(feature = "named-pipe")]
-pub(crate) mod pipe;
 
 pub(super) use driver::{submit_read, submit_write};
 pub(super) use io::{
@@ -17,7 +15,7 @@ pub(super) use io::{
     set_len_once, sync_once, with_overlapped, write_all_at, write_at_known_overlapped,
     write_batch_in_place,
 };
-pub(super) use service::{spawn_service_process, take_standard_output, wait_named_pipe};
+pub(super) use service::{spawn_service_process, take_standard_output};
 
 #[cfg(test)]
 mod tests;

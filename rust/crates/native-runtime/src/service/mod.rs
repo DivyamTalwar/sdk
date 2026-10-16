@@ -164,9 +164,3 @@ pub fn process_status(
     tree.terminate(None)?;
     result
 }
-
-/// Waits in the kernel for a local named-pipe instance, without polling.
-#[cfg(windows)]
-pub fn wait_named_pipe(name: &std::ffi::OsStr, timeout_ms: u32) -> io::Result<()> {
-    windows::wait_named_pipe(name, timeout_ms)
-}

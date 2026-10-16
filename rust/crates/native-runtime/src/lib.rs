@@ -21,8 +21,6 @@ mod process_tree;
 mod windows;
 #[cfg(windows)]
 pub use windows::hard_link_count;
-#[cfg(all(windows, feature = "named-pipe"))]
-pub use windows::pipe::UserPipeSecurity;
 #[cfg(all(unix, not(target_os = "linux")))]
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
@@ -58,8 +56,6 @@ pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
 mod service;
-#[cfg(windows)]
-pub use service::wait_named_pipe;
 mod shell;
 pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, process_output, process_status,

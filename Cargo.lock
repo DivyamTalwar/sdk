@@ -548,7 +548,6 @@ dependencies = [
  "proptest",
  "rustix 1.1.5",
  "tempfile",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",

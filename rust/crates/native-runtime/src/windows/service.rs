@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     Security::SECURITY_ATTRIBUTES,
     System::{
         Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle},
-        Pipes::{CreatePipe, WaitNamedPipeW},
+        Pipes::CreatePipe,
         Threading::{
             CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
@@ -165,27 +165,4 @@ pub(crate) fn take_standard_output() -> io::Result<Option<File>> {
     }
     // SAFETY: the handle is live and no longer reachable as standard output.
     Ok(Some(unsafe { File::from_raw_handle(handle) }))
-}
-
-/// Waits in the kernel for a named-pipe instance to become available.
-pub(crate) fn wait_named_pipe(name: &std::ffi::OsStr, timeout_ms: u32) -> io::Result<()> {
-    if timeout_ms == 0 || timeout_ms == u32::MAX {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "pipe wait must be finite and positive",
-        ));
-    }
-    let mut name: Vec<u16> = name.encode_wide().collect();
-    if name.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "pipe name contains NUL",
-        ));
-    }
-    name.push(0);
-    // SAFETY: the NUL-terminated pipe name stays live for the synchronous wait.
-    if unsafe { WaitNamedPipeW(name.as_ptr(), timeout_ms) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }

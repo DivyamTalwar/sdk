@@ -11,9 +11,6 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
-[features]
-named-pipe = ["dep:tokio", "windows-sys/Win32_Security_Authorization"]
-
 [dependencies]
 bytes.workspace = true
 
@@ -27,7 +24,6 @@ libc = "0.2.175"
 rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-tokio = { version = "1.48.0", default-features = false, features = ["net"], optional = true }
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
 compio-driver = { version = "=0.12.5", default-features = false }
 windows-sys = { version = "0.61.2", features = [
@@ -46,9 +42,6 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 tempfile = "3.27.0"
-
-[target.'cfg(windows)'.dev-dependencies]
-tokio = { version = "1.48.0", default-features = false, features = ["net", "rt", "macros"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-core = "0.3.31"
