@@ -71,7 +71,7 @@ impl Source {
         let boot = fixture.issuer.issue(
             "seed",
             &Capabilities::new([read, write]),
-            None,
+            Some(crate::AgentId::from_bytes([1; 16])),
             None,
             &mut None,
         )?;

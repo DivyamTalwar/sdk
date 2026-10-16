@@ -76,7 +76,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
             project.capability(VolumeOperation::Read, &mut None)?,
             project.capability(VolumeOperation::Write, &mut None)?,
         ]),
-        None,
+        Some(crate::AgentId::from_bytes([1; 16])),
         None,
         &mut None,
     )?;
