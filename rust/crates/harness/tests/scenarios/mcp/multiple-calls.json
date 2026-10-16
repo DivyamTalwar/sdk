@@ -1,0 +1,10 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"echo","name":"mcp.fixture.echo","arguments":{"text":"hello"}},{"type":
+    "event","kind":"tool_call","call_id":"second","name":"mcp.fixture.echo","arguments":{"text":"hello"}},{"type":"event","kind":
+    "completed","metadata":null}],"done"],"expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"echo","name":
+    "mcp.fixture.echo","arguments":{"text":"hello"}}},{"kind":"model","event":{"kind":"tool_call","call_id":"second","name":
+    "mcp.fixture.echo","arguments":{"text":"hello"}}},{"kind":"model","event":{"kind":"completed"}},{"kind":"tool_started","call_id"
+    :"echo"},{"kind":"tool_completed","call_id":"echo"},{"kind":"tool_started","call_id":"second"},{"kind":"tool_completed",
+    "call_id":"second"},{"kind":"turn_completed"}],"requests":[{},{"messages":[{"role":"tool","content":{"kind":"tool_result",
+    "call_id":"echo","name":"mcp.fixture.echo","content":{"kind":"json","value":{"content":[{"type":"text","text":"reply"}],
+    "isError":false}}}},{"role":"tool","content":{"kind":"tool_result","call_id":"second","name":"mcp.fixture.echo","content":{
+    "kind":"json","value":{"content":[{"type":"text","text":"reply"}],"isError":false}}}}]}]}}
