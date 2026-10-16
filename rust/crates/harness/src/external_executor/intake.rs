@@ -212,6 +212,7 @@ where
             }
             ExternalAction::Attach { .. }
             | ExternalAction::Detach
+            | ExternalAction::HostTool { .. }
             | ExternalAction::ToolFinished { .. }
             | ExternalAction::Fork { .. }
             | ExternalAction::Join { .. } => (LIFECYCLE, volume::encode(request).map_err(storage)?),

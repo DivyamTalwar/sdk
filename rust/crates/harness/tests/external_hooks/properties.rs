@@ -86,3 +86,31 @@ proptest! {
         prop_assert!(request(selected.host, &selected.event, selected.input).is_err());
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    // Host-executed calls retain their full arguments and immutable identity,
+    // but can never become a prepared harness effect.
+    #[test]
+    fn host_execution_classification_preserves_authenticated_identity(
+        host in prop_oneof![Just(ExternalHost::Codex), Just(ExternalHost::ClaudeCode), Just(ExternalHost::Pi)],
+        session in "[a-zA-Z0-9_-]{1,24}", name in "[a-zA-Z0-9_-]{1,24}",
+        arguments in ".{0,64}",
+    ) {
+        let event = if host == ExternalHost::Pi { "tool_call" } else { "PreToolUse" };
+        let mut input = json!({"session_id":session,"toolCallId":"call","toolName":name,"input":{"value":arguments}});
+        let harness = request(host,event,input.clone())?;
+        input["hostExecuted"] = json!(true);
+        let observed = request(host,event,input.clone())?;
+        prop_assert_eq!(observed.operation_id, harness.operation_id);
+        prop_assert_eq!(observed.task_id(), harness.task_id());
+        prop_assert!(matches!(&observed.action, ExternalAction::HostTool {name: actual, arguments: value, ..}
+            if actual == &name && value == &json!({"value":arguments})), "host arguments changed");
+        prop_assert!(observed.tool_call(&acyclic_harness::tools::defaults()?).is_err());
+        let task = Component::new(observed.task_id().to_string())?;
+        let file = observed.to_file(task.clone())?;
+        prop_assert_eq!(ExternalRequest::from_file(&task,&file)?, observed);
+        input["hostExecuted"] = json!("true");
+        prop_assert!(request(host,event,input).is_err());
+    }
+}

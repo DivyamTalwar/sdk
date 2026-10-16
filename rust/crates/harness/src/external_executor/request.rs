@@ -43,7 +43,8 @@ impl ExternalRequest {
     pub(super) fn valid(&self) -> bool {
         let action = match &self.action {
             ExternalAction::Attach { workspace } => valid_text(workspace),
-            ExternalAction::RunTool { call_id, name, .. } => {
+            ExternalAction::RunTool { call_id, name, .. }
+            | ExternalAction::HostTool { call_id, name, .. } => {
                 valid_text(call_id) && valid_text(name)
             }
             ExternalAction::ToolFinished { call_id, .. } => valid_text(call_id),
@@ -83,6 +84,15 @@ pub enum ExternalAction {
         /// Native tool name, interpreted by the host tool catalog.
         name: String,
         /// Complete arguments after the native call has been assembled.
+        arguments: Value,
+    },
+    /// Observe a tool executed by the native host, never by the harness.
+    HostTool {
+        /// Native invocation identity shared with its completion record.
+        call_id: String,
+        /// Complete native tool name, including a foreign MCP namespace.
+        name: String,
+        /// Original host-executed arguments retained for authenticated history.
         arguments: Value,
     },
     /// Record the native tool completion.

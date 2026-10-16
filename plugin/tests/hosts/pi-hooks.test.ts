@@ -52,7 +52,12 @@ test("Pi executes every registered tool exactly once through the harness", async
     assert.deepEqual(calls.at(-1),{event:"tool_call",input:{toolCallId:"call",toolName:name,input:{},sessionId:"native-session",cwd:"/selected-project"}});
     assert.equal(calls.length,count+1);
   }
-  assert.deepEqual(await handlers.get("tool_call")!({toolName:"unbound"},context),{block:true,reason:"Use the registered harness tools"});
+  const foreign = {toolName:"foreign-mcp",toolCallId:"host-call",input:{query:"native"}};
+  assert.equal(await handlers.get("tool_call")!(foreign,context),undefined);
+  assert.deepEqual(calls.at(-1),{event:"tool_call",input:{...foreign,sessionId:"native-session",cwd:"/selected-project",hostExecuted:true}});
+  const completion = {...foreign,content:[{type:"text",text:"native result"}],isError:false};
+  await handlers.get("tool_result")!(completion,context);
+  assert.deepEqual(calls.at(-1),{event:"tool_result",input:{...completion,sessionId:"native-session",cwd:"/selected-project"}});
   await handlers.get("session_shutdown")!({},context);
   assert.equal(calls.at(-1)!.event,"session_shutdown");
 });

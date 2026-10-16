@@ -25,12 +25,7 @@ pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<External
         HookAction::Attach => ExternalAction::Attach {
             workspace: text(&mut input, &["cwd"])?,
         },
-        HookAction::RunTool => ExternalAction::RunTool {
-            call_id: text(&mut input, &["tool_use_id", "toolCallId"])?,
-            name: text(&mut input, &["tool_name", "toolName"])?,
-            arguments: value(&mut input, &["tool_input", "input"])?
-                .ok_or_else(|| Error::Invalid("external tool arguments are missing".into()))?,
-        },
+        HookAction::RunTool => tool(&mut input)?,
         HookAction::ToolFinished => {
             let failed = failed(&mut input, host == ExternalHost::Pi)?;
             let result = match (host, event) {
@@ -130,7 +125,9 @@ pub(super) fn operation(
 ) -> OperationId {
     let (kind, invocation) = match action {
         ExternalAction::Attach { .. } => ("attach", ""),
-        ExternalAction::RunTool { call_id, .. } => ("tool", call_id.as_str()),
+        ExternalAction::RunTool { call_id, .. } | ExternalAction::HostTool { call_id, .. } => {
+            ("tool", call_id.as_str())
+        }
         ExternalAction::ToolFinished { call_id, .. } => ("tool-finished", call_id.as_str()),
         ExternalAction::Fork { child_id, .. } => ("fork", child_id.as_str()),
         ExternalAction::Join { child_id } => ("join", child_id.as_str()),
@@ -151,4 +148,33 @@ pub(super) fn operation(
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+fn tool(input: &mut Map<String, Value>) -> Result<ExternalAction> {
+    let host_executed = match input.remove("hostExecuted") {
+        None | Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) => true,
+        _ => {
+            return Err(Error::Invalid(
+                "host execution flag must be a boolean".into(),
+            ));
+        }
+    };
+    let call_id = text(input, &["tool_use_id", "toolCallId"])?;
+    let name = text(input, &["tool_name", "toolName"])?;
+    let arguments = value(input, &["tool_input", "input"])?
+        .ok_or_else(|| Error::Invalid("external tool arguments are missing".into()))?;
+    Ok(if host_executed {
+        ExternalAction::HostTool {
+            call_id,
+            name,
+            arguments,
+        }
+    } else {
+        ExternalAction::RunTool {
+            call_id,
+            name,
+            arguments,
+        }
+    })
 }

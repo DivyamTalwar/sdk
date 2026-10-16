@@ -47,6 +47,7 @@ windows-sys = { version = "0.61.2", features = [
 
 
 [dev-dependencies]
+acyclic-stream = { path = "../rust/crates/stream", features = ["grpc"] }
 hex.workspace = true
 proptest.workspace = true
 acyclic-fs = { path = "../rust/crates/filesystem", features = ["local", "native-mount"] }

@@ -74,18 +74,17 @@ pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir().map_err(storage)?);
     let mcp = super::handoff::normalize_tool(host, event, &mut input)?;
-    let request = request(host, event, input)?;
-    if matches!(request.action, super::ExternalAction::RunTool { .. })
-        && host != ExternalHost::Pi
-        && !mcp
-    {
-        return Err(Error::Unsupported(
-            "Use the Acyclic MCP coding tools so execution and results share the task fence."
-                .into(),
-        ));
+    if host != ExternalHost::Pi && event == "PreToolUse" {
+        input
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("native hook input is not an object".into()))?
+            .insert("hostExecuted".into(), Value::Bool(!mcp));
     }
+    let request = request(host, event, input)?;
     let (answer, task) = run_request(&request, &cwd).await?;
-    if mcp {
+    if matches!(request.action, super::ExternalAction::HostTool { .. }) {
+        super::answer::host_tool(host, event, &request, answer)
+    } else if mcp {
         // The ordinary MCP call returns this already-published result. Its
         // rewritten arguments identify the exact original immutable request.
         super::handoff::answer(request, task, &answer)

@@ -56,3 +56,28 @@ pub(super) fn validate(host: ExternalHost, event: &str, answer: Value) -> Result
 fn invalid() -> Error {
     Error::Invalid("invalid native hook answer or missing explicit tool decision".into())
 }
+
+/// Acknowledgement records observation only; the native host owns this effect.
+pub(super) fn host_tool(
+    host: ExternalHost,
+    event: &str,
+    request: &super::ExternalRequest,
+    answer: Value,
+) -> Result<Value> {
+    if answer.get("task") != Some(&serde_json::json!(request.task_id()))
+        || answer.get("operation_id") != Some(&serde_json::json!(request.operation_id))
+    {
+        return Err(invalid());
+    }
+    validate(
+        host,
+        event,
+        if host == ExternalHost::Pi {
+            serde_json::json!({"block":false})
+        } else {
+            serde_json::json!({"hookSpecificOutput":{
+                "hookEventName":"PreToolUse", "permissionDecision":"allow"
+            }})
+        },
+    )
+}

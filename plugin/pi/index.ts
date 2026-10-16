@@ -66,8 +66,12 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
       registered.add(tool.name);
     }
   });
-  pi.on("tool_call", async event => registered.has(event.toolName)
-    ? undefined : { block: true, reason: "Use the registered harness tools" });
+  pi.on("tool_call", async (event, ctx) => {
+    if (!registered.has(event.toolName)) {
+      await send("tool_call", { ...event, ...identity(ctx), hostExecuted: true });
+    }
+    return undefined;
+  });
   pi.on("tool_result", async (event, ctx) => { await send("tool_result", { ...event, ...identity(ctx) }); });
   pi.on("session_shutdown", async (_event, ctx) => { await send("session_shutdown", identity(ctx)); });
 }
