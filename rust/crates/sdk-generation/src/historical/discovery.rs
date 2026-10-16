@@ -419,27 +419,41 @@ fn owner_metadata(
     source: &RegistryOwnerSource,
     mut query: impl FnMut() -> Result<Metadata, String>,
 ) -> Result<Metadata, String> {
-    if !crate::file_cache::is_resolved_cargo(cargo) {
+    // Opaque Cargo configuration may include further files. Leave it Cargo-owned.
+    if !crate::file_cache::is_resolved_cargo(cargo)
+        || source.discovery.config_sha256.values().any(Option::is_some)
+    {
         return query();
     }
+    let Ok(workspace) = workspace_inputs(root) else {
+        return query();
+    };
+    let mut checked_query = || {
+        let metadata = query()?;
+        if workspace_inputs(root)? != workspace {
+            return Err("Cargo workspace discovery inputs changed during inspection".into());
+        }
+        Ok(metadata)
+    };
     // The caller checks the complete original inventory and discovery inputs
     // before AND after this lookup. Never reuse an external input closure.
-    let context = owner_metadata_context(root, source, sdk_docs::command_environment())?;
+    let context =
+        owner_metadata_context(root, source, sdk_docs::command_environment(), &workspace)?;
     let mut queried = None;
     let encoded = crate::file_cache::get(cargo, &context, || {
-        let metadata = query().map_err(crate::CliError)?;
+        let metadata = checked_query().map_err(crate::CliError)?;
         let encoded =
             serde_json::to_string(&metadata).map_err(|error| crate::CliError(error.to_string()))?;
         queried = Some(metadata);
         Ok(encoded)
     })
     .map_err(|error| error.to_string())?;
-    if let Some(metadata) = queried {
-        return Ok(metadata);
-    }
-    let metadata: Metadata = serde_json::from_str(&encoded).map_err(|error| error.to_string())?;
-    let closed =
-        metadata.packages.iter().all(|package| {
+    let metadata = if let Some(metadata) = queried {
+        metadata
+    } else {
+        let metadata: Metadata =
+            serde_json::from_str(&encoded).map_err(|error| error.to_string())?;
+        let closed = metadata.packages.iter().all(|package| {
             std::iter::once(package.manifest_path.as_std_path())
                 .chain(
                     package
@@ -450,21 +464,60 @@ fn owner_metadata(
                 .chain(package.dependencies.iter().filter_map(|dependency| {
                     dependency.path.as_ref().map(|path| path.as_std_path())
                 }))
+                .map(Path::to_owned)
+                .chain(
+                    [package.readme.as_ref(), package.license_file.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .map(|path| {
+                            package
+                                .manifest_path
+                                .parent()
+                                .unwrap()
+                                .join(path)
+                                .into_std_path_buf()
+                        }),
+                )
                 .all(|path| path.canonicalize().is_ok_and(|path| path.starts_with(root)))
         });
-    if closed {
-        Ok(metadata)
-    } else {
-        query()
+        if closed {
+            metadata
+        } else {
+            checked_query()?
+        }
+    };
+    if workspace_inputs(root)? != workspace {
+        return Err("Cargo workspace discovery inputs changed during inspection".into());
     }
+    Ok(metadata)
+}
+
+fn workspace_inputs(root: &Path) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut inputs = BTreeMap::new();
+    for directory in root.ancestors().skip(1) {
+        for name in ["Cargo.toml", "Cargo.lock"] {
+            let path = directory.join(name);
+            let digest = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !is_linked(&metadata) => {
+                    Some(crate::sha256_file(&path).map_err(|error| error.to_string())?)
+                }
+                Ok(_) => return Err("workspace discovery input is redirected or non-file".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            inputs.insert(crate::path_string(&path), digest);
+        }
+    }
+    Ok(inputs)
 }
 
 fn owner_metadata_context(
     root: &Path,
     source: &RegistryOwnerSource,
     environment: BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    workspace: &BTreeMap<String, Option<String>>,
 ) -> Result<String, String> {
-    let input = serde_json::to_vec(source).map_err(|error| error.to_string())?;
+    let input = serde_json::to_vec(&(source, workspace)).map_err(|error| error.to_string())?;
     Ok(crate::toolchains::cargo_context(
         root,
         &format!("owner-metadata:{}", crate::sha256_bytes(&input)),
