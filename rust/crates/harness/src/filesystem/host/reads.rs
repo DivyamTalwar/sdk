@@ -281,7 +281,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map(|file| io.guard_owned(file.logical_owned_bytes()?))
             .transpose()?;
         let (descriptor, display_name) = if let Some(staged) = &staged {
-            if staged.volume() != volume || staged.path() != path || staged.version() != "pending" {
+            if staged.volume() != volume || staged.path() != path {
                 return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Storage,
@@ -319,6 +319,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
         })?;
         grant.require_file_read(&reference, Some(io))?;
+        if staged.is_some() {
+            // Upload metadata carries the publication operation, not a sentinel.
+            // Reuse range authentication to bind it to the original atomic write.
+            self.read_pinned_range(
+                &reference,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                Some(io),
+            )
+            .await?;
+        }
         Ok((reference, bytes))
     }
 

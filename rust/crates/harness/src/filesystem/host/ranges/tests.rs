@@ -294,3 +294,36 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
     assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     Ok(())
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    // Discovery accepts the current upload format, rejects a substituted index,
+    // and preserves the authentic result at its original immutable generation.
+    #[test]
+    fn private_discovery_authenticates_publication_metadata(
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+    ) {
+        futures::executor::block_on(async {
+            let (host, file) = published(&body).await.unwrap();
+            let read = grant(file.volume(), VolumeOperation::Read).unwrap();
+            let (discovered, bytes) = host.read_private_path(file.volume(), &read, file.path(), None, 256, None).await.unwrap();
+            proptest::prop_assert_eq!(&discovered, &file);
+            proptest::prop_assert_eq!(bytes.as_ref(), body.as_slice());
+            let key = IdempotencyKey::new("publish").unwrap();
+            let operation = fork_preparer_io::operation_key(&key, None).unwrap();
+            let substituted = FileRef::new(file.volume().clone(), file.path().into(),
+                hex::encode(operation.into_bytes()), file.descriptor().clone(), "forged".into(), &mut None).unwrap();
+            let workspace = fork_preparer_io::content_workspace(&host.provider, file.volume(), None).unwrap();
+            host.apply(&workspace, None, &[crate::filesystem::WorkspaceMutation::PutFile {
+                path: content_metadata_path_io(file.path(), true, None).unwrap(),
+                bytes: serde_json::to_vec(&substituted).unwrap().into(),
+            }], &IdempotencyKey::new("substitute-index").unwrap()).await.unwrap();
+            proptest::prop_assert!(host.read_private_path(file.volume(), &read, file.path(), None, 256, None).await.is_err());
+            let original = host.file_generation(&file, None).unwrap();
+            let (restored, bytes) = host.read_private_path(file.volume(), &read, file.path(), Some(&original), 256, None).await.unwrap();
+            proptest::prop_assert_eq!(restored, file);
+            proptest::prop_assert_eq!(bytes.as_ref(), body.as_slice());
+            Ok(())
+        })?;
+    }
+}
