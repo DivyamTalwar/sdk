@@ -132,7 +132,7 @@ fn builtins_collisions_unicode_and_replayed_names_project_for_every_adapter() ->
             let wire = names.wire(name)?;
             let encoded = serde_json::to_string(&body).unwrap();
             assert!(encoded.contains(&format!("\"name\":\"{wire}\"")));
-            if name != wire {
+            if !valid(name) {
                 assert!(!encoded.contains(&format!("\"name\":\"{name}\"")));
             }
         }
@@ -191,7 +191,7 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
         ),
     ] {
         let (mut provider, _) = provider(adapter, 200);
-        provider.transport = Arc::new(native_tests::Fixture::new(fixture));
+        provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(fixture)));
         let (prepared, _) = request(&provider)?;
         let mut request = prepared.request().clone();
         request.tools.push(definition("acyclic.read_file".into()));
@@ -200,6 +200,13 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
             request_digest: prepared.request_digest(),
             ..parser_dispatch()
         };
+        let ordinary: Vec<_> = provider
+            .generate(prepared.clone(), dispatch)
+            .try_collect()
+            .await?;
+        assert!(ordinary.iter().any(
+            |event| matches!(event, ModelEvent::ToolCall(call) if call.name == "acyclic.read_file")
+        ));
         let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
         let baseline = work.live_allocation_bytes();
         let mut stream = provider
@@ -219,6 +226,29 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
+}
+
+struct AliasFixture(native_tests::Fixture);
+
+impl HttpTransport for AliasFixture {
+    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            Ok(HttpResponse {
+                status: 200,
+                body: chunks(self.0.response, 1),
+            })
+        })
+    }
+    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        self.0.supports_native(work)
+    }
+    fn send_with_native_work<'a>(
+        &'a self,
+        request: HttpRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
+        self.0.send_with_native_work(request, work)
+    }
 }
 
 #[test]
