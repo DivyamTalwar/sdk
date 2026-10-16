@@ -61,6 +61,72 @@ fn negative_control_detects_split_concrete_version_lookup() {
     concrete_version_model(true);
 }
 
+#[test]
+fn concrete_identity_changes_cannot_publish_a_torn_version() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(|| {
+        let versions = Arc::new(concrete_versions::Mutex::new(
+            std::collections::BTreeMap::new(),
+        ));
+        let identity = Arc::new(AtomicUsize::new(0));
+        let reader = {
+            let versions = Arc::clone(&versions);
+            let identity = Arc::clone(&identity);
+            loom::thread::spawn(move || {
+                concrete_versions::query(
+                    &versions,
+                    0,
+                    || Ok(identity.load(Ordering::SeqCst)),
+                    || Ok::<_, ()>(identity.load(Ordering::SeqCst).to_string()),
+                    || (),
+                )
+            })
+        };
+        let writer = loom::thread::spawn(move || identity.store(1, Ordering::SeqCst));
+        let _ = reader.join().unwrap();
+        writer.join().unwrap();
+        for (stamp, version) in versions.lock().unwrap().values() {
+            assert_eq!(&stamp.to_string(), version);
+        }
+    });
+}
+
+#[test]
+fn failed_concrete_probe_releases_the_lock_for_another_reader() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(|| {
+        let versions = Arc::new(concrete_versions::Mutex::new(
+            std::collections::BTreeMap::new(),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let jobs = [0, 1].map(|_| {
+            let versions = Arc::clone(&versions);
+            let calls = Arc::clone(&calls);
+            loom::thread::spawn(move || {
+                concrete_versions::query(
+                    &versions,
+                    0,
+                    || Ok(0),
+                    || {
+                        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            Err(())
+                        } else {
+                            Ok("version".to_owned())
+                        }
+                    },
+                    || (),
+                )
+            })
+        });
+        let results = jobs.map(|job| job.join().unwrap());
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(versions.lock().unwrap()[&0], (0, "version".to_owned()));
+    });
+}
+
 #[path = "../../crates/sdk-generation/src/shared_cache.rs"]
 mod shared_cache;
 
