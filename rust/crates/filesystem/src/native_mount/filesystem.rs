@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::native_mount) fn can_disclose(
     source: &dyn MountFilesystem,
     path: &MountPath,
