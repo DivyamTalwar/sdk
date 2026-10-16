@@ -203,12 +203,14 @@ impl Forest {
             let content = match kind {
                 Kind::Text | Kind::Escape => {
                     let left = range.start + usize::from(kind == Kind::Escape);
-                    let raw = source.get(left..range.end)?;
-                    let visible = raw.trim_end_matches([' ', '\t', '\r', '\n']);
-                    if !visible.is_empty() {
+                    // Respect the parser-visible source range uniformly,
+                    // including prefixes ending inside a physical token.
+                    let right = range.end.min(end);
+                    let visible_left = if right < range.end { range.start } else { left };
+                    if visible_left < right {
                         trimmed = full.clone();
                         trimmed.concat(run(
-                            self.input.text(source, left..left + visible.len())?,
+                            self.input.text(source, visible_left..right)?,
                             Style::default(),
                         ));
                         trimmed.freeze();
@@ -248,22 +250,6 @@ impl Forest {
                 .get_mut(index / PAGE)?
                 .get_mut(index % PAGE)?
                 .view = Some(Box::new(View { full, trimmed }));
-        }
-        // A parser-visible prefix can end inside a physical token. Render
-        // its covered source without committing the token's EOF preview.
-        if let Some(node) = self.node(root)
-            && node.range.start < end
-            && end < node.range.end
-            && node.kind == Kind::Escape
-        {
-            let mut spans = self
-                .cached(node.previous)
-                .map_or_else(Spans::default, |view| view.full.clone());
-            spans.concat(run(
-                self.input.text(source, node.range.start..end)?,
-                Style::default(),
-            ));
-            return Some(spans);
         }
         Some(
             self.cached(root)
