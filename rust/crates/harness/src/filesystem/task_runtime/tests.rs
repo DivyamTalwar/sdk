@@ -773,6 +773,7 @@ mod future_sizes;
 mod model;
 mod settlement;
 mod worker;
+mod wake;
 
 #[cfg(all(windows, feature = "native-execution"))]
 mod native_mount;

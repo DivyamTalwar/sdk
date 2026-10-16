@@ -233,7 +233,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let io = operation_io(work)?;
         let input = self
             .payloads
-            .stage(operation, &text, b"null", io.as_ref())?
+            .stage_input(operation, &text, b"null", io.as_ref())?
             .await?;
         self.resume_workflow(
             task,

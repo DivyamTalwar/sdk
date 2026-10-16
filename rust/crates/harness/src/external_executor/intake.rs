@@ -175,7 +175,7 @@ where
             let key = format!("external-resume:{}", request.operation_id);
             let payload = self
                 .payloads
-                .stage(request.operation_id, &key, &bytes, None)?
+                .stage_input(request.operation_id, &key, &bytes, None)?
                 .await?;
             if slot.input.as_ref() == Some(&payload) {
                 return Ok(());
@@ -219,7 +219,7 @@ where
         let key = format!("external-command:{}", request.operation_id);
         let payload = self
             .payloads
-            .stage(request.operation_id, &key, &bytes, None)?
+            .stage_input(request.operation_id, &key, &bytes, None)?
             .await?;
         Ok(WorkflowCommand {
             operation_id: request.operation_id,

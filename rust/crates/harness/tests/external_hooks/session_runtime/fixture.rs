@@ -139,8 +139,7 @@ impl Fixture {
             &signed,
             65_536,
             None,
-        )?
-        .workflow_inputs()?;
+        )?;
         Ok(Self {
             runtime,
             files,

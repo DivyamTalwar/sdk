@@ -43,6 +43,14 @@ proptest! {
             let replayed = SchedulerPayloadStore::stage(publisher.as_ref(), operation, &key, &bytes, None)?.await?;
             assert_eq!(replayed, original);
             assert_eq!(host.resolve(&workspace, None).await?.generation, before);
+            // A wake may retry the same operation/key after an old scheduler
+            // upload. Its different purpose must not collide with that receipt.
+            let input = SchedulerPayloadStore::stage_input(publisher.as_ref(), operation, &key, b"null", None)?.await?;
+            assert_eq!(input.path(), format!("inputs/{operation}/{digest}.json"));
+            let before = host.resolve(&workspace, None).await?.generation;
+            assert_eq!(SchedulerPayloadStore::stage_input(publisher.as_ref(), operation, &key, b"null", None)?.await?, input);
+            assert_eq!(SchedulerPayloadStore::stage(publisher.as_ref(), operation, &key, &bytes, None)?.await?, original);
+            assert_eq!(host.resolve(&workspace, None).await?.generation, before);
             Ok::<_, crate::Error>(())
         }).unwrap();
     }

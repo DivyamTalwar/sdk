@@ -20,7 +20,6 @@ pub struct FilesystemContentPublisher<A, O> {
     volume: VolumeRef,
     grant: ContentGrant,
     maximum_bytes: u64,
-    payload_directory: &'static str,
     pub(in crate::filesystem) creation: Option<Arc<super::fork_preparer::CreatedProvenance>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
@@ -72,22 +71,10 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             volume,
             grant,
             maximum_bytes,
-            payload_directory: "scheduler/results",
             creation: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,
         }))
-    }
-
-    /// Stages scheduler payloads under the workflow's existing inputs grant.
-    /// Configure before staging or sharing; retries retain this path contract.
-    pub fn workflow_inputs(mut self: Arc<Self>) -> Result<Arc<Self>> {
-        Arc::get_mut(&mut self)
-            .ok_or_else(|| {
-                crate::Error::Conflict("configure payloads before sharing the publisher".into())
-            })?
-            .payload_directory = "inputs";
-        Ok(self)
     }
 }
 
@@ -96,6 +83,46 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 {
     fn stage<'a>(
         &'a self,
+        operation: OperationId,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        self.stage_at(
+            "scheduler/results",
+            "scheduler-result",
+            operation,
+            idempotency_key,
+            bytes,
+            io,
+        )
+    }
+
+    fn stage_input<'a>(
+        &'a self,
+        operation: OperationId,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        self.stage_at(
+            "inputs",
+            "workflow-input",
+            operation,
+            idempotency_key,
+            bytes,
+            io,
+        )
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    FilesystemContentPublisher<A, O>
+{
+    fn stage_at<'a>(
+        &'a self,
+        directory: &'static str,
+        retry_prefix: &'static str,
         operation: OperationId,
         idempotency_key: &'a str,
         bytes: &'a [u8],
@@ -127,7 +154,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (path_hold, path) = {
                 let path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
-                        format_args!("{}/{operation}/{key}.json", self.payload_directory),
+                        format_args!("{directory}/{operation}/{key}.json"),
                         work,
                     )
                 })?;
@@ -139,7 +166,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (retry_hold, retry) = {
                 let retry = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
-                        format_args!("scheduler-result:{operation}:{key}"),
+                        format_args!("{retry_prefix}:{operation}:{key}"),
                         work,
                     )
                 })?;
