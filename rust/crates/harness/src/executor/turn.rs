@@ -32,19 +32,26 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
-            for invocation in calls {
+            let mut calls = calls;
+            // Preserve the model's complete batch before appending any tool results.
+            for (invocation, metadata) in &mut calls {
                 let message = ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                        name: stock_string_copy(&invocation.name, self.io)?,
-                        arguments: crate::model::clone_value(&invocation.arguments, self.io)?,
-                    }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        crate::model::ToolCall::new(
+                            stock_string_copy(&invocation.call_id, self.io)?,
+                            stock_string_copy(&invocation.name, self.io)?,
+                            crate::model::clone_value(&invocation.arguments, self.io)?,
+                        )
+                        .with_metadata(std::mem::take(metadata)),
+                    )),
                 };
                 crate::executor::with_history_io(self.io, |work| {
                     message.content.validate_limits(self.stock.limits, work)
                 })?;
                 stock_vec_push(&mut prior_messages, message, self.io)?;
+            }
+            for (invocation, _) in calls {
                 match self
                     .resolve_tool_call(
                         journal,
@@ -78,7 +85,7 @@ impl StockExecution<'_> {
         step: u32,
         model_events: Vec<ModelEvent>,
         text: &mut String,
-    ) -> Result<(Vec<ToolInvocation>, Value)> {
+    ) -> Result<(Vec<(ToolInvocation, Value)>, Value)> {
         let mut calls = Vec::new();
         let mut completed = Value::Null;
         for event in model_events {
@@ -92,11 +99,12 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                 }
-                ModelEvent::ToolCall {
+                ModelEvent::ToolCall(crate::model::ToolCall {
                     call_id,
                     name,
                     arguments,
-                } => {
+                    metadata,
+                }) => {
                     let invocation = ToolInvocation::for_model_call(
                         input.operation_id,
                         step,
@@ -105,7 +113,7 @@ impl StockExecution<'_> {
                         arguments,
                         self.native_work(),
                     )?;
-                    stock_vec_push(&mut calls, invocation, self.io)?;
+                    stock_vec_push(&mut calls, (invocation, metadata), self.io)?;
                 }
                 ModelEvent::Completed { metadata } => completed = metadata,
                 ModelEvent::Reasoning { .. } => {}
