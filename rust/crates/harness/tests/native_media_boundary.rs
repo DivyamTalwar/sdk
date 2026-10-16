@@ -188,6 +188,7 @@ fn measure(bytes: &[u8], intent: &NativeMediaIntent) -> Result<Measurement> {
 
 #[derive(Clone, Debug, PartialEq)]
 enum CapturedPart {
+    Reasoning(acyclic_harness::model::ReasoningBlock),
     Text(String),
     Call(String, String),
     Result(String, String),
@@ -426,6 +427,9 @@ impl ModelProvider for MockAdapter {
                 }
                 for part in message.content.parts() {
                     match part {
+                        ModelContentPart::Reasoning { block } => {
+                            parts.push(CapturedPart::Reasoning(block.clone()));
+                        }
                         ModelContentPart::Text { text } => {
                             parts.push(CapturedPart::Text(text.clone()));
                         }
