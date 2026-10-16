@@ -18,7 +18,7 @@ impl CheckoutTools {
                 store: &self.workspace.store,
                 view: view.into(),
                 root: &self.workspace.path,
-                repository: self.workspace.view().workspace().id(),
+                repository: self.workspace.repository,
                 lease: None,
                 checkout: Some(self.workspace.identity),
                 author: "LocalHarness",

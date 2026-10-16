@@ -47,6 +47,15 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// Workspace selected by the durable branch catalog.
+    pub async fn current_workspace_id(&self) -> Result<WorkspaceId, GitCompatError<S::Error>> {
+        self.load()
+            .await?
+            .current()
+            .map(|branch| branch.workspace_id)
+            .map_err(|_| GitCompatError::InvalidState)
+    }
+
     /// Returns the selected branch's tracked paths.
     pub async fn tracked_paths(&self) -> Result<BTreeSet<String>, GitCompatError<S::Error>> {
         self.load()

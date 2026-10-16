@@ -58,7 +58,7 @@ impl CheckoutTools {
             .workspace_id(&project.storage_name(&mut None)?)
             .map_err(acyclic_fs::WorkspaceError::from)
             .map_err(Error::from)?
-            != workspace.view().workspace().id()
+            != workspace.repository
         {
             return Err(Error::Unauthorized(
                 "workspace differs from the bound project volume".into(),

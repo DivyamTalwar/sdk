@@ -25,6 +25,7 @@ pub struct LocalWorkspace {
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
     pub(super) mounts: Arc<Mounts>,
+    pub(super) repository: acyclic_fs::WorkspaceId,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -121,7 +122,11 @@ pub(super) async fn open(
         ));
     }
     let source = source
-        .exclude(volumes::excluded(&path, view_config())?, &&work, &cancellation)
+        .exclude(
+            volumes::excluded(&path, view_config())?,
+            &&work,
+            &cancellation,
+        )
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     let source = Arc::new(source);
     let view = match original {
@@ -153,7 +158,25 @@ pub(super) async fn open(
         .register_root(view.workspace())
         .await
         .map_err(storage)?;
+    let repository = view.workspace().id();
+    let selected = acyclic_fs::GitCompatRepository::new(repository, store.clone())
+        .current_workspace_id()
+        .await?;
+    let view = if selected == repository {
+        view
+    } else {
+        let selected = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(store.clone()),
+            ),
+            selected,
+        )
+        .await?;
+        view.open_related(selected, &mut accounting).await?
+    };
     Ok(LocalWorkspace {
+        repository,
         mounts: Arc::new(mounts::owner(&path, volume, None, [])?),
         path,
         view,
