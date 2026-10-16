@@ -3,9 +3,12 @@ pub(super) const SEPARATOR: &[u8] = b"/leases/";
 pub(crate) const MAX_ENCODED_BYTES: usize = PREFIX.len() + 32 + SEPARATOR.len() + 32 + 1 + 20;
 
 pub(super) fn length(expires_at_millis: u64) -> usize {
-    let digits = expires_at_millis
-        .checked_ilog10()
-        .map_or(1, |log| log as usize + 1);
+    let mut digits = 1_usize;
+    let mut number = expires_at_millis;
+    while number >= 10 {
+        digits += 1;
+        number /= 10;
+    }
     PREFIX.len() + 32 + SEPARATOR.len() + 32 + 1 + digits
 }
 
@@ -17,7 +20,9 @@ pub(super) fn write<const N: usize>(
     length: usize,
     text: &mut [u8; N],
 ) {
-    const { assert!(N >= MAX_ENCODED_BYTES); };
+    const {
+        assert!(N >= MAX_ENCODED_BYTES);
+    };
     write_buffer(workspace, lease, expires_at_millis, length, text);
 }
 
