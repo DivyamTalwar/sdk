@@ -55,3 +55,5 @@ pub use widget::{PromptWidget, Viewport};
 
 #[cfg(feature = "tui")]
 pub use screen::{Screen, ScreenAreas};
+#[cfg(feature = "tui")]
+pub mod term;

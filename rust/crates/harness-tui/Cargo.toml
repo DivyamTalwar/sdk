@@ -9,10 +9,13 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
 default = []
-tui = ["dep:ratatui", "dep:crossterm", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec"]
+model-checking = ["dep:loom"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-terminal-console"]
 
 [dependencies]
 arrayvec = { version = "0.7", optional = true }
+loom = { version = "=0.7.2", optional = true }
+vte = { version = "0.15", optional = true }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 ratatui = { version = "0.30", default-features = false, optional = true }
@@ -27,6 +30,19 @@ image = { version = "0.25", default-features = false, features = ["jpeg"], optio
 [dev-dependencies]
 allocation-counter = "=0.8.1"
 proptest.workspace = true
+alacritty_terminal = "0.26"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "termios"], optional = true }
+signal-hook = { version = "0.4", optional = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix-openpty = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+acyclic-terminal-console = { version = "=0.2.0", path = "../terminal-console", optional = true }
 
 [lints]
 workspace = true
