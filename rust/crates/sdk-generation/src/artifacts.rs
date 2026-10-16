@@ -139,11 +139,13 @@ pub(super) fn json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CliError> {
     serde_json::to_vec_pretty(value).map_err(|e| CliError(format!("JSON error: {e}")))
 }
 pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    format_digest(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+}
+fn format_digest(digest: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(7 + digest.as_ref().len() * 2);
+    let mut result = String::with_capacity(7 + digest.len() * 2);
     result.push_str("sha256:");
-    for &byte in digest.as_ref() {
+    for &byte in digest {
         result.push(DIGITS[(byte >> 4) as usize] as char);
         result.push(DIGITS[(byte & 0xf) as usize] as char);
     }
@@ -600,14 +602,14 @@ pub(super) fn imported_source_file_hashes(
 }
 
 pub(super) fn digest_map(files: &BTreeMap<String, String>) -> String {
-    let mut hasher = Sha256::new();
+    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
     for (path, digest) in files {
         hasher.update(path.as_bytes());
-        hasher.update([0]);
+        hasher.update(&[0]);
         hasher.update(digest.as_bytes());
-        hasher.update([0]);
+        hasher.update(&[0]);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format_digest(hasher.finish().as_ref())
 }
 
 pub(super) fn collect_source_files(

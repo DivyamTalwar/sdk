@@ -4,6 +4,19 @@ use std::cell::Cell;
 use std::fs::{File, FileTimes};
 
 proptest! {
+    #[test]
+    fn source_map_identity_matches_the_independent_sha2_oracle(
+        entries in proptest::collection::btree_map(".{0,24}", ".{0,80}", 0..16),
+    ) {
+        use sha2::{Digest, Sha256};
+        let mut oracle = Sha256::new();
+        for (path, value) in &entries {
+            oracle.update(path.as_bytes()); oracle.update([0]);
+            oracle.update(value.as_bytes()); oracle.update([0]);
+        }
+        prop_assert_eq!(crate::digest_map(&entries), format!("sha256:{:x}", oracle.finalize()));
+    }
+
     // The real memoization transition runs over generated observations, without
     // creating thousands of OS files. Native stamp mapping has separate controls.
     #[test]
