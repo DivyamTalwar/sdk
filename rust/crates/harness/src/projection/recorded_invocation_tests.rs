@@ -1,6 +1,6 @@
 #![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
-#[path = "../../fuzz/fuzz_targets/recorded_invocation_input.rs"]
+#[path = "../../../harness-fuzz/fuzz_targets/recorded_invocation_input.rs"]
 mod input;
 use crate::{OperationId, conversation::Limits, tool::ToolInvocation};
 use input::Record;
@@ -94,8 +94,8 @@ proptest! {
 
 #[test]
 fn checked_in_saved_record_corpus() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/recorded_invocation");
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../harness-fuzz/corpus/recorded_invocation");
     for entry in std::fs::read_dir(directory).unwrap() {
         input::check(&std::fs::read(entry.unwrap().path()).unwrap());
     }
