@@ -136,3 +136,10 @@ path = "fuzz_targets/plan_markdown.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "child_control"
+path = "fuzz_targets/child_control.rs"
+test = false
+doc = false
+bench = false

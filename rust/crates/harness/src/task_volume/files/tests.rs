@@ -42,7 +42,7 @@ async fn opening_requires_the_exact_private_owner_and_both_volume_grants() {
 }
 
 fn files() -> Vec<(FileKey, bool)> {
-    use crate::task_volume::{Channel, Component, InputPath, TaskFile, ToolFile};
+    use crate::task_volume::{Channel, ChildFile, Component, InputPath, TaskFile, ToolFile};
     let id = Component::new("id").unwrap();
     let mut files = vec![
         (FileKey::Goal, true),
@@ -53,6 +53,23 @@ fn files() -> Vec<(FileKey, bool)> {
         ),
         (FileKey::Agent(id.clone()), false),
     ];
+    files.extend(
+        [
+            ChildFile::Request,
+            ChildFile::Control,
+            ChildFile::Inbox(id.clone()),
+        ]
+        .into_iter()
+        .map(|file| {
+            (
+                FileKey::Child {
+                    reference: id.clone(),
+                    file,
+                },
+                true,
+            )
+        }),
+    );
     let task_files = [
         (TaskFile::Request(id.clone()), true),
         (TaskFile::Status, false),
@@ -136,5 +153,73 @@ proptest! {
             prop_assert_eq!(result.is_ok(), caller_owned && bytes <= maximum);
             if !caller_owned { prop_assert!(matches!(result, Err(Error::Unauthorized))); }
         }
+    }
+}
+
+#[tokio::test]
+async fn terminal_child_is_read_only_and_stale_controls_cannot_replace_it() {
+    use crate::task_volume::{ChildFile, Component, Control};
+    let agent = AgentId::from_bytes([1; 16]);
+    let volume = volume(agent);
+    let (verifier, scope) = authority(
+        agent,
+        &volume,
+        &[VolumeOperation::Read, VolumeOperation::Write],
+    );
+    let files = TaskFiles::open(
+        Arc::new(MemoryStream::default()),
+        &volume,
+        &verifier,
+        &scope,
+        4096,
+    )
+    .await
+    .unwrap();
+    for (reference, terminal) in [
+        ("cancelled", Control::Cancel),
+        ("archived", Control::Archive),
+    ] {
+        let reference = Component::new(reference).unwrap();
+        let key = |file| FileKey::Child {
+            reference: reference.clone(),
+            file,
+        };
+        let snapshot = files
+            .observe(Query::Children, None, 16)
+            .await
+            .unwrap()
+            .snapshot
+            .unwrap();
+        let request = FileValue::new(key(ChildFile::Request), b"work".to_vec());
+        let running = files.write(snapshot.generation, &request).await.unwrap();
+        let control = FileValue::new(key(ChildFile::Control), terminal.bytes().to_vec());
+        let frozen = files.write(running, &control).await.unwrap();
+        assert_eq!(files.write(frozen, &control).await.unwrap(), frozen);
+        let resume = FileValue::new(key(ChildFile::Control), Control::Resume.bytes().to_vec());
+        assert!(matches!(
+            files.write(running, &resume).await,
+            Err(Error::Conflict(_))
+        ));
+        for write in [
+            resume,
+            request,
+            FileValue::new(
+                key(ChildFile::Inbox(Component::new("late").unwrap())),
+                b"wake".to_vec(),
+            ),
+        ] {
+            assert!(matches!(
+                files.write(frozen, &write).await,
+                Err(Error::ImmutableConflict(_))
+            ));
+        }
+        let snapshot = files
+            .observe(Query::Child(reference), None, 16)
+            .await
+            .unwrap()
+            .snapshot
+            .unwrap();
+        assert_eq!(snapshot.files.len(), 2);
+        assert!(snapshot.files.contains(&control));
     }
 }

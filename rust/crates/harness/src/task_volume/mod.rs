@@ -1,5 +1,9 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+mod child;
+mod query;
+pub use child::{ChildFile, ChildState, Control};
+pub use query::Query;
 mod files;
 mod follow;
 mod heads;
@@ -12,9 +16,7 @@ pub use files::TaskFiles;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
-pub use schema::{
-    Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
-};
+pub use schema::{Channel, Component, FileKey, InputPath, Owner, SCHEMA, TaskFile, ToolFile};
 pub use source::FileQuerySource;
 
 use acyclic_stream::query_sync::Mutex;
@@ -375,6 +377,25 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     file.validate()?;
+    if let FileKey::Child {
+        reference,
+        file: child_file,
+    } = &file.key
+    {
+        let control_key = FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Control,
+        };
+        if let Some(previous) = index.files.get(&control_key) {
+            let state = ChildState::Running.apply(Control::parse(&previous.bytes)?);
+            if matches!(state, ChildState::Archived | ChildState::Cancelled) && previous != file {
+                return Err(Error::ImmutableConflict(control_key));
+            }
+        }
+        if matches!(child_file, ChildFile::Control) {
+            Control::parse(&file.bytes)?;
+        }
+    }
     if !file.key.mutable() && index.files.get(&file.key).is_some_and(|old| old != file) {
         return Err(Error::ImmutableConflict(file.key.clone()));
     }

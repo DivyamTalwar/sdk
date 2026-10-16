@@ -157,3 +157,77 @@ fn a_request_accepted_during_the_snapshot_handoff_is_replayed() {
 fn a_request_accepted_after_registration_wakes_and_reaches_its_follower() {
     check(wake, "accepted request did not wake its follower");
 }
+
+fn child_control_race(broken: bool) {
+    use crate::task_volume::{ChildFile, Control};
+    let files = files();
+    let reference = Component::new("running-child").unwrap();
+    let control_key = FileKey::Child {
+        reference: reference.clone(),
+        file: ChildFile::Control,
+    };
+    let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
+        .unwrap()
+        .snapshot
+        .unwrap();
+    let request = FileValue::new(
+        FileKey::Child {
+            reference,
+            file: ChildFile::Request,
+        },
+        b"work".to_vec(),
+    );
+    let cut = loom::future::block_on(Box::pin(files.write(snapshot.generation, &request))).unwrap();
+    let writer = files.clone();
+    let key = control_key.clone();
+    let cancel = loom::thread::spawn(move || {
+        let expected = if broken {
+            // Negative control: substitute a fresh cut for the caller's stale
+            // observation. A pause and a conflicting cancel can then both win.
+            loom::future::block_on(Box::pin(writer.observe(Query::Children, None, 8)))
+                .unwrap()
+                .snapshot
+                .unwrap()
+                .generation
+        } else {
+            cut
+        };
+        loom::future::block_on(Box::pin(writer.write(
+            expected,
+            &FileValue::new(key, Control::Cancel.bytes().to_vec()),
+        )))
+    });
+    let writer = files.clone();
+    let key = control_key.clone();
+    let pause = loom::thread::spawn(move || {
+        loom::future::block_on(Box::pin(
+            writer.write(cut, &FileValue::new(key, Control::Pause.bytes().to_vec())),
+        ))
+    });
+    let cancelled = cancel.join().unwrap().is_ok();
+    let paused = pause.join().unwrap().is_ok();
+    assert_ne!(
+        cancelled, paused,
+        "conflicting child controls both committed"
+    );
+    let snapshot = loom::future::block_on(Box::pin(files.observe(Query::Children, None, 8)))
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert_eq!(snapshot.files.len(), 2);
+    if cancelled {
+        let resume = FileValue::new(control_key, Control::Resume.bytes().to_vec());
+        assert!(matches!(
+            loom::future::block_on(Box::pin(files.write(snapshot.generation, &resume))),
+            Err(Error::ImmutableConflict(_))
+        ));
+    }
+}
+
+#[test]
+fn concurrent_child_controls_use_the_running_child_cut() {
+    check(
+        child_control_race,
+        "conflicting child controls both committed",
+    );
+}
