@@ -80,7 +80,10 @@ pub fn exercise(input: &[u8], skip_watermark: bool) {
         let mut expected = BTreeMap::new();
         for (next, key, value) in [(1, b"a".as_slice(), bytes), (1, b"b".as_slice(), b"old".as_slice()),
             (2, b"a".as_slice(), b"new".as_slice()), (2, b"b".as_slice(), bytes)] {
-            views.apply(SwarmUpdate::Data { agent: path("swarm/a"), overview: true, data: status(next, key, value) }).unwrap();
+            let original = status(next, key, value);
+            let decoded = wire::SessionData::decode(original.encode_to_vec().as_slice()).expect("generated latest value must decode");
+            assert_eq!(decoded, original);
+            views.apply(SwarmUpdate::Data { agent: path("swarm/a"), overview: true, data: decoded }).unwrap();
             expected.insert(key.to_vec(), value.to_vec());
             let actual: BTreeMap<_,_> = views.status(&path("swarm/a")).unwrap().values()
                 .map(|value| (value.key.to_vec(), value.value.to_vec())).collect();
@@ -91,6 +94,23 @@ pub fn exercise(input: &[u8], skip_watermark: bool) {
         assert_eq!(views.status(&path("swarm/a")).unwrap().watermarks().durable, 2);
         if let Ok(data) = wire::SessionData::decode(input) {
             assert_eq!(wire::SessionData::decode(data.encode_to_vec().as_slice()).unwrap(), data);
+            let mut status_views = SwarmViews::new(path("swarm"), limits).unwrap();
+            let expected = match &data.item {
+                Some(wire::session_data::Item::LatestValue(value)) => Some(value.clone()),
+                Some(wire::session_data::Item::Record(record)) => Some(wire::SessionLatestValue {
+                    key: Bytes::new(), value: record.value.clone(), attention: false }),
+                _ => None,
+            };
+            let after = data.after.clone();
+            let watermarks = (data.accepted, data.durable);
+            if status_views.apply(SwarmUpdate::Data { agent: path("swarm/a"), overview: true, data: data.clone() }).is_ok() {
+                let actual = status_views.status(&path("swarm/a")).unwrap();
+                assert_eq!(actual.cursor(), after.as_ref());
+                assert_eq!((actual.watermarks().accepted, actual.watermarks().durable), watermarks);
+                assert_eq!(actual.values().collect::<Vec<_>>(), vec![expected.as_ref().unwrap()]);
+            } else {
+                assert!(status_views.status(&path("swarm/a")).is_none(), "invalid status cannot partially insert an agent");
+            }
             let before = views.cursor(&path("swarm/a")).unwrap().clone();
             if views.apply(SwarmUpdate::Data { agent: path("swarm/a"), overview: false, data }).is_err() {
                 assert_eq!(views.cursor(&path("swarm/a")), Some(&before));

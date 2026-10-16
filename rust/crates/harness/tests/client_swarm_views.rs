@@ -5,6 +5,9 @@ mod oracle;
 #[path = "client_swarm_views_follow.rs"]
 mod follow;
 
+#[path = "client_swarm_views_retention.rs"]
+mod retention;
+
 #[test]
 fn standalone_watermarks_and_same_cut_status_keys_survive_promotion() {
     oracle::exercise(b"live text", false);
