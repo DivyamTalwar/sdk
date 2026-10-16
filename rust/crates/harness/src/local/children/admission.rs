@@ -318,6 +318,13 @@ impl LocalHarness {
             for volume in [&source_project, &source_private] {
                 excluded.push(volume.directory_read_capability("", &mut None)?);
             }
+            // New preparation proofs authenticate this child's own inputs.
+            // Ancestor-only input readers belong to the parent's proof set.
+            if let Some(access) = context.scope().created_access.as_ref() {
+                for (file, _) in &access.references {
+                    excluded.push(file.read_capability(&mut None)?);
+                }
+            }
             child.grants = Capabilities::new(
                 child
                     .grants
