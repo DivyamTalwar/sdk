@@ -156,6 +156,8 @@ pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
     PreparedNativeCommit,
 };
+#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+mod test_latency;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_meter;
 #[cfg(all(
