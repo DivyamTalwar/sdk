@@ -29,11 +29,11 @@ mod checkout_tools;
 mod compaction;
 mod config;
 mod context;
-#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-mod mcp;
 mod owner;
 mod owner_record;
 mod runtime;
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -63,6 +63,8 @@ pub struct LocalHarness {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(feature = "hooks")]
+    hooks: crate::hooks::Hooks,
     #[cfg(test)]
     context_read_observer: Option<
         for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
@@ -128,14 +130,16 @@ impl LocalHarness {
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            let settings = settings::load(&config.project, config.settings).await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp::install(
-                &config.project,
-                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
-                tools,
-                config.mcp_limits,
-            )
-            .await?;
+            let mcp_workspace =
+                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = settings
+                .mcp
+                .install(tools, &mcp_workspace, config.mcp_limits)
+                .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = compaction::select(
@@ -304,6 +308,8 @@ impl LocalHarness {
                 context_read_observer: None,
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
+                #[cfg(feature = "hooks")]
+                hooks: settings.hooks,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
