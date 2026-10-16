@@ -41,7 +41,7 @@ pub(crate) fn bind_defaults(
         let tool = match name {
             "bash" => command(
                 name,
-                "Run a bash command in the calling task's composed workspace view",
+                "Run a bash command in the calling task's composed workspace view. No OS sandbox in release 1; writes outside the task view are not captured",
             )?,
             "fs" => command(
                 name,

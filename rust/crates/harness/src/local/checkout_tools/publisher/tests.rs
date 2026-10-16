@@ -87,7 +87,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
 -> Result<()> {
     let (directory, harness, publisher) = fixture().await?;
     let view = harness.workspace.as_ref().unwrap().view();
-    let writer = publisher.writer(view)?;
+    let writer = publisher.writer_for(&harness.project, view.workspace())?;
     let operation = OperationId::new();
     // Crash boundary: the actual volume write commits, but no native
     // preparation journal or checkout edit has happened.
@@ -290,4 +290,97 @@ proptest::proptest! {
         let mut other = operation; other[0] ^= 1;
         proptest::prop_assert_ne!(first, publication_operation(OperationId::from_bytes(other), &path));
     }
+}
+
+#[tokio::test]
+async fn mounted_publication_retries_and_replacements_keep_their_volume_with_negative_control()
+-> Result<()> {
+    let (directory, harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let (file, _) = publisher
+        .stage_once(
+            operation,
+            ".volumes/scratch/note",
+            b"first",
+            "text/plain",
+            "note",
+            None,
+        )?
+        .await?;
+    assert_eq!(file.volume(), harness.scratch());
+    assert_eq!(file.path(), "note");
+    assert_eq!(
+        publisher.observe_staged_once(operation, 64, None)?.await?.0,
+        Some(file.clone())
+    );
+    assert_eq!(
+        publisher
+            .stage_once(
+                operation,
+                ".volumes/scratch/note",
+                b"first",
+                "text/plain",
+                "note",
+                None
+            )?
+            .await?
+            .0,
+        file
+    );
+    let (edited, _) = publisher
+        .stage_at(OperationId::new(), &file, b"edited", None)?
+        .await?;
+    assert_eq!(edited.volume(), harness.scratch());
+    assert_eq!(
+        std::fs::read(directory.path().join(".volumes/scratch/note")).map_err(storage)?,
+        b"edited"
+    );
+    let view = harness.workspace.as_ref().unwrap().view();
+    let stop = acyclic_fs::CancellationToken::new();
+    let primary_absent = async |path: &str| -> Result<bool> {
+        let head = view
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+            .await
+            .map_err(storage)?
+            .value;
+        Ok(matches!(
+            head.stat(path, acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+                .await,
+            Err(acyclic_fs::OperationFailure {
+                error: acyclic_fs::WorkspaceError::NotFound,
+                ..
+            })
+        ))
+    };
+    assert!(primary_absent("/.volumes/scratch/note").await?);
+    assert!(primary_absent("/note").await?);
+    // The former implementation selected the project writer. This deliberately
+    // bypasses routing and must fail the same history-attribution oracle.
+    publisher
+        .writer_for(&harness.project, view.workspace())?
+        .stage_once(
+            OperationId::new(),
+            ".volumes/scratch/control",
+            b"wrong history",
+            "text/plain",
+            "control",
+            None,
+        )?
+        .await?;
+    assert!(
+        !primary_absent("/.volumes/scratch/control").await?,
+        "negative control failed to expose the project-history leak"
+    );
+    assert!(
+        publisher
+            .destination(Some(&harness.journal), "nope", None)
+            .is_err()
+    );
+    assert!(
+        publisher
+            .destination(Some(&harness.project), ".volumes/scratch/note", None)
+            .is_err()
+    );
+    Ok(())
 }

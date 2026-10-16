@@ -59,6 +59,31 @@ pub struct MountTable<T> {
 }
 
 impl<T> MountTable<T> {
+    /// Resolves either a task-relative path or an exact volume's relative path.
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    pub(crate) fn file(
+        &self,
+        volume: Option<&VolumeRef>,
+        path: &str,
+    ) -> Result<(&Mount<T>, String)> {
+        let selected = if let Some(volume) = volume {
+            let (prefix, _) = self
+                .mounts()
+                .find(|(_, mount)| &mount.view.volume == volume)
+                .ok_or_else(|| {
+                    Error::Unauthorized("volume is not mounted in this task view".into())
+                })?;
+            self.resolve(&Path::new(prefix).join(path))?
+        } else {
+            self.resolve(Path::new(path))?
+        };
+        if volume.is_some_and(|volume| volume != &selected.0.view.volume) {
+            return Err(Error::Unauthorized(
+                "file path names another mounted volume".into(),
+            ));
+        }
+        Ok(selected)
+    }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]

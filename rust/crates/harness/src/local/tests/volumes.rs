@@ -330,3 +330,89 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall {
+                call_id: "mounted-write".into(),
+                name: "write".into(),
+                arguments: json!({"path":".volumes/scratch/note", "text":"scratch bytes", "media_type":"text/plain", "display_name":"note"}),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ]),
+        super::checked_commands::call(
+            1,
+            "bash",
+            r#"test "$(cat .volumes/scratch/note)" = 'scratch bytes'"#,
+        ),
+        ScriptedTurn::Text("published".into()),
+    ]);
+    let harness = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model()?, provider.clone()),
+    ))
+    .await?;
+    assert_eq!(harness.run("write into scratch").await?.text, "published");
+    let requests = provider.requests();
+    let value = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id,
+                content: crate::model::ToolResultContent::Json { value },
+                ..
+            } if call_id == "mounted-write" => Some(value),
+            _ => None,
+        })
+        .expect("write result");
+    let file: crate::conversation::FileRef =
+        serde_json::from_value(value["file"].clone()).map_err(super::super::storage)?;
+    assert_eq!(file.volume(), harness.scratch());
+    assert_eq!(file.path(), "note");
+    let workspace = harness.workspace().unwrap();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let stop = acyclic_fs::CancellationToken::new();
+    let primary = workspace
+        .current()
+        .await
+        .head(budget, &stop)
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    assert!(matches!(
+        primary.stat("/.volumes/scratch/note", budget, &stop).await,
+        Err(acyclic_fs::OperationFailure {
+            error: acyclic_fs::WorkspaceError::NotFound,
+            ..
+        })
+    ));
+    let scratch = workspace
+        .filesystem
+        .open_workspace(&harness.scratch().storage_name(&mut None)?, budget, &stop)
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .head(budget, &stop)
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    assert_eq!(
+        scratch
+            .read("/note", 64, budget, &stop)
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
+        b"scratch bytes"
+    );
+    Ok(())
+}

@@ -34,7 +34,7 @@ pub(super) struct CheckoutTools {
 pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
-    pub(in crate::local) mounts: workspace::Mounts,
+    pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
 }
 
@@ -126,6 +126,14 @@ impl ToolExecutor for CheckoutTools {
             return Err(Error::Unauthorized(
                 "checkout command differs from its task authority".into(),
             ));
+        }
+        if invocation.name == "fs" {
+            let command = invocation
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::Invalid("checkout command must be text".into()))?;
+            self.fs_arguments(command, scope)?;
         }
         Ok(())
     }

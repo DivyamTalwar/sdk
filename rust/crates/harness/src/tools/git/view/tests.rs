@@ -173,3 +173,100 @@ fn volume_view_pins_exact_generations_for_both_capture_modes() -> TestResult {
     )?;
     Ok(())
 }
+
+#[tokio::test]
+async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let repository = main.id();
+    main.write_text("/note", "base").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "base"],
+    )
+    .await?;
+    let child = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["checkout", "-b", "topic"],
+    )
+    .await?
+    .switched
+    .ok_or("missing child")?;
+    child.workspace().write_text("/note", "child").await?;
+    execute(
+        &filesystem,
+        &store,
+        child.view(),
+        repository,
+        &["commit", "-m", "child"],
+    )
+    .await?;
+    execute(
+        &filesystem,
+        &store,
+        child.view(),
+        repository,
+        &["checkout", "main"],
+    )
+    .await?;
+    let before = main
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value
+        .id();
+    let checks = AtomicUsize::new(0);
+    let result = super::super::run_with_guard(
+        Workspace {
+            filesystem: &filesystem,
+            store: &store,
+            view: (&main).into(),
+            root: Path::new("."),
+            repository,
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+        },
+        &["merge".into(), "topic".into()],
+        || {
+            std::future::ready(if checks.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(())
+            } else {
+                Err(Error::Unauthorized("execution owner lost".into()))
+            })
+        },
+    )
+    .await;
+    assert!(matches!(result, Err(Error::Unauthorized(_))));
+    assert!(checks.load(Ordering::Relaxed) >= 2);
+    assert_eq!(
+        main.head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        before
+    );
+    // Negative control: the same merge with no ownership validation publishes.
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["merge", "topic"],
+    )
+    .await?;
+    assert_ne!(
+        main.head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        before
+    );
+    Ok(())
+}

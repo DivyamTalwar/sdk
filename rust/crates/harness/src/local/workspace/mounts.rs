@@ -91,7 +91,7 @@ mod tests {
         // Replacing a provider binding cannot change the namespace, access
         // decisions or volume identity compiled at composition time.
         #[test]
-        fn binding_keeps_the_composed_authority(sources in any::<[u8; 2]>()) {
+        fn binding_keeps_the_composed_authority(sources in any::<[u8; 2]>(), entry in "[a-z]{1,8}(/[a-z]{1,8}){0,3}") {
             let provider = crate::resources::ProviderRef::new(
                 "binding".into(), "filesystem".into(), "1".into(), &mut None,
             ).unwrap();
@@ -118,6 +118,17 @@ mod tests {
                 prop_assert!(mounted.check(Action::Read, "file", 0).is_ok());
                 prop_assert!(mounted.check(Action::Write, "file", 0).is_ok());
             }
+            for (path, mount) in mounts.mounts() {
+                let task_path = if path.is_empty() { entry.clone() } else { format!("{path}/{entry}") };
+                let (routed, relative) = mounts.file(None, &task_path).unwrap();
+                prop_assert_eq!(&routed.view.volume, &mount.view.volume);
+                prop_assert_eq!(&relative, &entry);
+                let (routed_again, same_path) = mounts.file(Some(&routed.view.volume), &relative).unwrap();
+                prop_assert_eq!(&routed_again.view.volume, &mount.view.volume);
+                prop_assert_eq!(same_path, relative);
+            }
+            prop_assert!(mounts.file(Some(&volume("project")), ".volumes/data/entry").is_err());
+            prop_assert!(mounts.file(None, "../entry").is_err());
             prop_assert!(mounts.named(Some("journal")).is_err());
             prop_assert!(mounts.named(Some("../data")).is_err());
             prop_assert_eq!(&mounts.named(None).unwrap().1.view.volume, &volume("project"));

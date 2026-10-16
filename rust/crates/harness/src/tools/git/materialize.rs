@@ -2,19 +2,19 @@ use super::*;
 use crate::filesystem::NativeDirectory;
 use acyclic_fs::MaterializeOptions;
 
-/// Publishes git facade mutations into the ordinary checkout.
-pub(crate) struct RootMaterializingGitExecutor<'a, F> {
+/// Fences every facade effect and optionally materializes an ordinary checkout.
+pub(crate) struct GuardedGitExecutor<'a, F> {
     /// Managed workspace executor.
     pub inner: &'a WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
-    pub source_root_identity: acyclic_fs::NativeRootIdentity,
+    pub source_root_identity: Option<acyclic_fs::NativeRootIdentity>,
     /// Revalidates the admitted task and its publication permit before each effect.
     pub before_effect: F,
 }
 
-impl<F, Fut> RootMaterializingGitExecutor<'_, F>
+impl<F, Fut> GuardedGitExecutor<'_, F>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
@@ -25,6 +25,9 @@ where
         operation_id: OperationId,
         from: LocalGeneration,
     ) -> Result<(), Error> {
+        let Some(identity) = self.source_root_identity else {
+            return Ok(());
+        };
         let target = self
             .inner
             .switched
@@ -43,7 +46,7 @@ where
             .map_err(Error::from)?;
         publish_checkout_transition(
             self.root,
-            self.source_root_identity,
+            identity,
             self.inner.store,
             operation_id,
             from,
@@ -52,6 +55,19 @@ where
         )
         .await
     }
+}
+
+// Preparation can await storage and merge drivers. Revalidate after it,
+// before handing any prepared result to a publication using the lease permit.
+pub(super) async fn prepared<T, P, F, Fut>(preparation: P, before_effect: &F) -> Result<T, Error>
+where
+    P: Future<Output = Result<T, Error>>,
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<(), Error>>,
+{
+    let value = preparation.await?;
+    before_effect().await?;
+    Ok(value)
 }
 
 pub(crate) async fn publish_checkout_transition<F, Fut>(
@@ -197,7 +213,7 @@ fn cleanup(_root: &Path, operation_directory: &Path) -> Result<(), Error> {
         .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))
 }
 
-impl<F, Fut> GitFilesystemExecutor for RootMaterializingGitExecutor<'_, F>
+impl<F, Fut> GitFilesystemExecutor for GuardedGitExecutor<'_, F>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
@@ -214,24 +230,33 @@ where
         operation_id: OperationId,
         action: &GitFilesystemAction,
     ) -> Result<GitFilesystemResult, Self::Error> {
-        let from = self
-            .inner
-            .current
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
+        let from = if self.source_root_identity.is_some() {
+            Some(
+                self.inner
+                    .current
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| Error::from(failure.error))?
+                    .value,
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(Error::from)?;
-        let result = self.inner.execute(operation_id, action).await;
+        } else {
+            None
+        };
+        self.validate().await?;
+        let result = self
+            .inner
+            .execute_guarded(operation_id, action, &|| self.validate())
+            .await;
         // Conflict projection is an intentional state transition: the join
         // executor leaves the Git transition pending and returns an error so
         // the caller can present the typed conflicts. Materialize that new
         // generation before propagating the error, otherwise the checkout
         // would never expose the files the user must edit.
-        let materialized = self.materialize(operation_id, from).await;
+        let materialized = if let Some(from) = from {
+            self.materialize(operation_id, from).await
+        } else {
+            Ok(())
+        };
         match (result, materialized) {
             (Ok(result), Ok(())) => Ok(result),
             (Err(error), Ok(())) | (_, Err(error)) => Err(error),

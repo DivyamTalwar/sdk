@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
 /// A command in the calling task's view; workspace selection is host-owned.
+/// Release 1 uses no OS sandbox: commands can reach the host filesystem.
+/// Writes outside the task view are not captured. The cwd must remain in the view.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BashInput {

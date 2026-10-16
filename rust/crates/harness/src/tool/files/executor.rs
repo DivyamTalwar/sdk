@@ -315,6 +315,11 @@ impl ToolExecutor for FileTool {
             return Err(unauthorized());
         }
         let (file, _custody) = self.preflight(scope, invocation, work)?;
+        let path = file
+            .as_ref()
+            .map(FileRef::path)
+            .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+            .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -327,13 +332,18 @@ impl ToolExecutor for FileTool {
                     work,
                 )
             } else {
-                context.authorize_content_publication_with_native_work(file.as_ref(), work)
+                context.authorize_content_publication_with_native_work(path, file.as_ref(), work)
             };
         }
         if self.is_read() {
             Ok(())
         } else {
-            context.task().authorize_content_publication(file.as_ref())
+            context.task().authorize_content_publication(
+                path,
+                file.as_ref(),
+                context.effective_scope(),
+                None,
+            )
         }
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

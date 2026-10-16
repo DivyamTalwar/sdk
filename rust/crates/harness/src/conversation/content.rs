@@ -235,6 +235,16 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
 
 /// Owner-bound, bounded publication on the caller's existing ledger.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
+    /// Resolves the exact destination before the caller checks write authority.
+    /// Paths remain relative to the selected volume in returned file references.
+    fn destination<'a>(
+        &'a self,
+        _volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
+    }
     /// Exact writable volume.
     fn volume(&self) -> &VolumeRef;
     /// Rejects unavailable bounded publication before external side effects.

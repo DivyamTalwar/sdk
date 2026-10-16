@@ -33,6 +33,22 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
         operation_id: OperationId,
         action: &GitFilesystemAction,
     ) -> Result<GitFilesystemResult, Self::Error> {
+        self.execute_guarded(operation_id, action, &|| self.validate())
+            .await
+    }
+}
+
+impl WorkspaceGitExecutor<'_> {
+    pub(super) async fn execute_guarded<F, Fut>(
+        &self,
+        operation_id: OperationId,
+        action: &GitFilesystemAction,
+        before_effect: &F,
+    ) -> Result<GitFilesystemResult, Error>
+    where
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<(), Error>> + Send,
+    {
         match action {
             GitFilesystemAction::CaptureCommit {
                 workspace_tree,
@@ -297,11 +313,17 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
-                let plan = builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| Error::from(failure.error))?;
+                let plan = super::materialize::prepared(
+                    async {
+                        builder
+                            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| Error::from(failure.error))
+                    },
+                    before_effect,
+                )
+                .await?;
                 let options = ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -321,7 +343,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map_err(Error::from)?;
                     let typed_json = serde_json::to_string(&typed).map_err(json_error)?;
-                    let candidate = {
+                    let candidate = super::materialize::prepared(async {
                         let mut cache = self.merge_cache.lock().await;
                         resolve_merge_plan(typed, &self.merge_drivers, &mut *cache, false).map_err(
                             |error| {
@@ -329,8 +351,8 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                     "Git join has unresolved typed conflicts: {typed_json}; {error}"
                                 ))
                             },
-                        )?
-                    };
+                        )
+                    }, before_effect).await?;
                     let has_markers = candidate.resolutions.values().any(|resolution| {
                         matches!(resolution, acyclic_fs::MergeResolution::Text(text)
                                 if acyclic_fs::text_merge::has_conflict_markers(text))

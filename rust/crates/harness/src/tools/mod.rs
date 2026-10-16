@@ -5,7 +5,7 @@ mod defaults;
 pub use defaults::defaults;
 mod command;
 pub use command::parse_command;
-pub(crate) use command::parse_fs_command;
+pub(crate) use command::{FsCommand, parse_fs_command};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
