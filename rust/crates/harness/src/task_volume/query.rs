@@ -1,4 +1,6 @@
-use super::{Channel, ChildFile, Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile};
+use super::{
+    Channel, ChildFile, Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -202,6 +204,8 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
+            (Self::Children, FileKey::Child { .. }) => true,
+            (Self::Child(wanted), FileKey::Child { reference, .. }) => wanted == reference,
             (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
             (Self::Config, FileKey::Input(path)) => matches!(
                 path.0.as_str(),
@@ -335,7 +339,6 @@ impl Query {
         })
     }
 }
-
 
 #[cfg(test)]
 #[path = "../../tests/task_volume/ranges.rs"]

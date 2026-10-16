@@ -48,6 +48,15 @@ async fn files() -> TaskFiles<MemoryStream> {
     .unwrap()
 }
 
+fn limits() -> Limits {
+    Limits {
+        file_bytes: 4096,
+        render_bytes: 4096,
+        attachments: 16,
+        ..Limits::default()
+    }
+}
+
 async fn call(
     files: &TaskFiles<MemoryStream>,
     command: Value,
@@ -57,7 +66,7 @@ async fn call(
         files,
         serde_json::from_value(command).unwrap(),
         operation,
-        16,
+        limits(),
         false,
     )
     .await
@@ -189,7 +198,7 @@ async fn reconciliation_does_not_reapply_a_superseded_control() {
         &files,
         serde_json::from_value(pause.clone()).unwrap(),
         operation,
-        16,
+        limits(),
         true,
     )
     .await
@@ -214,7 +223,7 @@ async fn reconciliation_does_not_reapply_a_superseded_control() {
             &files,
             serde_json::from_value(pause).unwrap(),
             operation,
-            16,
+            limits(),
             true
         )
         .await
@@ -316,6 +325,63 @@ async fn new_inbox_files_make_a_previously_settled_status_pending() {
     .await
     .unwrap();
     assert_eq!(waiter.await.unwrap()["state"], json!(ChildState::Cancelled));
+}
+
+#[tokio::test]
+async fn agent_file_access_retains_the_callers_file_and_snapshot_bounds() {
+    let files = files().await;
+    let operation = OperationId::from_bytes([3; 16]);
+    let spawn = json!({"command":"spawn","reference":"worker","prompt":"four"});
+    let before = files
+        .observe(Query::Children, None, 16)
+        .await
+        .unwrap()
+        .snapshot
+        .unwrap()
+        .generation;
+    let restricted = Limits {
+        file_bytes: 3,
+        ..limits()
+    };
+    assert!(
+        access(
+            &files,
+            serde_json::from_value(spawn.clone()).unwrap(),
+            operation,
+            restricted,
+            false
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        files
+            .observe(Query::Children, None, 16)
+            .await
+            .unwrap()
+            .snapshot
+            .unwrap()
+            .generation,
+        before
+    );
+    call(&files, spawn, operation).await.unwrap();
+    let restricted = Limits {
+        render_bytes: 3,
+        ..limits()
+    };
+    assert!(
+        access(
+            &files,
+            AgentCommand::Status {
+                reference: Component::new("worker").unwrap()
+            },
+            operation,
+            restricted,
+            false
+        )
+        .await
+        .is_err()
+    );
 }
 
 proptest! {

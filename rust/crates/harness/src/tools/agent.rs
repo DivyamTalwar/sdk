@@ -1,10 +1,11 @@
 //! The default agent tool translates calls into task-volume files and live queries.
 use crate::{
     Error, Result,
+    conversation::Limits,
     runtime::{RuntimeScope, ToolContext},
     task_volume::{
-        ChildFile, ChildRequest, ChildState, Component, Control, FileKey, FileValue, Query,
-        TaskFiles,
+        ChildFile, ChildRequest, ChildState, Component, Control, FileKey, FileQuerySource,
+        FileValue, Query, TaskFiles,
     },
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -147,7 +148,7 @@ impl ToolExecutor for AgentExecutor {
                 files,
                 command,
                 invocation.operation_id,
-                context.effective_scope().limits().attachments,
+                context.effective_scope().limits(),
                 false,
             )
             .await
@@ -182,7 +183,7 @@ impl ToolExecutor for AgentExecutor {
                 files,
                 command,
                 invocation.operation_id,
-                context.effective_scope().limits().attachments,
+                context.effective_scope().limits(),
                 true,
             )
             .await
@@ -195,13 +196,14 @@ async fn access<P: StreamProvider + ?Sized>(
     files: &TaskFiles<P>,
     command: AgentCommand,
     operation: crate::OperationId,
-    maximum: usize,
+    limits: Limits,
     reconcile_only: bool,
 ) -> Result<Option<Value>> {
+    let maximum_bytes = usize::try_from(limits.render_bytes).map_err(invalid)?;
     let (reference, write, wait) = match command {
         AgentCommand::List => {
             let snapshot = files
-                .observe(Query::Children, None, maximum)
+                .observe_files(Query::Children, None, limits.attachments, maximum_bytes)
                 .await
                 .map_err(storage)?
                 .snapshot
@@ -262,7 +264,12 @@ async fn access<P: StreamProvider + ?Sized>(
         AgentCommand::Wait { reference } => (reference, None, true),
     };
     let mut observation = files
-        .observe(Query::Child(reference.clone()), None, maximum)
+        .observe_files(
+            Query::Child(reference.clone()),
+            None,
+            limits.attachments,
+            maximum_bytes,
+        )
         .await
         .map_err(storage)?;
     let snapshot = observation
@@ -283,6 +290,9 @@ async fn access<P: StreamProvider + ?Sized>(
         return Err(Error::NotFound(format!("agents/{}", reference.as_str())));
     }
     if let Some((file, bytes)) = write {
+        if bytes.len() as u64 > limits.file_bytes {
+            return Err(invalid("child file exceeds the calling scope"));
+        }
         let file = FileValue::new(
             FileKey::Child {
                 reference: reference.clone(),
