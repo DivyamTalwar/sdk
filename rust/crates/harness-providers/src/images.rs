@@ -166,14 +166,14 @@ pub(crate) async fn load<'a>(
         };
         let bytes = &payload.0;
         let kind = imagesize::image_type(bytes).map_err(|_| invalid("invalid image header"))?;
-        let matches = match (kind, file.descriptor().media_type()) {
+        let matches = matches!(
+            (kind, file.descriptor().media_type()),
             (imagesize::ImageType::Png, "image/png")
-            | (imagesize::ImageType::Jpeg, "image/jpeg")
-            | (imagesize::ImageType::Gif, "image/gif")
-            | (imagesize::ImageType::Webp, "image/webp")
-            | (imagesize::ImageType::Heif(_), "image/heic" | "image/heif") => true,
-            _ => false,
-        };
+                | (imagesize::ImageType::Jpeg, "image/jpeg")
+                | (imagesize::ImageType::Gif, "image/gif")
+                | (imagesize::ImageType::Webp, "image/webp")
+                | (imagesize::ImageType::Heif(_), "image/heic" | "image/heif")
+        );
         if !matches {
             return Err(invalid("image header differs from its declared media type"));
         }

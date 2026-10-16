@@ -130,6 +130,15 @@ impl ResumableMachine for OneCommand {
 
 #[tokio::test]
 async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<()> {
+    stock_turn(false).await
+}
+
+#[tokio::test]
+async fn image_attach_and_paste_run_on_the_issued_native_task() -> Result<()> {
+    stock_turn(true).await
+}
+
+async fn stock_turn(with_images: bool) -> Result<()> {
     for (adapter, response) in [
         (
             Adapter::Chat,
@@ -149,7 +158,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
         ),
     ] {
         let transport = Arc::new(Fixture::new(response));
-        let provider = if adapter == Adapter::Responses {
+        let mut provider = if adapter == Adapter::Responses {
             let mut registry = Registry::with_transport(
                 Credentials::explicit(BTreeMap::from([(
                     "openai".into(),
@@ -173,7 +182,6 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             provider
         };
         let model = provider.model().clone();
-        let provider = Arc::new(provider);
         let storage_provider =
             ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &storage_provider, None)?;
@@ -221,8 +229,87 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             65_536,
             None,
         )?;
+        let input = if with_images {
+            use acyclic_harness::{
+                client::{attach_image, paste_image},
+                conversation::ContentPublisher,
+                filesystem::FilesystemContentVerifier,
+                model::{
+                    FileProjectionPolicy, ImageDetail, ModelContentPart, NativeMediaIntent,
+                    NativeMediaPolicy,
+                },
+                tui::{ClipboardContent, prepare_image},
+            };
+            use base64::Engine as _;
+            let clipboard = prepare_image(2, 2, vec![255; 16]).expect("clipboard image");
+            let ClipboardContent::Image { jpeg, .. } = &clipboard else {
+                unreachable!()
+            };
+            let (selected, hold) = ContentPublisher::stage_once(
+                payloads.as_ref(),
+                OperationId::new(),
+                "attachments/selected.jpg",
+                jpeg,
+                "image/jpeg",
+                "selected.jpg",
+                None,
+            )?
+            .await?;
+            drop(hold);
+            let reader = FilesystemContentVerifier::new(
+                host.clone(),
+                &issuer.verifier(&mut None)?,
+                &signed,
+                65_536,
+                Some(&io),
+            )?;
+            let attached = attach_image(selected, reader.as_ref(), 4096).await?;
+            let pasted =
+                paste_image(payloads.as_ref(), OperationId::new(), &clipboard, 4096).await?;
+            provider = provider.with_content_reader(reader);
+            Arc::make_mut(&mut provider.config).images.insert(
+                model.name.clone(),
+                crate::ImageInput {
+                    maximum_bytes: 4096,
+                    maximum_total_bytes: 8192,
+                    maximum_images: 4,
+                    maximum_dimension: 1024,
+                    maximum_tokens: 1024,
+                },
+            );
+            transport
+                .expected_images
+                .lock()
+                .expect("fixture image expectations")
+                .push((
+                    base64::engine::general_purpose::STANDARD
+                        .encode(jpeg)
+                        .into_bytes(),
+                    2,
+                ));
+            let mut parts = vec![ModelContentPart::Text {
+                text: "question".into(),
+            }];
+            for attachment in [attached, pasted] {
+                parts.push(ModelContentPart::File {
+                    file: attachment.file,
+                    policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+                        intent: NativeMediaIntent::Image {
+                            detail: ImageDetail::Auto,
+                        },
+                        maximum_bytes: 4096,
+                        maximum_work: 1024,
+                        configuration: None,
+                    })),
+                });
+            }
+            ModelContent::Parts(parts)
+        } else {
+            ModelContent::Text("question".into())
+        };
+        let provider = Arc::new(provider);
         let command = ModelTaskCommand {
-            input: ModelContent::Text("question".into()),
+            input,
             selected_context: None,
             max_steps: 1,
             max_output_tokens: None,

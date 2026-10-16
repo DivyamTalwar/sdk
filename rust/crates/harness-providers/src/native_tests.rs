@@ -8,6 +8,7 @@ mod stock;
 pub(super) struct Fixture {
     pub(super) response: &'static str,
     pub(super) sent: AtomicUsize,
+    expected_images: Mutex<Vec<(Vec<u8>, usize)>>,
     cancel: Option<CancellationToken>,
     pending_body: bool,
     prefix: Option<&'static str>,
@@ -18,6 +19,7 @@ impl Fixture {
         Self {
             response,
             sent: AtomicUsize::new(0),
+            expected_images: Mutex::new(Vec::new()),
             cancel: None,
             pending_body: false,
             prefix: None,
@@ -45,6 +47,22 @@ impl HttpTransport for Fixture {
                     || request.headers.contains_key("x-api-key")
                     || request.headers.contains_key("x-goog-api-key")
             );
+            {
+                let expected = self
+                    .expected_images
+                    .lock()
+                    .expect("fixture image expectations");
+                for (bytes, count) in expected.iter() {
+                    assert_eq!(
+                        request
+                            .body
+                            .windows(bytes.len())
+                            .filter(|part| *part == bytes.as_slice())
+                            .count(),
+                        *count
+                    );
+                }
+            }
             drop(request);
             if let Some(cancel) = &self.cancel {
                 if self.pending_body {
