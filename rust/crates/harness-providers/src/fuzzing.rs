@@ -28,6 +28,23 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'R' {
+        if let Ok(block) = serde_json::from_slice::<acyclic_harness::model::ReasoningBlock>(input) {
+            let encoded = serde_json::to_vec(&block).unwrap();
+            let replay: acyclic_harness::model::ReasoningBlock =
+                serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(block, replay);
+            for family in ["anthropic", "responses", "gemini", "chat"] {
+                let mut target = block.origin.clone();
+                target.provider = family.into();
+                assert_eq!(
+                    crate::project_reasoning(&block, &target),
+                    crate::project_reasoning(&replay, &target)
+                );
+            }
+        }
+        return;
+    }
     if kind == b'C' {
         catalog_round_trip(input);
         return;

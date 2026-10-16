@@ -11,6 +11,7 @@ mod http;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
+mod reasoning;
 mod registry;
 mod resolved;
 mod spec;
@@ -28,6 +29,7 @@ pub use http::BrowserTransport;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
+pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec};
