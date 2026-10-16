@@ -198,23 +198,23 @@ impl Fixture {
             Limits::default().file_bytes,
             None,
         )?;
-        let manifest =
-            crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?;
-        let context_manifest = Some(
-            publisher
-                .stage_once(
-                    OperationId::from_bytes([17; 16]),
-                    "inputs/fixture.manifest.json",
-                    &manifest.encode(Limits::default())?,
-                    "application/json",
-                    "fixture.manifest.json",
-                    None,
-                )?
-                .await?
-                .0,
-        );
+        let bytes = crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?
+            .encode(Limits::default())?;
+        let digest = blake3::hash(&bytes);
+        let context_manifest = publisher
+            .stage_once(
+                OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
+                &format!("inputs/context/{digest}.json"),
+                &bytes,
+                "application/json",
+                "context-manifest.json",
+                None,
+            )?
+            .await?
+            .0;
         Ok(LocalHarness {
             task_files,
+            external_bindings: Default::default(),
             files: files.clone(),
             runtime,
             project: self.volumes[0].clone(),
@@ -222,7 +222,6 @@ impl Fixture {
             journal: self.volumes[2].clone(),
             verifier,
             signed,
-            external_bindings: Default::default(),
             model: Some((
                 Model::new(
                     "scripted".into(),
@@ -232,12 +231,10 @@ impl Fixture {
                 )?,
                 self.provider.clone(),
             )),
-            context_manifest,
+            context_manifest: Some(context_manifest),
             context_read_observer: None,
             #[cfg(feature = "hooks")]
-            hooks: Default::default(),
-            #[cfg(feature = "native-execution")]
-            checkout_context: false,
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -250,6 +247,8 @@ impl Fixture {
             admission: StateArc::new(Mutex::new(())),
             #[cfg(feature = "native-execution")]
             workspace: None,
+            #[cfg(feature = "native-execution")]
+            checkout_context: false,
         })
     }
 
