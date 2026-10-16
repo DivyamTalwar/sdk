@@ -9,7 +9,7 @@ pub(super) async fn verify_model_contents_scoped<'a>(
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
     for content in contents.clone() {
-        validate_model_content_bindings(content, limits, scope, io)?;
+        validate_model_content_limits(content, limits, scope, io)?;
     }
     let mut summaries = Vec::new();
     let result = async {
@@ -34,6 +34,7 @@ pub(super) async fn verify_model_contents_scoped<'a>(
                         "attenuated task cannot read model content",
                     ));
                 }
+                validate_model_binding(binding, scope, io)?;
             }
         }
         for content in contents {
@@ -60,8 +61,8 @@ pub(super) fn validate_model_content_scope(
     scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    validate_model_content_bindings(content, limits, scope, io)?;
-    for file in content.file_refs() {
+    validate_model_content_limits(content, limits, scope, io)?;
+    for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
             && !with_history_io(io, |work| {
                 crate::runtime::read_granted_with_work(scope.grants(), file, work)
@@ -73,11 +74,12 @@ pub(super) fn validate_model_content_scope(
                 "attenuated task cannot read model content",
             ));
         }
+        validate_model_binding(binding, scope, io)?;
     }
     Ok(())
 }
 
-fn validate_model_content_bindings(
+fn validate_model_content_limits(
     content: &ModelContent,
     limits: Limits,
     scope: Option<&RuntimeScope>,
@@ -87,19 +89,28 @@ fn validate_model_content_bindings(
     if let Some(scope) = scope {
         with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
     }
-    let schemas = scope.and_then(RuntimeScope::extension_schema_registry);
-    let runtime = scope.and_then(RuntimeScope::extension_runtime);
-    for (_, binding) in content.file_bindings() {
-        if let Some(binding) = binding {
-            let scope = scope.ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "original native task scope is unavailable",
-                )
-            })?;
-            binding.verify_original(scope.extensions(), schemas, runtime.as_deref(), io)?;
-        }
+    Ok(())
+}
+
+fn validate_model_binding(
+    binding: Option<&crate::model::NativeConfigurationBinding>,
+    scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    if let Some(binding) = binding {
+        let scope = scope.ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original native task scope is unavailable",
+            )
+        })?;
+        binding.verify_original(
+            scope.extensions(),
+            scope.extension_schema_registry(),
+            scope.extension_runtime().as_deref(),
+            io,
+        )?;
     }
     Ok(())
 }
