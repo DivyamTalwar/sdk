@@ -126,11 +126,12 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
-            ModelContentPart::ToolCall {
+            ModelContentPart::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } => {
+                ..
+            }) => {
                 charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                 crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                 if role != ModelRole::Assistant || pending.contains_key(call_id) {
@@ -335,11 +336,11 @@ impl PreparedModelRequest {
         }
         let fixed_tokens = u32::try_from(fixed_bytes)
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
-        let count = crate::context::ModelTokenCount {
-            request_digest: self.request_digest,
+        let count = crate::context::ModelTokenCount::from_upper_bounds(
+            self.request_digest,
             fixed_tokens,
             message_tokens,
-        };
+        );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = observer
             .map(|io| {

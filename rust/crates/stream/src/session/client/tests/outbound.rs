@@ -128,6 +128,7 @@ async fn paused_peer() -> Result<
         Fixture {
             controls,
             channel,
+            tls_client: None,
             counts,
             server,
         },
@@ -156,8 +157,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
             Some("Bearer fixture".parse()?),
             None,
             connect,
-        )
-        .await?;
+        );
         phase.set("opening redirected healthy follow");
         let mut records = client.follow(StreamPath::new("healthy")?, 1).await?;
         let rejected = Arc::new(tokio::sync::Notify::new());

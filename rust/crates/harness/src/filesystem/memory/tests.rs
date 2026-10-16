@@ -35,12 +35,11 @@ fn synthetic_token_count(
         })
         .collect::<Result<Vec<_>>>()?;
     let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
-    Ok(crate::context::ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: u32::try_from(fixed)
-            .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        u32::try_from(fixed).map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
         message_tokens,
-    })
+    ))
 }
 
 fn text_model(turns: usize) -> ScriptedModelProvider {
@@ -538,11 +537,11 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     let model = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: "read".into(),
-                    name: "read".into(),
-                    arguments: json!({"file": staged}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "read".into(),
+                    "read".into(),
+                    json!({"file": staged}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),
@@ -639,6 +638,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     let provider = Arc::new(text_model(2));
     let bundle = storage
         .builder()
+        .default_tools(false)
         .compaction(crate::context::CompactionPolicy::Disabled)
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
@@ -844,6 +844,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     );
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.tools.is_empty()));
     assert_eq!(requests[0].messages.len(), 1);
     assert_eq!(requests[1].messages.len(), 3);
     Ok(())

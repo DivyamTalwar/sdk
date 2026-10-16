@@ -23,6 +23,42 @@ mod digest_properties {
     }
 
     proptest! {
+        // Flat arrays need one output buffer and at most one array allocation,
+        // regardless of length. The former reserve-per-element path fails this.
+        #[test]
+        fn flat_arrays_reserve_once(entries in prop::collection::vec(any::<i64>(), 0..512)) {
+            let value = Value::Array(entries.iter().copied().map(Value::from).collect());
+            let mut charged = 0;
+            let measured = allocation_counter::measure(|| {
+                let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                    charged += match event {
+                        JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
+                        JsonCodecCharge::AllocationOperations { operations } => operations,
+                        _ => 0,
+                    };
+                    Ok(())
+                }).unwrap();
+                assert_eq!(copied, value);
+            });
+            prop_assert!(charged >= measured.count_total);
+            prop_assert_eq!(charged, 1 + u64::from(!entries.is_empty()));
+            prop_assert_eq!(measured.count_total, charged);
+            prop_assert_eq!(measured.bytes_current, 0);
+            let legacy = allocation_counter::measure(|| {
+                let mut values = Vec::new();
+                for entry in &entries {
+                    if values.len() == values.capacity() {
+                        values.try_reserve_exact(1).unwrap();
+                    }
+                    values.push(Value::from(*entry));
+                }
+                std::hint::black_box(values);
+            });
+            if entries.len() > 1 {
+                prop_assert!(legacy.count_total > 1);
+            }
+        }
+
         // Explicit reserves are exact; only whole-object B-tree funding has
         // bounded slack, from node occupancy rather than a split schedule.
         #[test]
@@ -201,6 +237,7 @@ mod digest_properties {
         exhausted_prefixes(&serde_json::json!({"": null}));
         exhausted_prefixes(&Value::from(6.237624688224859e252));
         exhausted_prefixes(&Value::from(-0.0));
+        exhausted_prefixes(&serde_json::json!(["],}", "\"\\,", [], {"a,b": [1, 2]}, 3]));
         exhausted_prefixes(
             &serde_json::json!({"\u{0}\n\\\"": ["\u{1f600}\t\r", -0.25, 1e100, u64::MAX]}),
         );
@@ -541,4 +578,87 @@ fn ordinary_record_bytes_and_raw_value_identity_remain_exact() -> Result<()> {
         expected
     );
     Ok(())
+}
+
+mod object_work {
+    use super::*;
+    use proptest::prelude::*;
+    mod oracle {
+        use crate as acyclic_harness;
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/bounded_json.rs"
+        ));
+    }
+    proptest! {
+        // Object work depends on structural nodes, never on descendant string bytes.
+        #[test]
+        fn object_construction_visits_each_node_once(depth in 1usize..8, text in "[a-z]{64,128}") {
+            let mut value = Value::String(text);
+            for _ in 0..depth { value = serde_json::json!({"child": value}); }
+            let mut items = 0;
+            let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                items += match event {
+                    JsonCodecCharge::Inspect { items } | JsonCodecCharge::Work { items, .. } => items,
+                    _ => 0,
+                };
+                Ok(())
+            }).unwrap();
+            prop_assert_eq!(&copied, &value);
+            let bound = (2 * depth + 1) as u64;
+            prop_assert_eq!(items, bound);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            oracle::check(&bytes);
+            // Negative control: even one of the former descendant scans violates the bound.
+            let mut full_scan = items;
+            for _ in &bytes { full_scan += 1; }
+            prop_assert!(full_scan > bound);
+        }
+    }
+    proptest! {
+        // Counts depend on nodes, independently of array width, nesting and text size.
+        #[test]
+        fn nested_and_wide_arrays_do_not_rescan(
+            depth in 1usize..12, width in 1usize..48, text in "[a-z]{32,96}",
+        ) {
+            let mut value = Value::Array((0..width).map(|_| Value::String(text.clone())).collect());
+            for _ in 0..depth { value = Value::Array(vec![value, Value::Array(Vec::new())]); }
+            let nodes = (width + 1 + 2 * depth) as u64;
+            let mut work = (0, 0);
+            let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                match event {
+                    JsonCodecCharge::Inspect { items } | JsonCodecCharge::Work { items, .. } => work.0 += items,
+                    JsonCodecCharge::Read { bytes } => work.1 += bytes,
+                    _ => {},
+                }
+                Ok(())
+            }).unwrap();
+            prop_assert_eq!(&copied, &value);
+            prop_assert_eq!(work, (nodes, 0));
+            let bytes = serde_json::to_vec(&value).unwrap();
+            oracle::check(&bytes);
+            // Negative control: traverse every descendant as the former pre-count did.
+            fn rescans(value: &Value) -> usize {
+                match value {
+                    Value::Array(entries) => serde_json::to_vec(value).unwrap().len() - 1
+                        + entries.iter().map(rescans).sum::<usize>(),
+                    _ => 0,
+                }
+            }
+            let scanned = rescans(&value) as u64;
+            prop_assert!(work.0 + scanned > nodes);
+            prop_assert!(work.1 + scanned > 0);
+        }
+    }
+    #[test]
+    fn checked_codec_fuzz_corpus() {
+        for bytes in [
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/empty").as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/nested"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/duplicates"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wide"),
+        ] {
+            oracle::check(bytes);
+        }
+    }
 }

@@ -1,25 +1,23 @@
 use super::*;
 
+#[cfg(any(test, acyclic_stream_loom))]
+pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
+            self.sync_attempts()?;
+            self.close_idle();
             tokio::select! {
+                changed = self.abandoned.changed(false) => changed?,
                 command = self.commands.recv() => match command { Some(command) => self.command(command)?, None => return Ok(()) },
                 released = self.released.next() => { self.released(released?)?; },
                 id = self.removed.next() => self.remove(id?)?,
-                ready = self.dials.next(), if !self.dials.is_empty() => {
-                    let (node,result) = ready.ok_or(StreamError::Unavailable)?;
-                    self.connecting.remove(&node);
-                    match result {
-                        Ok(ready) => {
-                            self.install(ready)?;
-                            self.pending.extend(self.routes.iter().filter(|(_,route)| route.node == node).map(|(id,route)| (*id,route.generation)));
-                        }
-                        Err(error) => self.fail_node(&node,&error),
-                    }
+                ready = future::poll_fn(|cx| poll_dials(&mut self.dials, cx)), if !self.dials.is_empty() => {
+                    let (node,epoch,result) = ready.ok_or(StreamError::Unavailable)?;
+                    self.dial_ready(node, epoch, result)?;
                 }
                 () = future::ready(()), if !self.pending.is_empty() => {
                     if let Some((id,generation)) = self.pending.pop_front()
@@ -38,9 +36,101 @@ impl Pool {
                     None => return Err(StreamError::Unavailable),
                 }
             }
+            self.close_idle();
         }
     }
-    fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
+    fn sync_attempts(&mut self) -> Result<(), StreamError> {
+        // Clear the wake flag before loading the epoch: abandonment either
+        // appears in this load or leaves a wake for the next dispatch turn.
+        self.abandoned.set(false)?;
+        let epoch = self.attempt_epoch.load(Ordering::Acquire);
+        if epoch == self.dial_epoch {
+            return Ok(());
+        }
+        self.dial_epoch = epoch;
+        self.dials.clear();
+        let stale = self
+            .routes
+            .iter()
+            .filter(|(_, route)| !route.opened && route.attempt_epoch != epoch)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in stale {
+            self.reject(id, StreamError::Unavailable);
+        }
+        Ok(())
+    }
+    pub(super) fn dial_ready(
+        &mut self,
+        node: String,
+        epoch: u64,
+        result: Result<Ready, StreamError>,
+    ) -> Result<(), StreamError> {
+        self.sync_attempts()?;
+        if epoch != self.dial_epoch {
+            // A credential callback may settle after its final owner cancelled.
+            // Neither its failure nor its success belongs to the successor dial.
+            return Ok(());
+        }
+        if !self.node_interested(&node) {
+            return Ok(());
+        }
+        match result {
+            Ok(ready) => {
+                let installed = self.install(ready)?;
+                if node.is_empty() && self.home.is_empty() {
+                    self.admissions.bind_home(&installed)?;
+                    self.home = installed.clone();
+                    for route in self
+                        .routes
+                        .values_mut()
+                        .filter(|route| route.node.is_empty())
+                    {
+                        route.node = installed.clone();
+                    }
+                }
+                self.pending.extend(
+                    self.routes
+                        .iter()
+                        .filter(|(_, route)| route.node == installed)
+                        .map(|(id, route)| (*id, route.generation)),
+                );
+            }
+            Err(error) => self.fail_node(&node, &error),
+        }
+        Ok(())
+    }
+    pub(super) fn close_idle(&mut self) {
+        if self.active.load(Ordering::Acquire) == 0 {
+            self.close_links();
+        } else {
+            let idle = self
+                .dials
+                .keys()
+                .filter(|node| !self.node_interested(node))
+                .cloned()
+                .collect::<Vec<_>>();
+            for node in idle {
+                // Dropping the owned future cancels connector/credential/Welcome
+                // work immediately; it cannot later publish a Link or failure.
+                self.dials.remove(&node);
+            }
+        }
+    }
+    pub(super) fn node_interested(&self, node: &str) -> bool {
+        self.routes
+            .values()
+            .any(|route| route.node == node && route.live())
+            || self.admissions.interested(node)
+    }
+    fn close_links(&mut self) {
+        self.links.clear();
+        self.reads.clear();
+        self.dials.clear();
+        self.pending.clear();
+        self.routes.clear();
+    }
+    pub(super) fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
             Ok(()) => true,
             Err(error) => {
@@ -50,19 +140,31 @@ impl Pool {
         }
     }
     pub(super) fn fail_link(&mut self, node: &str, error: &StreamError) {
-        self.links.remove(node);
+        if let Some(mut link) = self.links.remove(node)
+            && let Some(observation) = &mut link.observation
+        {
+            observation.finish(Some(error));
+        }
         self.fail_node(node, error);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
+        self.sync_attempts()?;
         match command {
             Command::Open {
                 id,
+                attempt_epoch,
                 acknowledge,
                 kind,
                 progress,
                 records,
                 ready,
+                observation,
             } => {
+                self.admissions.remove(id)?;
+                if attempt_epoch != self.dial_epoch {
+                    let _ = ready.send(Err(StreamError::Unavailable));
+                    return Ok(());
+                }
                 if self.routes.len() >= Limits::default().channels {
                     let _ = ready.send(Err(StreamError::Capacity));
                     return Ok(());
@@ -75,6 +177,7 @@ impl Pool {
                     id,
                     Route {
                         node: self.home.clone(),
+                        attempt_epoch,
                         kind,
                         generation: 1,
                         placement_epoch: 0,
@@ -87,6 +190,7 @@ impl Pool {
                         progress,
                         records,
                         ready: Some(ready),
+                        observation,
                     },
                 );
                 if self.links.contains_key(&self.home) {
@@ -173,9 +277,27 @@ impl Pool {
                 }) {
                     return Err(StreamError::Unavailable);
                 }
+                if let Kind::Follow(follow) = &route.kind {
+                    let preceding = wire_codec::session::preceding_follow(
+                        follow,
+                        opened.resume.as_ref().ok_or(StreamError::Unavailable)?,
+                    )?;
+                    if let Err(error) = wire_codec::session::confirm_follow(preceding, &opened) {
+                        if let Some(ready) = route.ready.take() {
+                            let _ = ready.send(Err(error.clone()));
+                        }
+                        let records = route.records.clone();
+                        self.remove(id)?;
+                        tokio::spawn(async move {
+                            let _ = records.send(Err(error)).await;
+                        });
+                        return Ok(());
+                    }
+                }
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Ok(id));
                 }
+                route.observation.record("generation", route.generation);
                 route.opened = true;
                 self.grant(id)
             }
@@ -183,6 +305,13 @@ impl Pool {
             Some(Body::Closed(closed)) => {
                 let error =
                     StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
+                if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
+                    && let Some(ready) = route.ready.take()
+                {
+                    let _ = ready.send(Err(error));
+                    self.routes.remove(&id);
+                    return Ok(());
+                }
                 // Errors are delivered after all earlier records, using one reserved slot.
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Ok(id));
@@ -316,7 +445,7 @@ impl Pool {
         for id in ids {
             if let Some(mut route) = self.routes.remove(&id) {
                 if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Ok(id));
+                    let _ = ready.send(Err(error.clone()));
                 }
                 let error = error.clone();
                 let records = route.records;
@@ -329,7 +458,8 @@ impl Pool {
     pub(super) fn fail(&mut self, error: &StreamError) {
         for (id, mut route) in std::mem::take(&mut self.routes) {
             if let Some(ready) = route.ready.take() {
-                let _ = ready.send(Ok(id));
+                let checked = matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty());
+                let _ = ready.send(if checked { Err(error.clone()) } else { Ok(id) });
             }
             let error = error.clone();
             let records = route.records;
@@ -338,4 +468,18 @@ impl Pool {
             });
         }
     }
+}
+
+pub(super) fn poll_dials(
+    dials: &mut BTreeMap<String, Dial>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<Option<(String, u64, Result<Ready, StreamError>)>> {
+    for (node, dial) in dials.iter_mut() {
+        if let std::task::Poll::Ready(result) = dial.as_mut().poll(cx) {
+            let node = node.clone();
+            dials.remove(&node);
+            return std::task::Poll::Ready(Some(result));
+        }
+    }
+    std::task::Poll::Pending
 }

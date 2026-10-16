@@ -46,11 +46,11 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
     let model = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: "read".into(),
-                    name: "read".into(),
-                    arguments: json!({"file":file}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    "read".into(),
+                    "read".into(),
+                    json!({"file":file}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: first_metadata.clone(),
                 }),
@@ -65,11 +65,11 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             ]),
         ])
         .with_token_counter(|request| {
-            Ok(ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 512,
-                message_tokens: vec![512; request.request().messages.len()],
-            })
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                512,
+                vec![512; request.request().messages.len()],
+            ))
         }),
     );
     let bundle = storage
