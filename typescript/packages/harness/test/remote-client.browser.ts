@@ -1,0 +1,67 @@
+import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+
+const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
+const encoder = new TextEncoder(), decoder = new TextDecoder();
+const request = (id: string) => ({ Task: { task: "task", file: { Request: `${id}.json` } } }) as const;
+const command = (id: string) => encoder.encode(JSON.stringify({ operationId: id, authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
+const limits = { commands: 8n, bytes: 4096n, durability: "Accepted" } as const;
+const queryLimits = { files: 32n, segments: 64n, bytes: 16384n };
+
+export async function test(endpoint: string) {
+  await initializeClientQueries();
+  const remote = WasmStream.connect(endpoint, () => "browser-test");
+  const local = await WasmStream.openBrowser(`remote-client-${crypto.randomUUID()}`, 64, 131072n);
+  const outbox = await TaskVolume.create(local, "client/files");
+  const target = await TaskVolume.create(remote, "agent/files");
+  const client = await HarnessClient.open(outbox, target, limits);
+  const query = await ClientQuery.open(target, "Root", null, queryLimits);
+  const views = query.views();
+  const cancel = Promise.withResolvers<void>();
+  const streamed = Promise.withResolvers<void>();
+  const seen: string[] = [];
+  let text = false;
+  const running = query.follow(delivery => {
+    const key = delivery.file?.key;
+    if (key && typeof key === "object" && "Task" in key) {
+      if (typeof key.Task.file === "object" && "Request" in key.Task.file) {
+        const id = JSON.parse(decoder.decode(delivery.file!.bytes)).operationId;
+        if (id !== "existing") seen.push(id);
+      }
+      if (typeof key.Task.file === "object" && "Chunk" in key.Task.file) {
+        assert(decoder.decode(delivery.file!.bytes) === "streaming markdown", "streamed text delta changed");
+        text = true;
+      }
+    }
+  }, () => { if (text) streamed.resolve(); }, cancel.promise);
+  await fetch(`${endpoint}/fixture/offline`, { method: "POST" });
+  await client.enqueue(request("first"), command("first"));
+  await client.enqueue(request("second"), command("second"));
+  assert(client.pending() === 2, "indeterminate publication retired an offline request");
+  const idle = client.whenIdle();
+  await fetch(`${endpoint}/fixture/recover`, { method: "POST" });
+  await idle;
+  assert(client.pending() === 0, "Rust did not automatically drain after recovery");
+
+  // The target already owns this immutable identity with different content.
+  await target.write(await target.head(), request("rejected"), command("existing"), null);
+  await fetch(`${endpoint}/fixture/offline`, { method: "POST" });
+  await client.enqueue(request("rejected"), command("rejected"));
+  await client.enqueue(request("valid"), command("valid"));
+  const rejectedThenValid = client.whenIdle();
+  await fetch(`${endpoint}/fixture/recover`, { method: "POST" });
+  await rejectedThenValid;
+  assert(client.lastError()?.kind === "Rejected", "terminal rejection was not reported and retired");
+  assert(client.pending() === 0, "terminal rejection stranded the next request");
+  client.free();
+  const restored = await HarnessClient.open(outbox, target, limits);
+  assert(restored.pending() === 0, "reopening resurrected retired requests");
+  const chunk = { Task: { task: "task", file: { Chunk: { turn: 9007199254740993n, sequence: 1n } } } } as const;
+  await target.write(await target.head(), chunk, encoder.encode("streaming markdown"), "Text");
+  await streamed.promise;
+  const head = { Task: { task: "task", file: { TextHead: { turn: 9007199254740993n, channel: "Text" } } } } as const;
+  assert(views.segments(head)?.map(segment => decoder.decode(segment)).join("") === "streaming markdown", "remote updates bypassed the shared Rust view fold");
+  assert(JSON.stringify(seen) === JSON.stringify(["first", "second", "valid"]), `requests were skipped, reordered or duplicated: ${seen}`);
+  cancel.resolve(); await running;
+  restored.free(); views.free(); query.free(); outbox.free(); target.free(); local.free(); remote.free();
+  return { requests: seen, textDeltas: 1, javascriptRetries: 0 };
+}

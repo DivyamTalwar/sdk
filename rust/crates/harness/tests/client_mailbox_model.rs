@@ -1,3 +1,4 @@
+//! Exhaustive ownership and wakeup checks over the production mailbox.
 #![cfg(acyclic_harness_loom)]
 
 #[test]

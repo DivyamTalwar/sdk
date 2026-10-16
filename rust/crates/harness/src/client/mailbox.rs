@@ -39,6 +39,22 @@ fn wake(waker: Option<Waker>) {
     }
 }
 impl<T> Sender<T> {
+    pub(crate) fn close(&self) {
+        let (value, senders, receiver) = {
+            let mut state = self.0.lock().expect("mailbox lock");
+            state.sender_closed = true;
+            (
+                state.value.take(),
+                std::mem::take(&mut state.senders),
+                state.receiver.take(),
+            )
+        };
+        drop(value);
+        for (_, sender) in senders {
+            wake(sender);
+        }
+        wake(receiver);
+    }
     pub(crate) fn is_closed(&self) -> bool {
         self.0.lock().expect("mailbox lock").receiver_closed
     }
@@ -85,7 +101,7 @@ impl<T: Unpin> Future for Send<'_, T> {
         let sender = self.sender;
         let (result, notify, retired) = {
             let mut state = sender.0.lock().expect("mailbox lock");
-            if state.receiver_closed {
+            if state.receiver_closed || state.sender_closed {
                 return Poll::Ready(Err(()));
             }
             let first = state.senders.first_key_value().map(|(id, _)| *id);

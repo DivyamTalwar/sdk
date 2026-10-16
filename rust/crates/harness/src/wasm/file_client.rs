@@ -101,4 +101,10 @@ impl WasmFileClient {
     pub fn last_error(&self) -> JsValue {
         self.state.error.borrow().clone()
     }
+
+    /// Stops waiting and leaves all unacknowledged intent in its volume.
+    #[wasm_bindgen]
+    pub fn close(&self) {
+        self.commands.close();
+    }
 }

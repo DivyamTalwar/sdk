@@ -57,5 +57,10 @@ pub fn verify_mailbox(omit_wake: bool) {
         drop(waiting);
         assert!(reply.is_closed());
         assert_eq!(reply.reply(7), Err(()));
+        let (sender, mut receiver) = channel();
+        assert_eq!(block_on(sender.send(1)), Ok(()));
+        sender.close();
+        assert_eq!(block_on(receiver.recv()), None);
+        assert_eq!(block_on(sender.send(2)), Err(()));
     });
 }
