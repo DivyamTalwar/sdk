@@ -187,7 +187,7 @@ async fn followed_presentation_rows_are_declarative_and_live() {
         .await
         .unwrap();
     assert!(renderer.screen_for(&files).is_err());
-    let before = renderer.screen().transcript.to_vec();
+    let before = format!("{:?}", renderer.screen().transcript);
     files
         .write_state(
             CommandFileRoot::Config,
@@ -197,7 +197,7 @@ async fn followed_presentation_rows_are_declarative_and_live() {
         .await
         .unwrap();
     assert!(renderer.configure(&views, &owner, &files).is_err());
-    assert_eq!(renderer.screen().transcript, before.as_slice());
+    assert_eq!(format!("{:?}", renderer.screen().transcript), before);
 }
 
 #[tokio::test]

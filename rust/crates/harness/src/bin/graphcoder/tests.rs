@@ -547,7 +547,7 @@ proptest::proptest! {
     // document panel, without mutating or discarding the other query projection.
     #[test]
     fn followed_command_layout_selects_document_panels(sequence in proptest::collection::vec(proptest::bool::ANY, 1..8)) {
-        use acyclic_harness::{client::{CommandResolution, CommandQuery, CommandSession, DocumentViews}, task_volume::{Component, TaskVolume}};
+        use acyclic_harness::{client::{CommandResolution, CommandQuery, CommandSession, DocumentViews}, task_volume::{PlanName, TaskVolume}};
         use acyclic_stream::{MemoryStream, StreamPath};
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
@@ -555,7 +555,7 @@ proptest::proptest! {
             let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
             let mut views = ClientViews::default();
             let mut documents = DocumentViews { goal: Some("Goal contents".into()), ..DocumentViews::default() };
-            documents.plans.insert(Component::new("layout").unwrap(), "Plan contents".into());
+            documents.plans.insert(PlanName::new("layout").unwrap(), "Plan contents".into());
             views.documents.insert(key, documents);
             let mut renderer = ClientRenderer::default();
             renderer.update(&views, &owner);

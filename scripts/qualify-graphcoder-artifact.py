@@ -13,11 +13,12 @@ for line in sys.stdin:
             print(rendered, end="", file=sys.stderr)
     if (message.get("reason") == "compiler-artifact"
             and message.get("profile", {}).get("test")
-            and "lib" in message["target"]["kind"]
             and message.get("executable")):
+        if executable is not None and executable != message["executable"]:
+            sys.exit("Qualification requires one focused test target")
         executable = message["executable"]
 if executable is None:
-    sys.exit("Cargo did not produce the Harness test executable")
+    sys.exit("Cargo did not produce a test executable")
 
 listed = subprocess.check_output([executable, "--list"], text=True)
 tests = [line.removesuffix(": test") for line in listed.splitlines()

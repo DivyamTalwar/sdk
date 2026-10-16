@@ -110,5 +110,15 @@
     "visible": [
       "ab"
     ]
+  },
+  {
+    "row": "SGR mouse drag selects prompt text before keyboard copy",
+    "text": "abcd",
+    "bytes": "\u001b[<0;2;2M\u001b[<32;5;2M\u001b[<0;5;2m\u0003",
+    "expected": "abcd",
+    "visible": [
+      "abcd"
+    ],
+    "copied": "abc"
   }
 ]

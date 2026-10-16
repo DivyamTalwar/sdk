@@ -194,7 +194,7 @@
     "visible": []
   },
   {
-    "row": "Enter submission (typed input boundary; ConPTY byte decoding remains #604)",
+    "row": "Enter submission at the typed input boundary",
     "text": "abc",
     "events": [
       {

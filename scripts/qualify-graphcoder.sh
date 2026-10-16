@@ -11,7 +11,8 @@ python3 scripts/qualify-graphcoder-artifact.py \
     local::tests::checkout_reconciliation:: local::tests::reconciliation_interruptions:: \
     local::checkout_tools::publisher::tests:: tools::git::view::tests::
 
-cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test client_session documents::
+cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test client_session --no-run --message-format=json |
+python3 scripts/qualify-graphcoder-artifact.py documents:: views:: jsonl_tests::
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test context-discovery manifest::
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test default_tools
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support --test git_executor facade_commits_branches_merges_and_inspects_managed_files
