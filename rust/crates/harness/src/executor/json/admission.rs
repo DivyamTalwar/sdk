@@ -346,8 +346,11 @@ impl Lexical {
             }
         };
         if item {
-            if depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
+            if self.items >= bounds.maximum_items {
                 return Err(boundary("JSON exceeds declared structural bound", code));
+            }
+            if depth > bounds.maximum_depth {
+                return Err(boundary("JSON nesting limit exceeded", code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             self.items += 1;
@@ -369,8 +372,10 @@ pub(super) fn source(
     }
     let charge = RefCell::new(charge);
     let mut lexical = Lexical::default();
+    charge.borrow_mut()(JsonCodecCharge::Read {
+        bytes: bytes.len() as u64,
+    })?;
     for byte in bytes {
-        charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
         lexical.byte(*byte, bounds, code, &charge)?;
     }
     if lexical.string || lexical.depth != 0 {
