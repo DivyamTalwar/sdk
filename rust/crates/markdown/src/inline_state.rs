@@ -40,6 +40,7 @@ struct Snapshot {
     bracket: usize,
     labels: [Option<Range<usize>>; 2],
     opaque: Option<usize>,
+    frontier: usize,
 }
 
 struct Code {
@@ -80,6 +81,7 @@ impl State {
             bracket: self.bracket,
             labels: self.labels.clone(),
             opaque: self.opaque,
+            frontier: self.earliest(usize::MAX),
         }
     }
 
@@ -111,7 +113,9 @@ impl State {
             self.bracket().map(|bracket| bracket.frontier),
             self.labels.iter().flatten().next().map(|label| label.start),
             self.opaque,
-            self.codes.first().map(|code| code.opening.start),
+            self.codes
+                .first()
+                .map(|code| code.opening.start.min(code.before.frontier)),
         ]
         .into_iter()
         .flatten()

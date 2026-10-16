@@ -7,3 +7,4 @@
 cc b71b8e0352a57a78171e007a6a1650d6762fd47638f40a67ae9e410326190b7c # shrinks to chunks = ["**bold**"]
 cc f795c1b0c33c7c6e2fc52fd95312415508f412810dfa757afaee21322958b385 # shrinks to input = ["¡", "𐀀", "𐡜", "\t", "/"], splits = [116, 16, 167, 20, 183, 99]
 cc 6d853982e0a8e2fefed6cc13bb23d65122c9925dcfb1f120be8cfebed8091b0b # shrinks to [backslash, newline, U+00A1]
+cc 03e55729085cb08e7c9dd7345d9162278d70e791d07a910e5a8c79b0473027b3 # shrinks to input = ["*", "`", "*", "\\", "`", "*"], splits = []
