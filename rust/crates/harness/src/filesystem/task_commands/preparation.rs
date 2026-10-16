@@ -306,14 +306,19 @@ where
         if command.kind == TASK_INSPECT_COMMAND_KIND {
             let input: TaskInspectCommand = mail::decode_command(payload, io)?;
             if !context.scope().grants().contains("operation:observe") {
-                return Err(boundary(
+                return query::failure(
+                    boundary(io, ErrorCode::Unauthorized, "task lacks operation:observe"),
                     io,
-                    ErrorCode::Unauthorized,
-                    "task lacks operation:observe",
-                ));
+                );
             }
-            let source = self.runtime.admission_observed(input.task, io).await?;
-            let outcome = self.runtime.outcome_observed(input.task, io).await?;
+            let source = match self.runtime.admission_observed(input.task, io).await {
+                Ok(source) => source,
+                Err(error) => return query::failure(error, io),
+            };
+            let outcome = match self.runtime.outcome_observed(input.task, io).await {
+                Ok(outcome) => outcome,
+                Err(error) => return query::failure(error, io),
+            };
             #[derive(Serialize)]
             struct Inspection<'a> {
                 task: TaskId,
@@ -336,10 +341,7 @@ where
             let input: TaskJoinCommand = mail::decode_command(payload, io)?;
             match self.observe_direct_child(task, input.child, io).await {
                 Ok(outcome) => outcome,
-                Err(Error::NotFound(message) | Error::Unauthorized(message)) => {
-                    return ready(Outcome::<Value>::Failed { message }, io);
-                }
-                Err(error) => return Err(error),
+                Err(error) => return query::failure(error, io),
             }
         } else {
             let input: TaskObserveCommand = mail::decode_command(payload, io)?;

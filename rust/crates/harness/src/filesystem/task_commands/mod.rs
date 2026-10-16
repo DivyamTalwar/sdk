@@ -27,6 +27,7 @@ mod effects;
 mod mail;
 mod model;
 mod preparation;
+mod query;
 #[cfg(test)]
 mod tests;
 mod tool;
