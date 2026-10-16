@@ -47,7 +47,10 @@ impl ModelProvider for ModelEffects {
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.accounting.context_capacity(model)
     }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> BoxProviderFuture<'a, Result<ModelTokenCount>> {
         self.accounting.count_tokens(request)
     }
 

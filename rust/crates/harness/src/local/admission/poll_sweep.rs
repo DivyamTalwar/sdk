@@ -159,7 +159,7 @@ impl Fixture {
                 None,
             )?;
         }
-        let (runtime, signed) = runtime::open(runtime::Configuration {
+        let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
             files: files.clone(),
             #[cfg(feature = "native-execution")]
             workspace: None,
@@ -190,16 +190,21 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
-        let task_files = Arc::new(
-            crate::task_volume::TaskFiles::open(
-                stream.clone(),
-                &self.volumes[3],
-                &verifier,
-                &signed,
-                Limits::default().file_bytes,
-            )
-            .await?,
-        );
+        let publisher = FilesystemContentPublisher::new(
+            files.clone(),
+            &self.volumes[2],
+            &verifier,
+            &signed,
+            Limits::default().file_bytes,
+            None,
+        )?;
+        let context_manifest = crate::local::turn::default_manifest(
+            publisher.as_ref(),
+            &tools,
+            Limits::default(),
+            None,
+        )
+        .await?;
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -216,7 +221,7 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context: ContextPipeline::default(),
+            context_manifest,
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
