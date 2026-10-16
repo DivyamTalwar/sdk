@@ -198,9 +198,8 @@ impl Fixture {
             Limits::default().file_bytes,
             None,
         )?;
-        let manifest =
-            crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?;
-        let bytes = manifest.encode(Limits::default())?;
+        let bytes = crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?
+            .encode(Limits::default())?;
         let digest = blake3::hash(&bytes);
         let context_manifest = publisher
             .stage_once(
@@ -232,7 +231,7 @@ impl Fixture {
             context_manifest: Some(context_manifest),
             context_read_observer: None,
             #[cfg(feature = "hooks")]
-            hooks: Default::default(),
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
