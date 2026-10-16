@@ -1,4 +1,19 @@
+mod compiler_probe;
+
 fn main() {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments
+        .first()
+        .is_some_and(|arg| std::path::Path::new(arg).is_absolute())
+    {
+        match compiler_probe::run(&arguments) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("fixture compiler: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     let args = std::env::args().collect::<Vec<_>>();
     assert!(args.windows(2).any(|pair| pair[0] == "--user-agent"
         && pair[1].starts_with("acyclic-sdk-docs/")

@@ -2,6 +2,8 @@ use super::*;
 use proptest::prelude::*;
 use std::cell::Cell;
 use std::fs::{File, FileTimes};
+#[path = "../../tests/support/compiler_probe.rs"]
+mod compiler_probe;
 
 proptest! {
     // The real memoization transition runs over generated observations, without

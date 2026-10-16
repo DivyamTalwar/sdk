@@ -72,6 +72,9 @@ pub(super) fn path() -> std::ffi::OsString {
 
 // Leaf slot: release it before any Cargo work or fixture locks.
 static CARGO: sync::Mutex<Option<sync::Arc<PathBuf>>> = sync::Mutex::new(None);
+// Leaf slot, entered after CARGO has been released; construction only creates
+// a private directory. The existing initialization models cover publication.
+static PROBE_CACHE: sync::Mutex<Option<sync::Arc<PathBuf>>> = sync::Mutex::new(None);
 // Independent leaf slots: constructors do not acquire another fixture slot.
 static FIXTURES: [sync::Mutex<Option<sync::Arc<Fixture>>>; 3] =
     [const { sync::Mutex::new(None) }; 3];
@@ -110,6 +113,34 @@ pub(super) fn configure(command: &mut Command) {
         // Private fixtures do not inherit this checkout's static-CRT flags.
         // Resolver/lock configuration is still discovered by the real Cargo.
         .env("CARGO_ENCODED_RUSTFLAGS", "");
+    let cargo = cargo();
+    let sysroot = cargo.parent().unwrap().parent().unwrap();
+    if let Some(host) = sysroot
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("1.98.1-"))
+    {
+        let cache = sync::get_or_try_init(&PROBE_CACHE, || {
+            Ok::<_, std::io::Error>(
+                tempfile::Builder::new()
+                    .prefix("compiler-probes-")
+                    .tempdir_in(temp_dir())?
+                    .keep(),
+            )
+        })
+        .unwrap();
+        command
+            .env("RUSTC_WRAPPER", binary("registry-transport-fixture"))
+            .env("SDK_FIXTURE_COMPILER_CACHE", &*cache)
+            .env("SDK_FIXTURE_RUSTC", rustc())
+            .env(
+                "SDK_FIXTURE_NIGHTLY_RUSTC",
+                sysroot.parent().unwrap().join(format!(
+                    "nightly-2026-07-01-{host}/bin/rustc{}",
+                    std::env::consts::EXE_SUFFIX
+                )),
+            );
+    }
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());

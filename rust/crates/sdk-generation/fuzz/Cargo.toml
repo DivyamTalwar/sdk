@@ -37,3 +37,10 @@ path = "fuzz_targets/identity_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "compiler_probe"
+path = "fuzz_targets/compiler_probe.rs"
+test = false
+doc = false
+bench = false
