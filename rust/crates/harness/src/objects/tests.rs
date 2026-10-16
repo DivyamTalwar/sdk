@@ -70,6 +70,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             "text/plain",
             "one.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -81,6 +82,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await?
@@ -102,6 +104,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             "text/plain",
             "one.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -114,6 +117,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await
@@ -181,6 +185,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             "application/vnd.acyclic.harness.attachments+json",
             "one.json",
             None,
+            None,
         )?
         .await?
         .0;
@@ -228,6 +233,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"denied",
                 "text/plain",
                 "denied.txt",
+                None,
                 None
             )?
             .await
@@ -241,6 +247,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "changed.txt",
+                None,
                 None
             )?
             .await
@@ -254,6 +261,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"other bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await
@@ -267,6 +275,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await
@@ -340,6 +349,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             b"replacement bytes",
             "text/plain",
             "one.txt",
+            None,
             None,
         )?
         .await?
@@ -505,6 +515,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
             "text/plain",
             "a.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -515,6 +526,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
             b"bucket b",
             "text/plain",
             "b.txt",
+            None,
             None,
         )?
         .await?

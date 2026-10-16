@@ -15,6 +15,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             b"original",
             "application/json",
             "original.json",
+            None,
             Some(&committed_io),
         )?
         .await?;
@@ -28,13 +29,14 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             "text/plain",
             "later.txt",
             None,
+            None,
         )?
         .await?;
     let observed_io =
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
     let (recovered, _recovered_hold) = storage
         .publisher
-        .observe_staged_once(operation, 1024, Some(&observed_io))?
+        .observe_staged_once(operation, 1024, None, Some(&observed_io))?
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
     let read_io =
@@ -56,6 +58,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 b"original",
                 "text/plain",
                 "changed.txt",
+                None,
                 Some(&committed_io)
             )?
             .await
@@ -74,6 +77,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 b"never",
                 "text/plain",
                 "never",
+                None,
                 Some(&cancelled_io)
             )
             .is_err()
@@ -92,6 +96,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 b"never",
                 "text/plain",
                 "never",
+                None,
                 Some(&denied_io)
             )
             .is_err()
@@ -99,7 +104,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert!(
         storage
             .publisher
-            .observe_staged_once(denied_operation, 1024, Some(&observed_io))?
+            .observe_staged_once(denied_operation, 1024, None, Some(&observed_io))?
             .await?
             .0
             .is_none()
@@ -142,6 +147,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
             b"never",
             "text/plain",
             "never",
+            None,
             Some(&io)
         ),
         Err(Error::NativeBoundary {
@@ -166,6 +172,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"never",
                 "text/plain",
                 "never",
+                None,
                 Some(&frame_io)
             )
             .is_err()
@@ -180,6 +187,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
             b"original",
             "application/json",
             "original.json",
+            None,
             Some(&io),
         )?
         .await?;
@@ -205,6 +213,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"original",
                 "text/plain",
                 "changed",
+                None,
                 Some(&io)
             )?
             .await
@@ -222,6 +231,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"never",
                 "text/plain",
                 "never",
+                None,
                 Some(&io)
             )
             .is_err()
@@ -241,6 +251,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"never",
                 "text/plain",
                 "never",
+                None,
                 Some(&denied_io)
             )?
             .await
@@ -393,6 +404,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 1024,
                 &key,
                 None,
+                None,
                 Some(&path_io)
             )
             .await,
@@ -410,6 +422,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &key,
                 ".system/private",
                 1024,
+                None,
                 Some(&path_io)
             )
             .await,
@@ -439,6 +452,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             1024,
             &key,
             None,
+            None,
             Some(&io),
         )
         .await?;
@@ -456,6 +470,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &IdempotencyKey::new("head-edit")?,
             None,
             None,
+            None,
         )
         .await?;
     let recovered = storage
@@ -466,6 +481,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &key,
             "inputs/original.json",
             1024,
+            None,
             Some(&io),
         )
         .await?
@@ -492,6 +508,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 1024,
                 &key,
                 None,
+                None,
                 Some(&io)
             )
             .await
@@ -507,6 +524,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &key,
                 "inputs/changed.json",
                 1024,
+                None,
                 Some(&io)
             )
             .await
@@ -521,6 +539,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &IdempotencyKey::new("proven-absent-operation")?,
                 "inputs/original.json",
                 1024,
+                None,
                 Some(&io)
             )
             .await?
@@ -547,6 +566,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &key,
                 "inputs/original.json",
                 1024,
+                None,
                 Some(&io)
             )
             .await,

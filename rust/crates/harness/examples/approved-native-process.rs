@@ -194,6 +194,7 @@ where
             &IdempotencyKey::new("example-source")?,
             None,
             None,
+            None,
         )
         .await?;
     let runtime = task::open(
@@ -363,6 +364,7 @@ where
             "application/json",
             "request.json",
             None,
+            None,
         )?
         .await?
         .0;
@@ -373,6 +375,7 @@ where
             b"{\"type\":\"object\"}",
             "application/schema+json",
             "schema.json",
+            None,
             None,
         )?
         .await?

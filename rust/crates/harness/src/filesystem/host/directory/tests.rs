@@ -78,6 +78,7 @@ async fn fixture(
             &IdempotencyKey::new(format!("row-{index}"))?,
             None,
             None,
+            None,
         )
         .await?;
         if keep {

@@ -191,6 +191,7 @@ pub(super) async fn prepare_case(
                 &IdempotencyKey::new(format!("planned-input-{label}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         let command = WorkflowCommand {

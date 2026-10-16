@@ -92,6 +92,7 @@ where
                             maximum_bytes: self.maximum_payload_bytes,
                             internal_class: Some(InternalContentClass::Execution),
                             scope: &self.scope,
+                            ceiling: None,
                         },
                         Some(&io),
                     )

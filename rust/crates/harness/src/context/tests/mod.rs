@@ -127,6 +127,7 @@ impl ContentPublisher for TestPayloadStore {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<

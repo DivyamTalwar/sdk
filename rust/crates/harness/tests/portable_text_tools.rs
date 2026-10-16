@@ -45,6 +45,7 @@ async fn single_file_publication_never_falls_back_to_ordinary_staging() -> Resul
             b"one",
             "text/plain",
             "one.txt",
+            None,
             None
         ),
         Err(Error::Unsupported(_))
@@ -65,6 +66,7 @@ impl ContentPublisher for OrdinaryPublisher {
         _: &'a [u8],
         _: &'a str,
         _: &'a str,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<

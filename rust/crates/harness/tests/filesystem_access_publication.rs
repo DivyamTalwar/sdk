@@ -37,7 +37,7 @@ proptest! {
             let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &scope,
                 &fixture.volume, VolumeOperation::Write, 4096, &mut None)?;
             let result = fixture.host.content_for_operation(&fixture.volume, &grant,
-                &IdempotencyKey::new("file")?, "secrets/key", 4096, None).await;
+                &IdempotencyKey::new("file")?, "secrets/key", 4096, None, None).await;
             let allowed = list && path && !expired && !denied;
             assert_eq!(result.is_ok(), allowed, "{result:?}");
             if allowed {
@@ -87,6 +87,7 @@ async fn legacy_write_grant_does_not_disclose_cached_metadata() -> Result<(), Bo
                 "secrets/key",
                 4096,
                 None,
+                None,
             )
             .await;
         assert_eq!(result.is_ok(), read);
@@ -117,6 +118,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
             "text/plain",
             "cached",
             None,
+            None,
         )?
         .await?;
     let cancel = CancellationToken::new();
@@ -142,7 +144,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
         fixture.publish_policy(policy).await?;
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
         let result = writer
-            .observe_staged_once(operation, 4096, Some(&io))?
+            .observe_staged_once(operation, 4096, None, Some(&io))?
             .await;
         assert_eq!(result.is_ok(), !denied);
         drop(result);

@@ -42,6 +42,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 &IdempotencyKey::new(format!("row-{index}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         if hidden {

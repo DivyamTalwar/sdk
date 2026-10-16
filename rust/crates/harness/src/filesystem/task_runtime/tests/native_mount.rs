@@ -75,6 +75,7 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
             &IdempotencyKey::new("lazy-native-input")?,
             None,
             None,
+            None,
         )
         .await?;
     let cancellation = CancellationToken::new();

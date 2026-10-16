@@ -114,6 +114,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             "text/plain",
             "source.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -124,6 +125,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             b"later workspace content",
             "text/plain",
             "source.txt",
+            None,
             None,
         )?
         .await?

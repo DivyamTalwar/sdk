@@ -167,30 +167,6 @@ mod parent;
 pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    async fn content_for_operation_impl(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        key: &IdempotencyKey,
-        expected_path: Option<&str>,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<FileRef>> {
-        grant.require(volume, VolumeOperation::Write, io)?;
-        self.content_for_operation_record_io(
-            PublicationLookup {
-                volume,
-                key,
-                expected_path,
-                maximum_bytes,
-                internal_class: None,
-                scope: grant.policy_scope(),
-            },
-            io,
-        )
-        .await
-    }
-
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -208,6 +184,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&GenerationRef>,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<FileRef>
     where
@@ -215,6 +192,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         O: 'static,
     {
         grant.require(volume, VolumeOperation::Write, io)?;
+        if let Some(grants) = ceiling {
+            if !crate::executor::with_history_io(io, |work| {
+                crate::core::volume_write_granted_with_work(grants, volume, work)
+            })? {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "content caller lacks a filesystem write grant",
+                ));
+            }
+        }
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(stock_boundary(
                 io,
@@ -355,7 +343,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?
         .await?;
         let authorized_generation = self
-            .authorize_content_write(&workspace, grant, provisional.path(), prior.is_some(), io)
+            .authorize_content_write(
+                &workspace,
+                grant,
+                provisional.path(),
+                prior.is_some(),
+                ceiling,
+                io,
+            )
             .await?;
         let generation_hold = io
             .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))

@@ -90,6 +90,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &IdempotencyKey::new("admitted-content")?,
             None,
             None,
+            None,
         )
         .await?;
     let orphan = host
@@ -102,6 +103,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("unpublished-content")?,
+            None,
             None,
             None,
         )
@@ -191,6 +193,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &IdempotencyKey::new("advanced-head")?,
         None,
         None,
+        None,
     )
     .await?;
     let retried = host
@@ -203,6 +206,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
             None,
             None,
         )
@@ -218,6 +222,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
             None,
             None
         )

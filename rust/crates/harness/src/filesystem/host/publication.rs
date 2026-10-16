@@ -8,6 +8,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub maximum_bytes: u64,
     pub internal_class: Option<InternalContentClass>,
     pub scope: &'a Scope,
+    pub ceiling: Option<&'a crate::Capabilities>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -30,6 +31,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             maximum_bytes,
             internal_class,
             scope,
+            ceiling,
         } = request;
         volume.validate(&mut Some(&mut io.history_io()))?;
         if volume.provider() != &self.provider {
@@ -93,6 +95,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_or("", |(parent, _)| parent),
             Some(io),
         )?;
+        super::super::access::require_directory_ceiling(
+            ceiling,
+            volume,
+            recorded
+                .0
+                .0
+                .path()
+                .rsplit_once('/')
+                .map_or("", |(parent, _)| parent),
+            Some(io),
+        )?;
         let label = crate::core::filesystem_scope_label(
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
@@ -103,7 +116,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 scope,
                 Some(original.id()),
                 super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
-                None,
+                ceiling,
                 io,
             )
             .await?;

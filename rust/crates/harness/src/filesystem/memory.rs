@@ -378,7 +378,15 @@ impl MemoryHarnessStorage {
     ) -> Result<FileRef> {
         let (file, _hold) = self
             .publisher
-            .stage(operation_id, path, bytes, media_type, display_name, None)?
+            .stage(
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                None,
+                None,
+            )?
             .await?;
         Ok(file)
     }

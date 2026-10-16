@@ -63,6 +63,7 @@ async fn put(
             4096,
             &IdempotencyKey::new(key)?,
             None,
+            None,
             io,
         )
         .await
@@ -241,6 +242,7 @@ async fn publication_refuses_a_generation_older_than_its_transaction_head()
                 4096,
                 &IdempotencyKey::new("stale")?,
                 Some(&prior),
+                None,
                 io.as_ref(),
             )
             .await;

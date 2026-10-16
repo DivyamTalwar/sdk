@@ -358,7 +358,12 @@ impl TaskContext {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
         let (file, hold) = writer
-            .observe_staged_once(operation_id, scope.limits.file_bytes, io)?
+            .observe_staged_once(
+                operation_id,
+                scope.limits.file_bytes,
+                Some(scope.grants()),
+                io,
+            )?
             .await?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;

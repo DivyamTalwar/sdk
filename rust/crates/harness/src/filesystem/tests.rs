@@ -219,6 +219,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             &IdempotencyKey::new("stage-first")?,
             None,
             None,
+            None,
         )
         .await?;
     let second = host
@@ -233,6 +234,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             &IdempotencyKey::new("stage-second")?,
             None,
             None,
+            None,
         )
         .await?;
     assert_eq!(
@@ -245,6 +247,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "first.txt",
             16,
             &IdempotencyKey::new("stage-first")?,
+            None,
             None,
             None
         )
@@ -270,6 +273,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
                 display_name,
                 16,
                 &IdempotencyKey::new("stage-first")?,
+                None,
                 None,
                 None
             )
@@ -435,6 +439,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &IdempotencyKey::new("stage-later")?,
         None,
         None,
+        None,
     )
     .await?;
     let (old_generation, old_page) = delegated_reader
@@ -507,6 +512,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("internal-write")?,
             None,
+            None,
             None
         )
         .await
@@ -522,6 +528,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "empty.txt",
             16,
             &IdempotencyKey::new("stage-empty")?,
+            None,
             None,
             None,
         )
@@ -565,6 +572,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "escape",
             16,
             &IdempotencyKey::new("invalid-path")?,
+            None,
             None,
             None
         )
@@ -657,6 +665,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
             "input.txt",
             32,
             &IdempotencyKey::new("input-upload")?,
+            None,
             None,
             None,
         )

@@ -7,6 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         replay: bool,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
         let owned;
@@ -28,7 +29,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 scope,
                 None,
                 capability_payload(label, VolumeOperation::Write, io)?,
-                None,
+                ceiling,
                 io,
             )
             .await?;

@@ -226,6 +226,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
 }
 
 /// Owner-bound, bounded publication on the caller's existing ledger.
+/// A supplied caller ceiling only restricts the authenticated writer. Filesystem
+/// providers intersect it with persisted policy through their shared decision.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Exact writable volume.
     fn volume(&self) -> &VolumeRef;
@@ -248,6 +250,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _bytes: &'a [u8],
         _media_type: &'a str,
         _display_name: &'a str,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -264,6 +267,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _bytes: &'a [u8],
         _media_type: &'a str,
         _display_name: &'a str,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -277,6 +281,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -291,6 +296,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _source: &'a FileRef,
         _bytes: &'a [u8],
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         Err(content_error(

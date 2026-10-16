@@ -448,10 +448,15 @@ impl ContentGrant {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
+        volume.validate(work)?;
+        if volume.provider().family() == "filesystem"
+            && crate::core::filesystem_scope_label(scope.capabilities(), work)?.is_some()
+        {
+            return Ok(());
+        }
         if operation == VolumeOperation::Write {
             volume.require_writer(scope.agent(), work)?;
         }
-        volume.validate(work)?;
         let digest = crate::executor::json::canonical_json_digest(
             volume,
             maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes),

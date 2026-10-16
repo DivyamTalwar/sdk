@@ -14,6 +14,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         key: &IdempotencyKey,
         expected_generation: Option<&GenerationRef>,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef>
     where
@@ -34,6 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key,
             None,
             expected_generation,
+            ceiling,
             io,
         )
         .await
@@ -47,10 +49,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: &IdempotencyKey,
         path: &str,
         maximum_bytes: u64,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        self.content_for_operation_impl(volume, grant, key, Some(path), maximum_bytes, io)
-            .await
+        grant.require(volume, VolumeOperation::Write, io)?;
+        self.content_for_operation_record_io(
+            PublicationLookup {
+                volume,
+                key,
+                expected_path: Some(path),
+                maximum_bytes,
+                internal_class: None,
+                scope: grant.policy_scope(),
+                ceiling,
+            },
+            io,
+        )
+        .await
     }
 
     /// Stages journal payloads under the assigned internal subtree.
@@ -83,6 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key,
             Some(class),
             None,
+            None,
             io,
         )
         .await
@@ -113,6 +129,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "attachments.json",
                 maximum_bytes,
                 idempotency_key,
+                None,
                 None,
                 None,
             )

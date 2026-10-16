@@ -145,6 +145,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     self.maximum_bytes,
                     &retry,
                     None,
+                    None,
                     io,
                 )
                 .await;
@@ -177,11 +178,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         bytes: &'a [u8],
         media: &'a str,
         display: &'a str,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
             let file = self
-                .publish(operation, None, path, bytes, media, display, io)
+                .publish(operation, None, path, bytes, media, display, ceiling, io)
                 .await?;
             let hold = io
                 .map(|io| io.guard_owned(file.logical_owned_bytes()?))
@@ -195,6 +197,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         operation: OperationId,
         source: &'a FileRef,
         bytes: &'a [u8],
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
@@ -206,6 +209,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     bytes,
                     source.descriptor().media_type(),
                     source.display_name(),
+                    ceiling,
                     io,
                 )
                 .await?;
@@ -220,10 +224,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         &'a self,
         operation: OperationId,
         maximum: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
-            let file = self.observe_publication(operation, maximum, io).await?;
+            let file = self
+                .observe_publication(operation, maximum, ceiling, io)
+                .await?;
             let bytes = file
                 .as_ref()
                 .map(UploadRecord::logical_owned_bytes)
@@ -241,6 +248,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         bytes: &'a [u8],
         media: &'a str,
         display: &'a str,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
@@ -277,6 +285,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     self.maximum_bytes,
                     &retry,
                     None,
+                    ceiling,
                     io,
                 )
                 .await?;
@@ -312,6 +321,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         operation: OperationId,
         maximum: u64,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
         self.verify_creation(io).await?;
@@ -319,14 +329,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
             .transpose()?;
+        self.grant
+            .require(&self.volume, VolumeOperation::Write, io)?;
         let file = self
             .host
-            .content_for_operation_impl(
-                &self.volume,
-                &self.grant,
-                &retry,
-                None,
-                maximum.min(self.maximum_bytes),
+            .content_for_operation_record_io(
+                super::PublicationLookup {
+                    volume: &self.volume,
+                    key: &retry,
+                    expected_path: None,
+                    maximum_bytes: maximum.min(self.maximum_bytes),
+                    internal_class: None,
+                    scope: self.grant.policy_scope(),
+                    ceiling,
+                },
                 io,
             )
             .await?;
@@ -343,6 +359,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         bytes: &[u8],
         media: &str,
         display: &str,
+        ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
         self.verify_creation(io).await?;
@@ -399,6 +416,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &retry,
                 None,
                 generation,
+                ceiling,
                 io,
             )
             .await?;

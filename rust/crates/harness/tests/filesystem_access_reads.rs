@@ -105,6 +105,7 @@ impl Fixture {
                 &IdempotencyKey::new("file")?,
                 None,
                 None,
+                None,
             )
             .await?
         } else {
@@ -706,3 +707,6 @@ mod writes;
 
 #[path = "filesystem_access_publication.rs"]
 mod publication;
+
+#[path = "filesystem_access_write_ceilings.rs"]
+mod write_ceilings;
