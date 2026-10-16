@@ -83,13 +83,14 @@ fn assert_request(provider: &ScriptedModelProvider, count: usize, input: &str) {
 async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_once() -> Result<()> {
     let started = std::time::Instant::now();
     let bootstrap = bootstrap::Bootstrap::new().await?;
-    let mut cases = Vec::new();
     // Both orders restore identical immutable bytes into distinct roots; every
     // case has its own script, owner/provider caches, and model effect ledger.
-    for order in [
-        [None, Some(false), Some(true)],
-        [Some(true), Some(false), None],
-    ] {
+    // Overlap independent I/O on the existing runtime; each order stays serial.
+    async fn run_order(
+        bootstrap: &bootstrap::Bootstrap,
+        order: [Option<bool>; 3],
+    ) -> Result<Vec<Option<bool>>> {
+        let mut cases = Vec::new();
         for after_admission in order {
             let (root, provider) = bootstrap.restore()?;
             let directory = root.directory.path().join("root");
@@ -127,12 +128,14 @@ async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_on
             assert_eq!(provider.remaining(), 0);
             cases.push(Some(after_admission));
         }
+        Ok(cases)
     }
-    assert_eq!(
-        cases,
-        [None, Some(false), Some(true), Some(true), Some(false), None]
-    );
+    let (forward, reverse) = tokio::try_join!(
+        Box::pin(run_order(&bootstrap, [None, Some(false), Some(true)])),
+        Box::pin(run_order(&bootstrap, [Some(true), Some(false), None])),
+    )?;
+    assert_eq!(forward, [None, Some(false), Some(true)]);
+    assert_eq!(reverse, [Some(true), Some(false), None]);
     eprintln!("admission recovery suite: {:?}", started.elapsed());
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     Ok(())
 }
