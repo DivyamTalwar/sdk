@@ -302,10 +302,6 @@ impl Source {
 #[tokio::test]
 async fn selected_raw_reads_reject_restrictions_and_observe_revocation() -> TestResult {
     let mut source = Source::new("public.txt").await?;
-    for mode in 1..=4 {
-        assert!(matches!(source.reader(mode).await,
-            Err(error) if matches!(error.downcast_ref::<Error>(), Some(Error::FilesystemAccessConfiguration(_)))));
-    }
     let (reader, _) = source.reader(0).await?;
     assert_eq!(reader.read_file(&source.secret).await?.as_ref(), b"secret");
     assert!(
@@ -314,6 +310,15 @@ async fn selected_raw_reads_reject_restrictions_and_observe_revocation() -> Test
             .await
             .is_ok()
     );
+    for mode in 1..=4 {
+        let result = source.reader(mode).await;
+        assert!(
+            matches!(&result,
+            Err(error) if matches!(error.downcast_ref::<Error>(), Some(Error::FilesystemAccessConfiguration(_)))),
+            "mode {mode}: {:?}",
+            result.as_ref().err()
+        );
+    }
     source.deny_secret().await?;
     assert!(matches!(
         reader.read_file(&source.secret).await,
