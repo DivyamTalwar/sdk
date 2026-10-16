@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    conversation::ContentPublisher,
     distributed::{WorkPull, Worker},
     runtime::{RuntimeScope, RuntimeTask, TaskSpawner},
     scheduler::LeaseFence,
