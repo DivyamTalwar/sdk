@@ -37,12 +37,10 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(hook) = serde_json::from_slice::<Hook>(input)
         && let Ok(request) = request(hook.host, &hook.event, hook.input)
     {
-        let bytes = serde_json::to_vec(&request)?;
-        if bytes.len() <= acyclic_stream::MAX_RECORD_BYTES {
-            assert_eq!(
-                ExternalRequest::from_file(&task, &file(task.clone(), &request, bytes)?)?,
-                request
-            );
+        match request.to_file(task.clone()) {
+            Ok(file) => assert_eq!(ExternalRequest::from_file(&task, &file)?, request),
+            Err(acyclic_harness::task_volume::Error::LimitExceeded) => {}
+            Err(error) => return Err(error.into()),
         }
     }
     if let Ok(request) = serde_json::from_slice::<ExternalRequest>(input) {

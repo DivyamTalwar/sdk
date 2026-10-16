@@ -1,9 +1,8 @@
 use super::ExternalRequest;
 use crate::{
     JsonBounds,
-    task_volume::{Component, Error, FileKey, FileValue, Generation, Result, TaskFile, TaskVolume},
+    task_volume::{Component, Error, FileKey, FileValue, Result, TaskFile},
 };
-use acyclic_stream::StreamProvider;
 
 // Writes and reads share the bounded JSON decoder's structural ceiling.
 const BOUNDS: JsonBounds = JsonBounds {
@@ -13,13 +12,8 @@ const BOUNDS: JsonBounds = JsonBounds {
 };
 
 impl ExternalRequest {
-    /// Publishes one immutable request through the volume's authorized Streams provider.
-    /// Identical retries reuse admission; conflicting bodies retain the volume's typed error.
-    pub async fn submit<P: StreamProvider + ?Sized>(
-        &self,
-        volume: &TaskVolume<P>,
-        task: Component,
-    ) -> Result<Generation> {
+    /// Encodes the immutable request file for ordinary volume publication.
+    pub fn to_file(&self, task: Component) -> Result<FileValue> {
         if !self.valid() {
             return Err(Error::InvalidSegment);
         }
@@ -28,7 +22,13 @@ impl ExternalRequest {
         let mut name = [0; 36];
         let operation = uuid::Uuid::from_bytes(self.operation_id.into_bytes());
         let request = Component::new(operation.hyphenated().encode_lower(&mut name))?;
-        volume.submit(task, request, bytes.into()).await
+        Ok(FileValue::new(
+            FileKey::Task {
+                task,
+                file: TaskFile::Request(request),
+            },
+            bytes,
+        ))
     }
 
     /// Decodes a request belonging to this task, checking both file and hook identities.
