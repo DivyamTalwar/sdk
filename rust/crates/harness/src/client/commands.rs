@@ -20,6 +20,10 @@ pub use files::*;
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
 
+/// Bootstrap bytes for commands.json in the config volume. The client installs
+/// this file once, then loads its live-query revisions through `from_file`.
+pub const DEFAULT_COMMANDS_JSON: &[u8] = include_bytes!("commands.json");
+
 /// A declared home or checkout boundary; no host paths or implicit grants.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -301,7 +305,7 @@ struct PromptMetadata {
 impl CommandCatalog {
     /// Bootstrap contents for the user's catalog file; live clients load that file.
     pub fn builtins() -> Result<Self> {
-        let bytes = include_bytes!("commands.json");
+        let bytes = DEFAULT_COMMANDS_JSON;
         Self::from_bytes(bytes, bytes.len() as u64)
     }
 
