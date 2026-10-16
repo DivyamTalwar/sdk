@@ -53,7 +53,7 @@ proptest! {
         parts in proptest::collection::vec(value(), 0..8), extra in value(), slot in any::<usize>(),
     ) {
         let expected = json!({"content":parts});
-        prop_assert!(subset(&expected, &json!({"content":parts, "metadata":extra})));
+        prop_assert!(subset(&expected, &json!({"content":parts, "metadata":extra})), "unchanged content");
         for inserted in [extra.clone(), json!({"kind":"text", "text":""}),
             json!({"kind":"text", "text":"UNEXPECTED TEXT IN IMAGE-ONLY INPUT"})] {
             let mut actual = parts.clone();
