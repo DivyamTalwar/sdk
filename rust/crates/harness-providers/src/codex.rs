@@ -346,7 +346,7 @@ fn persist_with(
     // ownership: preserve it while publishing the rotated token fields.
     let baseline = document(original, io)?;
     let (mut observed, current) = load(path, io)?;
-    let Some(mut auth) = merge_refresh(&baseline, &current, &auth, io)? else {
+    let Some(mut auth) = merge_refresh(&baseline, &observed, &current, &auth, io)? else {
         return Ok(current);
     };
     let mut file = tempfile::NamedTempFile::new_in(parent)
@@ -356,7 +356,7 @@ fn persist_with(
     let bytes = read(path, io)?;
     if bytes != observed {
         let current = document(&bytes, io)?;
-        let Some(merged) = merge_refresh(&baseline, &current, &auth, io)? else {
+        let Some(merged) = merge_refresh(&baseline, &bytes, &current, &auth, io)? else {
             return Ok(current);
         };
         auth = merged;
@@ -406,12 +406,14 @@ fn stage(
 
 fn merge_refresh(
     original: &Value,
+    current_wire: &[u8],
     current: &Value,
     refreshed: &Value,
     io: &mut CredentialIo<'_>,
 ) -> Result<Option<Value>> {
     const FIELDS: [&str; 4] = ["account_id", "access_token", "refresh_token", "id_token"];
-    if original["auth_mode"] != current["auth_mode"]
+    if original["auth_mode"].as_str().unwrap_or("chatgpt")
+        != current["auth_mode"].as_str().unwrap_or("chatgpt")
         || original["OPENAI_API_KEY"] != current["OPENAI_API_KEY"]
         || FIELDS
             .iter()
@@ -419,14 +421,35 @@ fn merge_refresh(
     {
         return Ok(None);
     }
-    // This clone is a paid, bounded credential graph, including unrelated CLI edits.
-    let size = (crate::projection::encoded_len(current)? as u64)
-        .checked_add(crate::projection::encoded_len(refreshed)? as u64)
-        .ok_or_else(|| invalid("Codex credential merge size overflow"))?;
-    io.graph(size, size)?;
+    // The current wire supplies the graph's structural bound without encoding
+    // another copy. Only OAuth's changed string fields need additional storage.
+    let (bytes, nodes) = crate::native::shape(current_wire);
+    let fields = ["access_token", "refresh_token", "id_token"];
+    let mut replacement_bytes = 0u64;
+    for value in fields
+        .iter()
+        .map(|field| &refreshed["tokens"][field])
+        .chain(std::iter::once(&refreshed["last_refresh"]))
+    {
+        // Unchanged omitted fields may be null; refresh responses themselves
+        // have already admitted nonempty token strings.
+        if let Some(text) = value.as_str() {
+            replacement_bytes = replacement_bytes
+                .checked_add(text.len() as u64)
+                .ok_or_else(|| invalid("Codex credential merge size overflow"))?;
+        }
+    }
+    io.graph(
+        bytes
+            .checked_add(replacement_bytes)
+            .ok_or_else(|| invalid("Codex credential merge size overflow"))?,
+        nodes + 8,
+    )?;
     let mut merged = current.clone();
-    for field in ["access_token", "refresh_token", "id_token"] {
-        merged["tokens"][field] = refreshed["tokens"][field].clone();
+    for field in fields {
+        if merged["tokens"][field] != refreshed["tokens"][field] {
+            merged["tokens"][field] = refreshed["tokens"][field].clone();
+        }
     }
     merged["last_refresh"] = refreshed["last_refresh"].clone();
     Ok(Some(merged))

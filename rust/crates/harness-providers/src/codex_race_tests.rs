@@ -319,7 +319,7 @@ proptest! {
         let mut refreshed = original.clone();
         refreshed["tokens"]["access_token"] = json!(access);
         refreshed["tokens"]["refresh_token"] = json!(refresh);
-        let merged = merge_refresh(&original, &current, &refreshed, &mut CredentialIo::new(None).unwrap()).unwrap();
+        let merged = merge_refresh(&original, &serde_json::to_vec(&current).unwrap(), &current, &refreshed, &mut CredentialIo::new(None).unwrap()).unwrap();
         prop_assert_eq!(merged.is_none(), changed.is_some());
         if let Some(merged) = merged {
             prop_assert_eq!(&merged["agent_identity"], &current["agent_identity"]);
@@ -328,4 +328,24 @@ proptest! {
             prop_assert_eq!(&merged["tokens"]["refresh_token"], &refreshed["tokens"]["refresh_token"]);
         }
     }
+}
+
+#[test]
+fn explicit_chatgpt_mode_is_metadata_when_the_original_mode_was_implicit() -> Result<()> {
+    let mut original = auth("original");
+    original.as_object_mut().unwrap().remove("auth_mode");
+    let current = auth("original");
+    let mut refreshed = original.clone();
+    refreshed["tokens"]["refresh_token"] = json!("rotated-single-use");
+    let merged = merge_refresh(
+        &original,
+        &serde_json::to_vec(&current).unwrap(),
+        &current,
+        &refreshed,
+        &mut CredentialIo::new(None)?,
+    )?
+    .expect("same credential identity");
+    assert_eq!(merged["tokens"]["refresh_token"], "rotated-single-use");
+    assert_eq!(merged["auth_mode"], "chatgpt");
+    Ok(())
 }
