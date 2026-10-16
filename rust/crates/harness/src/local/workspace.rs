@@ -4,6 +4,7 @@ use acyclic_fs::{
     LazyWorkspace, LazyWorkspaceStore, LocalCoreStateStore, NativeMaterializationWork,
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
+mod bootstrap;
 
 mod mounts;
 pub(super) mod volumes;
@@ -38,6 +39,8 @@ pub struct LocalWorkspace {
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     context_line: String,
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    pub(super) selection_reads: std::sync::atomic::AtomicUsize,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -94,14 +97,32 @@ impl LocalWorkspace {
                 .await?,
         ))
     }
-    pub(super) async fn selected_view(&self) -> Result<Option<View>> {
+    pub(super) async fn checkout_selection(
+        &self,
+    ) -> Result<(
+        acyclic_fs::WorkspaceId,
+        Option<checkout_tools::reconciliation::Pending>,
+    )> {
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        self.selection_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = self.view.workspace().id();
-        let selected = acyclic_fs::GitCompatRepository::new(root, self.store.clone())
-            .selected_workspace()
+        acyclic_fs::GitCompatRepository::new(root, self.store.clone())
+            .checkout_selection()
             .await
-            .map_err(storage)?;
+            .map_err(storage)
+    }
+
+    pub(super) async fn selected_view(
+        &self,
+    ) -> Result<(
+        Option<View>,
+        Option<checkout_tools::reconciliation::Pending>,
+    )> {
+        let (selected, pending) = self.checkout_selection().await?;
+        let root = self.view.workspace().id();
         if selected == root {
-            return Ok(None);
+            return Ok((None, pending));
         }
         let selected = acyclic_fs::WorkspaceResolver::resolve(
             &(
@@ -119,7 +140,7 @@ impl LocalWorkspace {
                     .accounting(&acyclic_fs::CancellationToken::new()),
             )
             .await
-            .map(Some)
+            .map(|view| (Some(view), pending))
             .map_err(storage)
     }
 
@@ -234,6 +255,8 @@ pub(super) async fn open(
     volumes::attach(filesystem, &store, &path, &mut mounts).await?;
     let context_line = mounts.context_line();
     Ok(LocalWorkspace {
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        selection_reads: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,
         view,
@@ -264,11 +287,7 @@ pub(super) async fn open_volume(
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
-        let staging = directory.join("project-initializing");
-        if staging.try_exists().map_err(storage)? {
-            acyclic_native_runtime::remove_child_directory(directory, &staging).map_err(storage)?;
-        }
-        owner::directory(&staging)?;
+        let staging = bootstrap::staging(directory)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let name = volume.storage_name(&mut None)?;
         let workspace = filesystem
@@ -281,16 +300,30 @@ pub(super) async fn open_volume(
             .await
             .map_err(storage)?
             .value;
-        generation
-            .materialize(
-                ["/"].into_iter(),
-                &acyclic_fs::MaterializeOptions::native(&staging),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?;
-        std::fs::rename(&staging, &path).map_err(storage)?;
+        bootstrap::initialize(
+            async {
+                generation
+                    .materialize(
+                        ["/"].into_iter(),
+                        &acyclic_fs::MaterializeOptions::native(&staging),
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(storage)?;
+                Ok(())
+            },
+            || {
+                acyclic_native_runtime::durable_rename(
+                    &staging,
+                    &path,
+                    acyclic_native_runtime::RenameMode::NoReplace,
+                    None,
+                )
+            },
+            || acyclic_native_runtime::remove_child_directory(directory, &staging).map_err(storage),
+        )
+        .await?;
     }
     let identity = acyclic_fs::capture_root_identity(&path)
         .map_err(storage)?

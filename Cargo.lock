@@ -692,8 +692,11 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "libfuzzer-sys",
+ "prettyplease 0.2.37",
  "prost",
+ "sdk-proto-codegen",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -708,6 +711,7 @@ dependencies = [
  "bytes",
  "fs2",
  "futures",
+ "getrandom 0.3.4",
  "h2",
  "hyper",
  "hyper-util",
@@ -741,6 +745,8 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]
@@ -5798,12 +5804,16 @@ name = "sdk-proto-codegen"
 version = "0.2.0"
 dependencies = [
  "cargo_metadata",
+ "prettyplease 0.2.37",
+ "proptest",
  "prost",
  "prost-reflect",
  "protoc-gen-prost",
  "protoc-gen-tonic",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

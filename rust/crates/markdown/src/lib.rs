@@ -2,14 +2,22 @@
 //! stream; keep viewport layout and task/query ownership in the consuming client.
 
 mod code;
+mod context;
+mod delimiters;
 mod events;
+mod inline;
 mod reference_render;
 mod references;
 mod render;
 mod stream_code;
+mod stream_table;
 mod style;
 mod table;
+mod visibility;
+#[cfg(test)]
+mod work;
 
+use context::{container, context_event, context_prefix};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use references::{Key, References, Template, normalize};
 use std::{
@@ -26,7 +34,7 @@ pub struct Markdown {
     source: String,
     offset: usize,
     stable_lines: usize,
-    stable_visible_lines: usize,
+    visibility: visibility::Visibility,
     visible_lines: usize,
     lines: Vec<Line>,
     state: render::Renderer,
@@ -35,6 +43,10 @@ pub struct Markdown {
     dependencies: HashMap<Key, Vec<usize>>,
     cached: Vec<Cached>,
     fence: Option<Fence>,
+    inline: Option<inline::Inline>,
+    table: Option<stream_table::Stream>,
+    reference_cost: usize,
+    reference_limit: usize,
     plain: bool,
     plain_links: bool,
     plain_entity: bool,
@@ -64,6 +76,10 @@ struct Cached {
     template: Template,
     state: render::Renderer,
     lines: Range<usize>,
+    cost: usize,
+    cumulative: usize,
+    prefix: usize,
+    budget: Range<usize>,
 }
 
 impl Cached {
@@ -101,6 +117,10 @@ impl Cached {
             template: Template::new(raw, quotes, events),
             state,
             lines,
+            cost: 0,
+            cumulative: 0,
+            prefix: 0,
+            budget: 0..usize::MAX,
         })
     }
 }
@@ -130,6 +150,7 @@ impl Markdown {
         if self.source.len() == previous {
             return old_len;
         }
+        let budget_line = self.advance_budget();
         let appended = self.source.get(previous..).unwrap_or_default();
         if self.plain
             && plain_text(appended)
@@ -140,32 +161,66 @@ impl Markdown {
             self.plain_entity &= appended
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '#');
-            if let Some(line) = self.lines.get_mut(old_len.saturating_sub(1)) {
+            if let Some(line) = self.lines.get_mut(self.visible_lines.saturating_sub(1)) {
                 let visible = appended.trim_end_matches(' ');
                 if visible.is_empty() {
                     self.plain_spaces += appended.len();
                 } else {
                     if let Some(span) = line.spans.last_mut() {
+                        #[cfg(test)]
+                        {
+                            work::copy(self.plain_spaces + visible.len());
+                            if self.plain_spaces > span.text.capacity() - span.text.len() {
+                                work::copy(span.text.len());
+                            }
+                        }
                         span.text
                             .extend(std::iter::repeat_n(' ', self.plain_spaces));
+                        #[cfg(test)]
+                        if visible.len() > span.text.capacity() - span.text.len() {
+                            work::copy(span.text.len());
+                        }
                         span.text.push_str(visible);
                     }
                     self.plain_spaces = appended.len() - visible.len();
                 }
             }
-            return old_len.saturating_sub(1);
+            return self.visible_lines.saturating_sub(1).min(budget_line);
         }
+        // Trailing horizontal whitespace has no display effect in paragraphs or
+        // tables. Keep it in source until a non-whitespace byte settles the row.
+        if (self.inline.is_some() || self.table.is_some())
+            && appended.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            return old_len.min(self.visible_lines).min(budget_line);
+        }
+        if let Some(changed) = self.advance_inline(previous) {
+            return changed
+                .min(old_len)
+                .min(self.visible_lines)
+                .min(budget_line);
+        }
+        if let Some(changed) = self.advance_table() {
+            return changed
+                .min(old_len)
+                .min(self.visible_lines)
+                .min(budget_line);
+        }
+        self.table = None;
+        self.inline = None;
         self.plain = false;
-        let mut changed = self.stable_lines.min(old_len);
+        let mut changed = self.stable_lines.min(old_len).min(budget_line);
         self.lines.truncate(self.stable_lines);
         if self.fence.is_some() && !self.advance_fence() {
             self.finish_visible();
-            return changed;
+            return changed.min(self.visible_lines);
         }
         loop {
             let tail = self.source.get(self.offset..).unwrap_or_default();
             let prefix = context_prefix(&self.context);
             let source = format!("{prefix}{tail}");
+            #[cfg(test)]
+            work::copy(source.len());
             let keys = self.references.update(&source, self.offset, prefix.len());
             changed = changed.min(self.resolve(&keys));
             if !self.parse_tail() {
@@ -173,7 +228,7 @@ impl Markdown {
             }
         }
         self.finish_visible();
-        changed
+        changed.min(self.visible_lines)
     }
 
     /// Current unwrapped lines. A partial delimiter remains visible until it
@@ -196,16 +251,30 @@ impl Markdown {
     }
 
     fn finish_visible(&mut self) {
-        self.visible_lines = self.visible_end(
-            self.stable_lines,
-            self.lines.len(),
-            self.stable_visible_lines,
+        let (start, fallback) = self
+            .inline
+            .as_ref()
+            .map_or((self.stable_lines, self.visibility.end), |inline| {
+                inline.visible_frontier(self.stable_lines, self.visibility.end)
+            });
+        self.visible_lines = self.visible_end(start, self.lines.len(), fallback);
+    }
+
+    fn index_visible(&mut self, index: usize) {
+        #[cfg(test)]
+        self.visible_work.set(self.visible_work.get() + 1);
+        self.visibility.set(
+            index,
+            self.lines
+                .get(index)
+                .is_some_and(|line| !line.spans.is_empty()),
         );
     }
 
     fn set_stable_lines(&mut self, length: usize) {
-        self.stable_visible_lines =
-            self.visible_end(self.stable_lines, length, self.stable_visible_lines);
+        for index in self.stable_lines..length {
+            self.index_visible(index);
+        }
         self.stable_lines = length;
     }
 
@@ -220,7 +289,13 @@ impl Markdown {
     }
 
     fn append(&mut self, delta: &str) {
+        #[cfg(test)]
+        work::copy(delta.len());
         if !self.cr && !delta.contains('\r') {
+            #[cfg(test)]
+            if delta.len() > self.source.capacity() - self.source.len() {
+                work::grow_source(self.source.len());
+            }
             self.source.push_str(delta);
             return;
         }
@@ -260,11 +335,7 @@ impl Markdown {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        #[cfg(test)]
-        {
-            self.parsed_bytes += source.len();
-        }
-        let events = events::parse(&source, &self.references);
+        let events = self.parse_frontier(&source);
         self.seal_leading_definitions(base, &source, &events);
         let following_blocks = self.following_blocks(&source, &events);
         let mut out = self.state.checkpoint();
@@ -272,9 +343,16 @@ impl Markdown {
         let mut candidate = None;
         let mut leaf = None;
         let mut caches: Vec<(usize, Cached)> = Vec::new();
+        let mut cost = self.reference_cost;
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
-            if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
+            let html_end = matches!(event, Event::End(TagEnd::HtmlBlock))
+                && stack
+                    .last()
+                    .is_some_and(|container| container.end == TagEnd::HtmlBlock);
+            if html_end {
+                synthetic_leaf = false;
+            } else if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
                 continue;
             }
             if let Event::Start(tag) = event {
@@ -308,7 +386,21 @@ impl Markdown {
                 }
                 stack.push(container(&source, range.start, tag));
             }
-            out.event(event);
+            out.event_in(event, Some(&self.references));
+            if matches!(event, Event::Html(_))
+                && range.end > prefix.len()
+                && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
+                && stack
+                    .last()
+                    .is_some_and(|container| container.end == TagEnd::HtmlBlock)
+            {
+                candidate = Some((
+                    base + range.end - prefix.len(),
+                    self.lines.len() + out.lines.len(),
+                    out.checkpoint(),
+                    stack.clone(),
+                ));
+            }
             if let Event::End(end) = event {
                 if stack.last().is_some_and(|container| container.end == *end) {
                     stack.pop();
@@ -317,7 +409,7 @@ impl Markdown {
                 let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
                 if leaf_end
                     && let Some((start, first, state, begin, _)) = leaf.take()
-                    && let Some(cache) = Cached::new(
+                    && let Some(mut cache) = Cached::new(
                         &source,
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
@@ -325,6 +417,7 @@ impl Markdown {
                         events.get(begin..=index).unwrap_or_default(),
                     )
                 {
+                    self.render_cache(&mut cache, &mut out, &mut cost);
                     caches.push((range.end, cache));
                 }
                 if stack.is_empty() {
@@ -334,9 +427,12 @@ impl Markdown {
                     continue;
                 }
                 let next_block = following_blocks.get(index).copied().unwrap_or_default();
+                let sealed = closed
+                    || sealed(&source, range.end, *end, next_block)
+                    || (*end == TagEnd::HtmlBlock && context::html_closed(&source, range, &stack));
                 if range.end >= prefix.len()
                     && (leaf_end || (stack.is_empty() && next_block))
-                    && (closed || sealed(&source, range.end, *end, next_block))
+                    && sealed
                 {
                     candidate = Some((
                         base + range.end - prefix.len(),
@@ -354,6 +450,8 @@ impl Markdown {
         self.lines.extend(out.lines);
         self.finish_tail(candidate, caches, (base, prefix.len()));
         self.finish_definitions(&source, &events, (base, prefix.len()));
+        self.begin_inline(&source, &events, base);
+        self.begin_table(&source, &events, base);
         false
     }
 
@@ -408,9 +506,19 @@ impl Markdown {
             self.offset = self.references.frontier(self.offset);
         }
         if self.context.is_empty() {
-            while self.source.as_bytes().get(self.offset) == Some(&b'\n') {
-                self.offset += 1;
-            }
+            self.offset += self
+                .source
+                .get(self.offset..)
+                .unwrap_or_default()
+                .split_inclusive('\n')
+                .take_while(|row| {
+                    #[cfg(test)]
+                    work::scan(row.len() * 2);
+                    row.ends_with('\n')
+                        && row.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\n'))
+                })
+                .map(str::len)
+                .sum::<usize>();
         }
         self.references.commit(self.offset);
         let tail = self.source.get(self.offset..).unwrap_or_default();
@@ -458,10 +566,13 @@ impl Markdown {
         self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
     }
 
-    fn cache(&mut self, cache: Cached) {
+    fn cache(&mut self, mut cache: Cached) {
         if cache.template.keys.is_empty() {
             return;
         }
+        cache.prefix = self.reference_cost;
+        self.reference_cost = self.reference_cost.saturating_add(cache.cost);
+        cache.cumulative = self.reference_cost;
         let index = self.cached.len();
         for key in &cache.template.keys {
             self.dependencies
@@ -475,24 +586,6 @@ impl Markdown {
 
 fn plain_text(text: &str) -> bool {
     text.chars().all(plain_character)
-}
-
-fn context_event(event: &Event<'_>, range: &Range<usize>, prefix: usize, leaf: &mut bool) -> bool {
-    if let Event::Start(tag) = event
-        && range.start < prefix
-    {
-        *leaf = is_leaf(tag);
-        return true;
-    }
-    if *leaf {
-        if let Event::End(end) = event
-            && is_leaf_end(*end)
-        {
-            *leaf = false;
-        }
-        return true;
-    }
-    false
 }
 
 fn definition_candidate(source: &str) -> bool {
@@ -544,83 +637,6 @@ fn line_start(source: &str, position: usize) -> usize {
         .get(..position)
         .and_then(|text| text.rfind('\n'))
         .map_or(0, |position| position + 1)
-}
-
-fn container(source: &str, position: usize, tag: &Tag<'_>) -> Container {
-    if !matches!(tag, Tag::Item | Tag::BlockQuote(_)) {
-        return Container {
-            end: tag.to_end(),
-            opening: String::new(),
-            continuation: String::new(),
-        };
-    }
-    let line = source
-        .get(line_start(source, position)..)
-        .unwrap_or_default();
-    let before = position - line_start(source, position);
-    let parent: String = line
-        .get(..before)
-        .unwrap_or_default()
-        .chars()
-        .map(|character| {
-            if character == '>' || character.is_ascii_whitespace() {
-                character
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    let length = match tag {
-        Tag::Item => {
-            let marker = line.get(before..).unwrap_or_default();
-            let end = marker.find([' ', '\t', '\n']).unwrap_or(marker.len());
-            before
-                + end
-                + usize::from(
-                    marker
-                        .get(end..)
-                        .is_some_and(|tail| tail.starts_with([' ', '\t'])),
-                )
-        }
-        Tag::BlockQuote(_) => before + 1,
-        _ => {
-            return Container {
-                end: tag.to_end(),
-                opening: String::new(),
-                continuation: String::new(),
-            };
-        }
-    };
-    let marker = line.get(before..length).unwrap_or_default();
-    let opening = format!(
-        "{parent}{marker}{}\n",
-        if matches!(tag, Tag::Item) { "x" } else { "" }
-    );
-    let continuation = if matches!(tag, Tag::Item) {
-        format!("{parent}{}\n", " ".repeat(marker.len()))
-    } else {
-        opening.clone()
-    };
-    Container {
-        end: tag.to_end(),
-        opening,
-        continuation,
-    }
-}
-
-fn context_prefix(context: &[Container]) -> String {
-    let mut prefix: String = context
-        .iter()
-        .map(|container| container.opening.as_str())
-        .collect();
-    if let Some(container) = context
-        .iter()
-        .rev()
-        .find(|container| !container.continuation.is_empty())
-    {
-        prefix.push_str(&container.continuation);
-    }
-    prefix
 }
 
 fn sealed(source: &str, end: usize, tag: TagEnd, next_complete: bool) -> bool {

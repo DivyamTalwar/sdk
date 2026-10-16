@@ -187,10 +187,24 @@ async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> 
                 "delta",
                 "metadata",
                 "final",
+                "insert-empty",
+                "insert-reasoning",
             ][..],
         ),
-        ("empty-deltas", &["missing"][..]),
-        ("reasoning", &["leaked", "missing", "reversed"][..]),
+        (
+            "empty-deltas",
+            &["missing", "insert-empty", "insert-reasoning"][..],
+        ),
+        (
+            "reasoning",
+            &[
+                "leaked",
+                "missing",
+                "reversed",
+                "insert-empty",
+                "insert-reasoning",
+            ][..],
+        ),
     ] {
         let baseline =
             crate::scenario::load_value(&root, &root.join(format!("markdown/{name}.json")))?;
@@ -226,10 +240,45 @@ async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> 
                         .ok_or("completion")?["metadata"] = json!({"injected":true});
                 }
                 "final" => case["expect"]["text"] = json!("corrupted"),
+                "insert-empty" | "insert-reasoning" => {
+                    case["turns"][0].as_array_mut().ok_or("events")?.insert(
+                        1,
+                        json!({"type":"event", "kind":if *mutation == "insert-empty" {"content"} else {"reasoning"}, "delta":""}),
+                    );
+                }
                 _ => return Err("unknown Markdown mutation".into()),
             }
             assert!(run(case).await.is_err(), "accepted {name}: {mutation}");
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn composer_byte_boundary_oracles_reject_character_counts_and_expansion_overflow()
+-> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for (name, maximum) in [
+        ("ascii-exact", 4),
+        ("ascii-over", 5),
+        ("unicode-exact", 2),
+        ("unicode-over", 6),
+        ("builtin-exact", 4),
+        ("builtin-over", 5),
+        ("templates/appended-arguments-exact", 14),
+        ("templates/appended-arguments-over", 15),
+        ("templates/unicode-body-exact", 15),
+        ("templates/unicode-body-over", 16),
+    ] {
+        let baseline =
+            crate::scenario::load_value(&root, &root.join(format!("composer/limits/{name}.json")))?;
+        run(baseline.clone()).await?;
+        let mut changed = baseline;
+        changed["maximum_bytes"] = json!(maximum);
+        assert!(
+            run(changed).await.is_err(),
+            "accepted wrong bound for {name}"
+        );
     }
     Ok(())
 }

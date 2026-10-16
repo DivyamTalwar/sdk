@@ -1,19 +1,30 @@
 use pulldown_cmark::{BrokenLink, Event, Parser, Tag, TagEnd};
 use std::ops::Range;
 
-pub(crate) fn parse<'a>(
-    source: &'a str,
+type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
+type Charges = Vec<(usize, usize)>;
+
+pub(crate) fn parse(
+    source: &str,
     references: &crate::References,
-) -> Vec<(Event<'a>, Range<usize>)> {
+) -> Vec<(Event<'static>, Range<usize>)> {
+    parse_with(source, references, crate::options())
+}
+
+pub(crate) fn parse_with(
+    source: &str,
+    references: &crate::References,
+    options: pulldown_cmark::Options,
+) -> Vec<(Event<'static>, Range<usize>)> {
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut callback = |link: BrokenLink<'_>| {
         references
             .get(&crate::normalize(&link.reference))
-            .map(|(dest, title, _)| (dest.clone().into(), title.clone().into()))
+            .map(|(destination, title, _)| (destination.as_ref().into(), title.as_ref().into()))
     };
     let events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, crate::options(), Some(&mut callback))
+        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
             .into_offset_iter()
             .map(|(mut event, range)| {
                 if let Event::Start(
@@ -31,12 +42,14 @@ pub(crate) fn parse<'a>(
                     },
                 ) = &mut event
                     && !id.is_empty()
-                    && let Some((destination, label, _)) = references.get(&crate::normalize(id))
+                    && references.get(&crate::normalize(id)).is_some()
                 {
-                    *dest_url = destination.clone().into();
-                    *title = label.clone().into();
+                    *dest_url = "".into();
+                    *title = "".into();
                 }
-                (event, range)
+                #[cfg(test)]
+                crate::work::event(&event);
+                (event.into_static(), range)
             })
             .collect();
     if events
@@ -47,6 +60,49 @@ pub(crate) fn parse<'a>(
     } else {
         events
     }
+}
+
+// Normalized leaf templates contain no definitions. Charge reference expansion
+// against the document allowance, rather than restarting it for each leaf.
+pub(crate) fn scoped(
+    source: &str,
+    references: &crate::References,
+    options: pulldown_cmark::Options,
+    mut budget: usize,
+) -> (OwnedEvents, Charges) {
+    #[cfg(test)]
+    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+    let mut calls = Vec::new();
+    let mut exhausted = false;
+    let mut callback = |link: BrokenLink<'_>| {
+        if budget == 0 {
+            // No allowance remains. Keep a sentinel for the deferred suffix;
+            // a larger document budget will reopen only this leaf.
+            if !exhausted {
+                calls.push((link.span.end, usize::MAX));
+                exhausted = true;
+            }
+            return None;
+        }
+        let (destination, title, _) = references.get(&crate::normalize(&link.reference))?;
+        let cost = destination.len() + title.len();
+        budget = budget.saturating_sub(cost);
+        calls.push((link.span.end, cost));
+        // The real lengths were charged above. Rendering obtains their shared
+        // handles by id; do not also restart the parser's per-input allowance.
+        Some(("".into(), "".into()))
+    };
+    let events = Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
+        .into_offset_iter()
+        .map(|(event, range)| {
+            #[cfg(test)]
+            crate::work::event(&event);
+            (event.into_static(), range)
+        })
+        .collect();
+    #[cfg(test)]
+    crate::work::copy(calls.len() * std::mem::size_of::<(usize, usize)>() * 2);
+    (events, calls)
 }
 
 // The parser suppresses paragraph events in tight list items. Give those inline
@@ -110,5 +166,16 @@ fn inline(event: &Event<'_>) -> bool {
         ),
         Event::Rule => false,
         _ => true,
+    }
+}
+
+impl crate::Markdown {
+    pub(super) fn parse_frontier(&mut self, source: &str) -> OwnedEvents {
+        #[cfg(test)]
+        {
+            crate::work::copy(source.len());
+            self.parsed_bytes += source.len();
+        }
+        parse(source, &self.references)
     }
 }
