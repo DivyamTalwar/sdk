@@ -47,6 +47,7 @@ impl StockExecution<'_> {
                 crate::executor::with_history_io(self.io, |work| {
                     message.content.validate_limits(self.stock.limits, work)
                 })?;
+                let invocation_index = prior_messages.len();
                 stock_vec_push(&mut prior_messages, message, self.io)?;
                 match self
                     .resolve_tool_call(
@@ -54,6 +55,7 @@ impl StockExecution<'_> {
                         input.operation_id,
                         step,
                         invocation,
+                        invocation_index,
                         &mut prior_messages,
                     )
                     .await?
