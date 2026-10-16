@@ -8,20 +8,16 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
         invocation: ToolInvocation,
+        invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
         self.verify_task_context_binding(operation_id)?;
-        let metadata = prior_messages
-            .iter()
-            .rev()
-            .flat_map(|message| message.content.parts())
-            .find_map(|part| match part {
-                ModelContentPart::ToolCall(call) if call.call_id == invocation.call_id => {
-                    Some(&call.metadata)
-                }
-                _ => None,
-            })
-            .unwrap_or(&Value::Null);
+        let metadata = metadata_for_call(
+            prior_messages,
+            invocation_index,
+            &invocation.call_id,
+            self.io,
+        )?;
         invocation.validate_recorded(
             metadata,
             crate::conversation::Limits {
@@ -522,4 +518,32 @@ impl StockExecution<'_> {
         tool.definition
             .validate_projection(&projection.0, self.stock.limits, self.io)
     }
+}
+
+pub(super) fn metadata_for_call<'a>(
+    messages: &'a [ModelMessage],
+    index: usize,
+    call_id: &str,
+    io: Option<&PreparationIo>,
+) -> Result<&'a Value> {
+    crate::model::charge_items(io, 1)?;
+    let Some(ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(call)),
+    }) = messages.get(index)
+    else {
+        return Err(stock_boundary(
+            io,
+            Invalid,
+            "tool invocation has no indexed model call",
+        ));
+    };
+    if call.call_id != call_id {
+        return Err(stock_boundary(
+            io,
+            Invalid,
+            "tool invocation index refers to another call",
+        ));
+    }
+    Ok(&call.metadata)
 }
