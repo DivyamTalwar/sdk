@@ -331,12 +331,12 @@ proptest! {
     #[test]
     fn document_binding_snapshot_follow_equals_reopen(events in prop::collection::vec((0u8..2, ".{0,20}"), 1..7), cut in 0usize..7) {
         use crate::{client::{ClientSession, MemoryClientState, document_files}, wire};
-        use futures::StreamExt;
+        use futures::{StreamExt, FutureExt};
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let agent = AgentId::from_bytes([1;16]);
             let volume = volume(agent);
-            let (verifier, scope) = authority(agent, &volume, &[VolumeOperation::Read, VolumeOperation::Write]);
+            let (verifier, scope) = authority(Some(agent), &volume, &[VolumeOperation::Read, VolumeOperation::Write]);
             let files = TaskFiles::open(Arc::new(MemoryStream::default()), &volume, &verifier, &scope, 65_536).await.unwrap();
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: crate::TaskId::from_bytes([2;16]).to_string() };
             let new_session = || {
@@ -355,8 +355,16 @@ proptest! {
             for _ in 0..2 { live.apply_update(source.next().await.unwrap().unwrap()).unwrap(); }
             for (kind, text) in &events[cut..] {
                 let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::PlanName::new("layout").unwrap()) };
-                generation = files.write(generation, &FileValue::new(key, text.as_bytes().to_vec())).await.unwrap();
-                live.apply_update(source.next().await.unwrap().unwrap()).unwrap();
+                for _ in 0..2 {
+                    let before = generation;
+                    generation = files.write(generation, &FileValue::new(key.clone(), text.as_bytes().to_vec())).await.unwrap();
+                    let next = tokio::task::unconstrained(source.next()).now_or_never();
+                    if generation == before {
+                        prop_assert!(next.is_none());
+                    } else {
+                        live.apply_update(next.expect("accepted cut must be immediately followed").unwrap().unwrap()).unwrap();
+                    }
+                }
             }
             let mut replayed = new_session();
             let mut reopened = document_files(&files, &owner, 4, 65_536).await.unwrap();
