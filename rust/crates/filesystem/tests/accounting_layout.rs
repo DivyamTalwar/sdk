@@ -85,7 +85,7 @@ fn denied_ledger_does_not_allocate_its_arc() {
     });
     let required = allocations.bytes as u64;
     drop(probe);
-    for ceiling in [0, required - 1] {
+    for ceiling in 0..=required {
         let (result, allocations) = measured(|| {
             NativeMaterializationWork::new(
                 WorkBudget {
@@ -95,6 +95,15 @@ fn denied_ledger_does_not_allocate_its_arc() {
                 &cancellation,
             )
         });
+        if ceiling == required {
+            let work = result.unwrap();
+            assert_eq!(allocations.count, 1);
+            assert_eq!(allocations.bytes as u64, required);
+            assert_eq!(work.live_allocation_bytes(), required);
+            assert_eq!(work.receipt().peak_allocation_bytes, required);
+            assert_eq!(work.receipt().allocation_operations, 1);
+            continue;
+        }
         let (_, work) = result.unwrap_err();
         assert_eq!(*work, WorkCounters::UNCHARGED);
         // The typed error owns one receipt; the admitted ledger Arc is absent.
