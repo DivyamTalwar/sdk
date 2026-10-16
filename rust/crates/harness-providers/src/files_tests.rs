@@ -7,6 +7,8 @@ use acyclic_harness::{
 };
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "reference_tests.rs"]
+mod reference_tests;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
@@ -176,8 +178,13 @@ async fn bounded_text_and_reference_files_project_in_order_without_io_during_cou
             std::str::from_utf8(data).expect("fixture UTF-8")
         );
         let marker = parts[2]["text"].as_str().expect("reference marker");
-        assert!(marker.starts_with("[file: file.txt; text/plain; sha256="));
-        assert!(marker.ends_with(&format!("; bytes={}]", data.len())));
+        assert_eq!(
+            marker,
+            format!(
+                "[file: {}]",
+                serde_json::to_string(&file).expect("fixture FileRef")
+            )
+        );
         assert_eq!(parts[3]["text"], "last");
     }
     Ok(())

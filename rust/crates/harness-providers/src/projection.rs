@@ -94,7 +94,7 @@ pub(crate) fn count(
     })
 }
 
-pub(crate) fn encoded_len(value: &Value) -> Result<usize> {
+pub(crate) fn encoded_len(value: &impl serde::Serialize) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

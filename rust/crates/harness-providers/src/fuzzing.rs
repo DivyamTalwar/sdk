@@ -45,6 +45,26 @@ pub fn assert_stream_invariants(input: &[u8]) {
         }
         return;
     }
+    if kind == b'F' {
+        if let Ok(file) = serde_json::from_slice::<acyclic_harness::conversation::FileRef>(input) {
+            let marker = crate::files::FileText::Estimate
+                .project(
+                    &file,
+                    &acyclic_harness::model::FileProjectionPolicy::Reference,
+                )
+                .unwrap();
+            let restored: acyclic_harness::conversation::FileRef = serde_json::from_str(
+                marker
+                    .strip_prefix("[file: ")
+                    .unwrap()
+                    .strip_suffix(']')
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(restored, file);
+        }
+        return;
+    }
     let adapter = [
         Adapter::Anthropic,
         Adapter::Responses,
