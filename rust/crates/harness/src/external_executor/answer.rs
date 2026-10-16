@@ -15,6 +15,12 @@ pub(super) fn validate(host: ExternalHost, event: &str, answer: Value) -> Result
     if !answer.is_object() {
         return Err(invalid());
     }
+    if answer.get("Failed").is_some() {
+        return match serde::Deserialize::deserialize(&answer) {
+            Ok(crate::Outcome::<Value>::Failed {message}) => Err(Error::Invalid(message)),
+            _ => Err(invalid()),
+        };
+    }
     if spec.action == HookAction::RunTool {
         let input = if host == ExternalHost::Pi {
             if answer.get("block").and_then(Value::as_bool).is_none()

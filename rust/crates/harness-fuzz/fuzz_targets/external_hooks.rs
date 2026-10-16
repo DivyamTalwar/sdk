@@ -3,7 +3,7 @@
 
 use acyclic_harness::{
     external_executor::{
-        CommandSessionMachine, ExternalHost, ExternalRequest, HookBinding, hook_answer, request,
+        CommandSessionMachine, ExternalHost, ExternalRequest, HookBinding, hook_answer, hooks, request,
     },
     task_volume::{Component, FileKey, FileValue, TaskFile},
     workflow::ResumableMachine,
@@ -58,15 +58,13 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         ExternalHost::ClaudeCode,
         ExternalHost::Pi,
     ] {
-        let event = if host == ExternalHost::Pi {
-            "tool_call"
-        } else {
-            "PreToolUse"
-        };
-        if let Ok(answer) = hook_answer(host, event, input) {
-            let encoded = serde_json::to_vec(&answer)?;
-            assert_eq!(hook_answer(host, event, &encoded)?, answer);
-            assert!(answer.is_object());
+        for spec in hooks(host) {
+            if let Ok(answer) = hook_answer(host, spec.event, input) {
+                let encoded = serde_json::to_vec(&answer)?;
+                assert_eq!(hook_answer(host, spec.event, &encoded)?, answer);
+                assert!(answer.is_object());
+                assert!(answer.get("Failed").is_none());
+            }
         }
     }
     if let Ok(binding) = HookBinding::from_bytes(input) {

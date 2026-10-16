@@ -26,13 +26,20 @@ async fn retained_lifecycle_intent_can_settle_during_reconciliation() -> Result<
             fixture.publisher.as_ref(),"/project").accept(&folder,&file).await?;
         let worker=Worker {id:"lifecycle-recovery".into(),available:ResourceRequest::default(),labels:BTreeMap::new()};
         let interrupted=Interrupted {fixture:&fixture};
-        assert!(matches!(Box::pin(fixture.runtime.run_operation(&worker,task,&interrupted,8,None)).await?,
-            Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling {..}))));
-        let commands=RequestCommands::new(&fixture.runtime,&fixture.requests,&fixture.results);
-        match Box::pin(fixture.runtime.run_operation(&worker,task,&commands,8,None)).await? {
-            Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended {..}))=>{},
+        let lease=match Box::pin(fixture.runtime.run_operation(&worker,task,&interrupted,8,None)).await? {
+            Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling {lease}))=>lease,
             Some(TaskWorkerAttempt::Unresolved {error,..})=>return Err(error),
-            _=>return Err(Error::Storage("retained lifecycle intent did not settle".into())),
+            _=>return Err(Error::Storage("interrupted command did not retain its lease".into())),
+        };
+        let reservation=lease.reservation.id.clone();
+        let commands=RequestCommands::new(&fixture.runtime,&fixture.requests,&fixture.results);
+        match Box::pin(fixture.runtime.reconcile_task(lease,&commands,1,1000,None)).await {
+            TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling {lease})=>{
+                assert_eq!(lease.reservation.id,reservation);
+                assert_eq!(lease.operation.operation_id,acyclic_harness::OperationId::from_bytes(task.into_bytes()));
+            },
+            TaskWorkerAttempt::Unresolved {error,..}=>return Err(error),
+            _=>return Err(Error::Storage("reconciliation advanced the task instead of retaining its lease".into())),
         }
         let snapshot=fixture.results.snapshot(&Query::File(native.result_key(folder).map_err(storage)?),1).await.map_err(storage)?;
         assert_eq!(snapshot.files.len(),1);

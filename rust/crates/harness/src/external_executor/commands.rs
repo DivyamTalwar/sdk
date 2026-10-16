@@ -97,15 +97,7 @@ where
                     "request differs from the retained command".into(),
                 ));
             }
-            if command.kind == TOOL_TASK_COMMAND_KIND {
-                let actual: ToolTaskCommand = serde::Deserialize::deserialize(&payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                if actual != request.tool_call(self.runtime.tool_registry())? {
-                    return Err(Error::Conflict("tool command differs from the original native request".into()));
-                }
-            } else if command.kind != LIFECYCLE {
-                return Err(Error::Unsupported("external command kind is not bound".into()));
-            }
+            let mut failure = validate_command(&request, &command, &payload, self.runtime.tool_registry())?;
             let result_key = request.result_key(task.clone()).map_err(storage)?;
             let started = FileValue::new(
                 FileKey::Task {
@@ -154,24 +146,21 @@ where
             }
             drop(cached);
             let progress = if command.kind == LIFECYCLE {
-                let original: ExternalRequest = serde_json::from_value(payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                if original != request || !matches!(request.action,
-                    ExternalAction::Attach {..} | ExternalAction::Detach | ExternalAction::ToolFinished {..}) {
-                    return Err(Error::Conflict("lifecycle command differs from its native request".into()));
-                }
                 if let ExternalAction::ToolFinished {call_id,..}=&request.action {
                     let call = ExternalAction::RunTool {call_id:call_id.clone(),name:String::new(),arguments:Value::Null};
                     let operation=super::normalize::operation(request.host,&request.session_id,&request.caller,&call);
                     let result_key=FileKey::Task {task:Component::new(owner.task_id().to_string()).map_err(storage)?,
                         file:TaskFile::RequestResult(Component::new(operation.to_string()).map_err(storage)?)};
                     if self.results.snapshot(&Query::File(result_key),1).await.map_err(storage)?.files.is_empty() {
-                        return Err(Error::Conflict("native completion has no original harness tool result".into()));
+                        failure = Some("native completion has no original harness tool result");
                     }
                 }
-                TaskCommandProgress::Ready(serde_json::json!({
-                    "task":owner.task_id(),"operation_id":request.operation_id
-                }))
+                let value = match failure {
+                    Some(message) => serde_json::to_value(crate::Outcome::<Value>::Failed {message:message.into()})
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    None => serde_json::json!({"task":owner.task_id(),"operation_id":request.operation_id}),
+                };
+                TaskCommandProgress::Ready(value)
             } else {
                 drop(request);
                 let commands = self.runtime.commands();
@@ -194,6 +183,38 @@ where
             Ok(progress)
         })
     }
+}
+
+fn validate_command(
+    request: &ExternalRequest,
+    command: &WorkflowCommand,
+    payload: &Value,
+    tools: &crate::tool::ToolRegistry,
+) -> Result<Option<&'static str>> {
+    if command.kind == TOOL_TASK_COMMAND_KIND {
+        let actual: ToolTaskCommand = serde::Deserialize::deserialize(payload)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        if actual != request.tool_call(tools)? {
+            return Err(Error::Conflict("tool command differs from the original native request".into()));
+        }
+        return Ok(None);
+    }
+    if command.kind != LIFECYCLE {
+        return Err(Error::Unsupported("external command kind is not bound".into()));
+    }
+    let original: ExternalRequest = serde::Deserialize::deserialize(payload)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    if original != *request {
+        return Err(Error::Conflict("lifecycle command differs from its native request".into()));
+    }
+    Ok(match &request.action {
+        ExternalAction::RunTool {..} => match request.tool_call(tools) {
+            Ok(_) => return Err(Error::Conflict("valid tool call requires its pinned tool command".into())),
+            Err(_) => Some("native tool or arguments are not supported by the selected tool catalog"),
+        },
+        ExternalAction::Fork {..} | ExternalAction::Join {..} => Some("external child preparation is not bound"),
+        _ => None,
+    })
 }
 
 impl<P, A, O> TaskCommandHost for RequestCommands<'_, P, A, O>

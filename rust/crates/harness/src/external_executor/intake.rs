@@ -117,13 +117,14 @@ where
     async fn command(&self, request: &ExternalRequest) -> Result<WorkflowCommand> {
         let (kind, bytes) = match &request.action {
             ExternalAction::RunTool {..} => {
-                let input = request.tool_call(self.runtime.tool_registry())?;
-                (TOOL_TASK_COMMAND_KIND, volume::encode(&input).map_err(storage)?)
+                match request.tool_call(self.runtime.tool_registry()) {
+                    Ok(input) => (TOOL_TASK_COMMAND_KIND, volume::encode(&input).map_err(storage)?),
+                    Err(_) => (LIFECYCLE, volume::encode(request).map_err(storage)?),
+                }
             }
-            ExternalAction::Attach {..} | ExternalAction::Detach | ExternalAction::ToolFinished {..} =>
+            ExternalAction::Attach {..} | ExternalAction::Detach | ExternalAction::ToolFinished {..}
+                | ExternalAction::Fork {..} | ExternalAction::Join {..} =>
                 (LIFECYCLE, volume::encode(request).map_err(storage)?),
-            ExternalAction::Fork {..} | ExternalAction::Join {..} =>
-                return Err(Error::Unsupported("external child preparation is not bound".into())),
         };
         let key = format!("external-command:{}",request.operation_id);
         let payload = self.payloads.stage(request.operation_id, &key, &bytes, None)?.await?;

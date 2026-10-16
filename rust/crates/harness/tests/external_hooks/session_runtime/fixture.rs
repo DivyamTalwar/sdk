@@ -19,7 +19,11 @@ pub(crate) struct Fixture {
 }
 
 impl Fixture {
-    pub async fn new(binding: VolumeBinding) -> Result<Self> {
+    pub fn new(binding: VolumeBinding) -> impl Future<Output = Result<Self>> {
+        Box::pin(Self::open(binding))
+    }
+
+    async fn open(binding: VolumeBinding) -> Result<Self> {
     let provider = ProviderRef::new(
         "session-worker".into(),
         "filesystem".into(),
@@ -119,4 +123,30 @@ impl Fixture {
         FilesystemContentPublisher::new(files.clone(), &volume, &verifier, &signed, 65_536, None)?;
         Ok(Self {runtime,files,volume,verifier,signed,tasks,revision,publisher,requests,results})
     }
+}
+
+#[tokio::test]
+async fn fixture_creation_future_is_boxed_at_the_runtime_boundary() -> Result<()> {
+    {
+        let raw = Fixture::open(VolumeBinding::Separate);
+        let future = Fixture::new(VolumeBinding::Separate);
+        eprintln!("fixture bootstrap futures: raw {} bytes, boxed {} bytes",
+            std::mem::size_of_val(&raw), std::mem::size_of_val(&future));
+        assert!(std::mem::size_of_val(&future) < 16 * 1024);
+    }
+    let fixture = Fixture::new(VolumeBinding::Separate).await?;
+    let definition = fixture.tasks.get::<Value, ()>("acyclic.command_session@1")?;
+    {
+        let future = fixture.runtime.harness().admit(OperationId::from_bytes([80;16]), &definition, Value::Null, None);
+        eprintln!("task admission future: {} bytes", std::mem::size_of_val(&future));
+    }
+    {
+        let future = fixture.runtime.harness().durable_context(TaskId::from_bytes([80;16]), OperationId::from_bytes([80;16]), None);
+        eprintln!("task context future: {} bytes", std::mem::size_of_val(&future));
+    }
+    {
+        let future = fixture.files.create_volume(&fixture.volume);
+        eprintln!("volume creation future: {} bytes", std::mem::size_of_val(&future));
+    }
+    Ok(())
 }

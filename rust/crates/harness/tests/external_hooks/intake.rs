@@ -75,6 +75,35 @@ async fn intake_rejects_unbound_workspaces_and_unpublished_delivery_bytes() -> R
     }).await
 }
 
+#[tokio::test]
+async fn rejected_native_actions_settle_without_blocking_the_next_request() -> Result<()> {
+    Box::pin(async {
+        let fixture = Fixture::new(VolumeBinding::Separate).await?;
+        let folder = Component::new(TaskId::from_bytes([81; 16]).to_string()).map_err(storage)?;
+        let host = ExternalHost::ClaudeCode;
+        let start = request(host, "SessionStart", identity(host, json!({"cwd":"/project"})))?;
+        deliver(&fixture, &folder, &start, false).await?;
+        for (event, input) in [
+            ("PreToolUse", json!({"tool_use_id":"unknown", "tool_name":"unknown", "tool_input":{}})),
+            ("PreToolUse", json!({"tool_use_id":"escape", "tool_name":"Write",
+                "tool_input":{"file_path":"../escape", "content":"rejected"}})),
+            ("PostToolUse", json!({"tool_use_id":"missing", "tool_response":{"ok":true}})),
+            ("SubagentStart", json!({"agent_id":"child", "agent_type":"worker"})),
+            ("SubagentStop", json!({"agent_id":"child"})),
+        ] {
+            let rejected = request(host, event, identity(host, input))?;
+            let answer = deliver(&fixture, &folder, &rejected, false).await?;
+            let outcome: acyclic_harness::Outcome<Value> = serde_json::from_value(answer.clone())
+                .map_err(|error| invalid(&error))?;
+            assert!(matches!(outcome, acyclic_harness::Outcome::Failed {..}), "{event}: {answer}");
+            assert!(hook_answer(host, event, &serde_json::to_vec(&answer).map_err(|error| invalid(&error))?).is_err());
+        }
+        let stop = request(host, "SessionEnd", identity(host, json!({})))?;
+        deliver(&fixture, &folder, &stop, true).await?;
+        Ok(())
+    }).await
+}
+
 async fn publish(fixture:&Fixture,folder:&Component,request:&ExternalRequest)->Result<acyclic_harness::task_volume::FileValue> {
     let file=request.to_file(folder.clone()).map_err(storage)?;
     let snapshot=fixture.requests.snapshot(&Query::File(file.key.clone()),1).await.map_err(storage)?;
@@ -83,6 +112,7 @@ async fn publish(fixture:&Fixture,folder:&Component,request:&ExternalRequest)->R
 }
 
 async fn deliver(fixture:&Fixture,folder:&Component,request:&ExternalRequest,terminal:bool)->Result<Value> {
+    let file=request.to_file(folder.clone()).map_err(storage)?;
     let mut incoming = fixture.requests.observe(Query::File(file.key.clone()),None,1).await.map_err(storage)?;
     let consumer = RequestConsumer::new(&fixture.runtime,&fixture.requests,&fixture.results,fixture.publisher.as_ref(),"/project");
     let client = async { request.send(&fixture.requests,&fixture.results,folder.clone()).await.map_err(storage) };

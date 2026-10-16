@@ -39,6 +39,18 @@ fn malformed_tool_answers_cannot_implicitly_allow_native_execution() -> Result<(
 }
 
 proptest! {
+    // Property: a durable failure is never interpreted as native permission or
+    // a successful lifecycle acknowledgement, for any catalogued host event.
+    #[test]
+    fn failed_results_reject_every_native_hook(message in ".{0,64}") {
+        let answer = serde_json::to_vec(&acyclic_harness::Outcome::<Value>::Failed {message})?;
+        for host in [ExternalHost::Codex, ExternalHost::ClaudeCode, ExternalHost::Pi] {
+            for spec in hooks(host) {
+                prop_assert!(hook_answer(host, spec.event, &answer).is_err());
+            }
+        }
+    }
+
     // Property: explicit native decisions and their rewritten inputs round trip
     // exactly; deleting the decision always rejects the answer.
     #[test]

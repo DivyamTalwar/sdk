@@ -41,11 +41,22 @@ async fn request_permissions_cannot_include_owner_result_files() -> Result<()> {
     Box::pin(run_write_session(VolumeBinding::Shared)).await
 }
 
+#[tokio::test]
+async fn prepared_command_cannot_change_the_native_tool_arguments() -> Result<()> {
+    Box::pin(run_write_session(VolumeBinding::ChangedArguments)).await
+}
+
+#[tokio::test]
+async fn prepared_tool_cannot_be_acknowledged_as_a_lifecycle_command() -> Result<()> {
+    Box::pin(run_write_session(VolumeBinding::ForgedLifecycle)).await
+}
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum VolumeBinding {
     Separate,
     Foreign,
     Shared,
+    ChangedArguments,
+    ForgedLifecycle,
 }
 
 async fn run_write_session(binding: VolumeBinding) -> Result<()> {
@@ -74,18 +85,26 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
         .append(snapshot.generation, &file)
         .await
         .map_err(storage)?;
-    let payload = serde_json::to_vec(&ToolTaskCommand {
+    let mut arguments = arguments;
+    if binding == VolumeBinding::ChangedArguments {
+        arguments["text"] = json!("changed after immutable request publication");
+    }
+    let payload = if binding == VolumeBinding::ForgedLifecycle {
+        serde_json::to_vec(&original)
+    } else { serde_json::to_vec(&ToolTaskCommand {
         name: "write".into(),
         revision,
         arguments,
-    })
+    }) }
     .map_err(|error| invalid(&error))?;
     let payload =
         SchedulerPayloadStore::stage(publisher.as_ref(), tool_operation, "tool", &payload, None)?
             .await?;
     let command = WorkflowCommand {
         operation_id: tool_operation,
-        kind: TOOL_TASK_COMMAND_KIND.into(),
+        kind: if binding == VolumeBinding::ForgedLifecycle {
+            "acyclic.external.lifecycle.v1"
+        } else { TOOL_TASK_COMMAND_KIND }.into(),
         payload,
     };
     let definition = tasks.get::<Value, ()>("acyclic.command_session@1")?;
@@ -109,24 +128,8 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
         labels: BTreeMap::new(),
     };
     let commands = RequestCommands::new(&runtime, &requests, &results);
-    let context = runtime.harness().durable_context(task, operation, None).await?;
-    let future = commands.execute(
-        context,
-        acyclic_harness::scheduler::LeaseFence {
-            reservation_id: "unpolled-size-probe".into(),
-            placement: worker.id.clone(),
-        },
-        command,
-        Value::Null,
-    );
-    let bytes = std::mem::size_of_val(&future);
-    drop(future);
-    eprintln!("external request command future: {bytes} bytes");
-    assert!(
-        bytes < 16 * 1024,
-        "external request command future: {bytes} bytes"
-    );
-    let attempt = Box::pin(runtime.run_operation(&worker, task, &commands, 8, None)).await?;
+    let guarded = SizeGuard(&commands);
+    let attempt = Box::pin(runtime.run_operation(&worker, task, &guarded, 8, None)).await?;
     if binding != VolumeBinding::Separate {
         assert!(matches!(
             attempt,
@@ -224,4 +227,23 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+// Measure the actual dispatch future supplied with the worker's owned context.
+struct SizeGuard<'a>(&'a dyn TaskCommandHost);
+
+impl TaskCommandHost for SizeGuard<'_> {
+    fn execute<'a>(
+        &'a self,
+        context: acyclic_harness::runtime::TaskContext,
+        fence: acyclic_harness::scheduler::LeaseFence,
+        command: WorkflowCommand,
+        payload: Value,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_harness::filesystem::TaskCommandProgress>> {
+        let future = self.0.execute(context, fence, command, payload);
+        let bytes = std::mem::size_of_val(&future);
+        eprintln!("external request command future: {bytes} bytes");
+        assert!(bytes < 16 * 1024, "external request command future: {bytes} bytes");
+        future
+    }
 }
