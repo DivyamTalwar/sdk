@@ -372,6 +372,7 @@ name = "acyclic-harness-local-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-harness",
+ "acyclic-stream",
  "bytes",
  "diffy",
  "futures",
@@ -2892,6 +2893,7 @@ dependencies = [
  "clap",
  "futures",
  "proptest",
+ "serde_json",
  "tokio",
 ]
 
