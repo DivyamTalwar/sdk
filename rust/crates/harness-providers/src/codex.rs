@@ -62,6 +62,13 @@ impl RefreshFailure {
         failure.message[..message.len()].copy_from_slice(message.as_bytes());
         Some(failure)
     }
+    // Only call for token-endpoint failures, never per-model credential checks.
+    fn share<T>(result: Result<T>, failure: &mut Option<Self>) -> Result<T> {
+        if let Err(error) = &result {
+            *failure = Self::from_error(error);
+        }
+        result
+    }
     fn error(self, io: &mut CredentialIo<'_>) -> Result<acyclic_harness::Error> {
         use acyclic_harness::{Error, wire::ErrorCode};
         let text = std::str::from_utf8(&self.message[..self.length])
@@ -125,8 +132,10 @@ impl CodexLogin {
     ) -> Result<(String, Option<String>)> {
         let mut io = CredentialIo::new(custody)?;
         let result = crate::refresh::serialized(&self.refresh, async {
-            let result = self.refresh_bearer(transport, rejected, &mut io).await;
-            let failure = result.as_ref().err().and_then(RefreshFailure::from_error);
+            let mut failure = None;
+            let result = self
+                .refresh_bearer(transport, rejected, &mut io, &mut failure)
+                .await;
             (result, failure)
         })
         .await;
@@ -142,6 +151,7 @@ impl CodexLogin {
         transport: &dyn HttpTransport,
         rejected: Option<&str>,
         io: &mut CredentialIo<'_>,
+        failure: &mut Option<RefreshFailure>,
     ) -> Result<(String, Option<String>)> {
         let (mut original, mut auth) = load(&self.path, io)?;
         self.check_account(&auth)?;
@@ -160,10 +170,16 @@ impl CodexLogin {
                     "refresh_token":refresh,"refresh_reason":if force {"unauthorized"} else {"proactive_expiry"}}))
                     .map_err(|_| invalid("Codex refresh encoding failed"))?)?,
             };
-            let response = match io.work() {
-                Some(work) => transport.send_with_native_work(request, work)?.await?,
-                None => transport.send(request).await?,
-            };
+            let response = RefreshFailure::share(
+                async {
+                    match io.work() {
+                        Some(work) => transport.send_with_native_work(request, work)?.await,
+                        None => transport.send(request).await,
+                    }
+                }
+                .await,
+                failure,
+            )?;
             if response.status != 200 {
                 if attempt == 0 && matches!(response.status, 400 | 401) {
                     let (bytes, current) = load(&self.path, io)?;
@@ -176,56 +192,22 @@ impl CodexLogin {
                         continue;
                     }
                 }
-                return Err(if matches!(response.status, 400 | 401 | 403) {
-                    acyclic_harness::Error::Unauthorized(format!(
-                        "Codex refresh HTTP status {}; sign in with the Codex CLI again",
-                        response.status
-                    ))
-                } else {
-                    crate::http_error(response.status)
-                });
+                return RefreshFailure::share(
+                    Err(if matches!(response.status, 400 | 401 | 403) {
+                        acyclic_harness::Error::Unauthorized(format!(
+                            "Codex refresh HTTP status {}; sign in with the Codex CLI again",
+                            response.status
+                        ))
+                    } else {
+                        crate::http_error(response.status)
+                    }),
+                    failure,
+                );
             }
-            let mut body = response.body;
-            let mut bytes = Vec::new();
-            while let Some(chunk) = body.next().await {
-                let chunk = chunk?;
-                if chunk.len() as u64 > MAX_AUTH_BYTES.saturating_sub(bytes.len() as u64) {
-                    return Err(invalid("Codex refresh response exceeds limit"));
-                }
-                if bytes.len() + chunk.len() > bytes.capacity() {
-                    let capacity = (bytes.len() + chunk.len())
-                        .max(bytes.capacity() * 2)
-                        .min(MAX_AUTH_BYTES as usize);
-                    io.claim(
-                        capacity as u64,
-                        1,
-                        WorkCounters {
-                            bytes_copied: bytes.len() as u64,
-                            ..WorkCounters::UNCHARGED
-                        },
-                    )?;
-                    bytes
-                        .try_reserve_exact(capacity - bytes.len())
-                        .map_err(|_| invalid("cannot allocate Codex refresh response"))?;
-                }
-                io.charge(WorkCounters {
-                    bytes_copied: chunk.len() as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                bytes.extend_from_slice(&chunk);
-            }
-            let updated = io.json(&bytes)?;
-            if !["access_token", "refresh_token", "id_token"]
-                .iter()
-                .any(|field| updated.get(field).is_some())
-            {
-                return Err(invalid("Codex refresh did not return any tokens"));
-            }
+            let updated =
+                RefreshFailure::share(refresh_document(response.body, io).await, failure)?;
             for field in ["access_token", "refresh_token", "id_token"] {
                 if let Some(value) = updated.get(field) {
-                    if value.as_str().is_none_or(|token| token.trim().is_empty()) {
-                        return Err(invalid("Codex refresh returned an invalid token"));
-                    }
                     auth["tokens"][field] = value.clone();
                 }
             }
@@ -259,6 +241,55 @@ impl CodexLogin {
         }
         Ok(())
     }
+}
+
+async fn refresh_document(
+    mut body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
+    io: &mut CredentialIo<'_>,
+) -> Result<Value> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk?;
+        if chunk.len() as u64 > MAX_AUTH_BYTES.saturating_sub(bytes.len() as u64) {
+            return Err(invalid("Codex refresh response exceeds limit"));
+        }
+        if bytes.len() + chunk.len() > bytes.capacity() {
+            let capacity = (bytes.len() + chunk.len())
+                .max(bytes.capacity() * 2)
+                .min(MAX_AUTH_BYTES as usize);
+            io.claim(
+                capacity as u64,
+                1,
+                WorkCounters {
+                    bytes_copied: bytes.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                },
+            )?;
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(|_| invalid("cannot allocate Codex refresh response"))?;
+        }
+        io.charge(WorkCounters {
+            bytes_copied: chunk.len() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        bytes.extend_from_slice(&chunk);
+    }
+    let updated = io.json(&bytes)?;
+    if !["access_token", "refresh_token", "id_token"]
+        .iter()
+        .any(|field| updated.get(field).is_some())
+    {
+        return Err(invalid("Codex refresh did not return any tokens"));
+    }
+    for field in ["access_token", "refresh_token", "id_token"] {
+        if let Some(value) = updated.get(field) {
+            if value.as_str().is_none_or(|token| token.trim().is_empty()) {
+                return Err(invalid("Codex refresh returned an invalid token"));
+            }
+        }
+    }
+    Ok(updated)
 }
 
 fn token<'a>(auth: &'a Value, field: &str) -> Result<&'a str> {
@@ -449,7 +480,10 @@ fn stage(
     io: &mut CredentialIo<'_>,
 ) -> Result<()> {
     use std::io::{Seek as _, SeekFrom};
-    let encoded = crate::projection::encoded_len(auth)? as u64 + 1;
+    let encoded = (crate::projection::encoded_len(auth)? as u64)
+        .checked_add(1)
+        .filter(|&bytes| bytes <= MAX_AUTH_BYTES)
+        .ok_or_else(|| invalid("Codex merged credentials exceed limit"))?;
     io.charge(WorkCounters {
         bytes_encoded: encoded,
         output_bytes: encoded,

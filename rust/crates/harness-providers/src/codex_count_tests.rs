@@ -10,6 +10,7 @@ proptest! {
     #[test]
     fn usage_anchor_counts_new_input_and_rejects_unrelated_resume_prefixes(
         input in ".{1,128}", delta in ".{1,128}", tokens in 1u64..100_000,
+        output in 0u64..u64::MAX,
     ) {
         let mut request = ModelRequest {
             model: Model::new("openai".into(), "fixture".into(), "1".into(), json!({})).unwrap(),
@@ -18,12 +19,15 @@ proptest! {
         request.messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }];
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let counter = Counter::default();
-        counter.observe(&first, &json!({"usage":{"input_tokens":tokens,"output_tokens":7}})).unwrap();
-        request.messages.push(ModelMessage { role: ModelRole::User, content: ModelContent::Text(delta) });
+        counter.observe(&first, &json!({"usage":{"input_tokens":tokens,"output_tokens":output}})).unwrap();
+        prop_assert_eq!(counter.count(&first).unwrap(), tokens);
+        // Generated assistant content is new input exactly once, independent
+        // of the output-token count from the response which produced it.
+        request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text(delta) });
         let next = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let (_, before) = footprint(&first, 1).unwrap();
         let (_, after) = footprint(&next, 1).unwrap();
-        prop_assert_eq!(counter.count(&next).unwrap(), tokens + 7 + (after-before).div_ceil(3));
+        prop_assert_eq!(counter.count(&next).unwrap(), tokens + (after-before).div_ceil(3));
         request.messages[0].content = ModelContent::Text("unrelated resume".into());
         let resumed = PreparedModelRequest::prepare(request, Default::default(), None).unwrap();
         let (prefix, total) = footprint(&resumed, 1).unwrap();

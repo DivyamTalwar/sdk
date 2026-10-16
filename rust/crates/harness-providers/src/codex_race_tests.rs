@@ -351,3 +351,60 @@ fn explicit_chatgpt_mode_is_metadata_when_the_original_mode_was_implicit() -> Re
     assert_eq!(merged["auth_mode"], "chatgpt");
     Ok(())
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn oversized_refresh_merges_preserve_the_original_file_byte_for_byte(
+        metadata in 524_288usize..720_896,
+        access in 524_288usize..720_896,
+    ) {
+        let (root, login, mut transport) = fixture(&jwt(0), 200).unwrap();
+        let path = root.path().join("auth.json");
+        let mut original = auth(&jwt(0));
+        original["agent_identity"] = json!("m".repeat(metadata));
+        let original = serde_json::to_vec_pretty(&original).unwrap();
+        transport.response = json!({"access_token":"r".repeat(access)});
+        prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
+        prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
+        std::fs::write(&path, &original).unwrap();
+        let error = futures::executor::block_on(login.bearer(&transport, None, None)).unwrap_err();
+        prop_assert!(error.to_string().contains("merged credentials exceed limit"));
+        prop_assert_eq!(std::fs::read(&path).unwrap(), original);
+        prop_assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+}
+
+#[tokio::test]
+async fn account_binding_errors_are_not_shared_with_a_newly_resolved_model() -> Result<()> {
+    let (root, old, transport) = fixture(&jwt(0), 200)?;
+    old.check_account(&auth(&jwt(0)))?;
+    let fresh = old.fresh();
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
+    let mut switched = auth(&access);
+    switched["tokens"]["account_id"] = json!("new-account");
+    std::fs::write(root.path().join("auth.json"), switched.to_string()).unwrap();
+
+    // Queue both model bindings behind one guard so their sampled generation
+    // is identical. The old model's account rejection must not poison the new one.
+    let (release, wait) = futures::channel::oneshot::channel::<()>();
+    let holder = crate::refresh::serialized(&old.refresh, async {
+        wait.await.unwrap();
+        ((), None)
+    });
+    let old_request = old.bearer(&transport, None, None);
+    let new_request = fresh.bearer(&transport, None, None);
+    futures::pin_mut!(holder, old_request, new_request);
+    assert!(futures::poll!(&mut holder).is_pending());
+    assert!(futures::poll!(&mut old_request).is_pending());
+    assert!(futures::poll!(&mut new_request).is_pending());
+    release.send(()).unwrap();
+    let (_, rejected, accepted) = futures::join!(holder, old_request, new_request);
+    assert!(matches!(
+        rejected,
+        Err(acyclic_harness::Error::Unauthorized(_))
+    ));
+    assert_eq!(accepted?, (access, Some("new-account".into())));
+    assert!(transport.sent.lock().unwrap().is_empty());
+    Ok(())
+}

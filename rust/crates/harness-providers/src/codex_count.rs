@@ -22,10 +22,9 @@ impl Counter {
         metadata: &serde_json::Value,
     ) -> Result<()> {
         let usage = &metadata["usage"];
-        if let Some(tokens) = usage["input_tokens"]
-            .as_u64()
-            .and_then(|input| input.checked_add(usage["output_tokens"].as_u64().unwrap_or(0)))
-        {
+        // The footprint covers the request input, not the generated response.
+        // Its output is charged once when it becomes input on a later request.
+        if let Some(tokens) = usage["input_tokens"].as_u64() {
             let messages = request.request().messages.len();
             let (digest, bytes) = footprint(request, messages)?;
             self.0
