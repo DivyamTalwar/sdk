@@ -28,6 +28,24 @@ impl Default for ThresholdCompaction {
 }
 
 impl ThresholdCompaction {
+    /// Splits usable input capacity after fixed request overhead between recent
+    /// context and space for mandatory content and a replacement summary.
+    pub(crate) fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
+        capacity.validate()?;
+        let mut policy = Self::default();
+        policy.response_reserve_tokens = policy
+            .response_reserve_tokens
+            .min(capacity.output_tokens)
+            .min(capacity.context_tokens.saturating_sub(2));
+        let usable = capacity
+            .context_tokens
+            .saturating_sub(policy.response_reserve_tokens)
+            .saturating_sub(fixed_tokens);
+        policy.recent_tokens = policy.recent_tokens.min(usable / 2);
+        policy.validate(capacity, None)?;
+        Ok(policy)
+    }
+
     /// Validates the defaults or replacement against the actual selected capacity.
     pub fn validate(
         &self,
@@ -86,7 +104,7 @@ impl Default for CompactionPolicy {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl CompactionPolicy {
     /// Copies the policy on the optional original preparation ledger.
     pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
@@ -109,5 +127,7 @@ pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
 pub(crate) use allocation::reserve_vector;
 use allocation::{quota_vector, retire_vector};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod defaults_tests;
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,5 @@
-//! Allocation profiling for the filesystem benchmarks.
-
-#[path = "filesystem.rs"]
+//! Allocation instrumentation stays in its own benchmark executable.
+#[path = "../../conformance/benches/filesystem.rs"]
 mod filesystem;
 
 #[global_allocator]

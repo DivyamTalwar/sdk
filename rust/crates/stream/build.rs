@@ -1,6 +1,8 @@
 //! Generates the public hierarchical Stream gRPC client and server.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(acyclic_stream_loom)");
+    println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let include = protoc_bin_vendored::include_path()?;
     let mut prost = tonic_prost_build::Config::new();
@@ -16,9 +18,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(grpc)
         .compile_with_config(
             prost,
-            &[std::path::Path::new("proto/stream/v1/stream.proto")],
+            &[
+                std::path::Path::new("proto/stream/v1/stream.proto"),
+                std::path::Path::new("proto/stream/v1/session.proto"),
+            ],
             &[std::path::Path::new("proto"), include.as_path()],
         )?;
     println!("cargo:rerun-if-changed=proto/stream/v1/stream.proto");
+    println!("cargo:rerun-if-changed=proto/stream/v1/session.proto");
     Ok(())
 }

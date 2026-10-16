@@ -26,18 +26,26 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
     work: &mut W,
     operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
-    let length = wide_units(path.as_os_str(), work)?;
+    with_wide_units(path.as_os_str().encode_wide(), work, operation)
+}
+
+pub(crate) fn with_wide_units<W: NativeHostWork, T>(
+    units: impl Iterator<Item = u16> + Clone,
+    work: &mut W,
+    operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    let mut length = 0usize;
+    for _ in units.clone() {
+        work.started_io(ITEM)?;
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
     let encoded = WorkCounters {
         bytes_encoded: length.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     };
     work.admit(encoded)?;
     let (mut name, allocation) = buffer(length, work)?;
-    name.extend(
-        path.as_os_str()
-            .encode_wide()
-            .map(|u| if u == 47 { 92 } else { u }),
-    );
+    name.extend(units.map(|u| if u == 47 { 92 } else { u }));
     let result = work.record(encoded).and_then(|()| operation(&name, work));
     drop(name);
     work.release(allocation)?;
@@ -158,7 +166,7 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
     })
 }
 
-pub(super) fn stat_windows_file<W: NativeHostWork>(
+pub(crate) fn stat_windows_file<W: NativeHostWork>(
     file: &impl std::os::windows::io::AsHandle,
     volume: u32,
     work: &mut W,
@@ -169,12 +177,12 @@ pub(super) fn stat_windows_file<W: NativeHostWork>(
     )?)
 }
 
-pub(super) fn stat_windows_name<W: NativeHostWork>(
+pub(crate) fn stat_windows_name(
     directory: &Dir,
     name: &win::UNICODE_STRING,
     volume: u32,
-    work: &mut W,
-) -> Result<Option<HostStat>, W::Error> {
+    include_reparse: bool,
+) -> io::Result<Option<HostStat>> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
         Length: u32::try_from(std::mem::size_of::<
             windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
@@ -187,7 +195,6 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     };
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
     let mut information = nt::FILE_STAT_INFORMATION::default();
-    work.started_io(READ)?;
     // SAFETY: the held directory, name, and fixed-size output outlive the query.
     let status = unsafe {
         nt::NtQueryInformationByName(
@@ -203,9 +210,9 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
         return Ok(None);
     }
     if status.is_err() {
-        return Err(status_error(status).into());
+        return Err(status_error(status));
     }
-    if information.ReparseTag != 0 {
+    if !include_reparse && information.ReparseTag != 0 {
         return Ok(None);
     }
     Ok(Some(HostStat::from_stat_information(&information, volume)?))
@@ -318,11 +325,11 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     })
 }
 
-pub(super) fn set_windows_name<W: NativeHostWork>(
+pub(crate) fn set_windows_name<W: NativeHostWork>(
     file: &File,
     parent: &Dir,
     name: &[u16],
-    replace: bool,
+    flags: u32,
     class: nt::FILE_INFORMATION_CLASS,
     work: &mut W,
 ) -> Result<(), W::Error> {
@@ -333,7 +340,7 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
             .ok_or(crate::WorkError::Overflow)?,
     );
     work.admit(copied)?;
-    let (packet, allocation, length) = windows_name_packet(parent, name, replace, work)?;
+    let (packet, allocation, length) = windows_name_packet(parent, name, flags, work)?;
     let result = work.record(copied).and_then(|()| {
         work.attempt_io(WRITE, || {
             // SAFETY: initialized aligned storage covers the header and flexible name.

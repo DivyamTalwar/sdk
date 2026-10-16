@@ -128,10 +128,23 @@ impl DemandWork {
         Ok(self.work.admit(&delta, &self.budget)?)
     }
     pub(crate) fn admit_retained(&mut self, bytes: u64) -> Result<(), DemandError> {
+        self.admit_allocation(bytes, 0)
+    }
+    pub(super) fn admit_allocation(
+        &mut self,
+        bytes: u64,
+        operations: u64,
+    ) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
         self.check()?;
         if let Some(resource) = self.resource() {
-            resource.admit(WorkCounters::UNCHARGED, bytes)?;
+            resource.admit(
+                WorkCounters {
+                    allocation_operations: operations,
+                    ..WorkCounters::UNCHARGED
+                },
+                bytes,
+            )?;
         }
         let peak = self
             .allocations
@@ -142,14 +155,18 @@ impl DemandWork {
         Ok(self.work.admit(
             &WorkCounters {
                 peak_allocation_bytes: peak,
+                allocation_operations: operations,
                 ..WorkCounters::UNCHARGED
             },
             &self.budget,
         )?)
     }
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        let delta = self.item_charge(delta);
         self.reconcile_cancellation_registry()?;
+        self.charge_reconciled(delta)
+    }
+    pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        let delta = self.item_charge(delta);
         self.check()?;
         self.admission(delta, 0, |state| {
             Ok(state.work.charge(&delta, &state.budget)?)
