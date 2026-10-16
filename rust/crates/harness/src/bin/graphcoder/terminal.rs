@@ -3,8 +3,9 @@
 use acyclic_harness::{
     Error, Result, wire,
     wire_api::{
-        HarnessWireApi, cancel, negotiate, observe, validate_admission, validate_command_protocol,
-        validate_resume_protocol,
+        HarnessWireApi, negotiate, validate_admission, validate_cancel_request,
+        validate_cancel_response, validate_command_protocol, validate_observe_request,
+        validate_operation_status, validate_resume_protocol,
     },
 };
 use futures::StreamExt as _;
@@ -82,11 +83,17 @@ pub async fn dispatch(
                 .map(Response::Delivery))
         }
         Request::Observe(request) => {
-            let response = observe(api, request).await?;
+            let control = validate_observe_request(&request)?;
+            api.authorize_operation_control(&control).await?;
+            let response = api.observe(request.clone()).await?;
+            validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)?;
             Ok(Some(Response::Status(response)))
         }
         Request::Cancel(request) => {
-            let response = cancel(api, request).await?;
+            let control = validate_cancel_request(&request)?.control;
+            api.authorize_operation_control(&control).await?;
+            let response = api.cancel(request.clone()).await?;
+            validate_cancel_response(&request, &response)?;
             Ok(Some(Response::Cancellation(response)))
         }
         Request::Acknowledge(_) => Err(Error::Unsupported(

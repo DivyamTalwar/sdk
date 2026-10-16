@@ -2,7 +2,7 @@
 
 use acyclic_harness::{
     Error, Result, wire,
-    wire_api::{HarnessWireApi, negotiate, validate_resume_protocol},
+    wire_api::{HarnessWireApi, OperationControlRequest, negotiate, validate_resume_protocol},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::{FutureExt as _, stream};
@@ -100,6 +100,13 @@ impl HarnessWireApi for WireFixture {
                 as BoxProviderStream<'static, Result<wire::Delivery>>)
         }
         .boxed()
+    }
+
+    fn authorize_operation_control<'a>(
+        &'a self,
+        _: &'a OperationControlRequest,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        unavailable()
     }
 
     fn observe<'a>(
