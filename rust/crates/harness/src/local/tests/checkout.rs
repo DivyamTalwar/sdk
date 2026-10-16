@@ -571,15 +571,28 @@ async fn bash_output_is_live_before_exit_and_replays_without_relaunch() -> Resul
         std::fs::read(directory.path().join("result")).map_err(super::super::storage)?,
         b"final"
     );
+    let expected: Vec<_> = snapshot
+        .files
+        .into_iter()
+        .map(|file| (file.key, file.channel, file.bytes.as_ref().to_vec()))
+        .collect();
+    drop(observation);
+    drop(commands);
+    drop(harness);
     let reopened = LocalHarness::open(LocalHarnessConfig::new(
         directory.path(),
         (model()?, provider.clone()),
     ))
     .await?;
-    assert_eq!(
-        reopened.task_files().snapshot(&query, 16).await?.files,
-        snapshot.files
-    );
+    let actual: Vec<_> = reopened
+        .task_files()
+        .snapshot(&query, 16)
+        .await?
+        .files
+        .into_iter()
+        .map(|file| (file.key, file.channel, file.bytes.as_ref().to_vec()))
+        .collect();
+    assert_eq!(actual, expected);
     assert_eq!(provider.requests().len(), 2);
     Ok(())
 }
