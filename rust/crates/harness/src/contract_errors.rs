@@ -86,6 +86,10 @@ pub enum Error {
     /// Search publication is retryable; its completed response remains in ready.json.
     #[error("search publication deferred; resume from ready.json")]
     SearchPublicationDeferred,
+    /// A Machines provider failure with no operation receipt, keeping its exact cause.
+    #[cfg(feature = "machines")]
+    #[error("Machines {0}")]
+    Machines(#[source] acyclic_machines::ProviderError),
     /// An owned native failure, preserving its cause and existing allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -333,6 +337,24 @@ pub(crate) fn native_work_error_code(
     }
 }
 
+/// Wire classification of a retained Machines cause.
+#[cfg(feature = "machines")]
+const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
+    use crate::wire::ErrorCode;
+    use acyclic_machines::ProviderError as Machines;
+    match cause {
+        Machines::NotFound(_) => ErrorCode::NotFound,
+        Machines::Conflict(_) => ErrorCode::Conflict,
+        Machines::Unsupported(_) => ErrorCode::Unsupported,
+        Machines::Invalid(_) | Machines::Rejected(_) => ErrorCode::Invalid,
+        Machines::Indeterminate(_)
+        | Machines::OperationIndeterminate(_)
+        | Machines::CommandIndeterminate(_) => ErrorCode::Indeterminate,
+        Machines::Cancelled => ErrorCode::Cancelled,
+        Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
+    }
+}
+
 impl Error {
     #[cfg(all(
         not(target_arch = "wasm32"),
@@ -391,6 +413,8 @@ impl Error {
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process { .. } => ErrorCode::Invalid,
             Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
+            #[cfg(feature = "machines")]
+            Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
@@ -439,6 +463,10 @@ impl Error {
 
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
+        #[cfg(feature = "machines")]
+        if matches!(self, Self::Machines(_)) {
+            return false;
+        }
         !matches!(
             self,
             Self::TaskFiles(_)
