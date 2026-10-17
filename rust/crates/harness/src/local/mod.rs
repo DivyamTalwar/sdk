@@ -95,13 +95,11 @@ impl LocalHarness {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             for (_, mount) in workspace.mounts.mounts() {
-                if let Some(native) = mount
-                    .view
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.native.as_ref())
-                {
-                    native.unmount().await?;
+                if let Some(source) = &mount.view.source {
+                    let native = source.native().await;
+                    if let Some(native) = native.as_ref() {
+                        native.unmount().await?;
+                    }
                 }
             }
         }
