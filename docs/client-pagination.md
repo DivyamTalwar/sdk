@@ -5,10 +5,10 @@ one pinned generation. Loading older messages evicts the newest edge when
 `maxItems` is reached; loading newer messages evicts the oldest edge. Reversing
 direction reloads the messages adjacent to the retained window.
 
-Each page supplies independent `before` and `after` cursors for its first and last
-items. The loader must interpret those as exclusive boundaries in the requested
-direction. Cursors can be opaque and direction-specific; item identity keys are
-only used for deduplication.
+A page can supply independent `before` and `after` cursors for its first and last
+items. Each cursor is optional. The loader must interpret a supplied cursor as an
+exclusive boundary in the requested direction. Cursors can be opaque and
+direction-specific; item identity keys are only used for deduplication.
 
 ## Cursors inside a page
 
