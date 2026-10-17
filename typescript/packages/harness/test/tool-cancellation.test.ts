@@ -75,6 +75,31 @@ for (const binding of ["handler", "executor"] as const) {
     expect(executions).toBe(0);
   });
 
+  for (const answerKind of ["cancelled", "denied"] as const) {
+    for (const cancel of [false, true]) {
+      test(`${binding} ${cancel ? "preserves caller cancellation" : "preserves approval outcome"} when the router returns ${answerKind}`, async () => {
+        const pending = gate();
+        const controller = new AbortController();
+        const reason = new Error("caller cancelled while the approval router was pending");
+        let executions = 0;
+        const runtime = await counterTool(binding, async value => { executions++; return value; })
+          .policy({ identity: () => approvalPolicyIdentity,
+            evaluate: async () => ({ kind: "require-approval", prompt: "Allow this tool?" }) })
+          .interactions({ route: async () => {
+            await pending.wait();
+            return { kind: answerKind };
+          } }).build();
+        const result = runtime.call(runtime.tool("cancelled-tool"), 7, controller.signal);
+        await pending.entered;
+        if (cancel) controller.abort(reason);
+        pending.release();
+        if (cancel) await expect(result).rejects.toBe(reason);
+        else await expect(result).rejects.toMatchObject({ kind: answerKind });
+        expect(executions).toBe(0);
+      });
+    }
+  }
+
   test(`${binding} preserves a completed effect when cancellation follows dispatch`, async () => {
     const pending = gate();
     const controller = new AbortController();

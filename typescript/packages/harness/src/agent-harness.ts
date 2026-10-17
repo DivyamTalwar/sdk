@@ -484,6 +484,7 @@ export class AgentHarness {
         id: contracts.idFromDigest(actionDigest, "interaction"), kind: "approval", prompt: request.prompt,
         operationId: approval.operation_id, actionDigest: approval.action_digest,
       });
+      signal.throwIfAborted();
       if (answer?.kind === "approved") continue;
       if (answer?.kind === "indeterminate" && answer.operationId !== approval.operation_id) {
         throw new TypeError("approval outcome refers to another operation");
