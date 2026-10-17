@@ -46,11 +46,14 @@ impl Fixture {
     }
 
     fn replace_group(&self, names: &[&str], bytes: &[u8]) -> TestResult {
+        let (first, remaining) = names
+            .split_first()
+            .ok_or("a replacement hard-link group must not be empty")?;
         let temporary = self.source.path().join("save.tmp");
         std::fs::write(&temporary, bytes)?;
-        let first = self.source.path().join(names[0]);
+        let first = self.source.path().join(first);
         std::fs::rename(temporary, &first)?;
-        for name in &names[1..] {
+        for name in remaining {
             let destination = self.source.path().join(name);
             if destination.exists() {
                 std::fs::remove_file(&destination)?;
@@ -209,6 +212,89 @@ async fn removing_one_alias_preserves_the_surviving_file_identity() -> TestResul
         std::fs::remove_file(fixture.source.path().join(removed))?;
         fixture.capture().await?;
         assert_eq!(fixture.assert_file(retained, b"before").await?, original);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacing_the_last_host_alias_respects_the_capture_scope_and_prior_generation()
+-> TestResult {
+    for (removed, retained) in [("a", "z"), ("z", "a")] {
+        for complete in [true, false] {
+            let fixture = Fixture::new().await?;
+            fixture.replace_group(&["a", "z"], b"before")?;
+            fixture.capture().await?;
+            assert_eq!(
+                fixture.assert_file("a", b"before").await?,
+                fixture.assert_file("z", b"before").await?
+            );
+            let prior = fixture
+                .workspace
+                .head(WorkBudget::UNBOUNDED, &fixture.cancellation)
+                .await?
+                .value;
+            std::fs::remove_file(fixture.source.path().join(removed))?;
+            fixture.replace_group(&[retained], b"after!")?;
+            if complete {
+                fixture.capture().await?;
+            } else {
+                let mut checkout = fixture
+                    .workspace
+                    .checkout(
+                        GenerationSelector::Head,
+                        CheckoutMode::tracking_transaction(),
+                        WorkBudget::UNBOUNDED,
+                        &fixture.cancellation,
+                    )
+                    .await?
+                    .value;
+                capture_paths(
+                    &mut checkout,
+                    &[path(&format!("/{retained}"))?],
+                    &fixture.options,
+                    WorkBudget::UNBOUNDED,
+                    &fixture.cancellation,
+                )
+                .await?;
+                seal_checkout(
+                    &mut checkout,
+                    OperationId::new(),
+                    WorkBudget::UNBOUNDED,
+                    &fixture.cancellation,
+                )
+                .await?;
+            }
+            let retained_id = fixture.assert_file(retained, b"after!").await?;
+            if complete {
+                let missing = fixture
+                    .workspace
+                    .read(
+                        &format!("/{removed}"),
+                        64,
+                        WorkBudget::UNBOUNDED,
+                        &fixture.cancellation,
+                    )
+                    .await;
+                assert!(matches!(
+                    missing,
+                    Err(ref failure) if matches!(failure.error, acyclic_fs::WorkspaceError::NotFound)
+                ));
+            } else {
+                assert_ne!(fixture.assert_file(removed, b"before").await?, retained_id);
+            }
+            for name in ["a", "z"] {
+                let original = prior
+                    .read(
+                        &format!("/{name}"),
+                        64,
+                        WorkBudget::UNBOUNDED,
+                        &fixture.cancellation,
+                    )
+                    .await?
+                    .value;
+                assert_eq!(original.as_ref(), b"before", "pinned {name}");
+            }
+        }
     }
     Ok(())
 }
